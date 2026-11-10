@@ -1,4 +1,4 @@
--- Per-user attachment storage quota (issue #794, ADR 0069).
+-- Per-user attachment storage quota (issue #794, ADR 0072).
 --
 -- Until now the only limit was per file (50 MB, the bucket's file_size_limit).
 -- Nothing capped an account's total, so one account could fill the Supabase free
@@ -48,7 +48,7 @@ alter table public.profiles
 comment on column public.profiles.storage_quota_bytes is
   'Attachment storage quota in bytes; NULL = unlimited. Default 52428800 (50 MB, '
   'DEFAULT_STORAGE_QUOTA_BYTES in packages/shared). Only admins may change it. '
-  'See issue #794 / ADR 0069.';
+  'See issue #794 / ADR 0072.';
 
 -- Admins are unlimited. Runs as `postgres`, which the privilege guard doesn't gate.
 update public.profiles
@@ -224,7 +224,7 @@ $$;
 comment on function public.enforce_attachment_storage_quota() is
   'BEFORE INSERT trigger on public.attachments. Raises storage_quota_exceeded when '
   'the user''s usage plus the new file_size would exceed profiles.storage_quota_bytes. '
-  'See issue #794 / ADR 0069.';
+  'See issue #794 / ADR 0072.';
 
 -- A trigger's function needs no EXECUTE grant to fire.
 revoke all on function public.enforce_attachment_storage_quota() from public, anon, authenticated;
@@ -284,7 +284,7 @@ $$;
 
 comment on function public.can_store_attachment() is
   'Used by the attachments bucket''s INSERT and UPDATE policies on storage.objects. '
-  'False once the caller''s usage reaches their storage quota. See issue #794 / ADR 0069.';
+  'False once the caller''s usage reaches their storage quota. See issue #794 / ADR 0072.';
 
 revoke all on function public.can_store_attachment() from public, anon;
 grant execute on function public.can_store_attachment() to authenticated, service_role;

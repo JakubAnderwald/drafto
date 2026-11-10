@@ -1,4 +1,4 @@
-# 0069 — Per-User Attachment Storage Quota in the Database
+# 0072 — Per-User Attachment Storage Quota in the Database
 
 - **Status**: Accepted
 - **Date**: 2026-11-08

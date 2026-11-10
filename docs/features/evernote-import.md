@@ -19,7 +19,7 @@ Shipped on the web app. The flow:
 
 Uploading bytes from the browser straight to Storage keeps every API request small: Vercel caps request bodies at 4.5 MB.
 
-**Storage quota** (issue #794, [ADR-0069](../adr/0069-per-user-attachment-storage-quota.md)). Imported attachments count against the user's attachment storage quota like any other (see [editor](./editor.md), "Storage quota"). The import stops at the first quota refusal, a 413 from `upload-url` or `confirm` whose body carries `code: "storage_quota_exceeded"` (`isStorageQuotaError`):
+**Storage quota** (issue #794, [ADR-0072](../adr/0072-per-user-attachment-storage-quota.md)). Imported attachments count against the user's attachment storage quota like any other (see [editor](./editor.md), "Storage quota"). The import stops at the first quota refusal, a 413 from `upload-url` or `confirm` whose body carries `code: "storage_quota_exceeded"` (`isStorageQuotaError`):
 
 - Notes already imported stay, with their attachments.
 - The current note keeps its text: its remaining attachments are not tried, and it is finalized with the ones already uploaded.
@@ -54,7 +54,7 @@ Platform coverage:
 ## Related ADRs
 
 - [0007 — Evernote Import](../adr/0007-evernote-import.md)
-- [0069 — Per-User Attachment Storage Quota in the Database](../adr/0069-per-user-attachment-storage-quota.md)
+- [0072 — Per-User Attachment Storage Quota in the Database](../adr/0072-per-user-attachment-storage-quota.md)
 
 ## Cross-platform notes
 

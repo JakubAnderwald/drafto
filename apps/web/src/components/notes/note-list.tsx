@@ -22,10 +22,18 @@ interface NotebookOption {
 interface NoteListProps {
   notebookId: string;
   selectedNoteId: string | null;
-  onSelectNote: (id: string) => void;
+  onSelectNote: (id: string | null) => void;
   onCreateNote: () => void;
-  onMoveNote?: (noteId: string, targetNotebookId: string) => void;
-  onDeleteNote?: (noteId: string) => void;
+  /**
+   * `remainingIds` lists, in order, the notes left after the moved note's row was
+   * removed. The parent picks the next selection from them once the move succeeds,
+   * if the moved note is still the selected one. The list leaves the selection alone
+   * on a move or delete: changing it refetches the list while the request is still
+   * in flight.
+   */
+  onMoveNote?: (noteId: string, targetNotebookId: string, remainingIds: string[]) => void;
+  /** `remainingIds` works as in `onMoveNote`. */
+  onDeleteNote?: (noteId: string, remainingIds: string[]) => void;
   notebooks?: NotebookOption[];
   refreshTrigger?: number;
   lastNoteUpdate?: NoteListPatch | null;
@@ -110,35 +118,37 @@ export function NoteList({
     );
   }
 
+  // Delete and move remove the row at once and leave the selection to the parent,
+  // which changes it after the request settles (#461). Selecting the next note now
+  // would refetch the list while the request is in flight, and that response could
+  // still contain the removed note. The remaining notes are worked out here, outside
+  // any state updater, so React StrictMode's double-invoked updaters stay pure.
   const handleDelete = useCallback(
     (noteId: string) => {
-      setNotes((prev) => {
-        const filtered = prev.filter((n) => n.id !== noteId);
-        if (selectedNoteId === noteId) {
-          onSelectNote(filtered[0]?.id ?? "");
-        }
-        return filtered;
-      });
+      const remaining = notes.filter((n) => n.id !== noteId);
+      setNotes(remaining);
       setMenuOpenForNote(null);
-      onDeleteNote?.(noteId);
+      onDeleteNote?.(
+        noteId,
+        remaining.map((n) => n.id),
+      );
     },
-    [selectedNoteId, onSelectNote, onDeleteNote],
+    [notes, onDeleteNote],
   );
 
   const handleMove = useCallback(
     (noteId: string, targetNotebookId: string) => {
       if (!onMoveNote) return;
-      setNotes((prev) => {
-        const filtered = prev.filter((n) => n.id !== noteId);
-        if (selectedNoteId === noteId) {
-          onSelectNote(filtered[0]?.id ?? "");
-        }
-        return filtered;
-      });
+      const remaining = notes.filter((n) => n.id !== noteId);
+      setNotes(remaining);
       setMenuOpenForNote(null);
-      onMoveNote(noteId, targetNotebookId);
+      onMoveNote(
+        noteId,
+        targetNotebookId,
+        remaining.map((n) => n.id),
+      );
     },
-    [selectedNoteId, onSelectNote, onMoveNote],
+    [notes, onMoveNote],
   );
 
   const otherNotebooks = notebooks.filter((nb) => nb.id !== notebookId);

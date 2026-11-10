@@ -7,7 +7,7 @@ export const MAX_FILE_SIZE_MB = MAX_FILE_SIZE / (1024 * 1024);
 export const FILE_TOO_LARGE_MESSAGE = `File size exceeds ${MAX_FILE_SIZE_MB}MB limit`;
 export const FILE_EMPTY_MESSAGE = "File is empty";
 export const MAX_FILE_NAME_LENGTH = 255;
-// Per-user attachment storage quota (issue #794, ADR 0069). The database default of
+// Per-user attachment storage quota (issue #794, ADR 0072). The database default of
 // profiles.storage_quota_bytes; NULL there means unlimited (admins). Keep in step with
 // supabase/migrations/20261108000001_per_user_storage_quota.sql.
 export const DEFAULT_STORAGE_QUOTA_BYTES = 52428800; // 50MB in bytes

@@ -329,6 +329,35 @@ revise_replies_check 659 ${JSON.stringify(pr)} ${JSON.stringify(markers)}${kind 
     assert.doesNotMatch(out.posted, /The preview is unchanged/);
     assert.doesNotMatch(out.posted, /drafto-factory-revise-noop/);
   });
+
+  it("a no-op on an unshown head gets a fallback that says the card goes through In Review (#759)", () => {
+    const out = runReply({ comments: [], kind: "noop-review" });
+    assert.equal(out.posts, 1);
+    assert.match(out.posted, /This run made no new code change, and no reply was found/);
+    assert.match(
+      out.posted,
+      /The PR's current commit, which may already hold a change from an earlier attempt, hasn't been through review yet\. So the card goes through \*\*In Review\*\* first, then comes back for you to test with a new preview\./,
+    );
+    assert.match(
+      out.posted,
+      / PR #665's description may record what changed\. If that preview doesn't cover your comment, comment again then\./,
+    );
+    // The card isn't in In Test, so there is nothing to drag to Approved yet,
+    // and the preview it comes back with is a new one. The head may already
+    // hold the requested change, so it must not say nothing changed.
+    assert.doesNotMatch(out.posted, /Drag to \*\*Approved\*\*/);
+    assert.doesNotMatch(out.posted, /The preview is unchanged/);
+    assert.doesNotMatch(out.posted, /No code change was made/);
+    assert.match(out.posted, /<!-- drafto-factory-revise-reply-123 -->/);
+    assert.match(out.posted, /<!-- drafto-factory-revise-noop -->/);
+  });
+
+  it("a no-op on an unshown head fails open, like any no-op, when the comments can't be read", () => {
+    const out = runReply({ failFirst: 99, kind: "noop-review" });
+    assert.match(out.log, /posting the fallbacks/);
+    assert.equal(out.posts, 1);
+    assert.match(out.posted, /goes through \*\*In Review\*\* first/);
+  });
 });
 
 describe("worktree_untouched (extracted, real git)", () => {
@@ -438,7 +467,14 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
     );
   });
 
-  it("a revision no-op re-presents the existing preview (back to In Test)", () => {
+  // A function's body, from `name() {` to its closing column-0 `}`.
+  const fnBody = (name) => {
+    const start = script.indexOf(`${name}() {`);
+    assert.ok(start !== -1, `could not find ${name}`);
+    return script.slice(start, script.indexOf("\n}\n", start));
+  };
+
+  it("a revision no-op re-presents the existing preview (back to In Test) for the head shown there", () => {
     assert.match(script, /drafto-factory-revise-noop/);
     // Slice the noop arm rather than pinning line adjacency: the revision arm
     // now opens with the committed-but-unlanded guard before this comment.
@@ -450,22 +486,78 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
       return script.slice(start, end);
     })();
     assert.match(noopArm, /# The feedback needed no code change/);
-    // The PR number comes from bash's own lookup, and the shared helper does
-    // the move, the consume and the reply check.
+    // The PR number comes from bash's own lookup. The route decides between In
+    // Test and In Review (#759), and the shared helpers do the move, the
+    // consume and the reply check.
     assert.match(
       noopArm,
-      /revision_return_to_test "\$ISSUE_NUM" "\$ITEM_ID" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*"\$\(echo "\$PRIOR_PR" \| jq -r '\.number \/\/ ""'[^\n]*\n\s*"\$REPLY_MARKERS" "\$FEEDBACK_MARK" noop\n/,
+      /revision_noop_route "\$ISSUE_NUM" "\$ITEM_ID" "\$SLOT" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n\s*"\$\(echo "\$PRIOR_PR" \| jq -r '\.number \/\/ ""'[^\n]*\n\s*"\$REPLY_MARKERS" "\$FEEDBACK_MARK" "\$AFFECTED" "\$PARITY_OVERRIDE"\n/,
     );
+    // The arm no longer returns to In Test on its own: only the route does,
+    // after checking the head.
+    assert.doesNotMatch(noopArm, /revision_return_to_test/);
     assert.doesNotMatch(noopArm, /gh issue comment/);
-    const back = script.slice(
-      script.indexOf("revision_return_to_test() {"),
-      script.indexOf("\n}\n", script.indexOf("revision_return_to_test() {")),
-    );
+    const back = fnBody("revision_return_to_test");
     assert.match(back, /transition_status "\$item_id" "\$issue_num" "In Test"/);
     assert.match(back, /lastFeedbackAt "\$mark"/);
     assert.match(back, /factory:reset-attempts "\$issue_num"/);
     // The reply check replaced the arm's own fixed comment.
     assert.match(back, /revise_replies_check "\$issue_num" "\$pr_num" "\$markers" "\$kind"/);
+  });
+
+  it("returns a revision no-op to In Test only when its head is the one shown there (#759)", () => {
+    const route = fnBody("revision_noop_route");
+    assert.match(route, /jq -r '\.intestCommentSha \/\/ ""'/);
+    // An empty shown SHA counts as "not shown", never as a match.
+    assert.match(
+      route,
+      /if \[\[ -n "\$shown" && "\$shown" == "\$pr_head" \]\]; then\n\s*revision_return_to_test "\$issue_num" "\$item_id" "\$pr_head" "\$labels" "\$pr_num" \\\n\s*"\$markers" "\$mark" noop\n\s*return 0\n\s*fi\n/,
+    );
+    // Every other head goes through In Review.
+    assert.match(
+      route,
+      /revision_noop_to_review "\$issue_num" "\$item_id" "\$slot" "\$pr_num" "\$markers" "\$mark" \\\n\s*"\$affected" "\$override"$/,
+    );
+    assert.equal((route.match(/revision_return_to_test /g) || []).length, 1);
+  });
+
+  it("sends a revision no-op on an unshown head through the parity gate to In Review, keeping the slot", () => {
+    const review = fnBody("revision_noop_to_review");
+    const gateAt = review.indexOf(
+      'implement_parity_gate "$item_id" "$issue_num" "$slot" "$pr_num" "$affected" "$override"',
+    );
+    const moveAt = review.indexOf('transition_status "$item_id" "$issue_num" "In Review"');
+    assert.ok(gateAt !== -1, "runs the parity gate");
+    assert.ok(moveAt > gateAt, "the gate runs before the move to In Review");
+    // A violation (the gate parked the card in Blocked) stops here: nothing is
+    // consumed, so the feedback is still there when a human drags it back.
+    assert.match(review, /implement_parity_gate [^\n]*\\\n\s*\|\| return 0\n/);
+    assert.match(review, /lastFeedbackAt "\$mark"/);
+    assert.match(review, /factory:reset-attempts "\$issue_num"/);
+    // A new In Review stint, so a fresh behind-main budget (ADR-0070).
+    assert.match(review, /factory:set-issue-field "\$issue_num" branchUpdates "" --state-file/);
+    assert.match(review, /revise_replies_check "\$issue_num" "\$pr_num" "\$markers" noop-review\n/);
+    // --watch drives the card from In Review, on this slot and worktree.
+    assert.doesNotMatch(review, /factory:slot-release/);
+    assert.doesNotMatch(review, /worktree-cli/);
+    assert.doesNotMatch(review, /"In Test"|"Testing"/);
+  });
+
+  it("shares one parity gate between the implemented arm and the unshown-head no-op", () => {
+    const gate = fnBody("implement_parity_gate");
+    // A failed `gh pr diff` skips the check rather than reading as a violation.
+    assert.match(
+      gate,
+      /if diff_files=\$\(gh pr diff "\$pr_num" --repo JakubAnderwald\/drafto --name-only 2>>"\$LOG_FILE"\); then\n\s*violation=\$\(parity_violation "\$affected" "\$override" "\$diff_files"\)\n\s*else\n[^\n]*skipping parity post-check this tick"\n\s*violation=""\n\s*fi\n\s*\[\[ -n "\$violation" \]\] \|\| return 0\n/,
+    );
+    assert.match(gate, /<!-- drafto-factory-parity-violation -->/);
+    assert.match(gate, /transition_status "\$item_id" "\$issue_num" "Blocked"/);
+    assert.match(gate, /factory:slot-release "\$slot"/);
+    assert.match(gate, /worktree-cli\.mjs" remove --issue "\$issue_num"/);
+    assert.match(gate, /\n\s*return 1$/);
+    // One copy: the parity check runs nowhere else in --implement.
+    assert.equal((script.match(/parity_violation "\$affected" "\$override"/g) || []).length, 1);
+    assert.doesNotMatch(script, /parity_violation "\$AFFECTED"/);
   });
 
   // --implement's own arms; other stages have blocked) arms of their own.

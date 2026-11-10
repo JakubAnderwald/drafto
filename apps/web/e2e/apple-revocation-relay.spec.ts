@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { APPLE_RELAY_CSP } from "../src/lib/apple/revocation-relay";
 
 /**
  * The Sign in with Apple revocation relay (`/auth/apple/revocation`). Apple POSTs its answer
@@ -34,7 +35,11 @@ test.describe("Apple revocation relay", () => {
 
     expect(response.status()).toBe(200);
     expect(response.headers()["content-type"]).toContain("text/html");
-    expect(response.headers()["content-security-policy"]).toContain("default-src 'none'");
+    // Exactly the relay's own hash-based policy: the middleware adds no nonce policy here, which
+    // would replace this one and block the page's script (ADR-0069). Playwright joins a header
+    // sent twice with a newline, so equality also proves there is one.
+    expect(response.headers()["content-security-policy"]).toBe(APPLE_RELAY_CSP);
+    expect(response.headers()["referrer-policy"]).toBe("no-referrer");
     expect(response.headers()["x-robots-tag"]).toBe("noindex");
     const html = await response.text();
     expect(html).toContain("Return to Drafto");

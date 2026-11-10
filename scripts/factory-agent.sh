@@ -1619,9 +1619,11 @@ has_actionable_feedback() {
 # of only in the PR body. Trust the markers, not the directive line (as
 # intest_handoff does): for each comment with no reply, post the fixed fallback
 # for <kind>, so no comment goes unanswered. <kind> is "noop" (no code change),
-# "declined" (outside the plan, ADR-0058) or "implemented" (a revision was
-# pushed). No entries means the round was all approval noise: nothing to
-# answer. When the comments can't be read afterwards, noop and declined fail
+# "noop-review" (no code change, but the PR head was never shown at In Test, so
+# the card goes through In Review first — revision_noop_to_review), "declined"
+# (outside the plan, ADR-0058) or "implemented" (a revision was pushed). No
+# entries means the round was all approval noise: nothing to answer. When the
+# comments can't be read afterwards, noop, noop-review and declined fail
 # OPEN — a fallback for each comment whose reply wasn't posted just now,
 # because a rare extra notice beats a reporter hearing nothing — while a pushed
 # revision fails closed: its new preview and scenario comment follow anyway.
@@ -1662,8 +1664,8 @@ revise_replies_check() {
 
 # revise_fallback_reply <issue> <pr-num> <comment-id> <kind> — the fixed notice
 # for a feedback comment that got no reply. It links that comment and carries
-# its reply marker, so each comment is answered once. Noop and declined notices
-# also carry drafto-factory-revise-noop.
+# its reply marker, so each comment is answered once. Noop, noop-review and
+# declined notices also carry drafto-factory-revise-noop.
 revise_fallback_reply() {
   local issue_num="$1" pr_num="$2" id="$3" kind="${4:-noop}"
   local about="" details="" headline next="" body markers=""
@@ -1683,6 +1685,15 @@ revise_fallback_reply() {
       headline="A revision was pushed for that, but no reply was found."
       [[ -n "$pr_num" ]] && details=" PR #$pr_num's description records what changed."
       body="${about}The card goes back through review, then comes back for you to test with a new preview.$details"
+      ;;
+    noop-review)
+      # The card is in In Review, not In Test, so there is nothing to drag to
+      # Approved yet: its head owes the review gates before it comes back. That
+      # head may already hold the requested change (an earlier attempt pushed it
+      # and died), so don't say nothing changed or ask for the comment again now.
+      headline="This run made no new code change, and no reply was found."
+      [[ -n "$pr_num" ]] && details=" PR #$pr_num's description may record what changed."
+      body="${about}The PR's current commit, which may already hold a change from an earlier attempt, hasn't been through review yet. So the card goes through **In Review** first, then comes back for you to test with a new preview.$details If that preview doesn't cover your comment, comment again then."
       ;;
     *)
       headline="No code change was made for that, and no reply was found."
@@ -1789,6 +1800,58 @@ revision_return_to_test() {
   log "Issue #$issue_num: revision $kind; returned to $target"
 }
 
+# revision_noop_route <issue> <item-id> <slot> <pr-head> <item-labels> <pr-num>
+#   <reply-markers-json> <feedback-mark> <affected-csv> <parity-override>
+# Where a revision noop goes. Only the head the reporter was shown at In Test
+# (intestCommentSha) goes back there, through revision_return_to_test, as for
+# a declined revision (ADR-0058), though unlike declined the head isn't re-read
+# after the run. Any other head never went through In Review's gates: an
+# earlier attempt pushed it and died before reporting, or someone else pushed.
+# No recorded head means the card was never shown at In Test (one dragged out
+# of Blocked before it got there). Either goes through In Review first
+# (revision_noop_to_review) rather than Blocked, because the work itself is fine.
+revision_noop_route() {
+  local issue_num="$1" item_id="$2" slot="$3" pr_head="$4" labels="$5" pr_num="$6"
+  local markers="$7" mark="$8" affected="$9" override="${10}" shown shown_note
+  shown=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
+  if [[ -n "$shown" && "$shown" == "$pr_head" ]]; then
+    revision_return_to_test "$issue_num" "$item_id" "$pr_head" "$labels" "$pr_num" \
+      "$markers" "$mark" noop
+    return 0
+  fi
+  shown_note="${shown:0:12}"
+  [[ -n "$shown_note" ]] || shown_note="none recorded"
+  log "Issue #$issue_num: revision noop on PR head ${pr_head:0:12}, but In Test was shown $shown_note; routing through In Review"
+  revision_noop_to_review "$issue_num" "$item_id" "$slot" "$pr_num" "$markers" "$mark" \
+    "$affected" "$override"
+}
+
+# revision_noop_to_review <issue> <item-id> <slot> <pr-num> <reply-markers-json>
+#   <feedback-mark> <affected-csv> <parity-override>
+# A revision noop on a PR head that was never shown at In Test. It owes In
+# Review's gates, as a pushed revision does: the parity post-check first (a
+# violation parks the card in Blocked and leaves the feedback unconsumed), then
+# In Review, where --watch runs CI, the code review and a new In Test scenario.
+# The feedback is consumed (the noop said no code change was needed), attempts
+# and the behind-main budget reset and the replies checked. The slot and
+# worktree stay for --watch.
+revision_noop_to_review() {
+  local issue_num="$1" item_id="$2" slot="$3" pr_num="$4" markers="$5" mark="$6"
+  local affected="$7" override="$8"
+  implement_parity_gate "$item_id" "$issue_num" "$slot" "$pr_num" "$affected" "$override" \
+    || return 0
+  transition_status "$item_id" "$issue_num" "In Review" || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastFeedbackAt "$mark" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$issue_num" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  # A new In Review stint starts here, with a fresh behind-main budget
+  # (ADR-0070), as on the implemented arm. A move to Blocked doesn't reset it, so
+  # a card dragged back out of Blocked could otherwise arrive with it spent.
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  revise_replies_check "$issue_num" "$pr_num" "$markers" noop-review
+  log "Issue #$issue_num: revision noop on an unshown head → In Review (slot $slot retained for --watch)"
+}
+
 # implement_park_blocked <item-id> <issue> <slot> <reason> — move an --implement
 # card to Blocked for a human, release its slot and remove its worktree (the
 # branch stays). <reason> is recorded as lastError.
@@ -1799,6 +1862,42 @@ implement_park_blocked() {
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
   log "Issue #$issue_num: $reason → Blocked; slot $slot released"
+}
+
+# implement_parity_gate <item-id> <issue> <slot> <pr-num> <affected-csv>
+#   <parity-override>
+# The --implement parity / phase post-check (parity_violation) on PR <pr-num>'s
+# diff, run before a card moves to In Review: after a pushed revision or a
+# fresh PR, and after a revision noop on an unshown head. A transient
+# `gh pr diff` failure must not masquerade as a violation, so the check is only
+# enforced when the file list came back. On a violation it comments, parks the
+# card in Blocked, releases the slot and removes the worktree (the PR stays
+# open), then returns 1. Otherwise it returns 0 and changes nothing.
+implement_parity_gate() {
+  local item_id="$1" issue_num="$2" slot="$3" pr_num="$4" affected="$5" override="$6"
+  local diff_files violation
+  if diff_files=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+    violation=$(parity_violation "$affected" "$override" "$diff_files")
+  else
+    log "WARNING: gh pr diff failed for PR #$pr_num; skipping parity post-check this tick"
+    violation=""
+  fi
+  [[ -n "$violation" ]] || return 0
+  log "Issue #$issue_num: parity post-check failed: $violation → Blocked"
+  gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+    --body "🏭 **Parity post-check failed.**
+
+$violation
+
+The PR is left open for inspection. Correct the platform coverage, or for \
+legitimate single-platform work apply a \`parity:<platform>-only\` label and \
+drag the card back to **In Progress**.
+
+<!-- drafto-factory-parity-violation -->" >>"$LOG_FILE" 2>&1 || true
+  transition_status "$item_id" "$issue_num" "Blocked" || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+  return 1
 }
 
 # Build the factory_watch bundle. $2 approved-plan obj|null, $3 prior-PR obj,
@@ -7095,29 +7194,11 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
             continue
           fi
         fi
-        # Parity / phase post-check. A transient `gh pr diff` failure must not
-        # masquerade as a violation, so we only enforce when we got the list.
-        if DIFF_FILES=$(gh pr diff "$PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
-          VIOLATION=$(parity_violation "$AFFECTED" "$PARITY_OVERRIDE" "$DIFF_FILES")
-        else
-          log "WARNING: gh pr diff failed for PR #$PR_NUM; skipping parity post-check this tick"
-          VIOLATION=""
-        fi
-        if [[ -n "$VIOLATION" ]]; then
-          log "Issue #$ISSUE_NUM: parity post-check failed: $VIOLATION → Blocked"
-          gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-            --body "🏭 **Parity post-check failed.**
-
-$VIOLATION
-
-The PR is left open for inspection. Correct the platform coverage, or for \
-legitimate single-platform work apply a \`parity:<platform>-only\` label and \
-drag the card back to **In Progress**.
-
-<!-- drafto-factory-parity-violation -->" >>"$LOG_FILE" 2>&1 || true
-          transition_status "$ITEM_ID" "$ISSUE_NUM" "Blocked" || true
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$ISSUE_NUM" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
+        # Parity / phase post-check. implement_parity_gate parks a violation in
+        # Blocked (slot released, worktree removed) and skips it when
+        # `gh pr diff` fails; the revision noop on an unshown head runs the same.
+        if ! implement_parity_gate "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "$PR_NUM" \
+            "$AFFECTED" "$PARITY_OVERRIDE"; then
           continue
         fi
         # Happy path: advance to In Review. KEEP slot + worktree for --watch.
@@ -7163,12 +7244,14 @@ drag the card back to **In Progress**.
             node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
             continue
           fi
-          # The feedback needed no code change. The existing PR + preview are
-          # still valid, so re-present them. The PR number comes from bash's own
-          # lookup, not the directive's pr=.
-          revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
+          # The feedback needed no code change. When the PR head is the one shown
+          # at In Test, the existing PR + preview are still valid, so re-present
+          # them; any other head goes through In Review first
+          # (revision_noop_route). The PR number comes from bash's own lookup,
+          # not the directive's pr=.
+          revision_noop_route "$ISSUE_NUM" "$ITEM_ID" "$SLOT" "$PRE_HEAD_OID" "$ITEM_LABELS" \
             "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
-            "$REPLY_MARKERS" "$FEEDBACK_MARK" noop
+            "$REPLY_MARKERS" "$FEEDBACK_MARK" "$AFFECTED" "$PARITY_OVERRIDE"
         else
           # Fresh idempotency hit: a PR already exists from a prior attempt.
           PR_OBJ=$(find_prior_pr "$ISSUE_NUM")

@@ -17,7 +17,7 @@ Shipped on all four platforms.
 - **Cross-format migration**: `GET /api/notes/:id` defensively converts TipTap → BlockNote on read and persists the repaired shape. Mobile/desktop convert BlockNote → TipTap on read.
 - **Markdown conversion** (`packages/shared/src/editor/markdown-converter.ts`) is used by the MCP server for tool I/O and by the Evernote importer's downstream paths.
 - **Attachments**: images are uploaded to Supabase Storage via signed URLs and embedded as `attachment://<path>` URIs; the API resolves these to signed URLs on read. On mobile, a picked file is saved locally, then uploaded on its own (`uploadAttachment`), then inserted, and only then is a sync started without waiting for it. "Attachment uploaded" shows only when that upload succeeded.
-- **Storage quota** (issue #794, [ADR-0069](../adr/0069-per-user-attachment-storage-quota.md)). Besides the 50 MB per-file limit, each account has a total attachment quota, enforced in the database so that every upload route meets it:
+- **Storage quota** (issue #794, [ADR-0072](../adr/0072-per-user-attachment-storage-quota.md)). Besides the 50 MB per-file limit, each account has a total attachment quota, enforced in the database so that every upload route meets it:
   - **The quota** is `profiles.storage_quota_bytes`: 50 MB by default (`DEFAULT_STORAGE_QUOTA_BYTES`), `NULL` for unlimited. Admins are set to unlimited; someone made an admin later keeps 50 MB until an admin picks Unlimited on the admin page. Only admins can change it (the profile privilege guard rejects anyone else's change with `42501`).
   - **Usage** is `sum(attachments.file_size)` for the user. Attachments on trashed notes still count until the note is deleted permanently (emptying the trash) or the trash cron purges it; both cascade the note's rows. Removing an image or file from a note does not free its bytes: the `attachments` row stays until its note is deleted, and no client deletes a single attachment. To free space, delete notes with attachments and empty the trash.
   - **Enforcement.** A `BEFORE INSERT` trigger on `attachments` refuses a row that would take usage over the quota, with the message `storage_quota_exceeded` (`STORAGE_QUOTA_EXCEEDED_CODE`); landing exactly on the quota is allowed, and an upsert of a row that already exists (the mobile/desktop retry) is let through without counting twice. The bucket's `INSERT` and `UPDATE` policies also require `can_store_attachment()`, so Storage refuses an upload with "new row violates row-level security policy" once the rows reach the quota. Its object term counts only objects under notes the user still has and allows one file (50 MB) of slack, so a client that skips the row insert is stopped at quota + 50 MB, and orphans left by purged notes don't count.
@@ -77,7 +77,7 @@ Shipped on all four platforms.
 - [0009 — Mobile App Technology Choices](../adr/0009-mobile-app-technology-choices.md)
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [0017 — MCP Server for Claude Cowork](../adr/0017-mcp-server-for-claude-cowork.md)
-- [0069 — Per-User Attachment Storage Quota in the Database](../adr/0069-per-user-attachment-storage-quota.md)
+- [0072 — Per-User Attachment Storage Quota in the Database](../adr/0072-per-user-attachment-storage-quota.md)
 
 ## Cross-platform notes
 

@@ -1,7 +1,7 @@
 import { STORAGE_QUOTA_EXCEEDED_CODE, STORAGE_WARNING_RATIO } from "../constants";
 
 /**
- * Per-user attachment storage quota helpers (issue #794, ADR 0069), shared by web,
+ * Per-user attachment storage quota helpers (issue #794, ADR 0072), shared by web,
  * mobile and desktop. The database enforces the quota; these format it, recognise
  * its refusal, and let clients pre-check an upload.
  */

@@ -1,4 +1,4 @@
-// Live check of the per-user attachment storage quota (issue #794, ADR 0069)
+// Live check of the per-user attachment storage quota (issue #794, ADR 0072)
 // against the DEV Supabase project. It talks to GoTrue, PostgREST and Storage
 // with plain fetch, the same path mobile and desktop (supabase-js) and a
 // tampering client holding the public anon key and their own JWT would use.
