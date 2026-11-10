@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NotebooksSidebar } from "@/components/notebooks/notebooks-sidebar";
 import { NoteList } from "@/components/notes/note-list";
 import { handleAuthError } from "@/lib/handle-auth-error";
@@ -13,6 +13,7 @@ import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog
 import { ImportTickTickDialog } from "@/components/import/import-ticktick-dialog";
 import { ExportEvernoteDialog } from "@/components/export/export-evernote-dialog";
 import { SearchOverlay } from "@/components/search/search-overlay";
+import { useNoteRemovals, type NoteRemovalOutcome } from "@/hooks/use-note-removals";
 import { usePaneCollapse } from "@/hooks/use-pane-collapse";
 import type { NoteListPatch } from "@/lib/note-patch";
 
@@ -209,6 +210,16 @@ export function AppShell({
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(initialNotebookId);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  // Most changes refresh every pane at once through `refreshTrigger`. A delete or move
+  // that settles refreshes the lists alone, and refreshes the editor only when it
+  // opens a different note (#461). Refetching the open note re-suspends the editor,
+  // which drops the caret and puts the server copy over edits not yet saved
+  // (ADR-0032). Each pane's trigger adds its own count to the shared one. Both counts
+  // only grow, so the sum changes whenever either does and stays 0 until a refresh.
+  const [listOnlyRefreshes, setListOnlyRefreshes] = useState(0);
+  const [editorOnlyRefreshes, setEditorOnlyRefreshes] = useState(0);
+  const listRefreshTrigger = refreshTrigger + listOnlyRefreshes;
+  const editorRefreshTrigger = refreshTrigger + editorOnlyRefreshes;
   const [notebooks, setNotebooks] = useState<NotebookInfo[]>(
     initialNotebooks.map((n) => ({ id: n.id, name: n.name })),
   );
@@ -220,6 +231,13 @@ export function AppShell({
   const [searchOpen, setSearchOpen] = useState(false);
   const { notebooksCollapsed, notesCollapsed, togglePane } = usePaneCollapse();
   const [lastNoteUpdate, setLastNoteUpdate] = useState<NoteListPatch | null>(null);
+
+  // The selection as last committed, for code that runs when a request settles. A
+  // layout effect updates it during the commit, before any later response can read it.
+  const committedNoteId = useRef(selectedNoteId);
+  useLayoutEffect(() => {
+    committedNoteId.current = selectedNoteId;
+  }, [selectedNoteId]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -240,9 +258,12 @@ export function AppShell({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const handleSelectNote = useCallback((noteId: string) => {
+  const handleSelectNote = useCallback((noteId: string | null) => {
     setSelectedNoteId(noteId);
-    setRefreshTrigger((prev) => prev + 1);
+    // Clearing the selection loads nothing, so there is nothing to refresh.
+    if (noteId !== null) {
+      setRefreshTrigger((prev) => prev + 1);
+    }
   }, []);
 
   const handleNoteUpdated = useCallback((patch: NoteListPatch) => {
@@ -333,30 +354,68 @@ export function AppShell({
     setSelectedNoteId(null);
   }, []);
 
-  const handleDeleteNote = useCallback(
-    async (noteId: string) => {
-      try {
-        const res = await fetch(`/api/notes/${noteId}`, {
-          method: "DELETE",
-        });
+  // The note list has already removed the row. The follow-up selection and the list
+  // refresh both wait for the server (#461): a refetch started before the request
+  // settled could return the note again, and nothing would correct the list after
+  // it. The functional updater keeps a note the user picked meanwhile. The next note
+  // gets a fresh load, as a row click gives it, in the same commit that opens it, so
+  // the editor loads it once. A note that stays open is not refetched.
+  const handleNoteRemoved = useCallback((noteId: string, nextSelectedId: string | null) => {
+    setSelectedNoteId((current) => (current === noteId ? nextSelectedId : current));
+    if (committedNoteId.current === noteId && nextSelectedId !== null) {
+      setEditorOnlyRefreshes((prev) => prev + 1);
+    }
+  }, []);
 
-        if (handleAuthError(res)) return;
-        if (!res.ok) {
-          const err = new Error(`Failed to delete note: ${res.status}`);
-          console.error(err);
-          setRefreshTrigger((prev) => prev + 1);
+  // Only the lists: the editor shows a note the delete or move left in place.
+  const refreshLists = useCallback(() => {
+    setListOnlyRefreshes((prev) => prev + 1);
+  }, []);
+
+  const { beginRemoval, settleRemoval } = useNoteRemovals({
+    onRemoved: handleNoteRemoved,
+    onRefresh: refreshLists,
+  });
+
+  // A delete and a move share one lifecycle: the request's outcome decides the next
+  // selection and the refresh. Each caller supplies only its request and its logs.
+  const runRemoval = useCallback(
+    async (
+      noteId: string,
+      remainingIds: string[],
+      request: () => Promise<Response>,
+      log: { failedStatus: (status: number) => void; error: (err: unknown) => void },
+    ) => {
+      beginRemoval(noteId);
+      let outcome: NoteRemovalOutcome = "failed";
+      try {
+        const res = await request();
+
+        if (handleAuthError(res)) {
+          outcome = "signed-out";
           return;
         }
-
-        if (selectedNoteId === noteId) {
-          setSelectedNoteId(null);
+        if (!res.ok) {
+          log.failedStatus(res.status);
+          return;
         }
+        outcome = "removed";
       } catch (err) {
-        console.error("Failed to delete note:", err);
-        setRefreshTrigger((prev) => prev + 1);
+        log.error(err);
+      } finally {
+        settleRemoval(noteId, remainingIds, outcome);
       }
     },
-    [selectedNoteId],
+    [beginRemoval, settleRemoval],
+  );
+
+  const handleDeleteNote = useCallback(
+    (noteId: string, remainingIds: string[]) =>
+      runRemoval(noteId, remainingIds, () => fetch(`/api/notes/${noteId}`, { method: "DELETE" }), {
+        failedStatus: (status) => console.error(new Error(`Failed to delete note: ${status}`)),
+        error: (err) => console.error("Failed to delete note:", err),
+      }),
+    [runRemoval],
   );
 
   const handleRestoreNote = useCallback(async (noteId: string) => {
@@ -402,32 +461,22 @@ export function AppShell({
   }, []);
 
   const handleMoveNote = useCallback(
-    async (noteId: string, targetNotebookId: string) => {
-      try {
-        const res = await fetch(`/api/notes/${noteId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ notebook_id: targetNotebookId }),
-        });
-
-        if (handleAuthError(res)) return;
-        if (!res.ok) {
-          console.error("Failed to move note:", res.status);
-          setRefreshTrigger((prev) => prev + 1);
-          return;
-        }
-
-        // Deselect if the moved note was selected
-        if (selectedNoteId === noteId) {
-          setSelectedNoteId(null);
-        }
-        setRefreshTrigger((prev) => prev + 1);
-      } catch (err) {
-        console.error("Failed to move note:", err);
-        setRefreshTrigger((prev) => prev + 1);
-      }
-    },
-    [selectedNoteId],
+    (noteId: string, targetNotebookId: string, remainingIds: string[]) =>
+      runRemoval(
+        noteId,
+        remainingIds,
+        () =>
+          fetch(`/api/notes/${noteId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ notebook_id: targetNotebookId }),
+          }),
+        {
+          failedStatus: (status) => console.error("Failed to move note:", status),
+          error: (err) => console.error("Failed to move note:", err),
+        },
+      ),
+    [runRemoval],
   );
 
   return (
@@ -476,7 +525,7 @@ export function AppShell({
           onNotebooksChange={setNotebooks}
           isTrashSelected={viewingTrash}
           onSelectTrash={handleSelectTrash}
-          refreshTrigger={refreshTrigger}
+          refreshTrigger={listRefreshTrigger}
           initialNotebooks={initialNotebooks}
         />
         <div className="flex items-center justify-end p-2">
@@ -556,7 +605,7 @@ export function AppShell({
               notebooks={notebooks}
               onRestore={handleRestoreNote}
               onPermanentDelete={handlePermanentDelete}
-              refreshTrigger={refreshTrigger}
+              refreshTrigger={listRefreshTrigger}
             />
           </Suspense>
         ) : selectedNotebookId ? (
@@ -569,7 +618,7 @@ export function AppShell({
               onMoveNote={handleMoveNote}
               onDeleteNote={handleDeleteNote}
               notebooks={notebooks}
-              refreshTrigger={refreshTrigger}
+              refreshTrigger={listRefreshTrigger}
               lastNoteUpdate={lastNoteUpdate}
               initialNotes={selectedNotebookId === initialNotebookId ? initialNotes : undefined}
             />
@@ -616,7 +665,7 @@ export function AppShell({
             <NoteEditorPanel
               key={selectedNoteId}
               noteId={selectedNoteId}
-              refreshTrigger={refreshTrigger}
+              refreshTrigger={editorRefreshTrigger}
               onNoteUpdated={handleNoteUpdated}
               onNoteClosed={handleNoteClosed}
             />
