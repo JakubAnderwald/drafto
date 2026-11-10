@@ -265,6 +265,16 @@ A card in **In Test** needs a build a human can actually install. `--watch` ther
 
 **The build roots.** Each is a detached git worktree that the factory hard-resets to the PR head SHA, with `node_modules` seeded by `cp -c -R` and then `pnpm install`ed, plus a capped `bundle check || bundle install` in the app's directory. Mobile and desktop roots are prepared the same way. A root created by the factory is seeded from the factory checkout on the same volume, so its seed is an O(1) clone. One the nightly creates is seeded from the primary checkout on the internal disk, which makes it a full copy. They are **dedicated and disposable**: `ensure_beta_build_root` refuses, by canonical path, to use the caller's checkout or the primary checkout (`DRAFTO_PRIMARY_CHECKOUT_ROOT`) as a build root, because it resets what it is given and the primary checkout is your working tree. The helpers live in `scripts/lib/beta-build-root.sh`, which `nightly-support.sh` sources too: it ships merged support fixes into the **same** two roots ([ADR-0042](../adr/0042-nightly-support-runner-owns-beta-dispatch.md)). Each root has a pid lock at `<root>.lock`. `ensure_beta_build_root` takes it atomically, with its own pid, before touching the root. `claim_beta_build_root` hands it to the lane's pid, and `release_beta_build_root` drops a lock its holder no longer needs. A root locked by a live pid is skipped, by either scheduler, until a later tick or night. The issue's own worktree is deliberately not used either — the next `--watch` tick may install and edit files in it, and the cleanup sweep deletes it when the card leaves In Test.
 
+**A stale desktop `Pods` is cleared automatically.** The reset's `git clean` keeps the desktop root's `apps/desktop/macos/Pods` and `apps/desktop/macos/build`, so builds stay warm. Right after the reset, still holding the root lock, `ensure_beta_build_root` runs the test Xcode's "[CP] Check Pods Manifest.lock" phase runs: it compares `Pods/Manifest.lock` with the checked-out `Podfile.lock`.
+
+- **They differ, or `Pods` has no `Manifest.lock`:** it deletes both folders, so that build runs a full `pod install` and a cold build. It logs one line with the reason (`manifest mismatch` or `missing manifest`), the root and the commit.
+- **They match:** both folders stay.
+- **There is no `Pods`:** nothing happens.
+
+The mobile root has no such check, because the iOS lane regenerates `apps/mobile/ios`, `Pods` included, with `expo prebuild --clean` on every build. The check exists because of #790. After #791 moved desktop to react-native-macos 0.83, the kept `Pods` still described hermes-engine 0.81.6 while `Podfile.lock` pinned 0.14.1. CocoaPods reused the cached podspec, and every desktop `pod install` failed with `could not find compatible versions for pod "hermes-engine"` until `Pods` and `build` were deleted by hand.
+
+If the log shows this deletion on **every** desktop dispatch, the committed `Podfile.lock` is not the one a clean `pod install` writes. The lane rewrites it, and the next reset restores the committed one, which no longer matches. The builds are still correct, only cold. Commit the lock that a clean `pod install` writes after a clean `pnpm install` of the committed `pnpm-lock.yaml`, as [`apps/desktop/CLAUDE.md`](../../apps/desktop/CLAUDE.md) and the #618 note in [Release to TestFlight (macOS)](./builds-and-releases.md#release-to-testflight-macos) describe.
+
 > ### The desktop root is a normal install
 >
 > Until #558 the desktop root was a clonefile replica of the React 19.1 fossil and must never be installed into. That rule is retired ([ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)). The root now seeds from the caller's checkout and runs `pnpm install` like the mobile root. Before spawning the lane, `assertDesktopDeps()` in `dispatch-release.mjs` checks that the root's installed `react-native-macos` equals the version `apps/desktop/package.json` declares and that React is 19.2.x. A mismatch refuses the lane loudly, and the refusal is reported on the issue. The Fastfile's dependency preflight checks the same thing again before CocoaPods.
@@ -1150,6 +1160,8 @@ The factory implements each card in a throwaway git worktree that needs its own 
 > rm -rf /Volumes/DraftoFactory/drafto-beta-mobile/apps/mobile/ios/build
 > rm -rf /Volumes/DraftoFactory/drafto-beta-mobile/apps/mobile/android/.gradle
 > ```
+>
+> You don't need to delete the desktop root's `Pods` after a native dependency change either. `ensure_beta_build_root` deletes it, with `macos/build`, once it no longer matches the checked-out `Podfile.lock` (see [Pre-merge beta dispatch](#pre-merge-beta-dispatch-in-test)).
 
 **Env knobs** (set in the launchd plist's `EnvironmentVariables`, alongside `FACTORY_PHASE`):
 

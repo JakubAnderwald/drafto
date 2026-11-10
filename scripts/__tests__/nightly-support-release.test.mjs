@@ -444,8 +444,8 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
   });
 
   // Real git: an origin with two commits and a clone that has only the first.
-  // Runs ensure_beta_build_root for the desktop root at `sha` (default: the
-  // commit the clone lacks) and returns the result plus what the run logged.
+  // Runs ensure_beta_build_root at `sha` for the desktop root (or `platform`)
+  // and returns the result plus what the run logged.
   function withRealGit(fn) {
     const dir = mkdtempSync(join(tmpdir(), "beta-root-fetch-"));
     try {
@@ -461,8 +461,9 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
       git(origin, ...id, "commit", "-q", "--allow-empty", "-m", "two");
       const remoteSha = git(origin, "rev-parse", "HEAD").stdout.trim();
       const root = join(dir, "beta-desktop");
+      const mobileRoot = join(dir, "beta-mobile");
       const logFile = join(dir, "log");
-      const ensure = (sha, { env = {}, timeout, pre = "" } = {}) => {
+      const ensure = (sha, { env = {}, timeout, pre = "", platform = "desktop" } = {}) => {
         const r = spawnSync(
           BASH,
           [
@@ -477,7 +478,7 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
               `log() { :; }; logerr() { echo "$*" >> "$LOG_FILE"; }`,
               `source ${JSON.stringify(LIB)}`,
               pre,
-              `ensure_beta_build_root desktop ${sha}`,
+              `ensure_beta_build_root ${platform} ${sha}`,
             ].join("\n"),
           ],
           {
@@ -487,7 +488,7 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
               PATH: process.env.PATH,
               HOME: process.env.HOME,
               DRAFTO_DESKTOP_BUILD_ROOT: root,
-              DRAFTO_BETA_MOBILE_ROOT: join(dir, "beta-mobile"),
+              DRAFTO_BETA_MOBILE_ROOT: mobileRoot,
               DRAFTO_PRIMARY_CHECKOUT_ROOT: join(dir, "primary"),
               ...env,
             },
@@ -496,11 +497,154 @@ if out=$(ensure_beta_build_root mobile deadbeef); then echo "OK:$out"; else echo
         const log = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
         return { ...r, log };
       };
-      return fn({ git, repo, root, localSha, remoteSha, ensure, dir });
+      return fn({ git, repo, root, mobileRoot, localSha, remoteSha, ensure, dir });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }
+
+  // #804: a kept apps/desktop/macos/Pods that no longer matched the checked-out
+  // Podfile.lock (hermes-engine 0.81.6 vs 0.14.1 after #791) broke `pod install`
+  // on every desktop build until someone deleted it by hand.
+  const PODFILE_LOCK =
+    "PODS:\n  - hermes-engine (0.14.1)\n\nPODFILE CHECKSUM: 0123abcd\n\nCOCOAPODS: 1.16.2\n";
+  const STALE_MANIFEST = PODFILE_LOCK.replace("0.14.1", "0.81.6");
+
+  // Plants a Pods folder (with `manifest` as its Manifest.lock, or none when
+  // it is undefined) and a build folder, each holding a marker file.
+  function plantPods(dir, { manifest, pods = true, build = true } = {}) {
+    if (pods) {
+      mkdirSync(join(dir, "Pods"), { recursive: true });
+      writeFileSync(join(dir, "Pods", "marker"), "pods\n");
+      if (manifest !== undefined) writeFileSync(join(dir, "Pods", "Manifest.lock"), manifest);
+    }
+    if (build) {
+      mkdirSync(join(dir, "build"), { recursive: true });
+      writeFileSync(join(dir, "build", "marker"), "build\n");
+    }
+  }
+
+  // Commits a desktop Podfile.lock, stubs pnpm and bundle on PATH so the runs
+  // stay fast, and hands `fn` a `prepare(platform)` that runs
+  // ensure_beta_build_root on a fresh log and checks it printed exactly the root.
+  function withPodfileLock(fn) {
+    return withRealGit(({ git, repo, root, mobileRoot, ensure, dir }) => {
+      const id = ["-c", "user.email=t@t", "-c", "user.name=t"];
+      mkdirSync(join(repo, "apps", "desktop", "macos"), { recursive: true });
+      mkdirSync(join(repo, "apps", "mobile"), { recursive: true });
+      writeFileSync(join(repo, "apps", "desktop", "macos", "Podfile.lock"), PODFILE_LOCK);
+      writeFileSync(join(repo, "apps", "desktop", "Gemfile.lock"), "LOCK\n");
+      writeFileSync(join(repo, "apps", "mobile", "Gemfile.lock"), "LOCK\n");
+      git(repo, "add", "-A");
+      git(repo, ...id, "commit", "-q", "-m", "podfile lock");
+      const sha = git(repo, "rev-parse", "HEAD").stdout.trim();
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      for (const tool of ["pnpm", "bundle"]) {
+        writeFileSync(join(bin, tool), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      }
+      const prepare = (platform = "desktop") => {
+        writeFileSync(join(dir, "log"), "");
+        const r = ensure(sha, { platform, env: { PATH: `${bin}:${process.env.PATH}` } });
+        assert.equal(r.status, 0, r.stderr + r.log);
+        assert.equal(r.stdout, `${platform === "desktop" ? root : mobileRoot}\n`);
+        return r;
+      };
+      return fn({
+        root,
+        mobileRoot,
+        sha,
+        prepare,
+        macos: join(root, "apps", "desktop", "macos"),
+      });
+    });
+  }
+
+  it("ensure_beta_build_root deletes a desktop Pods whose Manifest.lock no longer matches", () => {
+    withPodfileLock(({ root, sha, prepare, macos }) => {
+      prepare(); // creates the root
+      plantPods(macos, { manifest: STALE_MANIFEST });
+      const r = prepare(); // the reset path
+      assert.equal(existsSync(join(macos, "Pods")), false, "the stale Pods was kept");
+      assert.equal(existsSync(join(macos, "build")), false, "the build made against it was kept");
+      assert.ok(
+        r.log.includes(`desktop beta build root ${root} at ${sha.slice(0, 12)} (manifest mismatch`),
+        r.log,
+      );
+      assert.equal(readFileSync(join(macos, "Podfile.lock"), "utf8"), PODFILE_LOCK);
+    });
+  });
+
+  it("ensure_beta_build_root keeps a desktop Pods and build that match Podfile.lock", () => {
+    withPodfileLock(({ prepare, macos }) => {
+      prepare();
+      plantPods(macos, { manifest: PODFILE_LOCK });
+      const r = prepare();
+      assert.equal(readFileSync(join(macos, "Pods", "marker"), "utf8"), "pods\n");
+      assert.equal(readFileSync(join(macos, "build", "marker"), "utf8"), "build\n");
+      assert.doesNotMatch(r.log, /Stale CocoaPods|manifest/);
+    });
+  });
+
+  it("ensure_beta_build_root does nothing when the desktop root has no Pods", () => {
+    withPodfileLock(({ prepare, macos }) => {
+      const first = prepare();
+      assert.doesNotMatch(first.log, /Stale CocoaPods/, "a fresh root has nothing to clear");
+      plantPods(macos, { pods: false });
+      const r = prepare();
+      assert.equal(existsSync(join(macos, "Pods")), false);
+      assert.equal(readFileSync(join(macos, "build", "marker"), "utf8"), "build\n");
+      assert.doesNotMatch(r.log, /Stale CocoaPods|manifest/);
+    });
+  });
+
+  it("ensure_beta_build_root deletes a desktop Pods that has no Manifest.lock", () => {
+    withPodfileLock(({ prepare, macos }) => {
+      prepare();
+      plantPods(macos, { manifest: undefined });
+      const r = prepare();
+      assert.equal(existsSync(join(macos, "Pods")), false);
+      assert.equal(existsSync(join(macos, "build")), false);
+      assert.match(r.log, /\(missing manifest: apps\/desktop\/macos\/Pods has no Manifest\.lock\)/);
+    });
+  });
+
+  it("ensure_beta_build_root leaves the mobile root's Pods alone", () => {
+    // The iOS lane regenerates apps/mobile/ios with `expo prebuild --clean`, so
+    // the mobile root needs no check. The desktop sandbox planted here too
+    // proves the platform guard: the check never runs for the mobile root.
+    withPodfileLock(({ mobileRoot, prepare }) => {
+      prepare("mobile");
+      const ios = join(mobileRoot, "apps", "mobile", "ios");
+      const macos = join(mobileRoot, "apps", "desktop", "macos");
+      plantPods(ios, { manifest: STALE_MANIFEST });
+      writeFileSync(join(ios, "Podfile.lock"), PODFILE_LOCK);
+      plantPods(macos, { manifest: STALE_MANIFEST });
+      const r = prepare("mobile");
+      for (const d of [ios, macos]) {
+        assert.equal(readFileSync(join(d, "Pods", "marker"), "utf8"), "pods\n", d);
+        assert.equal(readFileSync(join(d, "build", "marker"), "utf8"), "build\n", d);
+      }
+      assert.doesNotMatch(r.log, /Stale CocoaPods/);
+    });
+  });
+
+  it("_beta_root_drop_stale_pods counts a missing Podfile.lock as a mismatch, and is a no-op without a root", () => {
+    // Xcode's phase `diff`s the two files; a missing one fails it the same way.
+    const r = runLib(`
+R="$(dirname "$REPO_ROOT")/root"
+mkdir -p "$R/apps/desktop/macos/Pods" "$R/apps/desktop/macos/build"
+echo X > "$R/apps/desktop/macos/Pods/Manifest.lock"
+_beta_root_drop_stale_pods "" deadbeef && echo EMPTY-OK
+_beta_root_drop_stale_pods "$R/missing" deadbeef && echo MISSING-OK
+[[ -d "$R/apps/desktop/macos/Pods" ]] && echo STILL-THERE
+out=$(_beta_root_drop_stale_pods "$R" deadbeefcafe1234)
+[[ -z "$out" ]] && echo NO-STDOUT
+[[ -e "$R/apps/desktop/macos/Pods" || -e "$R/apps/desktop/macos/build" ]] || echo GONE`);
+    assert.equal(r.status, 0, r.stderr + r.log);
+    assert.match(r.stdout, /EMPTY-OK\nMISSING-OK\nSTILL-THERE\nNO-STDOUT\nGONE/);
+    assert.match(r.log, /at deadbeefcafe \(manifest mismatch:/);
+  });
 
   it("ensure_beta_build_root fetches before creating a root at a sha not yet local", () => {
     // The nightly passes origin/main's head straight from the GitHub API.

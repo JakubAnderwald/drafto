@@ -523,6 +523,65 @@ describe("ensure_beta_build_root — working-tree safety", () => {
     );
   });
 
+  it("checks the kept desktop Pods after the reset, before the root is seeded (#804)", () => {
+    // After #791 a kept Pods still described hermes-engine 0.81.6 while the
+    // committed Podfile.lock pinned 0.14.1, and every desktop `pod install`
+    // failed until someone deleted Pods by hand. The check has to compare
+    // against the Podfile.lock the reset just checked out, under the root lock,
+    // before anything is built from the root.
+    assert.match(
+      body,
+      /\n {2}if \[\[ "\$platform" == "desktop" \]\]; then\n {4}_beta_root_drop_stale_pods "\$root" "\$sha" >&2\n {2}fi\n/,
+    );
+    const lockIdx = body.indexOf('_beta_root_lock "$platform" "$root"');
+    const cleanIdx = body.indexOf("clean -fdx");
+    const dropIdx = body.indexOf('_beta_root_drop_stale_pods "$root"');
+    const seedIdx = body.indexOf('seed_worktree_node_modules "$root"');
+    assert.ok(
+      lockIdx !== -1 && lockIdx < dropIdx,
+      "the check must run while the root lock is held",
+    );
+    assert.ok(cleanIdx !== -1 && cleanIdx < dropIdx, "the check must run after the reset");
+    assert.ok(seedIdx > dropIdx, "the check must run before the root is seeded and installed");
+    const code = body
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l))
+      .join("\n");
+    assert.equal(
+      code.split("_beta_root_drop_stale_pods").length,
+      2,
+      "one call site, covering both the create and the reset paths",
+    );
+  });
+
+  it("compares Pods/Manifest.lock with Podfile.lock, like Xcode's [CP] check", () => {
+    const helper = fnBody("_beta_root_drop_stale_pods", lib);
+    assert.match(helper, /macos="\$root\/apps\/desktop\/macos"/);
+    assert.match(helper, /\[\[ -e "\$macos\/Pods" \|\| -L "\$macos\/Pods" \]\] \|\| return 0/);
+    assert.match(helper, /\[\[ ! -f "\$macos\/Pods\/Manifest\.lock" \]\]/);
+    assert.match(helper, /cmp -s "\$macos\/Podfile\.lock" "\$macos\/Pods\/Manifest\.lock"/);
+    assert.match(helper, /reason="missing manifest/);
+    assert.match(helper, /reason="manifest mismatch/);
+  });
+
+  it("deletes exactly the desktop Pods and build folders, nothing broader", () => {
+    const helper = fnBody("_beta_root_drop_stale_pods", lib);
+    assert.match(helper, /\[\[ -n "\$root" && -d "\$root" \]\] \|\| return 0/);
+    const rms = (helper.match(/^\s*rm .*$/gm) || []).map((l) => l.trim());
+    assert.deepEqual(rms, ['rm -rf -- "$macos/Pods" "$macos/build" 2>>"$LOG_FILE" \\']);
+  });
+
+  it("reports the deletion through logerr only, and never fails its caller", () => {
+    // It runs inside ensure_beta_build_root, whose stdout is the root path, and
+    // both callers run under `set -e`.
+    const helper = fnBody("_beta_root_drop_stale_pods", lib);
+    assert.ok(!/(?<![\w])log "/.test(helper), "must use logerr, not log");
+    assert.ok(!/^\s*(echo|printf)\b/m.test(helper), "no stdout writes");
+    assert.match(helper, /logerr "Stale CocoaPods sandbox in desktop beta build root \$root/);
+    assert.match(helper, /\|\| logerr "WARNING: could not fully delete/);
+    assert.match(helper, /\n {2}return 0\n\}$/);
+  });
+
   it("bounds bundle install — it runs synchronously inside the watch tick", () => {
     assert.match(body, /run-with-timeout\.mjs" "\$INSTALL_TIMEOUT_SEC" bundle install/);
   });
