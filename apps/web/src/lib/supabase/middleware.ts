@@ -150,12 +150,16 @@ export async function updateSession(request: NextRequest) {
 
   // Signed-out `/` is the public landing page; signed-in users get the app at the same URL.
   // A rewrite keeps the URL and answers 200. The old 307 to /login made Google index the login
-  // form under `/` and ignore /login's own canonical. The landing page is static, so when the
-  // session lookup cleared a stale cookie, Supabase's no-cache headers go with it.
+  // form under `/` and ignore /login's own canonical. When the session lookup cleared a stale
+  // cookie, Supabase's no-cache headers go with it. Unlike `next()`, a bare `rewrite()` forwards
+  // no request headers, so they are passed explicitly: the page renders with the CSP nonce
+  // `middleware.ts` put on them.
   if (!user && pathname === "/") {
     const landingUrl = request.nextUrl.clone();
     landingUrl.pathname = LANDING_PAGE_PATH;
-    const landingResponse = NextResponse.rewrite(landingUrl);
+    const landingResponse = NextResponse.rewrite(landingUrl, {
+      request: { headers: request.headers },
+    });
     for (const { name, value, options } of pendingCookies) {
       landingResponse.cookies.set(name, value, options);
     }

@@ -179,6 +179,22 @@ describe("Auth middleware", () => {
     expect(response.headers.get("expires")).toBe("0");
   });
 
+  it("forwards the request headers with the landing page rewrite", async () => {
+    // `middleware.ts` puts the CSP nonce on the request headers. A bare `rewrite()` forwards
+    // none, and the landing page would render without the nonce, its scripts blocked.
+    const response = await updateSession(
+      new NextRequest(new URL("/", "http://localhost:3000"), {
+        headers: { "x-nonce": "landing-nonce", "content-security-policy": "script-src 'none'" },
+      }),
+    );
+
+    expect(response.headers.get("x-middleware-rewrite")).not.toBeNull();
+    expect(response.headers.get("x-middleware-request-x-nonce")).toBe("landing-nonce");
+    expect(response.headers.get("x-middleware-request-content-security-policy")).toBe(
+      "script-src 'none'",
+    );
+  });
+
   it.each([
     ["/login", 200, null],
     ["/api/mcp", 200, null],
