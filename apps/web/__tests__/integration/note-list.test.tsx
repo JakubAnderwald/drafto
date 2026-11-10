@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { act, Component, Suspense, type ReactNode } from "react";
+import { act, Component, StrictMode, Suspense, type ComponentProps, type ReactNode } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import type { NoteListPatch } from "@/lib/note-patch";
@@ -575,11 +575,135 @@ describe("NoteList", () => {
     // Click the target notebook
     await user.click(screen.getByRole("menuitem", { name: "Work" }));
 
-    // Should call onMoveNote with the note ID and target notebook ID
-    expect(onMove).toHaveBeenCalledWith("note-1", "nb-2");
+    // Should call onMoveNote with the note ID, the target notebook ID and the notes
+    // left in the list, which the parent picks the next selection from
+    expect(onMove).toHaveBeenCalledWith("note-1", "nb-2", ["note-2"]);
 
     // Note should be removed from the list
     expect(screen.queryByText("First Note")).not.toBeInTheDocument();
+  });
+
+  // #461: selecting the next note from inside the list refetched the list while the
+  // DELETE was still in flight, and that response could bring the note back. The
+  // list now only removes the row and tells the parent what to select afterwards.
+  describe("delete and move leave the selection to the parent", () => {
+    const otherNotebooks = [
+      { id: "nb-1", name: "Current" },
+      { id: "nb-2", name: "Work" },
+    ];
+
+    async function renderList(
+      props: Partial<ComponentProps<typeof NoteList>>,
+      { strict = false }: { strict?: boolean } = {},
+    ) {
+      const list = (
+        <Suspense fallback={<Skeleton height="2.5rem" />}>
+          <NoteList
+            notebookId="nb-1"
+            selectedNoteId="note-1"
+            onSelectNote={vi.fn()}
+            onCreateNote={vi.fn()}
+            notebooks={otherNotebooks}
+            refreshTrigger={nextTrigger()}
+            {...props}
+          />
+        </Suspense>
+      );
+      await act(async () => {
+        render(strict ? <StrictMode>{list}</StrictMode> : list);
+      });
+    }
+
+    async function chooseAction(user: ReturnType<typeof userEvent.setup>, action: string) {
+      await user.click(screen.getByLabelText("Actions for First Note"));
+      await user.click(screen.getByRole("menuitem", { name: action }));
+    }
+
+    it("removes the deleted selected note and passes the remaining notes to onDeleteNote", async () => {
+      const user = userEvent.setup();
+      const onSelect = vi.fn();
+      const onDelete = vi.fn();
+      await renderList({ onSelectNote: onSelect, onDeleteNote: onDelete });
+      await waitFor(() => expect(screen.getByText("First Note")).toBeInTheDocument());
+
+      await chooseAction(user, "Delete");
+
+      expect(onDelete).toHaveBeenCalledOnce();
+      expect(onDelete).toHaveBeenCalledWith("note-1", ["note-2"]);
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(screen.queryByText("First Note")).not.toBeInTheDocument();
+      expect(screen.getByText("Second Note")).toBeInTheDocument();
+    });
+
+    it("selects nothing and fetches nothing on delete under StrictMode", async () => {
+      const user = userEvent.setup();
+      const onSelect = vi.fn();
+      const onDelete = vi.fn();
+      await renderList({ onSelectNote: onSelect, onDeleteNote: onDelete }, { strict: true });
+      await waitFor(() => expect(screen.getByText("First Note")).toBeInTheDocument());
+      const fetchesBeforeDelete = mockFetch.mock.calls.length;
+
+      await chooseAction(user, "Delete");
+
+      // StrictMode runs state updaters twice, which double-fired the selection change
+      // when it was made from inside one.
+      expect(onDelete).toHaveBeenCalledOnce();
+      expect(onDelete).toHaveBeenCalledWith("note-1", ["note-2"]);
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(fetchesBeforeDelete);
+      expect(screen.queryByText("First Note")).not.toBeInTheDocument();
+    });
+
+    it("passes no remaining notes when the deleted note was the last one", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([mockNotes[0]]),
+      });
+      const user = userEvent.setup();
+      const onSelect = vi.fn();
+      const onDelete = vi.fn();
+      await renderList({ onSelectNote: onSelect, onDeleteNote: onDelete });
+      await waitFor(() => expect(screen.getByText("First Note")).toBeInTheDocument());
+
+      await chooseAction(user, "Delete");
+
+      expect(onDelete).toHaveBeenCalledWith("note-1", []);
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(screen.getByText("No notes yet. Create one to get started.")).toBeInTheDocument();
+    });
+
+    it("moves the selected note without selecting another itself", async () => {
+      const user = userEvent.setup();
+      const onSelect = vi.fn();
+      const onMove = vi.fn();
+      await renderList({ onSelectNote: onSelect, onMoveNote: onMove }, { strict: true });
+      await waitFor(() => expect(screen.getByText("First Note")).toBeInTheDocument());
+
+      await chooseAction(user, "Work");
+
+      expect(onMove).toHaveBeenCalledOnce();
+      expect(onMove).toHaveBeenCalledWith("note-1", "nb-2", ["note-2"]);
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(screen.queryByText("First Note")).not.toBeInTheDocument();
+    });
+
+    it("passes no remaining notes when the moved note was the last one", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([mockNotes[0]]),
+      });
+      const user = userEvent.setup();
+      const onSelect = vi.fn();
+      const onMove = vi.fn();
+      await renderList({ onSelectNote: onSelect, onMoveNote: onMove });
+      await waitFor(() => expect(screen.getByText("First Note")).toBeInTheDocument());
+
+      await chooseAction(user, "Work");
+
+      expect(onMove).toHaveBeenCalledWith("note-1", "nb-2", []);
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(screen.getByText("No notes yet. Create one to get started.")).toBeInTheDocument();
+    });
   });
 
   it("does not show move button when no other notebooks exist", async () => {
