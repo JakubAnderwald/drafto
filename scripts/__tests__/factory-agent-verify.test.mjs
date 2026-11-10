@@ -27,7 +27,8 @@ import { isTerminalLaneState } from "../lib/verify-decide.mjs";
 //   7. a report that couldn't be posted is retried by the In Test sweep, at
 //      most VERIFY_REPORT_POST_MAX times, and only if the promotion wrote one;
 //   8. the revision no-op path routes through verify_target_status and keeps
-//      its literal In Test move;
+//      its literal In Test move, but only for the head shown at In Test; any
+//      other head goes through the parity gate to In Review (#759);
 //   9. the Web lane's screenshots (ADR-0072) are published only for a browser
 //      lane that reported, whose dry render withheld neither its text nor the
 //      body, and only after that render; the report is then composed again
@@ -149,6 +150,8 @@ node() {
       ;;
     # dispatch-release.mjs is the real module: derive-platforms (and --verify)
     # reads the stubbed diff on stdin.
+    # Never the real worktree CLI: it would remove a git worktree.
+    */worktree-cli.mjs) call "worktree \${*:2}" ;;
     */verify-report.mjs)
       [[ -z "\${REPORT_FAIL:-}" ]] || return 1
       if [[ " $* " == *" --browser-images "* ]]; then
@@ -382,8 +385,15 @@ describe("factory-agent.sh verification stage: static wiring", () => {
     const noopArm = slice('      noop)\n        if [[ "$IS_REVISION"', "      blocked)");
     assert.match(
       noopArm,
-      /revision_return_to_test "\$ISSUE_NUM" "\$ITEM_ID" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n[\s\S]*?"\$REPLY_MARKERS" "\$FEEDBACK_MARK" noop\n/,
+      /revision_noop_route "\$ISSUE_NUM" "\$ITEM_ID" "\$SLOT" "\$PRE_HEAD_OID" "\$ITEM_LABELS" \\\n[\s\S]*?"\$REPLY_MARKERS" "\$FEEDBACK_MARK" "\$AFFECTED" "\$PARITY_OVERRIDE"\n/,
     );
+    // Only the head shown at In Test reaches revision_return_to_test (#759).
+    const route = extract("revision_noop_route");
+    assert.match(
+      route,
+      /if \[\[ -n "\$shown" && "\$shown" == "\$pr_head" \]\]; then\n\s*revision_return_to_test "\$issue_num" "\$item_id" "\$pr_head" "\$labels" "\$pr_num" \\\n\s*"\$markers" "\$mark" noop\n/,
+    );
+    assert.match(route, /\n\s*revision_noop_to_review "\$issue_num" /);
     const back = extract("revision_return_to_test");
     assert.match(
       back,
@@ -619,6 +629,173 @@ describe("verify_target_status / verify_wanted (real helpers)", () => {
     withBash(target, { env: { HEAD: "", LABELS: "" } }, (r) => {
       assert.equal(r.stdout.trim(), "RC=1 In Test");
     });
+  });
+});
+
+describe("revision_noop_route (real helpers): back to In Test only for the head shown there", () => {
+  // A revision noop re-presents the PR only when its head is the one the
+  // reporter was shown (intestCommentSha). Any other head never went through In
+  // Review's gates (an earlier attempt pushed it and died, or someone else
+  // pushed), so it gets the parity post-check a pushed revision gets and goes
+  // to In Review (#759). The reply check is stubbed: its own tests are in
+  // factory-intest-iteration.test.mjs, and here only its kind matters. Back in
+  // In Test the card frees its slot and worktree (ADR-0070), through the real
+  // release helpers (worktree-cli itself is stubbed).
+  const ROUTE_FNS = [
+    "revision_noop_route",
+    "revision_noop_to_review",
+    "revision_return_to_test",
+    "implement_parity_gate",
+    "parity_violation",
+    "release_slot_and_worktree",
+    "slot_held_by_issue",
+    "remove_worktree_for",
+    "branch_keep_reason",
+    "log_removed_worktree_leftovers",
+  ];
+  const MARKERS = JSON.stringify([{ commentId: "123", marker: "drafto-factory-revise-reply-123" }]);
+  const MARK = "2026-11-01T00:00:00Z";
+  const EARLIER = "2026-10-01T00:00:00Z";
+  // branchUpdates: a behind-main budget spent in an earlier In Review stint
+  // (ADR-0070), as on a card dragged back out of Blocked.
+  const base = { attempts: 2, lastFeedbackAt: EARLIER, branchUpdates: "3" };
+  const route = ({ affected = "", override = "infra-only" } = {}) =>
+    [
+      ...ROUTE_FNS.map(extract),
+      'revise_replies_check() { call "replies issue=$1 pr=$2 kind=$4"; }',
+      "PHASE=C",
+      'node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire 1 7 4242 --state-file "$STATE_FILE" >/dev/null',
+      `revision_noop_route 7 ITEM 1 "$HEAD" "" 70 '${MARKERS}' "${MARK}" "${affected}" "${override}"`,
+      `echo "slot=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status 1 --state-file "$STATE_FILE" | jq -r '.issueNumber // "free"')"`,
+    ].join("\n");
+  const moves = (r) => (r.calls.match(/^transition .*$/gm) || []).join(" | ");
+  const SCRIPTS_DIFF = "scripts/factory-agent.sh";
+
+  for (const [name, shown] of [
+    ["a head that wasn't the one shown", { intestCommentSha: OLD }],
+    ["no shown head on record", {}],
+    ["an empty shown head", { intestCommentSha: "" }],
+    ["a null shown head", { intestCommentSha: null }],
+  ]) {
+    it(`sends ${name} through the parity gate to In Review, keeping the slot`, () => {
+      withBash(
+        route(),
+        { env: { HEAD, DIFF_STUB: SCRIPTS_DIFF }, state: { ...base, ...shown } },
+        (r) => {
+          assert.equal(moves(r), "transition In Review");
+          assert.match(r.calls, /^gh pr diff 70 --repo JakubAnderwald\/drafto --name-only$/m);
+          assert.match(r.calls, /^replies issue=7 pr=70 kind=noop-review$/m);
+          assert.equal(r.issue.lastFeedbackAt, MARK, "the feedback is consumed");
+          assert.equal(r.issue.attempts, 0, "attempts reset");
+          assert.equal(r.issue.branchUpdates, null, "a fresh behind-main budget");
+          assert.match(r.stdout, /^slot=7$/m, "the slot stays for --watch");
+          assert.doesNotMatch(r.calls, /^worktree /m, "and so does the worktree");
+          assert.equal(r.comments.length, 0);
+          assert.match(r.log, /routing through In Review/);
+          assert.match(r.log, /revision noop on an unshown head → In Review/);
+        },
+      );
+    });
+  }
+
+  it("never reads an empty head as matching an empty shown SHA", () => {
+    // Unreachable today (an unreadable head takes the PRE_HEAD_KNOWN=0 exit),
+    // so this pins the guard itself: "" == "" must not count as shown.
+    for (const shown of [{}, { intestCommentSha: "" }]) {
+      withBash(
+        route(),
+        { env: { HEAD: "", DIFF_STUB: SCRIPTS_DIFF }, state: { ...base, ...shown } },
+        (r) => {
+          assert.equal(moves(r), "transition In Review");
+          assert.match(r.calls, /^replies issue=7 pr=70 kind=noop-review$/m);
+        },
+      );
+    }
+  });
+
+  it("returns the shown head to Testing while it owes a report, with no parity re-check", () => {
+    // An app diff on an infra-only card would fail the gate, so a Testing move
+    // here also proves the shown head skips it: it passed In Review already.
+    withBash(
+      route(),
+      { env: { HEAD, DIFF_STUB: "apps/web/a.ts" }, state: { ...base, intestCommentSha: HEAD } },
+      (r) => {
+        assert.equal(moves(r), "transition Testing");
+        assert.doesNotMatch(r.calls, /gh pr diff/);
+        assert.match(r.calls, /^replies issue=7 pr=70 kind=noop$/m);
+        assert.equal(r.issue.verifySha, HEAD, "the commit's round starts");
+        assert.equal(r.issue.lastFeedbackAt, MARK);
+        assert.equal(r.issue.attempts, 0);
+        assert.match(r.stdout, /^slot=7$/m);
+        assert.match(r.log, /revision noop; returned to Testing/);
+      },
+    );
+  });
+
+  it("returns the shown head to In Test with verification off, freeing its slot", () => {
+    withBash(
+      route(),
+      {
+        env: { HEAD, FACTORY_VERIFY: "0", DIFF_STUB: "apps/web/a.ts", PR_OBJ_STUB: PR_OBJ },
+        state: { ...base, intestCommentSha: HEAD },
+      },
+      (r) => {
+        assert.equal(moves(r), "transition In Test");
+        assert.doesNotMatch(r.calls, /gh pr diff/);
+        assert.match(r.calls, /^replies issue=7 pr=70 kind=noop$/m);
+        assert.equal(r.issue.lastFeedbackAt, MARK);
+        assert.equal(r.issue.attempts, 0);
+        assert.match(r.stdout, /^slot=free$/m, "In Test holds no slot (ADR-0070)");
+        // The PR is open, so its branch stays; only the worktree goes.
+        assert.match(r.calls, /^worktree remove --issue 7 --root \S+ --force$/m);
+        assert.match(r.log, /revision noop; returned to In Test/);
+      },
+    );
+  });
+
+  it("parks an unshown head that fails the parity check in Blocked, the feedback unconsumed", () => {
+    withBash(
+      route(),
+      { env: { HEAD, DIFF_STUB: "apps/web/a.ts" }, state: { ...base, intestCommentSha: OLD } },
+      (r) => {
+        assert.equal(moves(r), "transition Blocked");
+        const posted = r.comments.filter((c) =>
+          c.body.includes("<!-- drafto-factory-parity-violation -->"),
+        );
+        assert.equal(posted.length, 1);
+        assert.match(posted[0].body, /parity:infra-only but the PR changes app code/);
+        assert.match(r.stdout, /^slot=free$/m, "the slot is released");
+        assert.match(r.calls, /^worktree remove --issue 7 --root \S+ --force$/m);
+        // Nothing consumed or reset, and no replies: a human looks at it first.
+        assert.equal(r.issue.lastFeedbackAt, EARLIER);
+        assert.equal(r.issue.attempts, 2);
+        assert.equal(r.issue.branchUpdates, "3");
+        assert.doesNotMatch(r.calls, /^replies /m);
+      },
+    );
+  });
+
+  it("checks the card's claimed platforms, not only infra-only", () => {
+    withBash(
+      route({ affected: "web,mobile", override: "" }),
+      { env: { HEAD, DIFF_STUB: "apps/web/a.ts" }, state: { ...base, intestCommentSha: OLD } },
+      (r) => {
+        assert.equal(moves(r), "transition Blocked");
+        assert.match(r.comments[0].body, /claimed platform 'mobile' has no apps\/mobile changes/);
+      },
+    );
+  });
+
+  it("still goes to In Review when the diff can't be read, as a pushed revision does", () => {
+    withBash(
+      route(),
+      { env: { HEAD, DIFF_FAIL: "1" }, state: { ...base, intestCommentSha: OLD } },
+      (r) => {
+        assert.equal(moves(r), "transition In Review");
+        assert.match(r.log, /gh pr diff failed for PR #70; skipping parity post-check this tick/);
+        assert.equal(r.issue.lastFeedbackAt, MARK);
+      },
+    );
   });
 });
 
