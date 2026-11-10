@@ -18,7 +18,9 @@
 // each step's screenshots, mapped from `results.jsonl` and the shot names
 // `NN-step-<id>-<STATUS>.png` (shots with other labels go under "Other
 // screenshots"). The comment carries `<!-- drafto-factory-macos-run-report -->`
-// and is posted once per run: `posted.json` in the run dir records it.
+// and is posted once per run: `posted.json` in the run dir records it, and a
+// retry first looks for the run's comment on the issue (a post that timed out
+// after GitHub created it), recording it instead of posting a second.
 //
 // CLI:
 //   node scripts/lib/evidence-post.mjs macos --run-dir <dir> --issue <n>
@@ -36,20 +38,21 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { COMMENT_MAX_CHARS, defangReport, truncateReport } from "./browser-report.mjs";
+import { COMMENT_MAX_CHARS, defangReport } from "./browser-report.mjs";
 import { evidenceSection, readUpload } from "./evidence-embed.mjs";
-import { ocrAvailable } from "./evidence-images.mjs";
+import { macosManifest, ocrAvailable } from "./evidence-images.mjs";
 import {
   REPO,
   RUN_ID_RE,
   UPLOAD_FILE,
   prepareRun,
+  priorUpload,
   uploadGate,
   uploadRun,
 } from "./evidence-upload.mjs";
 import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
-import { closeFences } from "./markdown-fence.mjs";
+import { closeFences, truncateFenced } from "./markdown-fence.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { scanLaneText } from "./verify-report.mjs";
 
@@ -101,6 +104,47 @@ export function scenarioShaFrom(comments) {
     for (const m of String(c.body ?? "").matchAll(SCENARIO_SHA_RE)) sha = m[1];
   }
   return sha;
+}
+
+// The comment's line that names its run (composeComment's head).
+const runLine = (runId) =>
+  `Run \`${String(runId).replace(/[^A-Za-z0-9_-]/g, "")}\`, posted by the operator. ` +
+  "It never moves the card.";
+
+/**
+ * This run's comment, if it is already on the issue: the factory's own
+ * (OWNER) comment with the macOS report marker and the run's line. A post
+ * whose `gh` call failed or timed out may still have landed.
+ */
+export function postedCommentFor(comments, runId) {
+  const line = runLine(runId);
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (c?.author_association !== "OWNER" && c?.authorAssociation !== "OWNER") continue;
+    const body = String(c.body ?? "");
+    if (body.includes(MACOS_REPORT_MARKER) && body.split(/\r?\n/).includes(line)) return c;
+  }
+  return null;
+}
+
+/**
+ * Every comment on <issue>, all pages (`--slurp`: one array of pages, so
+ * the parse never depends on how gh joins them), or null when gh fails or
+ * its output isn't a page list.
+ */
+export function readIssueComments(gh, issue) {
+  const r = gh([
+    "api",
+    `repos/${REPO}/issues/${issue}/comments?per_page=100`,
+    "--paginate",
+    "--slurp",
+  ]);
+  if (r.code !== 0) return null;
+  try {
+    const pages = JSON.parse(r.stdout);
+    return Array.isArray(pages) && pages.every(Array.isArray) ? pages.flat() : null;
+  } catch {
+    return null;
+  }
 }
 
 function defaultGh(args) {
@@ -177,13 +221,7 @@ export function composeComment({ report, upload, results, shotsDir, runId }) {
     results,
     isSafe: (lines) => scanLaneText(lines.join("\n"), {}).length === 0,
   });
-  const head = [
-    HEADER,
-    "",
-    `Run \`${String(runId).replace(/[^A-Za-z0-9_-]/g, "")}\`, posted by the operator. ` +
-      "It never moves the card.",
-    "",
-  ];
+  const head = [HEADER, "", runLine(runId), ""];
   const tail = [
     ...(ev.block.length ? ["", ...ev.block] : []),
     "",
@@ -196,8 +234,10 @@ export function composeComment({ report, upload, results, shotsDir, runId }) {
   const full = assemble(text);
   if (full.length <= COMMENT_MAX_CHARS) return { body: full, embedded: ev.embedded };
   const note = `\n\n_…report truncated; the full report is in the run directory._`;
-  const room = COMMENT_MAX_CHARS - assemble("").length - note.length - 4;
-  return { body: assemble(truncateReport(text, room) + note), embedded: ev.embedded };
+  // The cut closes the fence it leaves open (```, ~~~, ````…) within the
+  // room, so the screenshots and the marker after it never render as code.
+  const room = COMMENT_MAX_CHARS - assemble("").length - note.length;
+  return { body: assemble(truncateFenced(text, room) + note), embedded: ev.embedded };
 }
 
 // ── the command ─────────────────────────────────────────────────────────────
@@ -243,27 +283,63 @@ export function postMacosRun({
   if (!RUN_ID_RE.test(runId))
     throw new Refusal(`can't make a run id from ${path.basename(runDir)}`);
 
-  let commit = sha;
+  if (sha && !SHA_RE.test(sha)) throw new Refusal("the run's commit isn't a 40-hex SHA");
+  // The issue's comments: for the run's commit (without --sha), and for the
+  // run's own comment, which a post that failed or timed out may have left.
+  const comments = readIssueComments(gh, issue);
+  if (comments === null)
+    throw new Refusal(`reading #${issue}'s comments failed (gh api): run again`);
+  const commit = sha || scenarioShaFrom(comments);
   if (!commit) {
-    const r = gh(["api", `repos/${REPO}/issues/${issue}/comments`, "--paginate"]);
-    let comments = [];
-    try {
-      comments = r.code === 0 ? JSON.parse(r.stdout) : [];
-    } catch {
-      comments = [];
-    }
-    commit = scenarioShaFrom(comments) ?? "";
-    if (!commit) {
-      throw new Refusal(`no scenario-sha marker on #${issue}'s comments: pass --sha <40-hex>`);
-    }
+    throw new Refusal(`no scenario-sha marker on #${issue}'s comments: pass --sha <40-hex>`);
   }
-  if (!SHA_RE.test(commit)) throw new Refusal("the run's commit isn't a 40-hex SHA");
 
   const gate = uploadGate({ env, withheld: false, logDir });
   if (gate) throw new Refusal(`screenshots can't be published: ${gate}`);
+  const out = path.join(runDir, UPLOAD_FILE);
+
+  // Already on the issue: --yes only records it, never posts a second one.
+  const landed = postedCommentFor(comments, runId);
+  const landedUrl = typeof landed?.html_url === "string" ? landed.html_url : "";
+  if (landed && !yes) {
+    print(`This run's comment is already on #${issue}${landedUrl ? `: ${landedUrl}` : ""}.`);
+    print(`Running again with --yes only records it in ${POSTED_FILE}; nothing is published`);
+    print(`or posted again. To withdraw a screenshot, follow the factory runbook's`);
+    print(`"Taking a screenshot down".`);
+    return { listed: true, posted: true, url: landedUrl };
+  }
+  if (landed) {
+    const uploaded = readUpload(out)?.ok === true;
+    recordPosted(runDir, { issue, sha: commit, runId, url: landedUrl, upload: uploaded });
+    print(
+      `Already posted on #${issue}${landedUrl ? `: ${landedUrl}` : ""} (recorded; nothing posted again)`,
+    );
+    return { posted: true, url: landedUrl, upload: uploaded, reason: null, already: true };
+  }
+
+  // What an earlier --yes published is what this one posts, whatever shots/
+  // holds now: the listing shows it, and --yes posts that very record.
+  const prior = priorUpload({ issue, sha: commit, runId, out, repoRoot, ...(git ? { git } : {}) });
+  if (prior && prior.ok !== true) {
+    throw new Refusal(
+      yes
+        ? `publishing the screenshots failed (${prior.reason}); nothing was posted: run again to retry`
+        : `GitHub couldn't be asked whether this run's screenshots are already published ` +
+            `(${prior.reason}): run again`,
+    );
+  }
   const ocr = ocrBin || defaultOcr(logDir, repoRoot);
 
   if (!yes) {
+    if (prior) {
+      listPrior({ prior, runDir, issue, commit, report, out, print });
+      return {
+        listed: true,
+        publish: prior.images.length,
+        keep: prior.overflow.length,
+        published: true,
+      };
+    }
     const selection = prepareRun({
       source: "macos",
       evidenceDir: shotsDir,
@@ -286,23 +362,25 @@ export function postMacosRun({
     return { listed: true, publish: selection.upload.length, keep: selection.overflow.length };
   }
 
-  // Published first (idempotent: a retry reuses the run's upload.json or its
-  // ref). A failed upload posts nothing, so the operator can simply retry.
-  const upload = uploadRun({
-    issue,
-    sha: commit,
-    runId,
-    source: "macos",
-    evidenceDir: shotsDir,
-    out: path.join(runDir, UPLOAD_FILE),
-    logDir,
-    repoRoot,
-    withheld: false,
-    ocrBin: ocr,
-    env,
-    ...(git ? { git } : {}),
-    deps,
-  });
+  // Published first. A failed upload posts nothing, so the operator can
+  // simply retry, and the retry reuses what got published (priorUpload).
+  const upload = prior
+    ? withShotLabels(prior, shotsDir)
+    : uploadRun({
+        issue,
+        sha: commit,
+        runId,
+        source: "macos",
+        evidenceDir: shotsDir,
+        out,
+        logDir,
+        repoRoot,
+        withheld: false,
+        ocrBin: ocr,
+        env,
+        ...(git ? { git } : {}),
+        deps,
+      });
   if (upload.ok !== true) {
     throw new Refusal(
       `publishing the screenshots failed (${upload.reason ?? "error"}); nothing was posted: run again to retry`,
@@ -317,18 +395,64 @@ export function postMacosRun({
     const file = path.join(tmp, "comment.md");
     nodeFs.writeFileSync(file, body, { mode: 0o600 });
     const r = gh(["issue", "comment", issue, "--repo", REPO, "--body-file", file]);
-    if (r.code !== 0) throw new Refusal("posting the comment failed (gh issue comment)");
+    if (r.code !== 0) {
+      throw new Refusal(
+        "posting the comment failed (gh issue comment): run again to retry " +
+          "(it checks the issue first, so a comment that did land isn't posted twice)",
+      );
+    }
     const url = (r.stdout.trim().split("\n").at(-1) ?? "").trim();
-    nodeFs.writeFileSync(
-      path.join(runDir, POSTED_FILE),
-      `${JSON.stringify({ issue, sha: commit, runId, url, upload: upload.ok === true })}\n`,
-      { mode: 0o600 },
-    );
+    recordPosted(runDir, { issue, sha: commit, runId, url, upload: upload.ok === true });
     print(`Posted on #${issue}${url ? `: ${url}` : ""}`);
     return { posted: true, url, upload: upload.ok === true, reason: upload.reason ?? null };
   } finally {
     nodeFs.rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+// A record read back from the ref has no labels (its tree holds only
+// NN.png): take each one's from the run's own shot of that number, so the
+// comment still puts it under its step, as publishRun's reuse does. A number
+// with two shots gets no label: the ref doesn't say which of them was
+// published, so the image goes under "Other screenshots", never under a step
+// it may not show.
+function withShotLabels(record, shotsDir) {
+  const labels = new Map();
+  for (const e of macosManifest(shotsDir)) {
+    labels.set(e.slot, labels.has(e.slot) ? null : e.label);
+  }
+  return {
+    ...record,
+    images: record.images.map((i) => {
+      const label = labels.get(i.n);
+      return i.label || !label ? i : { ...i, label };
+    }),
+  };
+}
+
+function recordPosted(runDir, record) {
+  nodeFs.writeFileSync(path.join(runDir, POSTED_FILE), `${JSON.stringify(record)}\n`, {
+    mode: 0o600,
+  });
+}
+
+// The listing once an earlier --yes has published the run's screenshots.
+function listPrior({ prior, runDir, issue, commit, report, out, print }) {
+  print(
+    `Would post the report of ${runDir} on #${issue} (commit ${commit.slice(0, 12)}), with ` +
+      `what an earlier --yes already published${prior.commit ? ` on ${prior.ref}` : ""}:`,
+  );
+  for (const i of prior.images) print(`  published  ${i.local ?? i.url}`);
+  for (const o of prior.overflow) print(`  kept     ${o.path} (${o.why})`);
+  if (prior.images.length === 0) print("  (no screenshot was published)");
+  print("");
+  print("Moving a file out of shots/ no longer changes what is posted. To withdraw one, take");
+  print(`it down first (the factory runbook's "Taking a screenshot down"), delete ${out},`);
+  print("and list again. The report as it would be posted:");
+  print("");
+  print(reportText(report));
+  print("");
+  print("Run again with --yes to post the comment.");
 }
 
 export function main(argv, deps = {}) {

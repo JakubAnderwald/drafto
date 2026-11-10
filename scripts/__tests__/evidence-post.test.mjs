@@ -33,12 +33,14 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { COMMENT_MAX_CHARS } from "../lib/browser-report.mjs";
+import { fenceStep } from "../lib/markdown-fence.mjs";
 import {
   MACOS_REPORT_MARKER,
   POSTED_FILE,
   composeComment,
   main,
   postMacosRun,
+  postedCommentFor,
   readResults,
   scenarioShaFrom,
 } from "../lib/evidence-post.mjs";
@@ -67,6 +69,13 @@ const OTHER_SHA = "fedcba9876543210fedcba9876543210fedcba98";
 const RUN_NAME = "20261110-051950";
 const RUN_ID = `macos-${RUN_NAME}`;
 const COMMENT_URL = "https://github.com/JakubAnderwald/drafto/issues/797#issuecomment-4242";
+// The one read of the issue's comments: every page, as one array of pages.
+const COMMENTS_CALL = [
+  "api",
+  "repos/JakubAnderwald/drafto/issues/797/comments?per_page=100",
+  "--paginate",
+  "--slurp",
+];
 const HEADER = "🏭 **macOS run — the In-Test harness on this Mac mini**";
 const TITLE = "Desktop: note editor";
 // The shape of a Drafto API key (browser-report.mjs's drafto-api-key pattern); not a real key.
@@ -207,23 +216,43 @@ function ownerComment(sha, body = "Test scenario for In Test.") {
   };
 }
 
-/** A gh stub: records every call; reads and keeps each posted comment's body. */
-function fakeGh({ comments = [ownerComment(SHA)], apiCode = 0, commentCode = 0 } = {}) {
+/**
+ * A gh stub: records every call; reads and keeps each posted comment's body.
+ * The comment list is served as `--slurp` pages (<pages>, or one page of the
+ * issue's comments); a post that lands joins the issue's comments, as on
+ * GitHub. <landsOnFailure>: a failed post landed anyway (a timeout after
+ * GitHub created the comment).
+ */
+function fakeGh({
+  comments = [ownerComment(SHA)],
+  pages = null,
+  apiCode = 0,
+  apiStdout = null,
+  commentCode = 0,
+  landsOnFailure = false,
+} = {}) {
   const calls = [];
   const posts = [];
+  const live = [...comments];
   const gh = (args) => {
     calls.push([...args]);
     if (args[0] === "api") {
-      return { code: apiCode, stdout: apiCode === 0 ? JSON.stringify(comments) : "", stderr: "" };
+      if (apiCode !== 0) return { code: apiCode, stdout: "", stderr: "HTTP 502" };
+      if (apiStdout !== null) return { code: 0, stdout: apiStdout, stderr: "" };
+      return { code: 0, stdout: JSON.stringify(pages ?? [live]), stderr: "" };
     }
     if (args[0] === "issue" && args[1] === "comment") {
       const file = args[args.indexOf("--body-file") + 1];
+      const body = readFileSync(file, "utf8");
       posts.push({
         args: [...args],
         file,
-        body: readFileSync(file, "utf8"),
+        body,
         mode: statSync(file).mode & 0o777,
       });
+      if (commentCode === 0 || landsOnFailure) {
+        live.push({ author_association: "OWNER", html_url: COMMENT_URL, body });
+      }
       return commentCode === 0
         ? { code: 0, stdout: `${COMMENT_URL}\n`, stderr: "" }
         : { code: 1, stdout: "", stderr: "HTTP 502" };
@@ -624,7 +653,6 @@ describe("postMacosRun refusals", () => {
           },
         ],
       },
-      { apiCode: 1 },
     ];
     for (const gh of cases) {
       const t = setup({ gh });
@@ -632,9 +660,31 @@ describe("postMacosRun refusals", () => {
         () => t.post({ yes: true }),
         /no scenario-sha marker on #797's comments: pass --sha <40-hex>/,
       );
-      assert.deepEqual(t.gh.calls, [
-        ["api", "repos/JakubAnderwald/drafto/issues/797/comments", "--paginate"],
-      ]);
+      assert.deepEqual(t.gh.calls, [COMMENTS_CALL]);
+      assert.deepEqual(originRefs(t), []);
+    }
+  });
+
+  it("says the comments couldn't be read when gh fails or prints no page list, not that the marker is missing", () => {
+    const cases = [
+      { apiCode: 1 },
+      { apiStdout: "" },
+      { apiStdout: "not json" },
+      // gh's output without --slurp: one array, not a list of pages.
+      { apiStdout: JSON.stringify([ownerComment(SHA)]) },
+      { apiStdout: JSON.stringify({ message: "Not Found" }) },
+    ];
+    for (const gh of cases) {
+      const t = setup({ gh });
+      for (const yes of [false, true]) {
+        assertRefuses(
+          () => t.post({ yes }),
+          /^reading #797's comments failed \(gh api\): run again$/,
+        );
+        // --sha doesn't help: the read is also the check for the run's own comment.
+        assertRefuses(() => t.post({ yes, sha: SHA }), /^reading #797's comments failed/);
+      }
+      assert.deepEqual(commentCalls(t.gh), []);
       assert.deepEqual(originRefs(t), []);
     }
   });
@@ -696,9 +746,7 @@ describe("postMacosRun without --yes", () => {
 
     // Nothing pushed, nothing posted, nothing recorded.
     assert.deepEqual(originRefs(t), []);
-    assert.deepEqual(t.gh.calls, [
-      ["api", "repos/JakubAnderwald/drafto/issues/797/comments", "--paginate"],
-    ]);
+    assert.deepEqual(t.gh.calls, [COMMENTS_CALL]);
     assert.equal(existsSync(join(t.runDir, UPLOAD_FILE)), false);
     assert.equal(existsSync(join(t.runDir, POSTED_FILE)), false);
   });
@@ -798,11 +846,23 @@ describe("postMacosRun without --yes", () => {
     assert.match(t.printed[0], new RegExp(`\\(commit ${SHA.slice(0, 12)}\\)`));
   });
 
+  it("reads every page of the issue's comments: the newest marker can be on a later one", () => {
+    const filler = Array.from({ length: 100 }, (_, i) => ({
+      author_association: "NONE",
+      body: `comment ${i}`,
+    }));
+    const t = setup({ gh: { pages: [[ownerComment(OTHER_SHA), ...filler], [ownerComment(SHA)]] } });
+    t.post();
+    assert.match(t.printed[0], new RegExp(`\\(commit ${SHA.slice(0, 12)}\\)`));
+    assert.deepEqual(t.gh.calls, [COMMENTS_CALL]);
+  });
+
   it("--sha overrides the comment lookup", () => {
     const t = setup();
     t.cli(["--sha", OTHER_SHA]);
     assert.match(t.printed[0], new RegExp(`\\(commit ${OTHER_SHA.slice(0, 12)}\\)`));
-    assert.deepEqual(t.gh.calls, []);
+    // The comments are still read once, for the run's own comment.
+    assert.deepEqual(t.gh.calls, [COMMENTS_CALL]);
   });
 });
 
@@ -867,9 +927,10 @@ describe("posting with --yes", () => {
   it("--sha overrides the comment lookup for the ref and the record", () => {
     const t = setup();
     t.cli(["--yes", "--sha", OTHER_SHA]);
-    assert.equal(
-      t.gh.calls.some((a) => a[0] === "api"),
-      false,
+    // The comments are still read once, only to check the run isn't posted yet.
+    assert.deepEqual(
+      t.gh.calls.filter((a) => a[0] === "api"),
+      [COMMENTS_CALL],
     );
     const commit = assertEvidenceCommit(t, OTHER_SHA);
     assertComment(t.gh.posts[0].body, commit, { sha: OTHER_SHA });
@@ -1033,6 +1094,242 @@ describe("posting with --yes", () => {
   });
 });
 
+// ── retries: what an earlier attempt already did ────────────────────────────
+
+describe("a retry after an earlier --yes", () => {
+  const RUN_LINE = `Run \`${RUN_ID}\`, posted by the operator. It never moves the card.`;
+  const postedBody = (line = RUN_LINE) =>
+    [HEADER, "", line, "", "…", MACOS_REPORT_MARKER].join("\n");
+
+  it("records a comment whose post failed but landed, and never posts it twice", () => {
+    // gh issue comment fails (a timeout, a dropped connection) after GitHub created it.
+    const t = setup({ gh: { commentCode: 1, landsOnFailure: true } });
+    assertRefuses(
+      () => t.post({ yes: true }),
+      /posting the comment failed \(gh issue comment\): run again to retry \(it checks the issue first/,
+    );
+    assert.equal(t.gh.posts.length, 1);
+    assert.equal(existsSync(join(t.runDir, POSTED_FILE)), false);
+
+    t.printed.length = 0;
+    const r = t.post({ yes: true });
+    assert.deepEqual(r, {
+      posted: true,
+      url: COMMENT_URL,
+      upload: true,
+      reason: null,
+      already: true,
+    });
+    assert.equal(t.gh.posts.length, 1, "the comment was posted twice");
+    assert.deepEqual(readJson(join(t.runDir, POSTED_FILE)), {
+      issue: ISSUE,
+      sha: SHA,
+      runId: RUN_ID,
+      url: COMMENT_URL,
+      upload: true,
+    });
+    assert.equal(statSync(join(t.runDir, POSTED_FILE)).mode & 0o777, 0o600);
+    assert.deepEqual(t.printed, [
+      `Already posted on #797: ${COMMENT_URL} (recorded; nothing posted again)`,
+    ]);
+    // Only the first attempt pushed.
+    assert.deepEqual(originRefs(t), [evidenceRef(ISSUE, SHA, RUN_ID)]);
+    // Now posted.json answers.
+    assertRefuses(() => t.post({ yes: true }), /already posted/);
+  });
+
+  it("checks the issue before publishing anything, so a landed comment needs no git", () => {
+    const landed = { author_association: "OWNER", html_url: COMMENT_URL, body: postedBody() };
+    const t = setup({ gh: { comments: [ownerComment(SHA), landed] } });
+    const noGit = () => {
+      throw new Error("git was called");
+    };
+    assert.equal(t.post({ yes: true, git: noGit }).already, true);
+    assert.deepEqual(commentCalls(t.gh), []);
+    assert.deepEqual(t.gh.calls, [COMMENTS_CALL]);
+    assert.equal(readJson(join(t.runDir, POSTED_FILE)).upload, false);
+  });
+
+  it("only counts the factory's own comment for this very run", () => {
+    const others = [
+      // Someone else's copy of the comment.
+      { author_association: "CONTRIBUTOR", html_url: "x", body: postedBody() },
+      // Another run's comment.
+      {
+        author_association: "OWNER",
+        html_url: "y",
+        body: postedBody(RUN_LINE.replace(RUN_ID, "macos-20261109-101010")),
+      },
+      // The run's line without the marker: not a macOS run comment.
+      { author_association: "OWNER", html_url: "z", body: `${HEADER}\n\n${RUN_LINE}` },
+    ];
+    for (const c of others) assert.equal(postedCommentFor([c], RUN_ID), null);
+    const t = setup({ gh: { comments: [ownerComment(SHA), ...others] } });
+    assert.equal(t.post({ yes: true }).already, undefined);
+    assert.equal(t.gh.posts.length, 1);
+    // gh's camelCase, and a body GitHub stored with CRLF line ends.
+    const crlf = { authorAssociation: "OWNER", body: postedBody().replace(/\n/g, "\r\n") };
+    assert.equal(postedCommentFor([crlf], RUN_ID), crlf);
+  });
+
+  it("a listing says so when the run's comment already landed, and lists nothing to publish", () => {
+    const landed = { author_association: "OWNER", html_url: COMMENT_URL, body: postedBody() };
+    const t = setup({ gh: { comments: [ownerComment(SHA), landed] } });
+    assert.deepEqual(t.post(), { listed: true, posted: true, url: COMMENT_URL });
+    assert.deepEqual(t.printed, [
+      `This run's comment is already on #797: ${COMMENT_URL}.`,
+      "Running again with --yes only records it in posted.json; nothing is published",
+      "or posted again. To withdraw a screenshot, follow the factory runbook's",
+      '"Taking a screenshot down".',
+    ]);
+    assert.deepEqual(t.ocrCalls, []);
+    assert.equal(existsSync(join(t.runDir, POSTED_FILE)), false);
+  });
+
+  it("lists what the earlier --yes published, not what shots/ holds now", () => {
+    // The first --yes published the shots, then its post failed.
+    const t = setup({ gh: { commentCode: 1 } });
+    assertRefuses(() => t.post({ yes: true }), /posting the comment failed/);
+    const shots = join(t.runDir, "shots");
+    // The operator moves a shot out, as the guide's step 3 says, and lists again.
+    rmSync(join(shots, "01-after-login.png"));
+    t.printed.length = 0;
+    t.ocrCalls.length = 0;
+    const listed = t.post({ gh: fakeGh().gh });
+    assert.deepEqual(listed, { listed: true, publish: 4, keep: 0, published: true });
+    const ref = evidenceRef(ISSUE, SHA, RUN_ID);
+    assert.deepEqual(t.printed.slice(0, 5), [
+      `Would post the report of ${t.runDir} on #797 (commit ${SHA.slice(0, 12)}), with what an earlier --yes already published on ${ref}:`,
+      ...Object.keys(DEFAULT_SHOTS).map((n) => `  published  ${join(shots, n)}`),
+    ]);
+    const out = t.printed.join("\n");
+    assert.match(out, /Moving a file out of shots\/ no longer changes what is posted/);
+    assert.ok(out.includes(`delete ${join(t.runDir, UPLOAD_FILE)}`), out);
+    assert.equal(t.printed.at(-1), "Run again with --yes to post the comment.");
+    assert.deepEqual(t.ocrCalls, [], "nothing to scan: nothing new is published");
+
+    // And that is what --yes posts: the moved shot too.
+    const gh = fakeGh();
+    assert.equal(t.post({ yes: true, gh: gh.gh }).posted, true);
+    assert.equal(srcs(gh.posts[0].body).length, 4);
+  });
+
+  it("lists the commit already on the run's ref when upload.json is gone", () => {
+    const t = setup({ gh: { commentCode: 1 } });
+    assertRefuses(() => t.post({ yes: true }), /posting the comment failed/);
+    const commit = git(t.origin, ["rev-parse", evidenceRef(ISSUE, SHA, RUN_ID)]).stdout.trim();
+    rmSync(join(t.runDir, UPLOAD_FILE));
+    rmSync(join(t.runDir, "shots", "01-after-login.png"));
+    t.printed.length = 0;
+    assert.deepEqual(t.post({ gh: fakeGh().gh }), {
+      listed: true,
+      publish: 4,
+      keep: 0,
+      published: true,
+    });
+    assert.deepEqual(
+      t.printed.slice(1, 5),
+      [1, 2, 3, 4].map(
+        (n) => `  published  ${rawUrl(commit, imagePath(ISSUE, SHA, RUN_ID, n, "png"))}`,
+      ),
+    );
+    // main's own git (no injected runner) sees the same ref.
+    t.printed.length = 0;
+    assert.equal(t.cli([], { gh: fakeGh().gh }).published, true);
+  });
+
+  it("--yes posts the ref's images when upload.json is gone, even with shots/ emptied or no OCR", () => {
+    for (const empty of [false, true]) {
+      const t = setup({ gh: { commentCode: 1 } });
+      assertRefuses(() => t.post({ yes: true }), /posting the comment failed/);
+      const commit = git(t.origin, ["rev-parse", evidenceRef(ISSUE, SHA, RUN_ID)]).stdout.trim();
+      rmSync(join(t.runDir, UPLOAD_FILE));
+      if (empty) {
+        for (const n of Object.keys(DEFAULT_SHOTS)) rmSync(join(t.runDir, "shots", n));
+      }
+      let pushes = 0;
+      const counting = (args, opts) => {
+        if (args.includes("push")) pushes++;
+        return t.runGit(args, opts);
+      };
+      const gh = fakeGh();
+      // Nothing new is published, so no OCR helper is needed.
+      assert.equal(t.post({ yes: true, gh: gh.gh, git: counting, deps: {} }).posted, true);
+      assert.equal(pushes, 0, "the retry pushed again");
+      const body = gh.posts[0].body;
+      if (empty) {
+        // No local shot left to name a step after: they're all "taken during the run".
+        assert.deepEqual(
+          srcs(body),
+          [1, 2, 3, 4].map((n) => rawUrl(commit, imagePath(ISSUE, SHA, RUN_ID, n, "png"))),
+        );
+        assert.ok(body.includes("**Screenshots taken during the run**"), body);
+      } else {
+        // The run's own shots name the steps, as when the ref is reused on publish.
+        assertComment(body, commit);
+      }
+    }
+  });
+
+  it("--yes from the ref puts a number with two shots under no step: the ref can't say which was published", () => {
+    // 03-step-1-PASS sorts first, so it is the one published as 03.png;
+    // 03-step-2-FAIL is kept on the Mac mini.
+    const shots = { ...DEFAULT_SHOTS, "03-step-1-PASS.png": SELFTEST_PNG };
+    const t = setup({ shots, gh: { commentCode: 1 } });
+    assertRefuses(() => t.post({ yes: true }), /posting the comment failed/);
+    const commit = git(t.origin, ["rev-parse", evidenceRef(ISSUE, SHA, RUN_ID)]).stdout.trim();
+    rmSync(join(t.runDir, UPLOAD_FILE));
+    const gh = fakeGh();
+    assert.equal(t.post({ yes: true, gh: gh.gh }).posted, true);
+    const lines = gh.posts[0].body.split("\n");
+    // Step 2 shows only its own other shot, never the image published as 03.png.
+    const s2 = lineAt(lines, "**Step 2** · FAIL · Open a note and type");
+    assert.deepEqual(lines.slice(s2 + 1, s2 + 3), ["", img(commit, 4)]);
+    const s1 = lineAt(lines, "**Step 1** · PASS · Sign in with the throwaway account");
+    assert.deepEqual(lines.slice(s1 + 1, s1 + 3), ["", img(commit, 2)]);
+    // 03.png goes with the unnamed shot, under "Other screenshots".
+    const other = lineAt(lines, "**Other screenshots**");
+    assert.ok(lines.slice(other).includes(img(commit, 3)));
+    assert.ok(lines.slice(other).includes(img(commit, 1)));
+    assert.equal(lines.filter((l) => l === img(commit, 3)).length, 1);
+  });
+
+  it("refuses to list or post when origin can't say whether the run is already published", () => {
+    // The first push landed, but git reported a failure (a timeout), so upload.json isn't ok.
+    const t = setup({ gh: { commentCode: 1 } });
+    assertRefuses(() => t.post({ yes: true }), /posting the comment failed/);
+    const record = readJson(join(t.runDir, UPLOAD_FILE));
+    writeFileSync(
+      join(t.runDir, UPLOAD_FILE),
+      JSON.stringify({ ...record, ok: false, reason: "push" }),
+    );
+    rmSync(join(t.runDir, "shots", "01-after-login.png"));
+    const lsRemoteFails = (args, opts) =>
+      args[0] === "ls-remote" ? { code: 128, stdout: "", stderr: "" } : t.runGit(args, opts);
+    const gh = fakeGh();
+    assertRefuses(
+      () => t.post({ gh: gh.gh, git: lsRemoteFails }),
+      /^GitHub couldn't be asked whether this run's screenshots are already published \(remote\): run again$/,
+    );
+    assertRefuses(
+      () => t.post({ yes: true, gh: gh.gh, git: lsRemoteFails }),
+      /publishing the screenshots failed \(remote\); nothing was posted/,
+    );
+    assert.deepEqual(commentCalls(gh), []);
+    // Once origin answers, the listing shows the ref, the removed shot too.
+    t.printed.length = 0;
+    assert.equal(t.post({ gh: gh.gh }).publish, 4);
+  });
+
+  it("refuses to list or post when origin can't be reached at all", () => {
+    const t = setup();
+    git(t.work, ["remote", "set-url", "origin", join(t.root, "missing.git")]);
+    assertRefuses(() => t.cli(), /GitHub couldn't be asked .* \(remote\): run again/);
+    assertRefuses(() => t.cli(["--yes"]), /publishing the screenshots failed \(remote\)/);
+    assert.deepEqual(commentCalls(t.gh), []);
+  });
+});
+
 // ── the comment ─────────────────────────────────────────────────────────────
 
 describe("composeComment", () => {
@@ -1086,6 +1383,33 @@ describe("composeComment", () => {
     assert.equal(body.split("\n")[0], HEADER);
     assert.deepEqual(srcs(body), [pinned(1)]);
     assert.equal(body.split("\n").at(-1), MACOS_REPORT_MARKER);
+  });
+
+  it("closes a ~~~ or a ```` fence the cut leaves open, so the screenshots never render as code", () => {
+    for (const [open, close] of [
+      ["~~~", "~~~"],
+      ["````md", "````"],
+      ["```", "```"],
+    ]) {
+      // A fence that quotes a ``` block: only its own marker closes it.
+      const report = `${harnessReport()}\n${open}\n\`\`\`js\n${"x\n".repeat(40_000)}${close}\n`;
+      const { body } = composeComment({
+        report,
+        upload,
+        results,
+        shotsDir: "/tmp/run/shots",
+        runId: RUN_ID,
+      });
+      assert.ok(body.length <= COMMENT_MAX_CHARS, `${open}: ${body.length} > ${COMMENT_MAX_CHARS}`);
+      assert.ok(body.includes("_…report truncated"), open);
+      const lines = body.split("\n");
+      const img = lines.findIndex((l) => l.startsWith("<img "));
+      assert.notEqual(img, -1, open);
+      let state = null;
+      for (const l of lines.slice(0, img)) state = fenceStep(state, l);
+      assert.equal(state, null, `${open}: the screenshots are inside a code block`);
+      assert.equal(lines.at(-1), MACOS_REPORT_MARKER);
+    }
   });
 });
 

@@ -116,7 +116,8 @@ export function rawUrl(commit, rel) {
 
 // ── git ─────────────────────────────────────────────────────────────────────
 
-function defaultGit(repoRoot) {
+/** git in <repoRoot>, never prompting: {code, stdout, stderr}. */
+export function defaultGit(repoRoot) {
   return (args, { input, env } = {}) => {
     const r = spawnSync("git", args, {
       cwd: repoRoot,
@@ -429,6 +430,48 @@ export function publishRun({ issue, sha, runId, selection, git }) {
   );
 }
 
+/** Whether <record> is a successful upload record of this very run. */
+function isRunRecord(record, { issue, sha, runId }) {
+  return (
+    record?.ok === true &&
+    record.ref === evidenceRef(issue, sha, runId) &&
+    record.issue === issue &&
+    record.sha === sha &&
+    record.runId === runId
+  );
+}
+
+/**
+ * What this run already published, which a retry posts again instead of the
+ * files now in its evidence dir: the run's own upload.json (<out>), else the
+ * commit already on its ref. The record ({ok: true, …, reused: true}) as
+ * uploadRun returns it; images from the ref's tree carry no local path or
+ * label. null when nothing is published for the run yet; {ok: false, reason:
+ * "remote"} when GitHub can't be asked, or the ref's commit can't be read:
+ * then nobody can say what is published, so a caller must not guess.
+ */
+export function priorUpload({ issue, sha, runId, out, repoRoot, git = defaultGit(repoRoot) }) {
+  const ref = evidenceRef(issue, sha, runId);
+  const base = { issue, sha, runId, ref };
+  const prior = readJson(out);
+  if (isRunRecord(prior, { issue, sha, runId })) {
+    const list = (v) => (Array.isArray(v) ? v : []);
+    return { ...prior, images: list(prior.images), overflow: list(prior.overflow), reused: true };
+  }
+  const existing = remoteRefSha(git, ref);
+  if (existing === null) return { ok: false, ...base, reason: "remote", overflow: [] };
+  if (!SHA_RE.test(existing)) return null;
+  const paths = commitPaths(git, existing, ref);
+  if (paths === null) return { ok: false, ...base, reason: "remote", overflow: [] };
+  // The image paths, as publishRun's record reads them back.
+  const images = paths.flatMap((rel) => {
+    const m = /\/([0-9]{2,3})\.(?:png|jpg)$/.exec(rel);
+    return m ? [{ n: Number(m[1]), url: rawUrl(existing, rel), local: null, name: null }] : [];
+  });
+  images.sort((a, b) => a.n - b.n);
+  return { ok: true, ...base, commit: existing, images, overflow: [], reused: true };
+}
+
 /**
  * The whole upload: gates, the run's own upload.json, selection, publish.
  * Never throws for an expected failure; writes and returns the record.
@@ -459,13 +502,7 @@ export function uploadRun({
     const prior = readJson(out);
     if (gate) {
       result = { ok: false, reason: gate };
-    } else if (
-      prior?.ok === true &&
-      prior.ref === ref &&
-      prior.issue === issue &&
-      prior.sha === sha &&
-      prior.runId === runId
-    ) {
+    } else if (isRunRecord(prior, { issue, sha, runId })) {
       // Already published by an earlier attempt: nothing is pushed again.
       return { ...prior, reused: true };
     } else {

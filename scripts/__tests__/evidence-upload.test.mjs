@@ -46,6 +46,7 @@ import {
   evidenceRef,
   imagePath,
   main,
+  priorUpload,
   rawUrl,
   renderWithheld,
   selftest,
@@ -1087,6 +1088,60 @@ describe("upload is idempotent per issue + head + run", () => {
     assert.equal(fx.pushes(), 1);
     assert.deepEqual(readJsonFile(fx.out).images, firstRecord.images);
     assert.equal(evidenceRefs(fx.origin).length, 1);
+  });
+
+  it("priorUpload says what a retry posts: upload.json, else the ref, else nothing, never a guess", async () => {
+    const fx = uploadFixture();
+    const args = {
+      issue: ISSUE,
+      sha: SHA,
+      runId: RUN_ID,
+      out: fx.out,
+      repoRoot: fx.work,
+      git: fx.git,
+    };
+    assert.equal(priorUpload(args), null);
+    const first = await upload(fx);
+    const record = readJsonFile(fx.out);
+    assert.deepEqual(priorUpload(args), { ...record, reused: true });
+    // upload.json lost: the commit on the run's ref, read back from its tree.
+    rmSync(fx.out);
+    assert.deepEqual(priorUpload(args), {
+      ok: true,
+      issue: ISSUE,
+      sha: SHA,
+      runId: RUN_ID,
+      ref: record.ref,
+      commit: first.commit,
+      images: record.images.map(({ n, url }) => ({ n, url, local: null, name: null })),
+      overflow: [],
+      reused: true,
+    });
+    // Another run of the same head has nothing to reuse.
+    assert.equal(priorUpload({ ...args, runId: "verify-20261110T061000" }), null);
+    // An origin that can't be asked, or a ref whose commit can't be read, is
+    // never "nothing published".
+    const remote = {
+      ok: false,
+      issue: ISSUE,
+      sha: SHA,
+      runId: RUN_ID,
+      ref: record.ref,
+      reason: "remote",
+      overflow: [],
+    };
+    assert.deepEqual(
+      priorUpload({ ...args, git: () => ({ code: 128, stdout: "", stderr: "" }) }),
+      remote,
+    );
+    const unreadable = (a, o) =>
+      a[0] === "ls-remote" ? fx.git(a, o) : { code: 128, stdout: "", stderr: "" };
+    assert.deepEqual(priorUpload({ ...args, git: unreadable }), remote);
+    // A failed record is no upload: the ref decides.
+    writeFileSync(fx.out, `${JSON.stringify({ ...record, ok: false, reason: "push" })}\n`);
+    assert.equal(priorUpload(args).commit, first.commit);
+    assert.equal(priorUpload({ ...args, git: () => ({ code: 0, stdout: "", stderr: "" }) }), null);
+    assert.equal(fx.pushes(), 1);
   });
 
   it("reads the existing commit's paths from origin in a checkout that never had it", async () => {

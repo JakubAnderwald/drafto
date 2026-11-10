@@ -788,6 +788,53 @@ describe("evidence-images: selectImages", () => {
     );
   });
 
+  it("publishes one shot per number: a later shot with the same NN is kept on the Mac mini", () => {
+    // One slot is one published file (NN.png), so a second 07 would replace the first.
+    writeFileSync(join(root, "07-b.png"), png("b"));
+    writeFileSync(join(root, "07-a.png"), png("a"));
+    writeFileSync(join(root, "08-c.png"), png("c"));
+    const ocr = fakeOcr();
+    const r = selectImages({ root, entries: macosManifest(root), ocr });
+    assert.deepEqual(
+      r.upload.map((u) => [u.slot, u.name]),
+      [
+        [7, "07-a.png"],
+        [8, "08-c.png"],
+      ],
+    );
+    assert.deepEqual(r.overflow, [
+      { slot: 7, path: join(root, "07-b.png"), why: "another screenshot has the same number" },
+    ]);
+    // The duplicate is never read or scanned.
+    assert.deepEqual(
+      ocr.calls.map((c) => c.tag),
+      ["a", "c"],
+    );
+  });
+
+  it("lets a later shot with the same NN take the slot when the first one fails a check", () => {
+    writeFileSync(join(root, "07-a.png"), Buffer.from("not a png"));
+    writeFileSync(join(root, "07-b.png"), png("b-secret"));
+    writeFileSync(join(root, "07-c.png"), png("c"));
+    writeFileSync(join(root, "07-d.png"), png("d"));
+    const ocr = fakeOcr({
+      "b-secret": { ok: true, text: "dk_0123456789abcdef0123456789abcdef0123456789abcdef" },
+    });
+    const r = selectImages({ root, entries: macosManifest(root), ocr });
+    assert.deepEqual(
+      r.upload.map((u) => u.name),
+      ["07-c.png"],
+    );
+    assert.deepEqual(
+      r.overflow.map((o) => [o.path, o.why]),
+      [
+        [join(root, "07-a.png"), "its bytes aren't a PNG image"],
+        [join(root, "07-b.png"), "its text matched a secret pattern (drafto-api-key)"],
+        [join(root, "07-d.png"), "another screenshot has the same number"],
+      ],
+    );
+  });
+
   it("caps the number of images in slot order, lists the rest in order, and OCRs none past the cap", () => {
     const entries = stage([
       ["s1.png", png("1")],

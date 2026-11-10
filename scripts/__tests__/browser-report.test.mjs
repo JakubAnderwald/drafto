@@ -35,6 +35,7 @@ import {
   scanForSecrets,
 } from "../lib/browser-report.mjs";
 import { CAP_WHY } from "../lib/evidence-images.mjs";
+import { fenceStep } from "../lib/markdown-fence.mjs";
 
 // Guards the only path from the browser runner's stdout to a public GitHub
 // comment: the runner drives the Mac mini's signed-in Chrome, so its output is
@@ -763,6 +764,21 @@ describe("screenshots in the report (ADR-0072)", () => {
     for (const n of ns) assert.ok(body.includes(imgTag(n)), `screenshot ${n}`);
     assert.ok(body.indexOf("report truncated") < body.indexOf(imgTag(1)), "only the text is cut");
     assert.ok(lines(body).includes(PUBLISHED_FOOTER));
+    assert.deepEqual(lines(body).slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
+  });
+
+  it("closes a ~~~ fence the cut leaves open, so the screenshots after it aren't code", () => {
+    const report = `${SHOTS_REPORT}\n\n~~~\n\`\`\`js\n${"x\n".repeat(75_000)}~~~\n`;
+    const body = renderIntestComment({ ...base, report, images: upload() });
+    assert.ok(body.length <= COMMENT_MAX_CHARS, `length ${body.length}`);
+    assert.match(body, /report truncated to \d+ of \d+ characters/);
+    const at = lines(body).indexOf(imgTag(1));
+    assert.notEqual(at, -1);
+    assert.equal(
+      lines(body).slice(0, at).reduce(fenceStep, null),
+      null,
+      "the screenshots are inside a code block",
+    );
     assert.deepEqual(lines(body).slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
   });
 

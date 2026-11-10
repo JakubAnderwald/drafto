@@ -80,7 +80,7 @@ A finished run's report and screenshots can be posted on the card's issue, with 
 
    It prints each shot it would publish and each one it would keep on the Mac mini (with why), then the report as it would be posted. Nothing is published yet.
 
-3. **Look at each shot it lists.** An early one can show your own account's notes, because a run starts by signing that account out. If one shouldn't go out, move it out of `shots/` (only what's there is published) and list again, or don't post the run.
+3. **Look at each shot it lists.** An early one can show your own account's notes, because a run starts by signing that account out. If one shouldn't go out, move it out of `shots/` (only what's there is published) and list again, or don't post the run. Once an earlier `--yes` has published the shots (say its comment post failed), moving a file no longer changes anything: the listing shows what is already published, which is what a retry posts. To withdraw a shot then, take it down first (the runbook's "Taking a screenshot down"), delete the run's `upload.json`, and list again. If the run's comment is already on the issue, the listing says so instead.
 4. **Post it** by running the same command again with `--yes`. It publishes the shots as one parentless commit on `refs/factory-evidence/<issue>/<sha12>/macos-<timestamp>`, then posts one comment, **🏭 macOS run — the In-Test harness on this Mac mini** (marker `<!-- drafto-factory-macos-run-report -->`). The comment has the report, then each step's shots, matched by name (`NN-step-<id>-<STATUS>.png`) to the step in `results.jsonl`. Shots with other names go under "Other screenshots". The comment never moves the card.
 
 The shots go through the same checks as the browser runner's (see the factory runbook's "Test-run screenshots on GitHub"):
@@ -90,7 +90,7 @@ The shots go through the same checks as the browser runner's (see the factory ru
 - at most 20 shots and 20 MB per comment;
 - the one-time publishing selftest, and `FACTORY_EVIDENCE_UPLOAD`.
 
-Only files in `shots/` named `NN-<label>.png` are considered, so `preflight-window.png` and `tmp-ocr.png` never are.
+Only files in `shots/` named `NN-<label>.png` are considered, so `preflight-window.png` and `tmp-ocr.png` never are. One shot is published per `NN`. A second file with the same number is kept on the Mac mini.
 
 Flags:
 
@@ -106,9 +106,10 @@ It refuses, with exit 1 and nothing published, in these cases:
 - when the report matches a secret pattern;
 - when the run was already posted (`posted.json` in the run dir has the comment's URL);
 - when publishing isn't set up: the switch is off, the selftest hasn't passed, or there's no OCR helper;
-- when there's no scenario-sha marker on the issue and no `--sha`.
+- when there's no scenario-sha marker on the issue and no `--sha`;
+- when the issue's comments can't be read, or GitHub can't say what is already published for the run. Run it again.
 
-If publishing fails, nothing is posted. Run the command again to retry: it reuses the run's `upload.json`, or the commit already on its ref, so it never publishes twice. To take a posted run down, follow the runbook's "Taking a screenshot down".
+If publishing fails, nothing is posted. Run the command again to retry: it reuses the run's `upload.json`, or the commit already on its ref, so it never publishes twice. If the comment post fails or times out, run it again too. Before posting, `--yes` looks for the run's comment on the issue: the factory's own (OWNER) comment with the marker and the run's `Run` line. If a timed-out post did land, it records that comment in `posted.json` and doesn't post a second one. To take a posted run down, follow the runbook's "Taking a screenshot down".
 
 ## Layout
 

@@ -327,6 +327,11 @@ export function selectImages({
 
   const upload = [];
   const overflow = [];
+  // The slots already in the upload. A slot is one published file
+  // (NN.<ext>), so a second shot with the same number (macOS `07-a.png` and
+  // `07-b.png`) would replace the first's image. The first that passes every
+  // check keeps the slot: a rejected one doesn't hold it.
+  const taken = new Set();
   let total = 0;
   const deadline = now() + ocrBudgetMs;
   for (const e of [...listed].sort((a, b) => a.slot - b.slot)) {
@@ -336,6 +341,10 @@ export function selectImages({
       continue;
     }
     const file = path.join(root, e.name);
+    if (taken.has(e.slot)) {
+      overflow.push({ slot: e.slot, path: file, why: "another screenshot has the same number" });
+      continue;
+    }
     const img = checkImage(file, root, { maxBytes: maxImageBytes, realRoot, fs });
     if (!img.ok) {
       overflow.push({ slot: e.slot, path: file, why: img.why });
@@ -364,6 +373,7 @@ export function selectImages({
       });
       continue;
     }
+    taken.add(e.slot);
     total += img.size;
     upload.push({
       slot: e.slot,

@@ -78,7 +78,7 @@ import path from "node:path";
 
 import { evidenceSection, readUpload } from "./evidence-embed.mjs";
 import { isMainModule } from "./is-main.mjs";
-import { closeFences } from "./markdown-fence.mjs";
+import { closeFences, truncateFenced } from "./markdown-fence.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
 export const REPORT_MARKER = "<!-- drafto-factory-browser-report -->";
@@ -439,9 +439,11 @@ function renderRunReport(run, { header, okNote, notOkNote, markers, embed = fals
   const note = (n) =>
     `\n\n_…report truncated to ${n} of ${text.length} characters; ` +
     `the full output is at \`${localCopy}\`._`;
-  // Budget against the longest note and a fence closer ("\n```" = 4).
-  const room = COMMENT_MAX_CHARS - assemble([...intro, ""]).length - note(text.length).length - 4;
-  const cut = truncateReport(text, room);
+  // Budget against the longest note. The cut closes the fence it leaves open,
+  // whatever its marker (```, ~~~, ````…), within the room, so the screenshots
+  // after it never render as code.
+  const room = COMMENT_MAX_CHARS - assemble([...intro, ""]).length - note(text.length).length;
+  const cut = truncateFenced(text, room);
   return done(assemble([...intro, cut + note(cut.length)]));
 }
 
