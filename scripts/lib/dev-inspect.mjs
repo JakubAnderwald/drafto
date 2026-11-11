@@ -23,7 +23,12 @@
 // a failed request. Errors name the request, never a key or a header.
 
 import * as nodeFs from "node:fs";
-import { accountFileProblem, parseEnvValues, readAccountFile } from "./browser-report.mjs";
+import {
+  accountFileProblem,
+  adminAccountFileProblem,
+  readAccountFile,
+  readAdminAccountFile,
+} from "./browser-report.mjs";
 import { DEV_SUPABASE_URL, keyFileProblem, parseKeyFile } from "./browser-signin.mjs";
 
 export const BUCKET = "attachments"; // packages/shared/src/constants.ts BUCKET_NAME
@@ -316,16 +321,12 @@ export async function runInspect(parsed, { reader, userId, email }) {
 }
 
 /**
- * The run's inspect config (private/dev-inspect.cfg, JSON): {keyFile, accounts: {user:
- * accountFile, admin?: accountFile}}. Each account file is an env file whose
- * email is FACTORY_BROWSER_EMAIL (user) or FACTORY_BROWSER_ADMIN_EMAIL (admin).
+ * The run's inspect config (private/dev-inspect.cfg, JSON): {keyFile,
+ * accounts: {user: accountFile, admin?: adminAccountFile}}. The user's file is
+ * the browser runner's account file; the admin's holds only
+ * FACTORY_BROWSER_ADMIN_EMAIL (ADR-0073).
  */
-export const ACCOUNT_EMAIL_KEYS = Object.freeze({
-  user: "FACTORY_BROWSER_EMAIL",
-  admin: "FACTORY_BROWSER_ADMIN_EMAIL",
-});
-
-export function readAccountEmail(file, account, { fs = nodeFs } = {}) {
+export function readAccountEmail(file, account) {
   // The test account's file is the browser runner's own: read it the same way.
   if (account === "user") {
     const problem = accountFileProblem(file);
@@ -333,14 +334,9 @@ export function readAccountEmail(file, account, { fs = nodeFs } = {}) {
     return readAccountFile(file).email;
   }
   // The admin's file holds only an email (no password: it signs in by link).
-  const problem = keyFileProblem(file);
+  const problem = adminAccountFileProblem(file);
   if (problem) throw new Error(`the ${account} account file is ${problem}`);
-  const key = ACCOUNT_EMAIL_KEYS[account];
-  const email = parseEnvValues(fs.readFileSync(file, "utf8"), [key])[key];
-  if (!email || !/^[^\s@]+@[^\s@]+$/.test(email)) {
-    throw new Error(`the ${account} account file has no ${key}`);
-  }
-  return email;
+  return readAdminAccountFile(file).email;
 }
 
 /** Everything one invocation does, given its config. Returns {exitCode, out}. */
@@ -361,7 +357,7 @@ export async function inspectMain(argv, { config, fs = nodeFs, fetchImpl = fetch
     const keyProblem = keyFileProblem(config.keyFile);
     if (keyProblem) return { exitCode: 2, out: { error: `the dev key file is ${keyProblem}` } };
     ({ serviceRoleKey: serviceKey } = parseKeyFile(fs.readFileSync(config.keyFile, "utf8")));
-    const email = readAccountEmail(accountFile, parsed.account, { fs });
+    const email = readAccountEmail(accountFile, parsed.account);
     const reader = createDevReader({ serviceKey, fetchImpl });
     const userId = await reader.userIdByEmail(email);
     if (!userId)

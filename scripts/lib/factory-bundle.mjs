@@ -1166,6 +1166,14 @@ export function buildFactoryBrowserRunBundle({
   }
   const scenario = selectScenarioComment(comments, headSha);
   const webSteps = scenario ? extractWebSection(scenario.body) : null;
+  // ADR-0073: the `### Fixtures` section, which bash turns into files before
+  // the session (browser-fixtures.mjs, read by code, not by the model), and
+  // whether any Web step is marked `(admin)`, so bash mints the admin's link
+  // only when a step needs it.
+  const fixtureSection =
+    scenario && webSteps
+      ? extractScenarioSections(scenario.body).find((s) => /^fixtures$/i.test(s.heading.trim()))
+      : null;
   return {
     kind: "factory_browser_run",
     runKind,
@@ -1192,6 +1200,14 @@ export function buildFactoryBrowserRunBundle({
     // mints after this bundle is built (browser-signin.mjs) and sets here; it
     // never gets the password, which it couldn't type on a preview anyway.
     account: { email: readAccountFile(accountFile).email, signInUrl: null },
+    fixtureSpecs: fixtureSection ? fixtureSection.text : "",
+    hasAdminSteps: typeof webSteps === "string" && /\(admin\)/i.test(webSteps),
+    // Set by bash from its switches (ADR-0073) once it knows what this run
+    // got: {uploads, js, inspect, admin}, the generated fixtures, and the
+    // admin's one-time link.
+    capabilities: { uploads: false, js: false, inspect: false, admin: false },
+    fixtures: [],
+    adminAccount: null,
     browser: { deviceId },
     qaTag: `factory-${issue.number}-${String(headSha).slice(0, 7)}`,
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),

@@ -52,7 +52,7 @@
 import { randomBytes } from "node:crypto";
 import { linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 
-import { readAccountFile } from "./browser-report.mjs";
+import { readAccountFile, readAdminAccountFile } from "./browser-report.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
@@ -319,6 +319,8 @@ function warnToStderr(message) {
 export async function mint({
   keyFile,
   accountFile,
+  // "admin": accountFile is the email-only admin account file (ADR-0073).
+  account = "user",
   origin,
   fetchImpl = fetch,
   lease = null,
@@ -332,7 +334,9 @@ export async function mint({
   const problem = keyFileProblem(keyFile);
   if (problem) throw new Error(`key file ${problem}: ${keyFile}`);
   const { url, serviceRoleKey } = parseKeyFile(readFileSync(keyFile, "utf8"));
-  const { email } = readAccountFile(accountFile);
+  if (account !== "user" && account !== "admin") throw new Error(`unknown account ${account}`);
+  const { email } =
+    account === "admin" ? readAdminAccountFile(accountFile) : readAccountFile(accountFile);
   let held = null;
   if (lease) {
     // Bad arguments are a caller's bug, not a lease file problem: they throw.
@@ -363,7 +367,7 @@ export async function mint({
 }
 
 const USAGE =
-  "usage: browser-signin.mjs mint --key-file <f> --account-file <f> --origin <o> " +
+  "usage: browser-signin.mjs mint --key-file <f> --account-file <f> [--account user|admin] --origin <o> " +
   "[--lease-file <f> --owner <o> [--hold-sec <n>]] | release --lease-file <f> --owner <o>";
 
 function leaseFromFlags(flags) {
@@ -398,6 +402,7 @@ async function main(argv) {
     link = await mint({
       keyFile: flags["key-file"],
       accountFile: flags["account-file"],
+      account: flags.account ?? "user",
       origin: flags.origin,
       lease: leaseFromFlags(flags),
     });
