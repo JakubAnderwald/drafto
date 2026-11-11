@@ -613,7 +613,7 @@ export function buildPreviewCurlArgs(argv, { origin }) {
 export const LANE_BINS = Object.freeze({
   "preview-curl": "The verification lane's only way to the preview",
   "dev-inspect": "Read-only checks of the factory account's data on the dev project",
-  "live-tests": "One dev live test at the PR head; names and outcomes only",
+  "live-tests": "The scenario's dev live tests, run before the session; filtered result lines only",
 });
 
 export function laneBinScript({ nodePath, modulePath, runDir, sub = "preview-curl" }) {
@@ -653,7 +653,7 @@ export function previewCurlScript({ nodePath, modulePath, runDir }) {
  *   filtered results in private/lane-tests.cfg for bin/live-tests to print.
  */
 export async function prepareCapabilities(
-  { meta, runDir, privateDir, binDir, env, logFile = null, deadlineMs },
+  { meta, runDir, privateDir, binDir, env, logFile = null, deadlineMs, stopped = () => false },
   {
     fs = nodeFs,
     runTests = runScenarioLiveTests,
@@ -713,6 +713,8 @@ export async function prepareCapabilities(
           },
           deadlineMs,
           fs,
+          // A stop of the run reaches the test's own process group too.
+          stopped,
         });
         fs.writeFileSync(path.join(privateDir, LIVE_TESTS_CFG), JSON.stringify(results), {
           mode: 0o600,
@@ -1963,6 +1965,7 @@ export async function runSupervise({ runDir }, { env = process.env } = {}) {
         binDir,
         env,
         logFile,
+        stopped,
         // The live tests may use the run's time up to 10 minutes before its
         // cleanup reserve, leaving that for the session.
         deadlineMs: Date.parse(meta.deadlineAt) - (CLEANUP_RESERVE_SEC + 600) * 1000,

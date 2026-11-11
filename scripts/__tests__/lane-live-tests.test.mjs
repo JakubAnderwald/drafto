@@ -117,6 +117,12 @@ describe("filterLiveOutput", () => {
     assert.deepEqual(r, { lines: ["  ✔ ok"], withheld: false });
   });
 
+  it("finds a key that a cut would split, before cutting the line", () => {
+    const longKey = `k${"0123456789".repeat(30)}`;
+    const line = `  ✔ ${"x".repeat(180)}${longKey}`;
+    assert.deepEqual(filterLiveOutput(line, { secrets: [longKey] }), { lines: [], withheld: true });
+  });
+
   it("caps line length", () => {
     const { lines } = filterLiveOutput(`  ✔ ${"x".repeat(500)}`);
     assert.ok(lines[0].length <= 201);
@@ -143,10 +149,10 @@ describe("liveTestNames", () => {
     ]);
   });
 
-  it("is empty without the section, and caps the list", () => {
+  it("is empty without the section, and returns every name (the run caps them)", () => {
     assert.deepEqual(liveTestNames(null), []);
     const many = Array.from({ length: 9 }, (_, i) => `- t${i}`).join("\n");
-    assert.equal(liveTestNames([`### Live tests\n${many}`]).length, 5);
+    assert.equal(liveTestNames([`### Live tests\n${many}`]).length, 9);
   });
 });
 
@@ -230,6 +236,69 @@ describe("runScenarioLiveTests", () => {
     assert.deepEqual(r.skipped, [
       { test: "profile-guard", outcome: "not run: no time left before the session" },
     ]);
+  });
+});
+
+describe("runScenarioLiveTests: limits and stops", () => {
+  it("runs the first five and lists the rest as not run, with why", async () => {
+    const { fn, calls } = fakeSpawn("", 0);
+    const names = Array.from({ length: 7 }, (_, i) => `t${i}`);
+    const r = await runScenarioLiveTests(names, {
+      config: tempConfig(),
+      deadlineMs: Date.now() + 3_600_000,
+      spawnFn: fn,
+    });
+    assert.equal(calls.length, 5);
+    assert.deepEqual(
+      r.skipped.map((x) => x.test),
+      ["t5", "t6"],
+    );
+    assert.match(r.skipped[0].outcome, /at most 5 live tests; run it by hand/);
+  });
+
+  it("stops the test's own process group when the run is stopped, and runs no more", async () => {
+    const killed = [];
+    const origKill = process.kill;
+    process.kill = (pid, sig) => {
+      killed.push([pid, sig]);
+      return true;
+    };
+    try {
+      let stop = false;
+      const fn = () => {
+        const child = new EventEmitter();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.pid = 4242;
+        child.kill = () => {};
+        // Never exits on its own: only the stop ends it.
+        setTimeout(() => {
+          stop = true;
+        }, 50);
+        const poll = setInterval(() => {
+          if (killed.length) {
+            clearInterval(poll);
+            child.stdout.end();
+            child.stderr.end();
+            child.emit("close", null, "SIGTERM");
+          }
+        }, 20);
+        return child;
+      };
+      const r = await runScenarioLiveTests(["storage-quota", "profile-guard"], {
+        config: tempConfig(),
+        deadlineMs: Date.now() + 3_600_000,
+        spawnFn: fn,
+        stopped: () => stop,
+      });
+      assert.deepEqual(killed[0], [-4242, "SIGTERM"]);
+      assert.equal(r.ran[0].outcome, "stopped with the run");
+      assert.deepEqual(r.skipped, [
+        { test: "profile-guard", outcome: "not run: the run was stopped" },
+      ]);
+    } finally {
+      process.kill = origKill;
+    }
   });
 });
 

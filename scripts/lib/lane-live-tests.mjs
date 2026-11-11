@@ -1,7 +1,8 @@
 // The verification shell lane's dev live tests (ADR-0073). The supervisor runs
 // the scenario's `### Live tests` (names from scripts/run-dev-live-tests.mjs
 // LIVE_TESTS) at the PR head, with the dev service-role key, BEFORE the claude
-// session starts, and stores only each test's name and outcome in
+// session starts, and stores only filtered result lines (names, outcomes,
+// counts and durations) in
 // private/lane-tests-results.json. The session's `live-tests <name>` reads that
 // file; it never runs anything.
 //
@@ -63,18 +64,20 @@ const UNKNOWN_TEST_RE = /--only must be one of: ([a-z0-9, -]+)/;
 
 /** Keeps only result lines; returns {lines, withheld}. */
 export function filterLiveOutput(text, { secrets = [] } = {}) {
+  const known = secrets.filter((s) => typeof s === "string" && s.length >= 8);
+  // Checked on the whole line, before it is cut: a key that crosses the cut
+  // would otherwise get past the exact match.
+  const leaks = (line) =>
+    SECRET_RES.some((re) => re.test(line)) || known.some((s) => line.includes(s));
   const lines = [];
   for (const raw of String(text ?? "").split(/\r?\n/)) {
     const line = raw.replace(STRIP_ANSI, "").replace(/\s+$/, "");
     if (!RESULT_LINE_RES.some((re) => re.test(line))) continue;
+    if (leaks(line)) return { lines: [], withheld: true };
     lines.push(line.length > MAX_LINE ? `${line.slice(0, MAX_LINE)}…` : line);
     if (lines.length >= MAX_LINES) break;
   }
-  const joined = lines.join("\n");
-  const leaked =
-    SECRET_RES.some((re) => re.test(joined)) ||
-    secrets.some((s) => typeof s === "string" && s.length >= 8 && joined.includes(s));
-  return leaked ? { lines: [], withheld: true } : { lines, withheld: false };
+  return { lines, withheld: false };
 }
 
 /** The runner's outcome for <name> from its summary line, or the exit code's. */
@@ -103,14 +106,19 @@ export function liveTestNames(sections) {
       if (m && !names.includes(m[1])) names.push(m[1]);
     }
   }
-  return names.slice(0, MAX_LIVE_TESTS);
+  // All of them: runScenarioLiveTests runs the first MAX_LIVE_TESTS and lists
+  // the rest as not run, so none goes missing without a word.
+  return names;
 }
 
-function run(command, args, { cwd, env, timeoutMs, spawnFn }) {
+const STOP_POLL_MS = 1_000;
+
+function run(command, args, { cwd, env, timeoutMs, spawnFn, stopped = () => false }) {
   return new Promise((resolve) => {
     let out = "";
     let size = 0;
     let timedOut = false;
+    let wasStopped = false;
     // Its own process group, so a timeout stops the runner and the test it started.
     const child = spawnFn(command, args, {
       cwd,
@@ -131,18 +139,33 @@ function run(command, args, { cwd, env, timeoutMs, spawnFn }) {
     };
     child.stdout.on("data", take);
     child.stderr.on("data", take);
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const stop = () => {
       killGroup("SIGTERM");
       setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS).unref?.();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
     }, timeoutMs);
-    child.once("error", (err) => {
+    // The test runs in its own group, so a stop of the supervisor's group
+    // doesn't reach it: watch for one and stop the test's group too.
+    const watch = setInterval(() => {
+      if (!wasStopped && stopped()) {
+        wasStopped = true;
+        stop();
+      }
+    }, STOP_POLL_MS);
+    const done = () => {
       clearTimeout(timer);
+      clearInterval(watch);
+    };
+    child.once("error", (err) => {
+      done();
       resolve({ code: 127, out: "", error: err.code ?? "error" });
     });
     child.once("close", (code, signal) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? (signal ? 128 : 1), out, signal, timedOut });
+      done();
+      resolve({ code: code ?? (signal ? 128 : 1), out, signal, timedOut, stopped: wasStopped });
     });
   });
 }
@@ -153,7 +176,7 @@ function run(command, args, { cwd, env, timeoutMs, spawnFn }) {
  */
 export async function runLiveTest(
   name,
-  { config, fs = nodeFs, spawnFn = spawn, timeoutMs = LIVE_TEST_TIMEOUT_MS },
+  { config, fs = nodeFs, spawnFn = spawn, timeoutMs = LIVE_TEST_TIMEOUT_MS, stopped = () => false },
 ) {
   if (!LIVE_TEST_NAME_RE.test(name ?? "")) {
     return { test: String(name).slice(0, 40), outcome: "not a live-test name", results: [] };
@@ -183,8 +206,9 @@ export async function runLiveTest(
   const r = await run(
     config.node,
     [runner, "--only", name, "--key-file", config.keyFile, "--env-local", config.envLocal],
-    { cwd: config.worktree, env, timeoutMs, spawnFn },
+    { cwd: config.worktree, env, timeoutMs, spawnFn, stopped },
   );
+  if (r.stopped) return fail("stopped with the run");
   const unknown = r.code === 2 ? UNKNOWN_TEST_RE.exec(r.out) : null;
   if (unknown) {
     return fail(`not a live test at this commit (LIVE_TESTS: ${unknown[1].trim()})`);
@@ -201,16 +225,29 @@ export async function runLiveTest(
 }
 
 /**
- * The supervisor's pre-session run: every name in <names>, in order, while
- * there is time before <deadlineMs>. Returns {ran: [...], skipped: [...]}.
+ * The supervisor's pre-session run: the first MAX_LIVE_TESTS names in
+ * <names>, in order, while there is time before <deadlineMs> and the run
+ * hasn't been stopped (<stopped>, the supervisor's own flag). The rest are
+ * listed as not run, with why. Returns {ran: [...], skipped: [...]}.
  */
 export async function runScenarioLiveTests(
   names,
-  { config, deadlineMs, now = Date.now, fs = nodeFs, spawnFn = spawn },
+  { config, deadlineMs, now = Date.now, fs = nodeFs, spawnFn = spawn, stopped = () => false },
 ) {
   const ran = [];
   const skipped = [];
-  for (const name of names) {
+  for (const [i, name] of names.entries()) {
+    if (i >= MAX_LIVE_TESTS) {
+      skipped.push({
+        test: name,
+        outcome: `not run: the lane runs at most ${MAX_LIVE_TESTS} live tests; run it by hand`,
+      });
+      continue;
+    }
+    if (stopped()) {
+      skipped.push({ test: name, outcome: "not run: the run was stopped" });
+      continue;
+    }
     const left = deadlineMs - now();
     if (left < 60_000) {
       skipped.push({ test: name, outcome: "not run: no time left before the session" });
@@ -221,6 +258,7 @@ export async function runScenarioLiveTests(
         config,
         fs,
         spawnFn,
+        stopped,
         timeoutMs: Math.min(LIVE_TEST_TIMEOUT_MS, left),
       }),
     );

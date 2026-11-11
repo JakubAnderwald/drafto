@@ -315,9 +315,9 @@ Compose it in Markdown from the bundle's facts. Structure:
 - `### Live tests`, a heading that is exactly `### Live tests`, inside
   `## Test scenario`, only when the PR changes a migration, an RLS or storage
   policy, or a `*.live.test.*` file. One bullet per test, each only a name from
-  `LIVE_TESTS` in `scripts/run-dev-live-tests.mjs` at this commit. The
-  factory's shell lane runs each one when the operator has switched that on
-  (ADR-0073). A person runs `pnpm test:live:supabase -- --only <name>`, after
+  `LIVE_TESTS` in `scripts/run-dev-live-tests.mjs` at this commit, and at most
+  five: the factory's shell lane runs the first five when the operator has
+  switched that on (ADR-0073), so put any more in a manual step instead. A person runs `pnpm test:live:supabase -- --only <name>`, after
   pushing the PR's migration to dev.
 - A **data check**, what the dev database or Storage should hold after a step
   (a row count, a file there or gone, storage usage), goes in that step as a

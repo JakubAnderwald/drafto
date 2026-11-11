@@ -150,7 +150,8 @@ options]` sends one request to `preview.origin` with the preview's protection
       change. It writes nothing.
     - `live-tests [<name>]` prints the results of the scenario's
       `### Live tests`, which ran at this commit before your session started:
-      each test's name and outcome, nothing else. It runs nothing, so editing
+      filtered result lines (test names and outcomes, counts and durations),
+      nothing else. It runs nothing, so editing
       the checkout changes nothing it reports. Report each one. When `prFiles` has a file under
       `supabase/migrations/` and a live test fails, say the migration may not
       be on dev yet, and list "push the PR's migration to dev, then
