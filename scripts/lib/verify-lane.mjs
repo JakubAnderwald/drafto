@@ -76,6 +76,9 @@
 //         file, mode 600 or stricter, VERCEL_AUTOMATION_BYPASS_SECRET present
 //         and well-formed)? Never prints the value. Exit 0 when ok, 2 when not.
 //   preview-curl --run-dir D -- <curl args…>   (internal; bin/preview-curl)
+//   dev-inspect --run-dir D -- <args…>          (internal; bin/dev-inspect, FACTORY_DEV_INSPECT=1)
+//   live-tests --run-dir D -- [<name>]          (internal; bin/live-tests, FACTORY_VERIFY_LIVE_TESTS=1)
+//       → one JSON line each (ADR-0073): dev-inspect.mjs and lane-live-tests.mjs.
 //   _supervise --run-dir D                     (internal; spawned detached by start)
 //
 // Kill switch: FACTORY_VERIFY (validated and exported by factory-agent.sh).
@@ -91,7 +94,18 @@ import { fileURLToPath } from "node:url";
 import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
-import { COOKIE_JAR, CURL_CFG, SIGNED_OUT_CURL_CFG, SIGNIN_CFG } from "./verify-guard.mjs";
+import { inspectMain } from "./dev-inspect.mjs";
+import { accountFileProblem } from "./browser-report.mjs";
+import { keyFileProblem } from "./browser-signin.mjs";
+import { liveTestNames, liveTestsMain, runScenarioLiveTests } from "./lane-live-tests.mjs";
+import {
+  COOKIE_JAR,
+  CURL_CFG,
+  INSPECT_CFG,
+  LIVE_TESTS_CFG,
+  SIGNED_OUT_CURL_CFG,
+  SIGNIN_CFG,
+} from "./verify-guard.mjs";
 
 export const REPO = "JakubAnderwald/drafto";
 
@@ -216,6 +230,11 @@ export function readKnobs(env = process.env, flags = {}) {
         path.join(home, "drafto-secrets", "dev-supabase-admin.env"),
       home,
     ),
+    // Opt-in capabilities (ADR-0073), off unless exactly "1": the dev data
+    // checks (bin/dev-inspect) and the dev live tests (bin/live-tests). Off,
+    // the run gets no wrapper and no private config for them.
+    devInspect: env.FACTORY_DEV_INSPECT === "1",
+    liveTests: env.FACTORY_VERIFY_LIVE_TESTS === "1",
     // No default: without the flag the lane mints without a lease, as before.
     // Absolute, because the supervisor runs in its run dir, not start's cwd.
     signinLeaseFile: flags["signin-lease-file"]
@@ -589,22 +608,148 @@ export function buildPreviewCurlArgs(argv, { origin }) {
   return { ok: true, args: out, url: url.toString(), signedOut };
 }
 
-export function previewCurlScript({ nodePath, modulePath, runDir }) {
+// The run's bin/ wrappers, each a subcommand of this module in a fresh process
+// that reads its own config from private/ (ADR-0073 for the last two).
+export const LANE_BINS = Object.freeze({
+  "preview-curl": "The verification lane's only way to the preview",
+  "dev-inspect": "Read-only checks of the factory account's data on the dev project",
+  "live-tests": "The scenario's dev live tests, run before the session; filtered result lines only",
+});
+
+export function laneBinScript({ nodePath, modulePath, runDir, sub = "preview-curl" }) {
+  if (!Object.hasOwn(LANE_BINS, sub)) throw new Error(`no lane wrapper named ${sub}`);
   for (const [label, p] of [
     ["node", nodePath],
     ["module", modulePath],
     ["run dir", runDir],
   ]) {
     if (!path.isAbsolute(p) || p.includes("'") || /[\u0000-\u001f]/.test(p)) {
-      throw new Error(`preview-curl: unusable ${label} path`);
+      throw new Error(`${sub}: unusable ${label} path`);
     }
   }
   return [
     "#!/bin/sh",
-    "# The verification lane's only way to the preview (verify-lane.mjs preview-curl).",
-    `exec '${nodePath}' '${modulePath}' preview-curl --run-dir '${runDir}' -- "$@"`,
+    `# ${LANE_BINS[sub]} (verify-lane.mjs ${sub}).`,
+    `exec '${nodePath}' '${modulePath}' ${sub} --run-dir '${runDir}' -- "$@"`,
     "",
   ].join("\n");
+}
+
+export function previewCurlScript({ nodePath, modulePath, runDir }) {
+  return laneBinScript({ nodePath, modulePath, runDir, sub: "preview-curl" });
+}
+
+/**
+ * Prepares the opt-in wrappers the run's capabilities allow (ADR-0073) and
+ * returns the names it wrote, for the run-time facts. A wrapper is written
+ * only when the files it needs are usable, so `tools` never lists one that
+ * can only fail. Never throws: a failure here costs the run the wrapper, not
+ * the run.
+ *
+ * - dev-inspect: private/dev-inspect.cfg (the key file's and the account
+ *   file's paths) and bin/dev-inspect.
+ * - live-tests: runs the scenario's `### Live tests` now, before the session,
+ *   on the untouched checkout (lane-live-tests.mjs says why), and stores the
+ *   filtered results in private/lane-tests.cfg for bin/live-tests to print.
+ */
+export async function prepareCapabilities(
+  { meta, runDir, privateDir, binDir, env, logFile = null, deadlineMs, stopped = () => false },
+  {
+    fs = nodeFs,
+    runTests = runScenarioLiveTests,
+    keyProblem = keyFileProblem,
+    accountProblem = accountFileProblem,
+  } = {},
+) {
+  const caps = meta.capabilities ?? {};
+  const written = [];
+  const log = (line) => logFile && appendLog(logFile, line);
+  const writeBin = (sub) =>
+    fs.writeFileSync(
+      path.join(binDir, sub),
+      laneBinScript({ nodePath: meta.bins.node, modulePath: meta.paths.module, runDir, sub }),
+      { mode: 0o700 },
+    );
+  const keyOk = !keyProblem(meta.paths.signinKeyFile);
+  try {
+    if (caps.devInspect) {
+      if (keyOk && !accountProblem(meta.paths.accountFile)) {
+        fs.writeFileSync(
+          path.join(privateDir, INSPECT_CFG),
+          JSON.stringify({
+            keyFile: meta.paths.signinKeyFile,
+            accounts: { user: meta.paths.accountFile },
+          }),
+          { mode: 0o600 },
+        );
+        writeBin("dev-inspect");
+        written.push("dev-inspect");
+      } else {
+        log("dev-inspect: not offered (the key file or the account file isn't usable)");
+      }
+    }
+    if (caps.liveTests) {
+      const bundle = parseJson(readText(fs, meta.paths.bundle), null);
+      const names = liveTestNames(bundle?.scenario?.sections);
+      if (!keyOk || !fs.existsSync(meta.paths.envLocal)) {
+        log("live-tests: not offered (the key file or the dev env file isn't usable)");
+      } else if (names.length === 0) {
+        log("live-tests: the scenario has no ### Live tests section");
+      } else {
+        log(`live-tests: running ${names.join(", ")} before the session`);
+        const results = await runTests(names, {
+          config: {
+            keyFile: meta.paths.signinKeyFile,
+            envLocal: meta.paths.envLocal,
+            worktree: meta.worktree,
+            node: meta.bins.node,
+            home: env.HOME || os.homedir(),
+            tmpdir: env.TMPDIR || os.tmpdir(),
+            path: [
+              path.dirname(meta.bins.node),
+              path.dirname(meta.bins.pnpm),
+              SUPERVISED_PATH,
+            ].join(":"),
+          },
+          deadlineMs,
+          fs,
+          // A stop of the run reaches the test's own process group too.
+          stopped,
+        });
+        fs.writeFileSync(path.join(privateDir, LIVE_TESTS_CFG), JSON.stringify(results), {
+          mode: 0o600,
+        });
+        writeBin("live-tests");
+        written.push("live-tests");
+      }
+    }
+  } catch (err) {
+    log(`capabilities: ${err.message}; going on without the rest`);
+  }
+  return written;
+}
+
+/**
+ * bin/dev-inspect and bin/live-tests: read the run's private config, never
+ * meta.json (the session can write to the run dir, not to private/).
+ */
+export async function runCapability(
+  sub,
+  { runDir, argv },
+  { fs = nodeFs, stdout = process.stdout } = {},
+) {
+  const cfgName = sub === "dev-inspect" ? INSPECT_CFG : LIVE_TESTS_CFG;
+  const config = parseJson(readText(fs, path.join(runDir, "private", cfgName)), null);
+  if (!config) {
+    stdout.write(`${JSON.stringify({ error: `${sub} isn't available in this run` })}\n`);
+    return 2;
+  }
+  const { exitCode, out } =
+    sub === "dev-inspect"
+      ? await inspectMain(argv, { config, fs })
+      : liveTestsMain(argv, { results: config });
+  stdout.write(`${JSON.stringify(out)}\n`);
+  return exitCode;
 }
 
 /**
@@ -1212,6 +1357,7 @@ export async function runStart(opts, deps) {
       previewOrigin,
       qaTag,
       bins,
+      capabilities: { devInspect: knobs.devInspect, liveTests: knobs.liveTests },
       paths: {
         prompt: path.join(runDir, "prompt.md"),
         bundle: path.join(runDir, "bundle.json"),
@@ -1223,6 +1369,9 @@ export async function runStart(opts, deps) {
         accountFile: knobs.accountFile,
         signinKeyFile: knobs.signinKeyFile,
         signinLeaseFile: knobs.signinLeaseFile,
+        // The dev anon key for the live tests: the factory checkout's own env
+        // file (the verify worktree gets no env files).
+        envLocal: path.join(repoRoot, "apps", "web", ".env.local"),
       },
       laneFacts: { bypass: bypassProblem ?? "ok" },
     };
@@ -1671,6 +1820,8 @@ function composeInput(meta, facts) {
         }
       : null,
     install: facts.install,
+    // The opt-in wrappers this run has (ADR-0073): dev-inspect, live-tests.
+    tools: facts.tools ?? [],
     qaTag: meta.qaTag,
     minutesLeft: Math.max(
       1,
@@ -1805,6 +1956,21 @@ export async function runSupervise({ runDir }, { env = process.env } = {}) {
       previewCurlScript({ nodePath: meta.bins.node, modulePath: meta.paths.module, runDir }),
       { mode: 0o700 },
     );
+    stage = "capabilities";
+    if (!stopped()) {
+      facts.tools = await prepareCapabilities({
+        meta,
+        runDir,
+        privateDir,
+        binDir,
+        env,
+        logFile,
+        stopped,
+        // The live tests may use the run's time up to 10 minutes before its
+        // cleanup reserve, leaving that for the session.
+        deadlineMs: Date.parse(meta.deadlineAt) - (CLEANUP_RESERVE_SEC + 600) * 1000,
+      });
+    }
 
     stage = "claude";
     if (stopped()) return;
@@ -2368,7 +2534,8 @@ const USAGE =
   "usage: verify-lane.mjs <start --issue N --pr P --sha S --platforms J --state-file F --repo-root R --run-root D|" +
   "housekeeping --state-file F --repo-root R --run-root D|" +
   "stop --issue N [--sha S] [--reason R] --state-file F --repo-root R --run-root D|" +
-  "gaps --run-dir D|bypass-check [--file F]|preview-curl --run-dir D -- <args>|_supervise --run-dir D> " +
+  "gaps --run-dir D|bypass-check [--file F]|preview-curl --run-dir D -- <args>|" +
+  "dev-inspect --run-dir D -- <args>|live-tests --run-dir D -- [<name>]|_supervise --run-dir D> " +
   "[--dry-run 0|1] [--now ISO]";
 
 class UsageError extends Error {}
@@ -2381,6 +2548,18 @@ function required(flags, names) {
 
 export async function main(argv, deps = createDeps()) {
   const [sub, ...rest] = argv;
+  if (sub === "dev-inspect" || sub === "live-tests") {
+    const sep = rest.indexOf("--");
+    const own = sep === -1 ? rest : rest.slice(0, sep);
+    const { flags } = parseFlags(own);
+    required(flags, ["run-dir"]);
+    return {
+      exitCode: await runCapability(sub, {
+        runDir: flags["run-dir"],
+        argv: sep === -1 ? [] : rest.slice(sep + 1),
+      }),
+    };
+  }
   if (sub === "preview-curl") {
     // curl's own arguments follow "--"; they are not this module's flags.
     const sep = rest.indexOf("--");
@@ -2466,7 +2645,10 @@ if (isMainModule(import.meta.url)) {
       if (out == null) return;
       const { exitCode, ...rest } = out;
       // preview-curl is curl: its output is the response, never a JSON line.
-      if (process.argv[2] !== "preview-curl") process.stdout.write(JSON.stringify(rest) + "\n");
+      // The capability wrappers print their own JSON line.
+      if (!Object.hasOwn(LANE_BINS, process.argv[2])) {
+        process.stdout.write(JSON.stringify(rest) + "\n");
+      }
       if (Number.isInteger(exitCode) && exitCode !== 0) process.exitCode = exitCode;
     },
     (err) => {

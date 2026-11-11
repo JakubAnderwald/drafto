@@ -503,11 +503,27 @@ fi
 # created by `vercel curl`, which mints one silently (runbook).
 FACTORY_VERIFY_BYPASS_FILE="${FACTORY_VERIFY_BYPASS_FILE:-$HOME/drafto-secrets/vercel-bypass.env}"
 case "$FACTORY_VERIFY_BYPASS_FILE" in "~/"*) FACTORY_VERIFY_BYPASS_FILE="$HOME/${FACTORY_VERIFY_BYPASS_FILE#\~/}" ;; esac
+# Opt-in shell-lane capabilities (ADR-0073), each off unless exactly 1:
+# FACTORY_DEV_INSPECT gives a run bin/dev-inspect (read-only checks of the
+# factory account's data on the dev project), FACTORY_VERIFY_LIVE_TESTS gives it
+# bin/live-tests (one dev live test at the PR head, names and outcomes only).
+# Both read the dev service-role key (FACTORY_BROWSER_SIGNIN_KEY_FILE) in their
+# own process; the session never sees it.
+FACTORY_DEV_INSPECT="${FACTORY_DEV_INSPECT:-0}"
+FACTORY_VERIFY_LIVE_TESTS="${FACTORY_VERIFY_LIVE_TESTS:-0}"
+for _vk in FACTORY_DEV_INSPECT FACTORY_VERIFY_LIVE_TESTS; do
+  if [[ "${!_vk}" != "0" && "${!_vk}" != "1" ]]; then
+    echo "WARNING: invalid $_vk='${!_vk}'; defaulting to 0" >&2
+    printf -v "$_vk" '%s' 0
+  fi
+done
+unset _vk
 # Exported for the lane modules (verify-lane.mjs reads the switch as its kill
 # switch, like coderabbit-cli.mjs reads FACTORY_CR_CLI).
 export FACTORY_VERIFY FACTORY_VERIFY_LANES FACTORY_VERIFY_ONLY_LABEL FACTORY_VERIFY_HOLD_MAX_MIN \
   FACTORY_VERIFY_SHELL_TIMEOUT_MIN FACTORY_VERIFY_MAX_ATTEMPTS FACTORY_VERIFY_BOUNCE_MAX \
-  FACTORY_VERIFY_PREVIEW_WAIT_MIN FACTORY_VERIFY_BYPASS_FILE
+  FACTORY_VERIFY_PREVIEW_WAIT_MIN FACTORY_VERIFY_BYPASS_FILE FACTORY_DEV_INSPECT \
+  FACTORY_VERIFY_LIVE_TESTS
 # Failed attempts to post one commit's verification report: the promotion's own
 # plus three In Test sweep retries, spaced VERIFY_REPORT_RETRY_STEP_MIN apart
 # (10, 20 and 30 minutes after the report was composed), so a GitHub outage of

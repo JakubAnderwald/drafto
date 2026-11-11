@@ -115,12 +115,20 @@ export const CURL_CFG = "curl.cfg";
 export const SIGNED_OUT_CURL_CFG = "curl-signed-out.cfg";
 export const COOKIE_JAR = "cookies.txt";
 export const SIGNIN_CFG = "signin.cfg";
+// The opt-in wrappers' configs (ADR-0073): the dev key file's and the account
+// files' paths, read by bin/dev-inspect and bin/live-tests.
+export const INSPECT_CFG = "dev-inspect.cfg";
+export const LIVE_TESTS_CFG = "lane-tests.cfg";
 export const PRIVATE_FILE_NAMES = Object.freeze([
   CURL_CFG,
   SIGNED_OUT_CURL_CFG,
   COOKIE_JAR,
   SIGNIN_CFG,
+  INSPECT_CFG,
+  LIVE_TESTS_CFG,
 ]);
+// The run's own bin/ wrappers, which the session may name by full path.
+export const LANE_BIN_NAMES = Object.freeze(["preview-curl", "dev-inspect", "live-tests"]);
 
 // Command words a lane session never runs, whatever their arguments.
 export const DENY_COMMANDS = Object.freeze([
@@ -1487,9 +1495,10 @@ function checkSimple(words, ctx, targets = []) {
 // A whole Bash command string.
 function checkText(text, ctx) {
   if (ctx.depth > 8) return deny("command nesting is too deep to check");
-  // The run's own preview-curl may be named by its full path; nothing else
-  // under logs/ may.
-  const named = String(text).split(`${ctx.config.binDir}/preview-curl`).join("preview-curl");
+  // The run's own wrappers (preview-curl, dev-inspect, live-tests) may be
+  // named by their full path; nothing else under logs/ may.
+  let named = String(text);
+  for (const bin of LANE_BIN_NAMES) named = named.split(`${ctx.config.binDir}/${bin}`).join(bin);
   const normalised = named.replace(/\$\{HOME\}|\$HOME|(^|[\s'"=:])~(?=\/)/g, (m, pre) =>
     pre === undefined ? ctx.config.home : `${pre}${ctx.config.home}`,
   );

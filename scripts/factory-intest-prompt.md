@@ -312,6 +312,21 @@ Compose it in Markdown from the bundle's facts. Structure:
   signed-in GET say they can open the path in a signed-in browser tab instead.
   Keep these checks inside `## Test scenario`: a `##` section of its own, such
   as an "Optional cross-check from a terminal", is never run by any lane.
+- `### Live tests`, a heading that is exactly `### Live tests`, inside
+  `## Test scenario`, only when the PR changes a migration, an RLS or storage
+  policy, or a `*.live.test.*` file. One bullet per test, each only a name from
+  `LIVE_TESTS` in `scripts/run-dev-live-tests.mjs` at this commit, and at most
+  five: the factory's shell lane runs the first five when the operator has
+  switched that on (ADR-0073), so put any more in a manual step instead. A person runs `pnpm test:live:supabase -- --only <name>`, after
+  pushing the PR's migration to dev.
+- A **data check**, what the dev database or Storage should hold after a step
+  (a row count, a file there or gone, storage usage), goes in that step as a
+  `dev-inspect` line with the value it expects, for example
+  `dev-inspect rows attachments --note <id>` → `count: 0`. The commands are
+  `whoami`, `profile`, `usage`, `orphans`, `objects [--note <id>]` and
+  `rows <notebooks|notes|attachments|note_content_history|api_keys> [--note <id>] [--notebook <id>]`,
+  and they read only the factory's test account. A person checks the same in
+  the dev project's Supabase dashboard.
 - What isn't manually testable (only if there is something).
 - When `advisory` is non-empty: a one-line ⚠️ note that advisory (non-required)
   checks are not green — naming them — and that they don't block the merge but
