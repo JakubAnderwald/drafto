@@ -19,7 +19,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ios: {
     supportsTablet: true,
     bundleIdentifier: "eu.drafto.mobile",
-    associatedDomains: ["applinks:drafto.eu", "applinks:www.drafto.eu"],
+    // Apex only. www.drafto.eu is a Vercel redirect domain (308 → drafto.eu), and
+    // neither Apple's CDN nor Google's Digital Asset Links verifier follows a
+    // redirect to the association file, so a www entry can never verify (ADR-0074).
+    associatedDomains: ["applinks:drafto.eu"],
     usesAppleSignIn: true,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
@@ -33,19 +36,19 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       monochromeImage: "./assets/android-icon-monochrome.png",
     },
     package: "eu.drafto.mobile",
+    // App Links on the apex only, verified against
+    // apps/web/public/.well-known/assetlinks.json. No www host: it redirects, the
+    // verifier won't follow it, and on Android < 12 one unverifiable host fails
+    // the whole autoVerify filter (ADR-0074). The trailing slashes match the iOS
+    // association file's `/notes/*` and `/notebooks/*`, so `/notes` alone or
+    // `/notesxyz` stays in the browser on both platforms.
     intentFilters: [
       {
         action: "VIEW",
         autoVerify: true,
         data: [
-          { scheme: "https", host: "drafto.eu", pathPrefix: "/notebooks" },
-          { scheme: "https", host: "drafto.eu", pathPrefix: "/notes" },
-          {
-            scheme: "https",
-            host: "www.drafto.eu",
-            pathPrefix: "/notebooks",
-          },
-          { scheme: "https", host: "www.drafto.eu", pathPrefix: "/notes" },
+          { scheme: "https", host: "drafto.eu", pathPrefix: "/notebooks/" },
+          { scheme: "https", host: "drafto.eu", pathPrefix: "/notes/" },
         ],
         category: ["BROWSABLE", "DEFAULT"],
       },

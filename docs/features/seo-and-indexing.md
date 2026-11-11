@@ -23,6 +23,7 @@ The property is verified in Google Search Console as the domain property `drafto
 - **Redirects:**
   - `http://` returns a 308 to `https://`. Vercel enforces this.
   - `www.drafto.eu` returns a 308 to `drafto.eu`. This is a redirect domain in the Vercel project's domain settings, not code. GoDaddy has `www` as a CNAME into Vercel.
+    - Because of that redirect, `www` must stay out of the apps' App Link / Universal Link hosts. Neither verifier follows redirects to `/.well-known/*` ([ADR-0074](../adr/0074-app-links-verify-on-apex-only.md)).
 - **Landing page at `/`** ([ADR-0050](../adr/0050-public-landing-page-via-middleware-rewrite.md)):
   - Signed-out `/` is rewritten (200, the URL stays `/`) to `src/app/welcome/page.tsx`: what Drafto is, its features, Sign up / Log in, and links to the privacy policy and support page. Like every page, it renders per request, because the root layout reads the CSP nonce ([ADR-0069](../adr/0069-web-nonce-csp-and-security-headers.md)). The rewrite forwards the request headers, so the nonce reaches the page.
   - Signed-in `/` is the app, as before. The branch is in `updateSession` (`src/lib/supabase/middleware.ts`).
@@ -122,5 +123,6 @@ curl -s https://drafto.eu/login | grep -o '<meta name="robots"[^>]*>'   # conten
 curl -s https://drafto.eu/sitemap.xml | grep -c '/login<'   # 0
 curl -sI https://www.drafto.eu/ | grep -iE '^(HTTP|location)'   # 308 → https://drafto.eu/, no TLS error
 curl -sI https://drafto.eu/.well-known/apple-app-site-association | head -1   # 200
+curl -sI https://drafto.eu/.well-known/assetlinks.json | head -1   # 200, no redirect (ADR-0074)
 curl -s -o /dev/null -w '%{http_code}\n' https://app-site-association.cdn-apple.com/a/v1/drafto.eu  # 200 once Apple's CDN refreshes
 ```
