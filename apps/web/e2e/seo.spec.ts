@@ -38,6 +38,16 @@ test.describe("Search engine and app-link files (signed out)", () => {
     expect(await response.json()).toHaveProperty("applinks");
   });
 
+  // Google's Digital Asset Links verifier refuses redirects, so this must be a direct 200 (ADR-0074).
+  test("the Android App Links association file is served as JSON", async ({ request }) => {
+    const response = await request.get("/.well-known/assetlinks.json", { maxRedirects: 0 });
+
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("application/json");
+    const statements = await response.json();
+    expect(statements[0].target.package_name).toBe("eu.drafto.mobile");
+  });
+
   test("the sign-up page declares its apex URL as canonical", async ({ page }) => {
     await page.goto("/signup");
 

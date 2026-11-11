@@ -293,6 +293,27 @@ Look for `Status{statusCode=DEVELOPER_ERROR}`. The app also logs every native fa
 `[oauth][google] sign-in failed` (visible via `adb logcat -s ReactNativeJS:V`), and the on-screen
 banner carries the status code, so a cable is not strictly required.
 
+### App Links (Android) and Universal Links (iOS)
+
+`https://drafto.eu/notebooks/*` and `/notes/*` open the app on both platforms, but only on the apex host ([ADR-0074](../adr/0074-app-links-verify-on-apex-only.md)). `www.drafto.eu` is a redirect domain, and the verifiers don't follow redirects. The association files live in `apps/web/public/.well-known/`:
+
+- `assetlinks.json` lists the SHA-256 of the **Play App Signing key** (Play Console → Test and release → Setup → App signing, which also shows a ready-made Digital Asset Links snippet) and of the **upload key** (`keytool -list -v` on the upload keystore). Update it if either key changes.
+- `apple-app-site-association` names `4J2USPSG2U.eu.drafto.mobile`.
+
+Check them after a deploy:
+
+```bash
+curl -s "https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://drafto.eu&relation=delegate_permission/common.handle_all_urls"
+# statements[] names eu.drafto.mobile and there is no errorCode
+curl -s https://app-site-association.cdn-apple.com/a/v1/drafto.eu   # Apple's CDN copy; may lag ~24h
+
+# On a device with a Play build installed:
+adb shell pm verify-app-links --re-verify eu.drafto.mobile
+adb shell pm get-app-links eu.drafto.mobile   # drafto.eu: verified
+```
+
+Play Console → Deep links reports on the build on the track it checks. A host removed from the intent filter stays listed until a build without it reaches that track.
+
 ## Google OAuth branding
 
 The Google account chooser shows the app as whatever the **Branding** page of Cloud project
