@@ -241,6 +241,38 @@ export function accountFileProblem(file) {
   return null;
 }
 
+// The admin account the browser runner may sign in as for a scenario's
+// `(admin)` steps (ADR-0073): an email only, since it signs in by one-time
+// link, never with a password. FACTORY_BROWSER_ADMIN_EMAIL= in a mode-600 file
+// (FACTORY_BROWSER_ADMIN_ACCOUNT_FILE, ~/drafto-secrets/browser-admin-account.env).
+export const ADMIN_EMAIL_KEY = "FACTORY_BROWSER_ADMIN_EMAIL";
+
+export function readAdminAccountFile(file) {
+  const email = parseEnvValues(readFileSync(file, "utf8"), [ADMIN_EMAIL_KEY])[ADMIN_EMAIL_KEY];
+  if (!email || !/^[^\s@]+@[^\s@]+$/.test(email)) {
+    throw new Error(`admin account file has no ${ADMIN_EMAIL_KEY}`);
+  }
+  return { email };
+}
+
+/** Why the admin account file can't be used, or null. Same mode rule as above. */
+export function adminAccountFileProblem(file) {
+  let st;
+  try {
+    st = statSync(file);
+  } catch {
+    return "missing";
+  }
+  if (!st.isFile()) return "not-a-file";
+  if ((st.mode & 0o077) !== 0) return "mode";
+  try {
+    readAdminAccountFile(file);
+  } catch {
+    return "keys";
+  }
+  return null;
+}
+
 // ── secret scan ─────────────────────────────────────────────────────────────
 
 // [name, pattern] pairs, in scan order. Exported (frozen) for verify-report.mjs,
@@ -409,6 +441,51 @@ function required(flags, name) {
   return v;
 }
 
+/**
+ * Replaces each account's email in <text> with a name for it ("the test
+ * account", "the admin account"). The runner's output becomes a GitHub
+ * comment, and an account's email belongs in its secrets file, not on a
+ * public issue (ADR-0073). Case-insensitive; literal match only.
+ */
+export function redactAccountEmails(text, emails) {
+  let out = String(text ?? "");
+  for (const [email, name] of emails) {
+    if (typeof email !== "string" || !email.includes("@")) continue;
+    const re = new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    out = out.replace(re, name);
+  }
+  return out;
+}
+
+/** `redact-emails`: rewrites --in with the accounts' emails replaced. Never prints them. */
+export function redactEmailsCommand(argv) {
+  const { flags } = parseFlags(argv);
+  const inFile = required(flags, "in");
+  const emails = [];
+  try {
+    emails.push([readAccountFile(required(flags, "account-file")).email, "the test account"]);
+  } catch {
+    // An unreadable account file leaves that email as it is; render's own
+    // checks still apply.
+  }
+  if (flags["admin-account-file"]) {
+    try {
+      emails.push([readAdminAccountFile(flags["admin-account-file"]).email, "the admin account"]);
+    } catch {
+      // as above
+    }
+  }
+  let text;
+  try {
+    text = readFileSync(inFile, "utf8");
+  } catch {
+    return { redacted: 0 };
+  }
+  const next = redactAccountEmails(text, emails);
+  if (next !== text) writeFileSync(inFile, next, { mode: 0o600 });
+  return { redacted: next === text ? 0 : 1 };
+}
+
 export function render(argv) {
   const { flags } = parseFlags(argv);
   const kind = required(flags, "kind");
@@ -471,7 +548,9 @@ const USAGE =
   "--sha <sha> --evidence-dir <dir> --account-file <f> --out <body-file> " +
   "[--json-out <file>]\n" +
   "       browser-report.mjs status --in <runner-stdout-file>\n" +
-  "       browser-report.mjs account-check --account-file <f>\n";
+  "       browser-report.mjs account-check --account-file <f>\n" +
+  "       browser-report.mjs redact-emails --in <runner-stdout-file> --account-file <f> [--admin-account-file <f>]\n" +
+  "       browser-report.mjs admin-email --account-file <f>\n";
 
 function main(argv) {
   const [cmd, ...rest] = argv;
@@ -483,6 +562,16 @@ function main(argv) {
     const { flags } = parseFlags(rest);
     const text = readFileSync(required(flags, "in"), "utf8");
     process.stdout.write(parseRunnerOutput(text).status + "\n");
+    return 0;
+  }
+  if (cmd === "admin-email") {
+    // For bash to put in the runner's bundle; the file is the admin's email only.
+    const { flags } = parseFlags(rest);
+    process.stdout.write(readAdminAccountFile(required(flags, "account-file")).email);
+    return 0;
+  }
+  if (cmd === "redact-emails") {
+    process.stdout.write(JSON.stringify(redactEmailsCommand(rest)) + "\n");
     return 0;
   }
   if (cmd === "account-check") {

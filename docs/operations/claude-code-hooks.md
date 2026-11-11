@@ -65,6 +65,14 @@ The file wires up three hooks:
 
 The file also lists the always-denied Chrome tools under `permissions.deny`.
 
+**Opt-in capabilities** ([ADR-0073](../adr/0073-factory-verification-data-checks-live-tests-uploads-admin-js.md)) come from the run's guard config (`--capability uploads|js|inspect`), never by default:
+
+- **uploads** moves `file_upload` off the deny list, for regular files inside the run's `fixtures/` only.
+- **js** moves `javascript_tool` off it, for code `jsVerdict` accepts: no cookies or storage, no navigation, no network requests, no dynamic code.
+- **inspect** adds a second PreToolUse hook on `Bash` and `--tools Bash`. The same guard allows exactly `dev-inspect` with plain words.
+
+`upload_image` stays denied in every config.
+
 Every hook command uses absolute paths to node and the guard. Only the PreToolUse command ends in `|| exit 2`, so a pre guard that can't run blocks the call instead of letting it through. SessionStart and PostToolUse always exit 0. A missing SessionStart record is caught by `verify`. A failed post poisons the session or leaves its in-flight marker, and either one makes the next pre deny.
 
 **`claude -p` drops a settings file that fails validation without saying so,** and would run the session with Chrome and no guard. The canary is the check. After each run, `browser-guard.mjs verify` looks for the SessionStart record. If it is missing, the factory turns the runner off until `factory:browser-reset`.

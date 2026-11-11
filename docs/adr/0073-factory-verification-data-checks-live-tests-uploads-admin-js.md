@@ -50,36 +50,39 @@ The shell lane's supervisor runs the scenario's `### Live tests` **before the cl
 
 ### 3. Uploads in the browser (`FACTORY_BROWSER_UPLOADS=1`)
 
-Implemented in a follow-up PR.
-
-- **Fixtures:** the scenario's `### Fixtures` section names files by size and type, and bash generates them into the run's own `fixtures/` directory before the session. `file_upload` is allowed only for regular files inside that directory, never through a symlink.
+- **Fixtures:** the scenario's `### Fixtures` section names files by size and type (`- small.jpg 1.5MB`, `- quota.enex notes=4 image=1MB`, `- sample.enex`). Before the session, `scripts/lib/browser-fixtures.mjs` generates them into the run's own `fixtures/` directory (mode 700): valid images padded to the size, text, or an Evernote export. At most 10 files of 10 MB each, which is `file_upload`'s limit per call; the runner uploads one file per call. Bash pipes only the section's text to the generator, so the bundle and its sign-in links never touch disk. The bundle lists the files, and the directory is removed after the run.
+- **The guard** allows `file_upload` only on an owned tab, and only for regular files whose real path is directly inside that directory: no symlinks, no folders, nothing outside it.
 - `upload_image` stays denied.
 
 ### 4. Admin steps (`FACTORY_BROWSER_ADMIN=1`)
 
-Implemented in a follow-up PR.
-
-- **Which account:** the runner can sign in as the CI E2E admin account on dev, with a one-time magic link minted like the test account's. No password is involved, so CI's password sign-in is unaffected.
-- **Where its email lives:** the admin's email is in `~/drafto-secrets/browser-admin-account.env`, and each email has its own sign-in lease.
+- **Which account:** the runner can sign in as the CI E2E admin account on dev, with a one-time magic link minted like the test account's (`browser-signin.mjs mint --account admin`). No password is involved, so CI's password sign-in is unaffected.
+- **Where its email lives:** the admin's email is in `~/drafto-secrets/browser-admin-account.env` (`FACTORY_BROWSER_ADMIN_EMAIL=`, mode 600). The admin has its own sign-in lease, `logs/factory/factory-signin-admin.lease`.
+- **When it's minted:** only for a scenario with a Web step marked `(admin)`. A failed mint costs the run its admin steps, which become SKIP, never the run.
+- **Order:** each sign-in link works once, so the runner can't go back to the test account after signing in as the admin. The scenario writer puts admin steps last, and a test-account step after one is SKIP.
 - **What it may do:** the runner acts as admin only on the factory test account's row and on accounts its run created.
 - **Data checks:** `dev-inspect --as admin` reads the admin account's data.
 
 ### 5. JavaScript in the page (`FACTORY_BROWSER_JS=1`)
 
-Implemented in a follow-up PR.
-
-- **What's allowed:** `javascript_tool` is allowed on an owned tab on the preview's origin.
+- **What's allowed:** `javascript_tool` is allowed on an owned tab on the preview's origin (`jsVerdict` in `browser-guard.mjs`).
 - **What the guard denies:**
   - code that touches cookies or Web Storage;
   - code that navigates or opens a window;
-  - code that reaches anything but a relative path;
+  - any network request (`fetch` and the like, even through an alias): API checks are the shell lane's, and the runner reads the page's own requests with `read_network_requests`;
   - `eval`, `Function` and `import()`;
+  - assignments to `src`, `href`, `action` and the like;
   - code over 4 KB.
+- **The decision log** keeps the code, so the operator can see what ran.
 - **This is defence in depth.** The app's CSP (ADR-0069), the guard's off-origin tab quarantine and the report's secret scan are the backstops.
 
 ### The browser runner's one shell command
 
-Implemented in a follow-up PR. With `FACTORY_DEV_INSPECT=1`, the runner also gets Bash, and its guard allows exactly `dev-inspect` with plain arguments: no pipes, no `;`, no redirects. This is the only change to ADR-0051's "no tools but Chrome".
+With `FACTORY_DEV_INSPECT=1`, the runner also gets Bash: `--tools Bash`, and `$run_dir/bin` first on its PATH. A second PreToolUse hook on `Bash` runs the same guard, which allows exactly `dev-inspect` with up to 8 plain words: no pipes, no `;`, no redirects, no quotes, no globs. The wrapper and its private config come from `verify-lane.mjs setup-inspect`, and both are removed after the run. This is the only change to ADR-0051's "no tools but Chrome".
+
+### Emails in the report
+
+The runner's output becomes a GitHub comment, so after the session `browser-report.mjs redact-emails` replaces the test account's and the admin's emails in it with "the test account" and "the admin account", before the report is rendered or read by the verification report.
 
 ## Consequences
 

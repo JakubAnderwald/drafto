@@ -366,6 +366,28 @@ FACTORY_BROWSER_SIGNIN_KEY_FILE="${FACTORY_BROWSER_SIGNIN_KEY_FILE:-$HOME/drafto
 # A launchd plist doesn't expand `~`, so an operator's `~/drafto-secrets/…`
 # would reach node as a literal path and every run would fail its preflight.
 case "$FACTORY_BROWSER_ACCOUNT_FILE" in "~/"*) FACTORY_BROWSER_ACCOUNT_FILE="$HOME/${FACTORY_BROWSER_ACCOUNT_FILE#\~/}" ;; esac
+# Opt-in runner capabilities (ADR-0073), each off unless exactly 1. They apply
+# to the intest and verify kinds, never to the plan-stage probe.
+#   FACTORY_BROWSER_UPLOADS — file_upload, only for files generated from the
+#     scenario's `### Fixtures` section into the run's fixtures/ directory;
+#   FACTORY_BROWSER_JS      — javascript_tool, for read-only page checks;
+#   FACTORY_BROWSER_ADMIN   — steps marked `(admin)`, signed in as the admin
+#     account in FACTORY_BROWSER_ADMIN_ACCOUNT_FILE (its email only, as
+#     FACTORY_BROWSER_ADMIN_EMAIL=; the CI E2E admin on dev) by one-time link.
+# FACTORY_DEV_INSPECT (the verification block below) also gives the runner
+# Bash for exactly `dev-inspect`.
+FACTORY_BROWSER_UPLOADS="${FACTORY_BROWSER_UPLOADS:-0}"
+FACTORY_BROWSER_JS="${FACTORY_BROWSER_JS:-0}"
+FACTORY_BROWSER_ADMIN="${FACTORY_BROWSER_ADMIN:-0}"
+for _bk in FACTORY_BROWSER_UPLOADS FACTORY_BROWSER_JS FACTORY_BROWSER_ADMIN; do
+  if [[ "${!_bk}" != "0" && "${!_bk}" != "1" ]]; then
+    echo "WARNING: invalid $_bk='${!_bk}'; defaulting to 0" >&2
+    printf -v "$_bk" '%s' 0
+  fi
+done
+unset _bk
+FACTORY_BROWSER_ADMIN_ACCOUNT_FILE="${FACTORY_BROWSER_ADMIN_ACCOUNT_FILE:-$HOME/drafto-secrets/browser-admin-account.env}"
+case "$FACTORY_BROWSER_ADMIN_ACCOUNT_FILE" in "~/"*) FACTORY_BROWSER_ADMIN_ACCOUNT_FILE="$HOME/${FACTORY_BROWSER_ADMIN_ACCOUNT_FILE#\~/}" ;; esac
 case "$FACTORY_BROWSER_SIGNIN_KEY_FILE" in "~/"*) FACTORY_BROWSER_SIGNIN_KEY_FILE="$HOME/${FACTORY_BROWSER_SIGNIN_KEY_FILE#\~/}" ;; esac
 # Most runner attempts per head SHA before the card waits for a new commit.
 FACTORY_BROWSER_MAX_ATTEMPTS=2
@@ -682,6 +704,11 @@ PLAN_PROBE_ROOT="$LOG_DIR/plan-probe"
 # The owner browser_run took the lease as, while it holds it (cleanup() gives
 # it back if this process exits mid-run).
 BROWSER_SIGNIN_LEASE_OWNER=""
+# The admin account's own lease (ADR-0073): Supabase keeps one live magic-link
+# token per user, so each account gets a lease of its own. Only browser_run
+# mints for the admin.
+ADMIN_SIGNIN_LEASE_FILE="$LOG_DIR/factory-signin-admin.lease"
+BROWSER_ADMIN_LEASE_OWNER=""
 LOG_FILE="$LOG_DIR/factory-agent-$MODE_NAME-$(date +%Y-%m-%d).log"
 touch "$LOG_FILE"
 chmod 600 "$LOG_FILE"
@@ -781,6 +808,10 @@ cleanup() {
   if [[ -n "${BROWSER_SIGNIN_LEASE_OWNER:-}" ]]; then
     node "$SCRIPT_DIR/lib/browser-signin.mjs" release --lease-file "$SIGNIN_LEASE_FILE" \
       --owner "$BROWSER_SIGNIN_LEASE_OWNER" >>"$LOG_FILE" 2>&1 || true
+  fi
+  if [[ -n "${BROWSER_ADMIN_LEASE_OWNER:-}" ]]; then
+    node "$SCRIPT_DIR/lib/browser-signin.mjs" release --lease-file "$ADMIN_SIGNIN_LEASE_FILE" \
+      --owner "$BROWSER_ADMIN_LEASE_OWNER" >>"$LOG_FILE" 2>&1 || true
   fi
   if [[ $exit_code -ne 0 ]]; then
     log "ERROR: factory-agent --$MODE_NAME exiting with code $exit_code"
@@ -3895,10 +3926,61 @@ browser_record_result() {
 # link. Owner-checked in browser-signin.mjs: a lease that expired during the
 # run and was taken over by the shell lane is left alone. Never fails.
 browser_signin_release() {
+  if [[ -n "${BROWSER_ADMIN_LEASE_OWNER:-}" ]]; then
+    node "$SCRIPT_DIR/lib/browser-signin.mjs" release --lease-file "${ADMIN_SIGNIN_LEASE_FILE:-$LOG_DIR/factory-signin-admin.lease}" \
+      --owner "$BROWSER_ADMIN_LEASE_OWNER" >>"$LOG_FILE" 2>&1 || true
+    BROWSER_ADMIN_LEASE_OWNER=""
+  fi
   [[ -n "${BROWSER_SIGNIN_LEASE_OWNER:-}" ]] || return 0
   node "$SCRIPT_DIR/lib/browser-signin.mjs" release --lease-file "$SIGNIN_LEASE_FILE" \
     --owner "$BROWSER_SIGNIN_LEASE_OWNER" >>"$LOG_FILE" 2>&1 || true
   BROWSER_SIGNIN_LEASE_OWNER=""
+  return 0
+}
+
+# browser_capabilities_cleanup <run-dir> — once the runner is done (or never
+# started): removes the run's generated fixtures (up to 100 MB) and the
+# dev-inspect wrapper and its private config (ADR-0073). The guard config and
+# evidence stay for the report. Never fails.
+browser_capabilities_cleanup() {
+  local run_dir="$1"
+  [[ -n "$run_dir" && -d "$run_dir" ]] || return 0
+  rm -rf "$run_dir/fixtures" "$run_dir/private" "$run_dir/bin" 2>/dev/null || true
+  return 0
+}
+
+# browser_admin_link <kind> <issue> <sha> <target> <bundle-json>
+# Sets BROWSER_ADMIN_BUNDLE to the bundle, with .adminAccount = {email,
+# signInUrl} when the run may do admin steps (ADR-0073): FACTORY_BROWSER_ADMIN=1,
+# an intest or verify run, a scenario with a step marked `(admin)`, and a
+# usable admin account file. Called directly, never in $(…): it records the
+# admin lease's owner (BROWSER_ADMIN_LEASE_OWNER) for browser_signin_release
+# and cleanup() to give back, which a subshell would lose. Anything short of a
+# link leaves the bundle unchanged and the runner SKIPs the admin steps: an
+# admin link is never worth failing the run for.
+browser_admin_link() {
+  local kind="$1" issue_num="$2" head_sha="$3" target="$4" bundle="$5" link email owner rc=0
+  BROWSER_ADMIN_BUNDLE="$bundle"
+  if [[ "${FACTORY_BROWSER_ADMIN:-0}" != 1 || "$kind" == plan ]] \
+      || [[ "$(echo "$bundle" | jq -r '.hasAdminSteps // false')" != true ]]; then
+    return 0
+  fi
+  owner="browser-admin:$kind:$issue_num:${head_sha:0:12}"
+  link=$(node "$SCRIPT_DIR/lib/browser-signin.mjs" mint --account admin \
+      --key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --account-file "${FACTORY_BROWSER_ADMIN_ACCOUNT_FILE:-}" \
+      --origin "$target" --lease-file "${ADMIN_SIGNIN_LEASE_FILE:-$LOG_DIR/factory-signin-admin.lease}" --owner "$owner" \
+      --hold-sec "$FACTORY_SIGNIN_LEASE_SEC" 2>>"$LOG_FILE") || rc=$?
+  # Exit 0 means the lease is held: from here, it's ours to give back.
+  [[ "$rc" -ne 0 ]] || BROWSER_ADMIN_LEASE_OWNER="$owner"
+  if [[ "$rc" -ne 0 || "$link" != https://* ]]; then
+    log "Issue #$issue_num: no admin sign-in link for this run (mint exit $rc); its admin steps will be SKIP"
+    return 0
+  fi
+  email=$(node "$SCRIPT_DIR/lib/browser-report.mjs" admin-email \
+    --account-file "${FACTORY_BROWSER_ADMIN_ACCOUNT_FILE:-}" 2>>"$LOG_FILE") || email=""
+  BROWSER_ADMIN_BUNDLE=$(echo "$bundle" | jq --arg e "$email" --arg u "$link" \
+    '.adminAccount = {email: $e, signInUrl: $u} | .capabilities.admin = true') \
+    || BROWSER_ADMIN_BUNDLE="$bundle"
   return 0
 }
 
@@ -3920,19 +4002,59 @@ run_browser_task() {
   mkdir -p "$run_dir/evidence" "$run_dir/guard-state" "$LOG_DIR/browser-guard" || return 1
   cfg="$run_dir/guard-config.json"
   settings="$run_dir/guard-settings.json"
+  # Opt-in capabilities (ADR-0073), for the intest and verify kinds only. Each
+  # is set up here, before the session, and a setup that fails leaves that
+  # capability off: the runner SKIPs the steps that needed it.
+  local caps=() tools path_prefix="" fixtures
+  if [[ "$kind" != plan ]]; then
+    if [[ "${FACTORY_BROWSER_UPLOADS:-0}" == 1 ]]; then
+      # Only the spec text goes to node, on stdin: the bundle holds the
+      # one-time sign-in links and never touches disk.
+      if fixtures=$(echo "$bundle" | jq -r '.fixtureSpecs // ""' \
+          | node "$SCRIPT_DIR/lib/browser-fixtures.mjs" make --out "$run_dir/fixtures" 2>>"$LOG_FILE") \
+          && echo "$fixtures" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        caps+=(--capability uploads --fixtures-dir "$run_dir/fixtures")
+        bundle=$(echo "$bundle" | jq --argjson f "$fixtures" '.fixtures = $f | .capabilities.uploads = true')
+      else
+        log "WARNING: couldn't make the scenario's fixtures ($kind): $(echo "$fixtures" | jq -r '.error // "no output"' 2>/dev/null); uploads are off for this run"
+      fi
+    fi
+    if [[ "${FACTORY_BROWSER_JS:-0}" == 1 ]]; then
+      caps+=(--capability js)
+      bundle=$(echo "$bundle" | jq '.capabilities.js = true')
+    fi
+    if [[ "${FACTORY_DEV_INSPECT:-0}" == 1 ]]; then
+      local admin_file_arg=()
+      [[ "$(echo "$bundle" | jq -r '.capabilities.admin // false')" == true ]] \
+        && admin_file_arg=(--admin-account-file "${FACTORY_BROWSER_ADMIN_ACCOUNT_FILE:-}")
+      if node "$SCRIPT_DIR/lib/verify-lane.mjs" setup-inspect --run-dir "$run_dir" \
+          --key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+          ${admin_file_arg[@]+"${admin_file_arg[@]}"} >>"$LOG_FILE" 2>&1; then
+        caps+=(--capability inspect)
+        path_prefix="$run_dir/bin:"
+        bundle=$(echo "$bundle" | jq '.capabilities.inspect = true')
+      else
+        log "WARNING: dev-inspect couldn't be set up ($kind); it is off for this run"
+      fi
+    fi
+  fi
   # The settings file is generated by one tested function rather than written
   # here: `claude -p` silently drops a settings file that fails validation, and
   # would then run with Chrome and no guard at all. `verify` below catches that.
   if ! node "$guard" config --out "$cfg" --device "$FACTORY_BROWSER_DEVICE_ID" \
       --allow-origin "$origin" --log-dir "$LOG_DIR/browser-guard" \
-      --state-dir "$run_dir/guard-state" --evidence-dir "$run_dir/evidence" >>"$LOG_FILE" 2>&1 \
+      --state-dir "$run_dir/guard-state" --evidence-dir "$run_dir/evidence" \
+      ${caps[@]+"${caps[@]}"} >>"$LOG_FILE" 2>&1 \
     || ! node "$guard" settings --config "$cfg" --out "$settings" >>"$LOG_FILE" 2>&1; then
     log "ERROR: browser guard setup failed ($kind); not starting the runner"
+    browser_capabilities_cleanup "$run_dir"
     return 1
   fi
-  allowed=$(node "$guard" allowed-tools 2>>"$LOG_FILE" || echo "")
+  allowed=$(node "$guard" allowed-tools --config "$cfg" 2>>"$LOG_FILE" || echo "")
+  tools=$(node "$guard" session-tools --config "$cfg" 2>>"$LOG_FILE" || echo "")
   if [[ -z "$allowed" ]]; then
     log "ERROR: browser guard printed no tool allowlist ($kind); not starting the runner"
+    browser_capabilities_cleanup "$run_dir"
     return 1
   fi
   uuid=$(uuidgen | tr '[:upper:]' '[:lower:]')
@@ -3954,14 +4076,24 @@ run_browser_task() {
   # no X's, where macOS's appends them.
   if ! cwd=$(mktemp -d "${TMPDIR:-/tmp}/factory-browser-cwd.XXXXXX") || ! cwd=$(cd "$cwd" && pwd -P); then
     log "ERROR: could not create the browser runner's working directory ($kind)"
+    browser_capabilities_cleanup "$run_dir"
     return 1
   fi
   # The prompt goes in on stdin, not argv: the bundle carries the test
   # account's password, and argv is visible to `ps`.
-  ( cd "$cwd" && printf '%s' "$input" | CLAUDE_CALL_TIMEOUT_SEC="$FACTORY_BROWSER_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p --chrome --permission-mode dontAsk --tools "" \
+  # --tools is "" (Chrome only) unless the run has dev-inspect, which adds Bash;
+  # the guard's Bash hook allows that one command and nothing else (ADR-0073).
+  ( cd "$cwd" && printf '%s' "$input" | PATH="$path_prefix$PATH" CLAUDE_CALL_TIMEOUT_SEC="$FACTORY_BROWSER_TIMEOUT_SEC" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p --chrome --permission-mode dontAsk --tools "$tools" \
       --allowedTools "$allowed" --setting-sources "" --strict-mcp-config --settings "$settings" \
       --session-id "$uuid" --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
+  browser_capabilities_cleanup "$run_dir"
+  # The runner's output becomes a comment: the accounts' emails come out of it
+  # here, once, before the report is rendered or read by the verification
+  # report (ADR-0073).
+  node "$SCRIPT_DIR/lib/browser-report.mjs" redact-emails --in "$BROWSER_OUT" \
+    --account-file "${FACTORY_BROWSER_ACCOUNT_FILE:-/nonexistent}" \
+    --admin-account-file "${FACTORY_BROWSER_ADMIN_ACCOUNT_FILE:-/nonexistent}" >>"$LOG_FILE" 2>&1 || true
   # A session that ran without the guard's SessionStart record is the one
   # outcome that turns the runner off (until factory:browser-reset): it means
   # claude dropped the settings file and ran Chrome unguarded. A claude that
@@ -4291,6 +4423,8 @@ Merge \`main\` into the branch (the **Update branch** button on PR #$pr_num, not
     browser_signin_release
     return 1
   fi
+  browser_admin_link "$kind" "$issue_num" "$head_sha" "$target" "$bundle"
+  bundle="$BROWSER_ADMIN_BUNDLE"
 
   attempts=$((attempts + 1))
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" browserRunAttempts \

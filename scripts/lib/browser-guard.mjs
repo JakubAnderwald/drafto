@@ -164,6 +164,40 @@ export const RUNNER_TOOLS = Object.freeze([
   "resize_window",
 ]);
 
+// Opt-in capabilities (ADR-0073), switched on per run through the guard's
+// config, never by default:
+//   uploads — file_upload, only for regular files inside the run's fixtures/
+//             directory (scripts/lib/browser-fixtures.mjs makes them);
+//   js      — javascript_tool, for read-only DOM checks (jsVerdict);
+//   inspect — the Bash tool, for exactly one command: dev-inspect (read-only
+//             checks of the factory account's data on dev, dev-inspect.mjs).
+// upload_image stays denied whatever the config: it uploads screenshots.
+export const CAPABILITIES = Object.freeze(["uploads", "js", "inspect"]);
+const CAPABILITY_TOOL = Object.freeze({ uploads: "file_upload", js: "javascript_tool" });
+
+function capabilitiesOf(config) {
+  return Array.isArray(config?.capabilities) ? config.capabilities : [];
+}
+
+/** The Chrome tools this run may use: RUNNER_TOOLS plus its capabilities' tools. */
+export function runnerTools(config = null) {
+  const extra = capabilitiesOf(config)
+    .map((c) => CAPABILITY_TOOL[c])
+    .filter(Boolean);
+  return [...RUNNER_TOOLS, ...extra];
+}
+
+/** ALWAYS_DENY minus the tools this run's capabilities switch on. */
+export function alwaysDeny(config = null) {
+  const on = new Set(runnerTools(config));
+  return ALWAYS_DENY.filter((t) => !on.has(t));
+}
+
+/** Whether the run may use the Bash tool (only for dev-inspect). */
+export function allowsInspect(config = null) {
+  return capabilitiesOf(config).includes("inspect");
+}
+
 // Pages a tab may sit on without being quarantined. They hold nothing, but
 // they are not navigation targets either: navigate accepts only the allowed
 // origin.
@@ -200,7 +234,7 @@ const ADOPTING_TOOLS = new Set(["tabs_context_mcp", "tabs_create_mcp"]);
 
 // Tools that act on one tab and must name it.
 const TAB_TOOLS = new Set(
-  RUNNER_TOOLS.filter(
+  [...RUNNER_TOOLS, ...Object.values(CAPABILITY_TOOL)].filter(
     (t) =>
       ![
         "list_connected_browsers",
@@ -314,8 +348,15 @@ export function fullToolName(short) {
   return `${CHROME_PREFIX}${short}`;
 }
 
-export function allowedToolsArg() {
-  return RUNNER_TOOLS.map(fullToolName).join(",");
+export function allowedToolsArg(config = null) {
+  const tools = runnerTools(config).map(fullToolName);
+  if (allowsInspect(config)) tools.push("Bash");
+  return tools.join(",");
+}
+
+/** The --tools value: "" (Chrome only), or "Bash" when the run may use dev-inspect. */
+export function sessionToolsArg(config = null) {
+  return allowsInspect(config) ? "Bash" : "";
 }
 
 // Claude Code runs hook commands through a shell. Single quotes make every
@@ -345,6 +386,7 @@ export function buildGuardSettings({
   guardPath,
   configPath,
   perlPath = DEFAULT_PERL_PATH,
+  config = null,
 }) {
   const node = shellQuotePath("nodePath", nodePath);
   const guard = shellQuotePath("guardPath", guardPath);
@@ -354,7 +396,7 @@ export function buildGuardSettings({
   const alarmed = `${perl} -e '${PERL_ALARM_SCRIPT}' ${PRE_ALARM_SEC} ${command("pre")}`;
   return {
     disableAllHooks: false,
-    permissions: { deny: ALWAYS_DENY.map(fullToolName) },
+    permissions: { deny: alwaysDeny(config).map(fullToolName) },
     hooks: {
       SessionStart: [
         {
@@ -380,6 +422,18 @@ export function buildGuardSettings({
             },
           ],
         },
+        // With the inspect capability the session has Bash, checked by the
+        // same guard (bashVerdict): dev-inspect and nothing else.
+        ...(allowsInspect(config)
+          ? [
+              {
+                matcher: "Bash",
+                hooks: [
+                  { type: "command", command: `${alarmed} || exit 2`, timeout: HOOK_TIMEOUTS.pre },
+                ],
+              },
+            ]
+          : []),
       ],
       PostToolUse: [
         {
@@ -564,13 +618,22 @@ export function validateConfig(raw) {
   if (!Array.isArray(raw.allowOrigins) || raw.allowOrigins.length === 0) {
     throw new Error("config.allowOrigins must be a non-empty array");
   }
-  return {
+  const capabilities = raw.capabilities === undefined ? [] : raw.capabilities;
+  if (!Array.isArray(capabilities) || capabilities.some((c) => !CAPABILITIES.includes(c))) {
+    throw new Error(`config.capabilities must be a list of ${CAPABILITIES.join(", ")}`);
+  }
+  const out = {
     deviceId: raw.deviceId,
     allowOrigins: [...new Set(raw.allowOrigins.map(parseAllowOrigin))],
     logDir: absoluteDir("config.logDir", raw.logDir),
     stateDir: absoluteDir("config.stateDir", raw.stateDir),
     evidenceDir: absoluteDir("config.evidenceDir", raw.evidenceDir),
   };
+  if (capabilities.length) out.capabilities = [...new Set(capabilities)];
+  if (capabilities.includes("uploads")) {
+    out.fixturesDir = absoluteDir("config.fixturesDir", raw.fixturesDir);
+  }
+  return out;
 }
 
 export function emptyState() {
@@ -625,11 +688,16 @@ export function decidePre({ tool, input, config, state }) {
 
 function decide({ tool, input, config, state }) {
   if (typeof tool !== "string") return deny("the hook payload names no tool");
+  if (tool === "Bash") {
+    if (!allowsInspect(config)) return deny("Bash is not available to the browser runner");
+    const v = bashVerdict(isPlainObject(input) ? input.command : undefined);
+    return v.ok ? allow(v.reason) : deny(v.reason);
+  }
   if (!tool.startsWith(CHROME_PREFIX)) return allow("not a Claude in Chrome tool");
   const name = tool.slice(CHROME_PREFIX.length);
-  if (ALWAYS_DENY.includes(name))
+  if (alwaysDeny(config).includes(name))
     return deny(`${name} is never allowed for the factory browser runner`);
-  if (!RUNNER_TOOLS.includes(name)) {
+  if (!runnerTools(config).includes(name)) {
     return deny(
       `${name} is not on the browser runner's tool list (new tools stay off until reviewed)`,
     );
@@ -692,7 +760,121 @@ function decide({ tool, input, config, state }) {
     const v = computerVerdict(args);
     if (!v.ok) return deny(v.reason);
   }
+  if (name === "file_upload") {
+    const v = uploadVerdict(args, config);
+    if (!v.ok) return deny(v.reason);
+  }
+  if (name === "javascript_tool") {
+    const v = jsVerdict(args.text);
+    if (!v.ok) return deny(v.reason);
+  }
   return allow(`tab ${tabId}`);
+}
+
+// The one command the inspect capability allows, with plain words only: no
+// pipes, separators, redirections, substitutions, quotes or globs.
+const BASH_INSPECT_RE = /^dev-inspect(?: [A-Za-z0-9:_./=-]{1,64}){0,8}$/;
+
+/** Whether a Bash command is exactly a dev-inspect call. Reasons never quote it. */
+export function bashVerdict(command) {
+  if (typeof command !== "string") return verdict(false, "Bash needs a command");
+  if (!BASH_INSPECT_RE.test(command)) {
+    return verdict(
+      false,
+      "the browser runner's Bash runs only `dev-inspect <command> [options]`, with plain words",
+    );
+  }
+  return verdict(true, "dev-inspect");
+}
+
+/**
+ * Whether a file_upload takes only files the run generated: every path a
+ * regular file (not a symlink) whose real path is inside the fixtures dir.
+ */
+export function uploadVerdict(args, config, { fs = { lstatSync, realpathSync } } = {}) {
+  const dir = config?.fixturesDir;
+  if (typeof dir !== "string" || !dir) return verdict(false, "this run has no fixtures directory");
+  const paths = args?.paths;
+  if (!Array.isArray(paths) || paths.length === 0 || paths.length > 10) {
+    return verdict(false, "file_upload needs 1 to 10 paths from the run's fixtures");
+  }
+  let root;
+  try {
+    root = fs.realpathSync(dir);
+  } catch {
+    return verdict(false, "the run's fixtures directory is missing");
+  }
+  for (const p of paths) {
+    if (typeof p !== "string" || !path.isAbsolute(p)) {
+      return verdict(false, "file_upload paths must be absolute paths to the run's fixtures");
+    }
+    let st;
+    let real;
+    try {
+      st = fs.lstatSync(p);
+      real = fs.realpathSync(p);
+    } catch {
+      return verdict(false, "a file_upload path doesn't exist");
+    }
+    if (st.isSymbolicLink() || !st.isFile()) {
+      return verdict(false, "file_upload takes regular files only, not links or folders");
+    }
+    if (path.dirname(real) !== root) {
+      return verdict(false, "file_upload takes only files from the run's fixtures directory");
+    }
+  }
+  return verdict(true, "the run's fixtures");
+}
+
+// Page JavaScript that would reach past the page: storage and cookies (the
+// session lives there), navigation, other windows, network calls to anything
+// but a relative path, and dynamic code. A denylist, so it is defence in
+// depth: the app's CSP (ADR-0069), the off-origin tab quarantine and the
+// report's secret scan are what actually limit it (ADR-0073).
+export const MAX_JS_CHARS = 4096;
+const JS_DENY = [
+  [/\bdocument\s*\.\s*cookie\b/, "it reads or writes cookies"],
+  [
+    /\b(?:localStorage|sessionStorage|indexedDB|caches|cookieStore)\b/,
+    "it touches browser storage",
+  ],
+  [/\b(?:location|history)\s*(?:\.\s*\w+\s*)?(?:=(?!=)|\()/, "it navigates the page"],
+  [/\blocation\s*\[/, "it navigates the page"],
+  [/\bwindow\s*\.\s*open\b|\bopen\s*\(/, "it opens a window"],
+  [
+    /\b(?:eval|Function|setTimeout|setInterval)\s*\(\s*['"`]|\bnew\s+Function\b|\beval\s*\(/,
+    "it runs dynamic code",
+  ],
+  [/\bimport\s*\(|\bimportScripts\b/, "it loads code"],
+  [/\b(?:WebSocket|EventSource|RTCPeerConnection|Worker|SharedWorker)\b/, "it opens a connection"],
+  [
+    /\bnavigator\s*\.\s*(?:sendBeacon|serviceWorker|clipboard|credentials)\b/,
+    "it reaches past the page",
+  ],
+  [/\bpostMessage\b/, "it messages another context"],
+  // No network calls at all: an API check is the shell lane's, and the
+  // runner reads the page's own requests with read_network_requests. Any
+  // mention of these names counts, so an alias (`const f = fetch`) does too.
+  [/\b(?:fetch|XMLHttpRequest|sendBeacon|Request)\b/, "it makes a network request"],
+  [/\bdocument\s*\.\s*(?:write|domain)\b/, "it loads or sends somewhere"],
+  // An assignment (not a comparison) to an attribute that loads or sends.
+  [/\.\s*(?:src|href|action|formAction|srcdoc|data)\s*=(?!=)/, "it loads or sends somewhere"],
+  [
+    /\bsetAttribute\s*\(\s*['"`](?:src|href|action|formaction|srcdoc|data)['"`]/i,
+    "it loads or sends somewhere",
+  ],
+];
+/** Whether page JavaScript stays read-only and on the page. Reasons never quote it. */
+export function jsVerdict(code) {
+  if (typeof code !== "string" || code.trim() === "") {
+    return verdict(false, "javascript_tool needs code");
+  }
+  if (code.length > MAX_JS_CHARS)
+    return verdict(false, `page JavaScript is limited to ${MAX_JS_CHARS} characters`);
+  for (const [re, why] of JS_DENY) {
+    if (re.test(code)) return verdict(false, `page JavaScript is refused because ${why}`);
+  }
+  return verdict(true, "read-only page JavaScript");
 }
 
 /**
@@ -1156,6 +1338,15 @@ function logFields(payload) {
   const fields = { tool };
   if (isTabId(input.tabId)) fields.tabId = input.tabId;
   if (tool === fullToolName("navigate")) fields.url = redactUrl(input.url);
+  if (tool === fullToolName("file_upload") && Array.isArray(input.paths)) {
+    fields.files = input.paths.map((p) => path.basename(String(p)).slice(0, 80)).slice(0, 10);
+  }
+  if (tool === fullToolName("javascript_tool") && typeof input.text === "string") {
+    fields.code = input.text.slice(0, 2000);
+  }
+  if (tool === "Bash" && typeof input.command === "string") {
+    fields.command = input.command.slice(0, 300);
+  }
   return fields;
 }
 
@@ -1346,10 +1537,12 @@ export function verifySession({ configPath, session }) {
 const USAGE = `Usage:
   browser-guard.mjs config --out <cfg.json> --device <uuid> --allow-origin <origin> [--allow-origin …]
                            --log-dir <dir> --state-dir <dir> --evidence-dir <dir>
+                           [--capability uploads|js|inspect …] [--fixtures-dir <dir>]
   browser-guard.mjs settings --config <cfg.json> --out <settings.json> [--perl <path>]
   browser-guard.mjs hook <session-start|pre|post> --config <cfg.json>   (payload on stdin)
   browser-guard.mjs verify --config <cfg.json> --session <uuid>
-  browser-guard.mjs allowed-tools
+  browser-guard.mjs allowed-tools [--config <cfg.json>]
+  browser-guard.mjs session-tools --config <cfg.json>
 `;
 
 const CLI_OPTIONS = {
@@ -1360,6 +1553,8 @@ const CLI_OPTIONS = {
   "log-dir": { type: "string" },
   "state-dir": { type: "string" },
   "evidence-dir": { type: "string" },
+  capability: { type: "string", multiple: true },
+  "fixtures-dir": { type: "string" },
   session: { type: "string" },
   perl: { type: "string" },
 };
@@ -1416,6 +1611,8 @@ export async function main(
         logDir: path.resolve(required(values, "log-dir")),
         stateDir: path.resolve(required(values, "state-dir")),
         evidenceDir: path.resolve(required(values, "evidence-dir")),
+        capabilities: values.capability ?? [],
+        ...(values["fixtures-dir"] ? { fixturesDir: path.resolve(values["fixtures-dir"]) } : {}),
       });
       writeFileAtomic(
         path.resolve(required(values, "out")),
@@ -1426,7 +1623,7 @@ export async function main(
 
     if (cmd === "settings") {
       const configPath = path.resolve(required(values, "config"));
-      loadConfig(configPath); // a broken config fails here, not at hook time
+      const config = loadConfig(configPath); // a broken config fails here, not at hook time
       // The pre hook only fails closed on a hang through perl's alarm, so the
       // runner must not start with a settings file whose wrapper is missing.
       const perlPath = values.perl ?? DEFAULT_PERL_PATH;
@@ -1436,6 +1633,7 @@ export async function main(
         guardPath: ownPath(),
         configPath,
         perlPath,
+        config,
       });
       writeFileAtomic(
         path.resolve(required(values, "out")),
@@ -1467,7 +1665,14 @@ export async function main(
     }
 
     if (cmd === "allowed-tools") {
-      stdout.write(`${allowedToolsArg()}\n`);
+      const config = values.config ? loadConfig(path.resolve(values.config)) : null;
+      stdout.write(`${allowedToolsArg(config)}\n`);
+      return 0;
+    }
+
+    if (cmd === "session-tools") {
+      const config = loadConfig(path.resolve(required(values, "config")));
+      stdout.write(`${sessionToolsArg(config)}\n`);
       return 0;
     }
 

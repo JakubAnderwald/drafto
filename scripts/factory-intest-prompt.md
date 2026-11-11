@@ -300,6 +300,25 @@ Compose it in Markdown from the bundle's facts. Structure:
   `/notebooks`) rather than full URLs: the runner opens them on the commit's
   own deployment, which isn't the `previewUrl` link. A cross-check on drafto.eu
   or on another device belongs in the step's text, not in its own Web step.
+  What the page should show can be checked closely ("no element with the class
+  `bn-error-text`", "one image block"): write it as the expected result, and
+  the runner reads it with its own tools. The runner can also, when the
+  operator has switched these on (ADR-0073):
+  - **upload files** named in a `### Fixtures` section inside
+    `## Test scenario`, one bullet per file: `- <name> <size>` (B, KB or MB,
+    at most 10 MB; `.jpg`, `.png` or `.txt`), `- <name>.enex notes=<N> image=<size>` for an
+    Evernote export with one image per note, or `- sample.enex` for the repo's
+    sample export. A Web step names the file it uploads;
+  - **do a step as the admin**: start the step with `(admin)`, and put the
+    admin steps **last**: each sign-in link works once, so the runner can't
+    go back to the test account after them (the test account's own row is
+    the only one an admin step may change);
+  - **check the data**: a `dev-inspect` line in a Web step, as in a data
+    check below.
+
+  Each of these comes back SKIP on a run that doesn't have it, so write the
+  step so a person can follow it too.
+
 - `### API`, a heading that is exactly `### API`, inside `## Test scenario`,
   only when `platforms.web` is true and the change has a response worth
   checking that a page can't show (a status code, a JSON body). Numbered

@@ -79,6 +79,10 @@
 //   dev-inspect --run-dir D -- <args…>          (internal; bin/dev-inspect, FACTORY_DEV_INSPECT=1)
 //   live-tests --run-dir D -- [<name>]          (internal; bin/live-tests, FACTORY_VERIFY_LIVE_TESTS=1)
 //       → one JSON line each (ADR-0073): dev-inspect.mjs and lane-live-tests.mjs.
+//   setup-inspect --run-dir D --key-file F --account-file F [--admin-account-file F]
+//       → {ok, accounts, binDir}: writes the browser run's private/dev-inspect.cfg
+//         and bin/dev-inspect (FACTORY_DEV_INSPECT=1, ADR-0073); exit 2 when a
+//         file isn't usable, writing nothing.
 //   _supervise --run-dir D                     (internal; spawned detached by start)
 //
 // Kill switch: FACTORY_VERIFY (validated and exported by factory-agent.sh).
@@ -95,7 +99,7 @@ import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { inspectMain } from "./dev-inspect.mjs";
-import { accountFileProblem } from "./browser-report.mjs";
+import { accountFileProblem, adminAccountFileProblem } from "./browser-report.mjs";
 import { keyFileProblem } from "./browser-signin.mjs";
 import { liveTestNames, liveTestsMain, runScenarioLiveTests } from "./lane-live-tests.mjs";
 import {
@@ -640,6 +644,25 @@ export function previewCurlScript({ nodePath, modulePath, runDir }) {
 }
 
 /**
+ * Writes dev-inspect's private config (mode 600: the key file's and each
+ * account file's paths) and its bin/ wrapper (mode 700). The one place both
+ * the shell lane and the browser runner get them from.
+ */
+export function writeInspectFiles(
+  { runDir, privateDir, binDir, keyFile, accounts, nodePath, modulePath = THIS_FILE },
+  { fs = nodeFs } = {},
+) {
+  fs.writeFileSync(path.join(privateDir, INSPECT_CFG), JSON.stringify({ keyFile, accounts }), {
+    mode: 0o600,
+  });
+  fs.writeFileSync(
+    path.join(binDir, "dev-inspect"),
+    laneBinScript({ nodePath, modulePath, runDir, sub: "dev-inspect" }),
+    { mode: 0o700 },
+  );
+}
+
+/**
  * Prepares the opt-in wrappers the run's capabilities allow (ADR-0073) and
  * returns the names it wrote, for the run-time facts. A wrapper is written
  * only when the files it needs are usable, so `tools` never lists one that
@@ -674,15 +697,18 @@ export async function prepareCapabilities(
   try {
     if (caps.devInspect) {
       if (keyOk && !accountProblem(meta.paths.accountFile)) {
-        fs.writeFileSync(
-          path.join(privateDir, INSPECT_CFG),
-          JSON.stringify({
+        writeInspectFiles(
+          {
+            runDir,
+            privateDir,
+            binDir,
             keyFile: meta.paths.signinKeyFile,
             accounts: { user: meta.paths.accountFile },
-          }),
-          { mode: 0o600 },
+            nodePath: meta.bins.node,
+            modulePath: meta.paths.module,
+          },
+          { fs },
         );
-        writeBin("dev-inspect");
         written.push("dev-inspect");
       } else {
         log("dev-inspect: not offered (the key file or the account file isn't usable)");
@@ -727,6 +753,33 @@ export async function prepareCapabilities(
     log(`capabilities: ${err.message}; going on without the rest`);
   }
   return written;
+}
+
+/**
+ * The browser runner's dev-inspect (ADR-0073): the same wrapper and private
+ * config as the shell lane's, in the browser run's own directory, with the
+ * admin account when the run has one. Returns {ok, accounts} or {ok: false,
+ * reason}; writes nothing unless every file it names is usable.
+ */
+export function setupInspect(
+  { runDir, keyFile, accountFile, adminAccountFile = null, nodePath = process.execPath },
+  { fs = nodeFs } = {},
+) {
+  if (!path.isAbsolute(runDir)) return { ok: false, reason: "run-dir must be absolute" };
+  if (keyFileProblem(keyFile)) return { ok: false, reason: "the dev key file isn't usable" };
+  if (accountFileProblem(accountFile)) {
+    return { ok: false, reason: "the account file isn't usable" };
+  }
+  const accounts = { user: accountFile };
+  if (adminAccountFile && !adminAccountFileProblem(adminAccountFile)) {
+    accounts.admin = adminAccountFile;
+  }
+  const privateDir = path.join(runDir, "private");
+  const binDir = path.join(runDir, "bin");
+  fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
+  writeInspectFiles({ runDir, privateDir, binDir, keyFile, accounts, nodePath }, { fs });
+  return { ok: true, accounts: Object.keys(accounts), binDir };
 }
 
 /**
@@ -2535,7 +2588,8 @@ const USAGE =
   "housekeeping --state-file F --repo-root R --run-root D|" +
   "stop --issue N [--sha S] [--reason R] --state-file F --repo-root R --run-root D|" +
   "gaps --run-dir D|bypass-check [--file F]|preview-curl --run-dir D -- <args>|" +
-  "dev-inspect --run-dir D -- <args>|live-tests --run-dir D -- [<name>]|_supervise --run-dir D> " +
+  "dev-inspect --run-dir D -- <args>|live-tests --run-dir D -- [<name>]|" +
+  "setup-inspect --run-dir D --key-file F --account-file F [--admin-account-file F]|_supervise --run-dir D> " +
   "[--dry-run 0|1] [--now ISO]";
 
 class UsageError extends Error {}
@@ -2629,6 +2683,16 @@ export async function main(argv, deps = createDeps()) {
       const file = readKnobs(deps.env, { "bypass-file": flags.file }).bypassFile;
       const problem = bypassFileProblem(file, deps.fs);
       return { ok: problem === null, file, problem, exitCode: problem === null ? 0 : 2 };
+    }
+    case "setup-inspect": {
+      required(flags, ["run-dir", "key-file", "account-file"]);
+      const r = setupInspect({
+        runDir: flags["run-dir"],
+        keyFile: flags["key-file"],
+        accountFile: flags["account-file"],
+        adminAccountFile: flags["admin-account-file"] ?? null,
+      });
+      return { ...r, exitCode: r.ok ? 0 : 2 };
     }
     case "_supervise":
       required(flags, ["run-dir"]);
