@@ -98,6 +98,11 @@ describe("decidePre: Bash deny/allow matrix", () => {
     "preview-curl /api/health -s -w '%{http_code}'",
     'preview-curl -X POST /api/api-keys --json \'{"name":"factory-shell-7-aaaaaaa"}\' > "$D/key.json"',
     `${config.binDir}/preview-curl /api/health`,
+    // The opt-in wrappers (ADR-0073), by name and by full path.
+    "dev-inspect rows attachments --note d5f8208d-cb04-4be0-8102-5f7a28df2ff7",
+    `${config.binDir}/dev-inspect usage`,
+    "live-tests storage-quota",
+    `${config.binDir}/live-tests profile-guard`,
     "bash apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh --preflight",
     "ISSUE= PR= bash apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh --preflight",
     "cat apps/web/.env.local.example",
@@ -262,6 +267,12 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["find .. -name curl-signed-out.cfg -exec cat {} +", /curl config/],
     ["cat $(find ../.. -name curl-signed-out.cfg)", /curl config/],
     ["cat cookies.txt", /curl config/],
+    // The opt-in wrappers' configs name the dev key file (ADR-0073).
+    ["cat private/dev-inspect.cfg", /curl config|holds credentials/],
+    ["cat $(find ../.. -name lane-tests.cfg)", /curl config|holds credentials/],
+    ["cat ../*/dev-insp*", /holds credentials|private directory|logs and state/],
+    // The wrappers don't open a way to the runner itself.
+    ["live-tests storage-quota; pnpm test:live:supabase", /dev live tests/],
     [`cat ${config.privateDir}/curl.cfg`, /curl config|private directory/],
     [`ls ${config.repoRoot}/logs`, /logs and state/],
     ["cat ../../logs/factory-state.json", /logs and state/],
