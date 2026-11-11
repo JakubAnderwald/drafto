@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
-import type { Block } from "@blocknote/core";
+import type { Block, BlockNoteEditor } from "@blocknote/core";
 import "@blocknote/mantine/style.css";
 import { useTheme } from "@/hooks/use-theme";
 import {
@@ -13,6 +13,7 @@ import {
   FILE_TOO_LARGE_MESSAGE,
   FILE_EMPTY_MESSAGE,
   storageQuotaErrorFromResponse,
+  StorageQuotaError,
 } from "@drafto/shared";
 import { useAttachmentUrlResolver } from "@/components/editor/use-attachment-url-resolver";
 import { createClient } from "@/lib/supabase/client";
@@ -26,8 +27,11 @@ interface NoteEditorProps {
 export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps) {
   const { resolvedTheme } = useTheme();
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // uploadFile is handed to useCreateBlockNote before the editor exists, so it
+  // reaches the editor through this ref.
+  const editorRef = useRef<BlockNoteEditor | null>(null);
   const uploadFile = useCallback(
-    async (file: File): Promise<string> => {
+    async (file: File, blockId?: string): Promise<string> => {
       setUploadError(null);
       try {
         if (file.size === 0) {
@@ -96,6 +100,16 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
         return toAttachmentUrl(data.file_path);
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : "Upload failed");
+        // A storage-full refusal is final: retrying from the same block can't
+        // succeed. Remove the placeholder block BlockNote inserted for the file,
+        // so the banner above is the only message. Otherwise BlockNote's upload
+        // panel adds its own generic "Upload failed" next to it, and a dropped or
+        // pasted file leaves an empty image block behind. BlockNote stops
+        // handling the upload once the block is gone.
+        if (err instanceof StorageQuotaError && blockId) {
+          const editor = editorRef.current;
+          if (editor?.getBlock(blockId)) editor.removeBlocks([blockId]);
+        }
         throw err;
       }
     },
@@ -109,6 +123,10 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
     uploadFile,
     resolveFileUrl,
   });
+
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
 
   return (
     <div data-testid="editor-scroll-container" className="min-h-0 flex-1 overflow-y-auto">

@@ -44,6 +44,22 @@ function authenticateAs(userId: string) {
 
 const params = Promise.resolve({ id: "note-1" });
 
+const mockRemoveNoteAttachments = vi.fn();
+vi.mock("@/lib/storage/remove-user-attachments", () => ({
+  removeNoteAttachments: (...args: unknown[]) => mockRemoveNoteAttachments(...args),
+}));
+
+const adminClient = { tag: "service-role" };
+const mockCreateAdminClient = vi.fn();
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: (...args: unknown[]) => mockCreateAdminClient(...args),
+}));
+
+const mockCaptureException = vi.fn();
+vi.mock("@sentry/nextjs", () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+}));
+
 describe("Trash API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -106,148 +122,100 @@ describe("Trash API", () => {
   });
 
   describe("DELETE /api/notes/[id]/permanent", () => {
+    // Records the order of the calls that matter: the note must be deleted
+    // before its files are removed, so a failed or raced delete never costs a
+    // live note its files.
+    let calls: string[];
+
+    function mockNoteDelete(
+      result: { data: { id: string } | null; error: { message: string } | null } = {
+        data: { id: "note-1" },
+        error: null,
+      },
+    ) {
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        if (table === "notes") {
+          return {
+            delete: () => {
+              calls.push("delete-note");
+              return {
+                eq: () => ({
+                  eq: () => ({
+                    eq: () => ({
+                      select: () => ({ single: () => Promise.resolve(result) }),
+                    }),
+                  }),
+                }),
+              };
+            },
+          };
+        }
+        return {};
+      });
+    }
+
+    async function callDelete() {
+      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
+        method: "DELETE",
+      });
+      return DELETE(request, { params });
+    }
+
+    beforeEach(() => {
+      calls = [];
+      mockCreateAdminClient.mockReturnValue(adminClient);
+      mockRemoveNoteAttachments.mockImplementation(() => {
+        calls.push("remove-files");
+        return Promise.resolve();
+      });
+    });
+
     it("returns 401 when not authenticated", async () => {
       mockGetUser.mockResolvedValue({ data: { user: null }, error: { message: "Not auth" } });
 
-      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
-        method: "DELETE",
-      });
-      const response = await DELETE(request, { params });
+      const response = await callDelete();
       expect(response.status).toBe(401);
+      expect(mockRemoveNoteAttachments).not.toHaveBeenCalled();
     });
 
-    it("returns 404 when note not found or not trashed", async () => {
+    it("returns 404 and leaves storage alone when the note isn't a trashed note of the user", async () => {
       authenticateAs("user-1");
-      mockFrom.mockImplementation((table: string) => {
-        if (table === "profiles") return approvedProfile;
-        if (table === "attachments") {
-          return {
-            select: () => ({
-              eq: () => ({
-                eq: () => Promise.resolve({ data: [], error: null }),
-              }),
-            }),
-          };
-        }
-        if (table === "notes") {
-          return {
-            delete: () => ({
-              eq: () => ({
-                eq: () => ({
-                  eq: () => ({
-                    select: () => ({
-                      single: () =>
-                        Promise.resolve({ data: null, error: { message: "Not found" } }),
-                    }),
-                  }),
-                }),
-              }),
-            }),
-          };
-        }
-        return {};
-      });
+      mockNoteDelete({ data: null, error: { message: "Not found" } });
 
-      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
-        method: "DELETE",
-      });
-      const response = await DELETE(request, { params });
+      const response = await callDelete();
       expect(response.status).toBe(404);
+      expect(mockCreateAdminClient).not.toHaveBeenCalled();
+      expect(mockRemoveNoteAttachments).not.toHaveBeenCalled();
     });
 
-    it("permanently deletes a trashed note and cleans up storage", async () => {
+    it("deletes the note, then removes its folder's files with the service-role client", async () => {
       authenticateAs("user-1");
-      const mockRemove = vi.fn().mockResolvedValue({ error: null });
-      mockStorageFrom.mockReturnValue({ remove: mockRemove });
+      mockNoteDelete();
 
-      mockFrom.mockImplementation((table: string) => {
-        if (table === "profiles") return approvedProfile;
-        if (table === "attachments") {
-          return {
-            select: () => ({
-              eq: () => ({
-                eq: () =>
-                  Promise.resolve({
-                    data: [
-                      { file_path: "user-1/note-1/image.png" },
-                      { file_path: "user-1/note-1/doc.pdf" },
-                    ],
-                    error: null,
-                  }),
-              }),
-            }),
-          };
-        }
-        if (table === "notes") {
-          return {
-            delete: () => ({
-              eq: () => ({
-                eq: () => ({
-                  eq: () => ({
-                    select: () => ({
-                      single: () => Promise.resolve({ data: { id: "note-1" }, error: null }),
-                    }),
-                  }),
-                }),
-              }),
-            }),
-          };
-        }
-        return {};
-      });
-
-      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
-        method: "DELETE",
-      });
-      const response = await DELETE(request, { params });
+      const response = await callDelete();
       expect(response.status).toBe(200);
-      expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/image.png", "user-1/note-1/doc.pdf"]);
+      expect(calls).toEqual(["delete-note", "remove-files"]);
+      expect(mockCreateAdminClient).toHaveBeenCalledWith("web-trash");
+      expect(mockRemoveNoteAttachments).toHaveBeenCalledWith(adminClient, "user-1", "note-1");
+      expect(mockCaptureException).not.toHaveBeenCalled();
     });
 
-    it("permanently deletes a trashed note with no attachments", async () => {
+    it("still succeeds, and reports to Sentry, when the service-role client is unavailable", async () => {
       authenticateAs("user-1");
-      const mockRemove = vi.fn();
-      mockStorageFrom.mockReturnValue({ remove: mockRemove });
-
-      mockFrom.mockImplementation((table: string) => {
-        if (table === "profiles") return approvedProfile;
-        if (table === "attachments") {
-          return {
-            select: () => ({
-              eq: () => ({
-                eq: () => Promise.resolve({ data: [], error: null }),
-              }),
-            }),
-          };
-        }
-        if (table === "notes") {
-          return {
-            delete: () => ({
-              eq: () => ({
-                eq: () => ({
-                  eq: () => ({
-                    select: () => ({
-                      single: () => Promise.resolve({ data: { id: "note-1" }, error: null }),
-                    }),
-                  }),
-                }),
-              }),
-            }),
-          };
-        }
-        return {};
+      mockNoteDelete();
+      const missingKey = new Error("SUPABASE_SERVICE_ROLE_KEY is not configured");
+      mockCreateAdminClient.mockImplementation(() => {
+        throw missingKey;
       });
 
-      const { DELETE } = await import("@/app/api/notes/[id]/permanent/route");
-      const request = new NextRequest("http://localhost:3000/api/notes/note-1/permanent", {
-        method: "DELETE",
-      });
-      const response = await DELETE(request, { params });
+      const response = await callDelete();
       expect(response.status).toBe(200);
-      expect(mockRemove).not.toHaveBeenCalled();
+      expect(calls).toEqual(["delete-note"]);
+      expect(mockCaptureException).toHaveBeenCalledWith(missingKey, {
+        extra: { where: "notes-permanent:storage", noteId: "note-1" },
+      });
     });
   });
 

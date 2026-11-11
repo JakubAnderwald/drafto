@@ -48,13 +48,45 @@ export async function removeUserAttachments(
   client: SupabaseClient<Database>,
   userId: string,
 ): Promise<void> {
+  await removeFolderBestEffort(client, userId, "remove-user-attachments", { userId });
+}
+
+/**
+ * Best-effort removal of every object under one note's folder
+ * (`{userId}/{noteId}/`), for after the note has been deleted.
+ *
+ * `client` must be a service-role client: the bucket's DELETE and SELECT
+ * policies only match objects under a note the user still has, so once the note
+ * is gone the user's own client can't remove its files. The folder is listed
+ * rather than taken from `attachments.file_path`, which the client supplies, so
+ * this never touches anything outside the note's own folder, and it also catches
+ * objects that never got a row. The caller must have verified that the note was
+ * the user's. Errors are reported to Sentry and never thrown.
+ */
+export async function removeNoteAttachments(
+  client: SupabaseClient<Database>,
+  userId: string,
+  noteId: string,
+): Promise<void> {
+  await removeFolderBestEffort(client, `${userId}/${noteId}`, "remove-note-attachments", {
+    userId,
+    noteId,
+  });
+}
+
+async function removeFolderBestEffort(
+  client: SupabaseClient<Database>,
+  prefix: string,
+  where: string,
+  extra: Record<string, string>,
+): Promise<void> {
   const bucket = client.storage.from(BUCKET_NAME);
 
   let paths: string[];
   try {
-    paths = await collectFilePaths(bucket, userId);
+    paths = await collectFilePaths(bucket, prefix);
   } catch (err) {
-    Sentry.captureException(err, { extra: { where: "remove-user-attachments:list", userId } });
+    Sentry.captureException(err, { extra: { where: `${where}:list`, ...extra } });
     return;
   }
 
@@ -64,7 +96,7 @@ export async function removeUserAttachments(
       if (error) throw error;
     } catch (err) {
       Sentry.captureException(err, {
-        extra: { where: "remove-user-attachments:remove", userId, batchSize: batch.length },
+        extra: { where: `${where}:remove`, ...extra, batchSize: batch.length },
       });
     }
   }
