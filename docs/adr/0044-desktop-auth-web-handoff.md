@@ -4,6 +4,8 @@
 - **Date**: 2026-10-10
 - **Authors**: Jakub Anderwald, Claude
 
+> **Update 2026-11-11**: The association files are no longer placeholders, and App Links / Universal Links now verify on `drafto.eu` ([ADR-0074](./0074-app-links-verify-on-apex-only.md)). The decision below stands. Moving it onto verified links is a separate change.
+
 ## Context
 
 The macOS app finishes two auth flows in the user's default browser, and both used to end on the app's custom scheme:
