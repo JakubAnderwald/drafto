@@ -135,3 +135,136 @@ describe("POST /api/api-keys", () => {
     expect(body.id).toBe("key-new");
   });
 });
+
+describe("POST /api/api-keys body validation", () => {
+  /**
+   * Mocks an approved user's `api_keys` insert and returns the insert spy, so a
+   * test can assert the stored `name` — or that nothing was inserted on a 400.
+   */
+  function mockApiKeysInsert() {
+    const insert = vi.fn((row: { name: string }) => ({
+      select: () => ({
+        single: () =>
+          Promise.resolve({
+            data: { id: "key-new", key_prefix: "dk_test1", name: row.name },
+            error: null,
+          }),
+      }),
+    }));
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      return { insert };
+    });
+    return insert;
+  }
+
+  function postWithRawBody(body?: string) {
+    return POST(new NextRequest("http://localhost/api/api-keys", { method: "POST", body }));
+  }
+
+  function postWithJson(body: unknown) {
+    return postWithRawBody(JSON.stringify(body));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authenticateAs("user-1");
+  });
+
+  it("returns 400 for a non-JSON body without inserting", async () => {
+    const insert = mockApiKeysInsert();
+
+    const response = await postWithRawBody("not json");
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("Invalid JSON body");
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for an empty body without inserting", async () => {
+    const insert = mockApiKeysInsert();
+
+    const response = await postWithRawBody();
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("Invalid JSON body");
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["null", null],
+    ["an array", []],
+    ["a number", 5],
+    ["a string", "str"],
+  ])("returns 400 when the JSON body is %s without inserting", async (_label, body) => {
+    const insert = mockApiKeysInsert();
+
+    const response = await postWithJson(body);
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("Invalid JSON body");
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a number", 123],
+    ["null", null],
+    ["a boolean", true],
+    ["an object", { first: "x" }],
+  ])("returns 400 when name is %s without inserting", async (_label, name) => {
+    const insert = mockApiKeysInsert();
+
+    const response = await postWithJson({ name });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("name must be a string");
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when the trimmed name is over 100 characters without inserting", async () => {
+    const insert = mockApiKeysInsert();
+
+    const response = await postWithJson({ name: "a".repeat(101) });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("name must be at most 100 characters");
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("accepts a name of exactly 100 characters", async () => {
+    const insert = mockApiKeysInsert();
+    const name = "a".repeat(100);
+
+    const response = await postWithJson({ name });
+
+    expect(response.status).toBe(201);
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ user_id: "user-1", name }));
+    expect((await response.json()).name).toBe(name);
+  });
+
+  it("applies the cap after trimming and stores the trimmed name", async () => {
+    const insert = mockApiKeysInsert();
+    const name = "b".repeat(100);
+
+    const response = await postWithJson({ name: `   ${name}   ` });
+
+    expect(response.status).toBe(201);
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ name }));
+  });
+
+  it.each([
+    ["no name", {}],
+    ["an empty name", { name: "" }],
+    ["a whitespace-only name", { name: "   " }],
+  ])('defaults to "Untitled key" for %s', async (_label, body) => {
+    const insert = mockApiKeysInsert();
+
+    const response = await postWithJson(body);
+
+    expect(response.status).toBe(201);
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ name: "Untitled key" }));
+    const json = await response.json();
+    expect(json).toMatchObject({ id: "key-new", key_prefix: "dk_test1", name: "Untitled key" });
+    expect(json.key).toMatch(/^dk_[0-9a-f]{48}$/);
+  });
+});
