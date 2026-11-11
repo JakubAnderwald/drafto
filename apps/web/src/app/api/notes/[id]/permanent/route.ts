@@ -1,8 +1,6 @@
-import * as Sentry from "@sentry/nextjs";
-import type { NextRequest } from "next/server";
+import { after, type NextRequest } from "next/server";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { removeNoteAttachments } from "@/lib/storage/remove-user-attachments";
+import { removeUserOrphanedAttachments } from "@/lib/storage/remove-orphaned-attachments";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -30,19 +28,13 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     return errorResponse("Note not found or not in trash", 404);
   }
 
-  // Then remove the note's files. The note goes first so a failed or raced
+  // Then remove the note's files, and any other files of this user whose note
+  // is gone (e.g. deleted on mobile). The note goes first so a failed or raced
   // delete never costs a live note its files. The user's own client can't do
-  // this step: the bucket's policies only match objects under a note the user
-  // still has, so after the delete its remove() silently matches nothing. The
-  // service-role client is safe here because the delete above proved the note
-  // was this user's, and removeNoteAttachments stays inside {user.id}/{id}/.
-  // Best-effort: the user asked for the note gone, and it is.
-  try {
-    await removeNoteAttachments(createAdminClient("web-trash"), user.id, data.id);
-  } catch (err) {
-    // createAdminClient throws when the service-role key isn't configured.
-    Sentry.captureException(err, { extra: { where: "notes-permanent:storage", noteId: data.id } });
-  }
+  // this: the bucket's policies only match objects under a note the user still
+  // has. Best-effort, and after the response: the user asked for the note gone,
+  // and it is.
+  after(() => removeUserOrphanedAttachments(user.id, "web-trash"));
 
   return successResponse({ success: true });
 }

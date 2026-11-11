@@ -113,7 +113,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;8,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;11,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -548,8 +548,9 @@ export default function PrivacyPolicyPage() {
               Earlier versions of a note&apos;s content are deleted automatically after 30 days
             </li>
             <li>
-              Attachment files of permanently deleted notes may stay in storage until you delete
-              your account
+              Attachment files of permanently deleted notes are deleted from storage too: right away
+              when you delete on the web, and within a day when the note is deleted by the 30-day
+              trash cleanup or in the iOS, Android and macOS apps
             </li>
           </ul>
 

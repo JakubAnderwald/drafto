@@ -7,13 +7,8 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...args),
 }));
 
-const {
-  removeAllUserAttachments,
-  removeNoteAttachments,
-  removeUserAttachments,
-  LIST_PAGE_SIZE,
-  REMOVE_BATCH_SIZE,
-} = await import("@/lib/storage/remove-user-attachments");
+const { removeAllUserAttachments, removeUserAttachments, LIST_PAGE_SIZE, REMOVE_BATCH_SIZE } =
+  await import("@/lib/storage/remove-user-attachments");
 
 const USER_ID = "bbbbbbbb-0000-4000-8000-000000000002";
 
@@ -265,69 +260,5 @@ describe("removeAllUserAttachments", () => {
     removeMock.mockRejectedValue(thrown);
 
     await expect(removeAllUserAttachments(client, USER_ID)).rejects.toBe(thrown);
-  });
-});
-
-describe("removeNoteAttachments", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    removeMock.mockResolvedValue({ data: [], error: null });
-  });
-
-  it("removes only the files under the note's own folder", async () => {
-    mockTree({
-      [USER_ID]: [folder("note-1"), folder("note-2")],
-      [`${USER_ID}/note-1`]: [file("a.png"), file("b.pdf")],
-      [`${USER_ID}/note-2`]: [file("c.jpg")],
-    });
-
-    await removeNoteAttachments(client, USER_ID, "note-1");
-
-    expect(storageFromMock).toHaveBeenCalledWith("attachments");
-    expect(listMock).toHaveBeenCalledTimes(1);
-    expect(listMock).toHaveBeenCalledWith(`${USER_ID}/note-1`, {
-      limit: LIST_PAGE_SIZE,
-      offset: 0,
-    });
-    expect(removeMock).toHaveBeenCalledTimes(1);
-    expect(removeMock).toHaveBeenCalledWith([`${USER_ID}/note-1/a.png`, `${USER_ID}/note-1/b.pdf`]);
-  });
-
-  it("skips remove when the note's folder is empty", async () => {
-    mockTree({});
-
-    await removeNoteAttachments(client, USER_ID, "note-1");
-
-    expect(removeMock).not.toHaveBeenCalled();
-    expect(captureExceptionMock).not.toHaveBeenCalled();
-  });
-
-  it("reports a list error to Sentry with the note id, without throwing", async () => {
-    const listError = new Error("list failed");
-    listMock.mockResolvedValue({ data: null, error: listError });
-
-    await expect(removeNoteAttachments(client, USER_ID, "note-1")).resolves.toBeUndefined();
-
-    expect(removeMock).not.toHaveBeenCalled();
-    expect(captureExceptionMock).toHaveBeenCalledWith(listError, {
-      extra: { where: "remove-note-attachments:list", userId: USER_ID, noteId: "note-1" },
-    });
-  });
-
-  it("reports a remove error to Sentry with the note id, without throwing", async () => {
-    mockTree({ [`${USER_ID}/note-1`]: [file("a.png")] });
-    const removeError = new Error("remove failed");
-    removeMock.mockResolvedValue({ data: null, error: removeError });
-
-    await expect(removeNoteAttachments(client, USER_ID, "note-1")).resolves.toBeUndefined();
-
-    expect(captureExceptionMock).toHaveBeenCalledWith(removeError, {
-      extra: {
-        where: "remove-note-attachments:remove",
-        userId: USER_ID,
-        noteId: "note-1",
-        batchSize: 1,
-      },
-    });
   });
 });

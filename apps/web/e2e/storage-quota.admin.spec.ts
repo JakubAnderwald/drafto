@@ -133,7 +133,10 @@ test.describe("Storage quota", () => {
       await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
       const editor = page.locator("[contenteditable='true']").first();
       await expect(async () => {
-        await page.getByRole("button", { name: NOTE_TITLE }).click({ timeout: 1000 });
+        // Anchored: a substring match also finds the row's "Actions for <title>" button.
+        await page
+          .getByRole("button", { name: new RegExp(`^${NOTE_TITLE}`) })
+          .click({ timeout: 1000 });
         await expect(editor).toBeVisible({ timeout: 2000 });
       }).toPass({ timeout: 15000 });
       await editor.click();
@@ -151,6 +154,9 @@ test.describe("Storage quota", () => {
       await expect(page.getByTestId("note-editor-upload-error")).toContainText("Storage full:", {
         timeout: 10000,
       });
+      // The refused file block is removed, so BlockNote shows no error of its own.
+      await expect(page.locator("[data-content-type='file']")).toHaveCount(0);
+      await expect(page.locator(".bn-error-text")).toHaveCount(0);
     });
   });
 

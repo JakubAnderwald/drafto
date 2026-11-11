@@ -44,20 +44,19 @@ function authenticateAs(userId: string) {
 
 const params = Promise.resolve({ id: "note-1" });
 
-const mockRemoveNoteAttachments = vi.fn();
-vi.mock("@/lib/storage/remove-user-attachments", () => ({
-  removeNoteAttachments: (...args: unknown[]) => mockRemoveNoteAttachments(...args),
+// after() runs its task once the response is sent; collect the tasks to run them later.
+const afterTasks: Array<() => unknown> = [];
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: (task: () => unknown) => {
+    afterTasks.push(task);
+  },
 }));
+const runAfterTasks = () => Promise.all(afterTasks.splice(0).map((task) => task()));
 
-const adminClient = { tag: "service-role" };
-const mockCreateAdminClient = vi.fn();
-vi.mock("@/lib/supabase/admin", () => ({
-  createAdminClient: (...args: unknown[]) => mockCreateAdminClient(...args),
-}));
-
-const mockCaptureException = vi.fn();
-vi.mock("@sentry/nextjs", () => ({
-  captureException: (...args: unknown[]) => mockCaptureException(...args),
+const mockRemoveUserOrphanedAttachments = vi.fn();
+vi.mock("@/lib/storage/remove-orphaned-attachments", () => ({
+  removeUserOrphanedAttachments: (...args: unknown[]) => mockRemoveUserOrphanedAttachments(...args),
 }));
 
 describe("Trash API", () => {
@@ -165,8 +164,8 @@ describe("Trash API", () => {
 
     beforeEach(() => {
       calls = [];
-      mockCreateAdminClient.mockReturnValue(adminClient);
-      mockRemoveNoteAttachments.mockImplementation(() => {
+      afterTasks.length = 0;
+      mockRemoveUserOrphanedAttachments.mockImplementation(() => {
         calls.push("remove-files");
         return Promise.resolve();
       });
@@ -177,7 +176,7 @@ describe("Trash API", () => {
 
       const response = await callDelete();
       expect(response.status).toBe(401);
-      expect(mockRemoveNoteAttachments).not.toHaveBeenCalled();
+      expect(mockRemoveUserOrphanedAttachments).not.toHaveBeenCalled();
     });
 
     it("returns 404 and leaves storage alone when the note isn't a trashed note of the user", async () => {
@@ -186,36 +185,21 @@ describe("Trash API", () => {
 
       const response = await callDelete();
       expect(response.status).toBe(404);
-      expect(mockCreateAdminClient).not.toHaveBeenCalled();
-      expect(mockRemoveNoteAttachments).not.toHaveBeenCalled();
+      expect(afterTasks).toHaveLength(0);
+      expect(mockRemoveUserOrphanedAttachments).not.toHaveBeenCalled();
     });
 
-    it("deletes the note, then removes its folder's files with the service-role client", async () => {
+    it("deletes the note, then sweeps the user's orphaned files after the response", async () => {
       authenticateAs("user-1");
       mockNoteDelete();
 
       const response = await callDelete();
       expect(response.status).toBe(200);
-      expect(calls).toEqual(["delete-note", "remove-files"]);
-      expect(mockCreateAdminClient).toHaveBeenCalledWith("web-trash");
-      expect(mockRemoveNoteAttachments).toHaveBeenCalledWith(adminClient, "user-1", "note-1");
-      expect(mockCaptureException).not.toHaveBeenCalled();
-    });
-
-    it("still succeeds, and reports to Sentry, when the service-role client is unavailable", async () => {
-      authenticateAs("user-1");
-      mockNoteDelete();
-      const missingKey = new Error("SUPABASE_SERVICE_ROLE_KEY is not configured");
-      mockCreateAdminClient.mockImplementation(() => {
-        throw missingKey;
-      });
-
-      const response = await callDelete();
-      expect(response.status).toBe(200);
+      // Deferred: nothing is swept until after() runs its task.
       expect(calls).toEqual(["delete-note"]);
-      expect(mockCaptureException).toHaveBeenCalledWith(missingKey, {
-        extra: { where: "notes-permanent:storage", noteId: "note-1" },
-      });
+      await runAfterTasks();
+      expect(calls).toEqual(["delete-note", "remove-files"]);
+      expect(mockRemoveUserOrphanedAttachments).toHaveBeenCalledWith("user-1", "web-trash");
     });
   });
 

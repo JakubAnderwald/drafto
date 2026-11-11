@@ -18,6 +18,13 @@
 //   - the API roles can't call the internal per-user helpers, can read only
 //     their own usage, can't call the admin RPC, and can't lift their own quota.
 //
+// And from supabase/migrations/20261111000001_attachment_orphan_sweep.sql:
+//   - once a note is deleted, orphaned_attachment_objects() lists its objects
+//     (only that user's with `only_user`), and storage_object_bytes() no longer
+//     counts them, so a user who frees space isn't refused before the sweep;
+//   - the API roles can call neither orphaned_attachment_objects() nor the
+//     30-day purge, cleanup_trashed_notes().
+//
 // Opt-in: it runs only when NEXT_PUBLIC_SUPABASE_ANON_KEY and
 // SUPABASE_SERVICE_ROLE_KEY are exported and NEXT_PUBLIC_SUPABASE_URL's origin
 // is exactly the dev project over HTTPS. The CI scripts job exports none of
@@ -291,6 +298,7 @@ describe(
     let rowless; // quota TINY_QUOTA: objects stored without rows
     let unlimited; // quota NULL, as admins have
     let plain; // the default quota, never changed
+    let orphaned; // the default quota: objects left behind by a deleted note
 
     before(
       async () => {
@@ -300,6 +308,7 @@ describe(
         rowless = await createUser("rowless", TINY_QUOTA);
         unlimited = await createUser("unlimited", null);
         plain = await createUser("plain");
+        orphaned = await createUser("orphaned");
       },
       { timeout: 120_000 },
     );
@@ -466,6 +475,84 @@ describe(
         // 350 bytes is far below the term's limit (quota + one 50 MB file), so
         // uploads stay open. Reaching it would take over 50 MB of uploads.
         assert.equal((await rpc("can_store_attachment", rowless.auth)).body, true);
+      },
+    );
+
+    it(
+      "lists a deleted note's objects as orphans, without counting them in the object term",
+      { timeout: 30_000 },
+      async () => {
+        const sizes = [120, 80];
+        const paths = [];
+        for (const [i, size] of sizes.entries()) {
+          const upload = await uploadObject(orphaned, `orphan-${i}.txt`, {
+            data: "x".repeat(size),
+          });
+          assert.equal(upload.status, 200, `upload ${i}: ${formatResponse(upload)}`);
+          paths.push(`${orphaned.id}/${orphaned.noteId}/orphan-${i}.txt`);
+        }
+
+        const listOrphans = async (args) => {
+          const res = await rpc("orphaned_attachment_objects", SERVICE, args);
+          assert.equal(res.status, 200, `orphaned_attachment_objects: ${formatResponse(res)}`);
+          return res.body;
+        };
+
+        // While the note exists, nothing of this user's is an orphan.
+        assert.deepEqual(await listOrphans({ only_user: orphaned.id }), []);
+
+        const del = await call(`/rest/v1/notes?id=eq.${orphaned.noteId}`, {
+          method: "DELETE",
+          ...SERVICE,
+          prefer: "return=representation",
+        });
+        assert.equal(del.status, 200, `delete the note: ${formatResponse(del)}`);
+        assert.equal(del.body.length, 1);
+
+        assert.deepEqual(await listOrphans({ only_user: orphaned.id }), paths);
+        // Another user's folder is out of an only_user listing.
+        assert.deepEqual(await listOrphans({ only_user: plain.id }), []);
+        // The everyone listing includes them (other orphans on dev may come first).
+        const everyone = await listOrphans({ max_rows: 1000 });
+        assert.ok(Array.isArray(everyone) && everyone.length <= 1000);
+        assert.deepEqual(await listOrphans({ only_user: orphaned.id, max_rows: 1 }), [paths[0]]);
+
+        // The policy's object term skips objects whose note is gone.
+        const objectBytes = await rpc("storage_object_bytes", SERVICE, { uid: orphaned.id });
+        assert.equal(objectBytes.status, 200, formatResponse(objectBytes));
+        assert.equal(objectBytes.body, 0);
+
+        const removed = await call(`/storage/v1/object/${BUCKET}`, {
+          method: "DELETE",
+          ...SERVICE,
+          body: { prefixes: paths },
+        });
+        assert.ok(removed.ok, `remove the orphans: ${formatResponse(removed)}`);
+        for (const p of paths) uploadedPaths.delete(p);
+
+        assert.deepEqual(await listOrphans({ only_user: orphaned.id }), []);
+      },
+    );
+
+    it(
+      "keeps the orphan listing and the 30-day purge out of the API roles' reach",
+      { timeout: 30_000 },
+      async () => {
+        for (const [who, auth] of [
+          ["anon", ANON],
+          ["authenticated", plain.auth],
+        ]) {
+          const orphans = await rpc("orphaned_attachment_objects", auth, { only_user: plain.id });
+          assert.ok(
+            [401, 403, 404].includes(orphans.status),
+            `${who} orphaned_attachment_objects: ${formatResponse(orphans)}`,
+          );
+          const purge = await rpc("cleanup_trashed_notes", auth);
+          assert.ok(
+            [401, 403, 404].includes(purge.status),
+            `${who} cleanup_trashed_notes: ${formatResponse(purge)}`,
+          );
+        }
       },
     );
 

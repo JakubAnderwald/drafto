@@ -221,9 +221,15 @@ export interface Database {
         Args: Record<PropertyKey, never>;
         Returns: string;
       };
+      // Service role only (pg_cron and the cron route).
       cleanup_trashed_notes: {
         Args: Record<PropertyKey, never>;
         Returns: number;
+      };
+      // Service role only: attachment object names whose note no longer exists.
+      orphaned_attachment_objects: {
+        Args: { max_rows?: number; only_user?: string | null };
+        Returns: string[];
       };
       // The caller's attachment storage usage and quota (issue #794). One row.
       get_my_storage_usage: {
