@@ -10,10 +10,25 @@ import assetLinks from "../../../web/public/.well-known/assetlinks.json";
 // unverifiable host fails the whole autoVerify filter. Play Console reported it
 // as an unverified domain with two broken web links.
 //
-// The paths must match apps/web/public/.well-known/apple-app-site-association,
-// which apps/web/__tests__/unit/app-association-files.test.ts pins to the same
-// two prefixes.
-const APP_LINK_PATH_PREFIXES = ["/notebooks", "/notes"];
+// The Android paths must match apps/web/public/.well-known/apple-app-site-association,
+// so both platforms claim the same URLs. That file has no .json extension, so it
+// can't be imported. It's read with Node's fs through jest, because the mobile
+// tsconfig has no Node types. apps/mobile/turbo.json adds the file to this
+// package's test inputs, so editing it invalidates the cached result.
+interface ReadFs {
+  readFileSync(path: string, encoding: "utf8"): string;
+}
+
+function readIosAssociationFile(): {
+  applinks: { details: { components: Record<string, string>[] }[] };
+} {
+  const testPath = expect.getState().testPath ?? "";
+  const file = testPath.replace(
+    /apps\/mobile\/__tests__\/.*$/,
+    "apps/web/public/.well-known/apple-app-site-association",
+  );
+  return JSON.parse(jest.requireActual<ReadFs>("fs").readFileSync(file, "utf8"));
+}
 
 const config: ExpoConfig = appConfig({
   config: {},
@@ -42,9 +57,15 @@ describe("app.config.ts App Links / Universal Links", () => {
     expect(config.ios?.associatedDomains).toEqual(["applinks:drafto.eu"]);
   });
 
-  it("claims the note and notebook paths the iOS association file claims", () => {
-    const prefixes = appLinkData.map((entry) => entry.pathPrefix).sort();
-    expect(prefixes).toEqual(APP_LINK_PATH_PREFIXES);
+  it("claims exactly the paths the iOS association file claims", () => {
+    // iOS `/notes/*` ↔ Android pathPrefix `/notes/`.
+    const iosPrefixes = readIosAssociationFile()
+      .applinks.details.flatMap((detail) => detail.components.map((component) => component["/"]))
+      .map((pattern) => pattern.replace(/\*$/, ""));
+    const androidPrefixes = appLinkData.map((entry) => entry.pathPrefix);
+
+    expect(iosPrefixes.length).toBeGreaterThan(0);
+    expect([...androidPrefixes].sort()).toEqual([...iosPrefixes].sort());
   });
 
   it("uses the package name assetlinks.json delegates to", () => {

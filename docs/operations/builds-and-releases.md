@@ -312,6 +312,8 @@ adb shell pm verify-app-links --re-verify eu.drafto.mobile
 adb shell pm get-app-links eu.drafto.mobile   # drafto.eu: verified
 ```
 
+Only Play builds and APKs signed with the upload key verify. A debug build (`pnpm android`, Maestro) is signed with the Android debug keystore, so its links open in the browser, which is expected. To test link handling on one, approve the domain by hand: `adb shell pm set-app-links-user-selection --user cur --package eu.drafto.mobile true drafto.eu`.
+
 Play Console → Deep links reports on the build on the track it checks. A host removed from the intent filter stays listed until a build without it reaches that track.
 
 ## Google OAuth branding

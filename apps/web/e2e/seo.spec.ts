@@ -44,8 +44,9 @@ test.describe("Search engine and app-link files (signed out)", () => {
 
     expect(response.status()).toBe(200);
     expect(response.headers()["content-type"]).toContain("application/json");
-    const statements = await response.json();
-    expect(statements[0].target.package_name).toBe("eu.drafto.mobile");
+    const statements: unknown = await response.json();
+    expect(Array.isArray(statements)).toBe(true);
+    expect(statements).toMatchObject([{ target: { package_name: "eu.drafto.mobile" } }]);
   });
 
   test("the sign-up page declares its apex URL as canonical", async ({ page }) => {
