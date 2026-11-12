@@ -809,7 +809,8 @@ export function protectedTextReason(text, config) {
   if (/delete-users(?!\.test\.mjs)/.test(lower) || lower.includes("users:delete")) {
     return "deleting user accounts (pnpm users:delete) is for interactive sessions only";
   }
-  // Reads a project's (by default prod's) service-role key: operators only.
+  // Reads the service-role key of the project --project names (prod or dev):
+  // operators only.
   // Its unit tests (fakes only) stay runnable.
   if (/user-stats(?!\.test\.mjs)/.test(lower) || lower.includes("users:stats")) {
     return "the product metrics (pnpm users:stats) read a service-role key and are for interactive sessions only";

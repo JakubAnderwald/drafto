@@ -33,7 +33,7 @@ Compute every product metric inside Postgres, as SQL functions, and have every c
   - The database enforces both the read-only use (`STABLE` functions over read-only GET requests) and who may call them.
   - The SQL runs in CI: PGlite executes both migrations verbatim, over stand-in tables with backdated data. A dev live test (`pnpm test:live:supabase -- --only metrics`) checks the real project, including the permissions.
 - **Negative**:
-  - The metrics inherit the history's 30-day retention. Older weeks become lower bounds (`activated` turns null), and a note's first version can only be known while its oldest overwrite is kept.
+  - The metrics inherit the history's 30-day retention. In older weeks `activated` turns null and `first_value` becomes a lower bound. `writers` can be off in either direction there, because purged overwrites drop out and a note's first version can only be known while its oldest overwrite is kept.
   - Inserts carry no client tag, so writers known only from new notes, including notes created offline on mobile or desktop, count as `untagged`.
   - Activation dates a note's versions by `updated_at` (the current one) and `content_updated_at` (the overwritten ones), as its definition says. Both also move on renames, notebook moves and trash changes, so a later non-content change can add a second activation day or push a version out of the 14-day window. Writers and depth don't depend on `updated_at`.
   - The functions read every note and history row on each call (`note_text_chars` per version). That's bounded by the retention and today's data size, and the callers are on-demand or weekly; a materialised table would be the next step if it gets slow.
