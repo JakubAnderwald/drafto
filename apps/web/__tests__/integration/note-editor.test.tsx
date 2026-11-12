@@ -11,9 +11,18 @@ import {
 // Mock BlockNote dependencies — they require a real DOM canvas, which jsdom lacks
 let capturedUploadFile: ((file: File, blockId?: string) => Promise<string>) | undefined;
 // The editor stub useCreateBlockNote returns: the storage-full path removes the
-// placeholder block through it.
+// placeholder block through it. discardRefusedUploadBlock's own test covers what
+// that does to a real BlockNote document.
 const mockGetBlock = vi.fn();
 const mockRemoveBlocks = vi.fn();
+const mockUpdateBlock = vi.fn();
+/** A block as getBlock returns it: an empty placeholder unless `url` is given. */
+const fileBlock = (id: string, url = "") => ({
+  id,
+  type: "image",
+  props: { url, name: "photo.png" },
+  children: [],
+});
 let capturedResolveFileUrl: ((url: string) => Promise<string>) | undefined;
 
 // Mock the extracted hook — returns a resolver that delegates to fetch
@@ -43,7 +52,12 @@ vi.mock("@blocknote/react", () => ({
     resolveFileUrl?: (url: string) => Promise<string>;
   }) => {
     capturedUploadFile = opts?.uploadFile;
-    return { document: [], getBlock: mockGetBlock, removeBlocks: mockRemoveBlocks };
+    return {
+      document: [],
+      getBlock: mockGetBlock,
+      removeBlocks: mockRemoveBlocks,
+      updateBlock: mockUpdateBlock,
+    };
   },
   BlockNoteView: vi.fn(({ editor: _editor, theme: _theme }) => (
     <div data-testid="blocknote-editor">BlockNote Editor</div>
@@ -89,6 +103,7 @@ describe("NoteEditor", () => {
     mockUploadToSignedUrl.mockReset();
     mockGetBlock.mockReset();
     mockRemoveBlocks.mockReset();
+    mockUpdateBlock.mockReset();
   });
 
   afterEach(() => {
@@ -335,7 +350,7 @@ describe("NoteEditor", () => {
 
     const expected = storageFullMessage(usedBytes, DEFAULT_STORAGE_QUOTA_BYTES);
     const file = new File(["test"], "photo.png", { type: "image/png" });
-    mockGetBlock.mockReturnValue({ id: "block-1" });
+    mockGetBlock.mockReturnValue(fileBlock("block-1"));
     await act(async () => {
       await expect(capturedUploadFile!(file, "block-1")).rejects.toThrow(expected);
     });
@@ -377,6 +392,40 @@ describe("NoteEditor", () => {
     expect(mockRemoveBlocks).not.toHaveBeenCalled();
   });
 
+  it("keeps an image that already has its file when Replace is refused for the quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () =>
+        Promise.resolve({
+          error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+          code: STORAGE_QUOTA_EXCEEDED_CODE,
+          usedBytes: 10,
+          quotaBytes: 10,
+          status: 413,
+        }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    // BlockNote's Replace button hands uploadFile the existing image's block.
+    mockGetBlock.mockReturnValue(fileBlock("block-3", "attachment://user-1/note-42/old.png"));
+    const file = new File(["test"], "new.png", { type: "image/png" });
+    await act(async () => {
+      await expect(capturedUploadFile!(file, "block-3")).rejects.toThrow(
+        storageFullMessage(10, 10),
+      );
+    });
+
+    expect(screen.getByTestId("note-editor-upload-error")).toHaveTextContent(
+      storageFullMessage(10, 10),
+    );
+    expect(mockRemoveBlocks).not.toHaveBeenCalled();
+    expect(mockUpdateBlock).not.toHaveBeenCalled();
+  });
+
   it("shows the storage-full message when confirm refuses for the quota", async () => {
     mockFetch
       .mockResolvedValueOnce({
@@ -409,7 +458,7 @@ describe("NoteEditor", () => {
 
     const expected = storageFullMessage(null, null);
     const file = new File(["test"], "photo.png", { type: "image/png" });
-    mockGetBlock.mockReturnValue({ id: "block-7" });
+    mockGetBlock.mockReturnValue(fileBlock("block-7"));
     await act(async () => {
       await expect(capturedUploadFile!(file, "block-7")).rejects.toThrow(expected);
     });
@@ -430,7 +479,7 @@ describe("NoteEditor", () => {
     });
 
     const file = new File(["test"], "large.bin", { type: "application/octet-stream" });
-    mockGetBlock.mockReturnValue({ id: "block-1" });
+    mockGetBlock.mockReturnValue(fileBlock("block-1"));
     await act(async () => {
       await expect(capturedUploadFile!(file, "block-1")).rejects.toThrow(
         "File size exceeds 50MB limit",

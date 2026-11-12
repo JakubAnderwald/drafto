@@ -120,17 +120,46 @@ describe("removeOrphanedAttachments", () => {
     await expect(removeOrphanedAttachments(client, USER_ID)).resolves.toBe(2);
   });
 
-  it("stops, and reports to Sentry, when a remove deletes nothing", async () => {
+  it("stops, and reports to Sentry, when a remove deletes nothing and the names stay listed", async () => {
     // Otherwise every round would list the same names again.
     rpcMock.mockResolvedValue({ data: paths(ORPHAN_BATCH_SIZE), error: null });
     removeMock.mockResolvedValue({ data: [], error: null });
 
     await expect(removeOrphanedAttachments(client)).resolves.toBe(0);
-    expect(rpcMock).toHaveBeenCalledTimes(1);
+    // Listed, removed (nothing deleted), listed again (still there): reported.
+    expect(rpcMock).toHaveBeenCalledTimes(2);
+    expect(removeMock).toHaveBeenCalledTimes(1);
     expect(mockCaptureException).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining("removed none") }),
       expect.anything(),
     );
+  });
+
+  it("reports nothing when another sweep removed the names first", async () => {
+    // Two sweeps of one user overlap: both list the same orphans, and this
+    // one's remove finds them already gone.
+    rpcMock
+      .mockResolvedValueOnce({ data: paths(3), error: null })
+      .mockResolvedValueOnce({ data: [], error: null });
+    removeMock.mockResolvedValueOnce({ data: [], error: null });
+
+    await expect(removeOrphanedAttachments(client, USER_ID)).resolves.toBe(0);
+    expect(rpcMock).toHaveBeenCalledTimes(2);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  it("carries on with new names after a remove that deleted nothing", async () => {
+    rpcMock
+      .mockResolvedValueOnce({ data: paths(2, "a"), error: null })
+      .mockResolvedValueOnce({ data: paths(2, "b"), error: null });
+    removeMock
+      .mockResolvedValueOnce({ data: [], error: null })
+      .mockImplementationOnce((names: string[]) => Promise.resolve(deletedAll(names)));
+
+    await expect(removeOrphanedAttachments(client, USER_ID)).resolves.toBe(2);
+    expect(removeMock).toHaveBeenLastCalledWith(paths(2, "b"));
+    expect(rpcMock).toHaveBeenCalledTimes(2);
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
   it("reports a thrown error to Sentry without throwing", async () => {

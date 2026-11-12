@@ -16,6 +16,7 @@ import {
   StorageQuotaError,
 } from "@drafto/shared";
 import { useAttachmentUrlResolver } from "@/components/editor/use-attachment-url-resolver";
+import { discardRefusedUploadBlock } from "@/components/editor/discard-refused-upload-block";
 import { createClient } from "@/lib/supabase/client";
 
 interface NoteEditorProps {
@@ -101,14 +102,13 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : "Upload failed");
         // A storage-full refusal is final: retrying from the same block can't
-        // succeed. Remove the placeholder block BlockNote inserted for the file,
-        // so the banner above is the only message. Otherwise BlockNote's upload
-        // panel adds its own generic "Upload failed" next to it, and a dropped or
-        // pasted file leaves an empty image block behind. BlockNote stops
-        // handling the upload once the block is gone.
-        if (err instanceof StorageQuotaError && blockId) {
-          const editor = editorRef.current;
-          if (editor?.getBlock(blockId)) editor.removeBlocks([blockId]);
+        // succeed. Take back the placeholder BlockNote made for the file, so the
+        // banner above is the only message, but never a block that already has
+        // its file (Replace) or the children of a block converted in place.
+        // Other failures keep the block, so the user can pick another file.
+        const editor = editorRef.current;
+        if (err instanceof StorageQuotaError && blockId && editor) {
+          discardRefusedUploadBlock(editor, blockId);
         }
         throw err;
       }

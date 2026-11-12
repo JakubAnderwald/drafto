@@ -29,6 +29,11 @@ export async function removeOrphanedAttachments(
 ): Promise<number> {
   const bucket = client.storage.from(BUCKET_NAME);
   let removed = 0;
+  // The names of a remove that deleted none of them. Another sweep running at
+  // the same time (two quick deletes by one user, or a user's sweep during the
+  // daily one) may have removed them first, so they are listed once more, and
+  // only reported if they are still there.
+  let undeleted: ReadonlySet<string> | null = null;
 
   for (let batch = 0; batch < MAX_ORPHAN_BATCHES; batch++) {
     try {
@@ -40,16 +45,20 @@ export async function removeOrphanedAttachments(
       const paths = data ?? [];
       if (paths.length === 0) return removed;
 
+      // Still listed after a remove that deleted nothing: Storage refused them,
+      // and every further round would list the same names again.
+      const refused = undeleted;
+      if (refused && paths.some((path) => refused.has(path))) {
+        throw new Error(`Storage removed none of ${refused.size} orphaned attachment objects`);
+      }
+
       const { data: deleted, error: removeError } = await bucket.remove(paths);
       if (removeError) throw removeError;
       const deletedCount = deleted?.length ?? 0;
       removed += deletedCount;
 
-      // A remove that deleted nothing would get the same names listed again.
-      if (deletedCount === 0) {
-        throw new Error(`Storage removed none of ${paths.length} orphaned attachment objects`);
-      }
-      if (paths.length < REMOVE_BATCH_SIZE) return removed;
+      undeleted = deletedCount === 0 ? new Set(paths) : null;
+      if (deletedCount > 0 && paths.length < REMOVE_BATCH_SIZE) return removed;
     } catch (err) {
       Sentry.captureException(err, {
         extra: { where: "remove-orphaned-attachments", userId: userId ?? "all", removed },
