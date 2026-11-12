@@ -98,11 +98,13 @@ Xcode 27 (installed on the Mac mini on 2026-10-04) breaks every iOS build in two
 
 These files hold Expo public env vars (Supabase URL/anon key, Google iOS URL scheme) and are gitignored. They are **not** in `~/drafto-secrets/` — restore from a personal backup. Worktree copy steps for these files are in [`CLAUDE.md`](../../CLAUDE.md) → "Worktree Workflow".
 
-### macOS TestFlight upload: `CDUploaderStateInfoResumeFilePath` after "UPLOAD SUCCEEDED"
+### TestFlight upload (macOS and iOS): `CDUploaderStateInfoResumeFilePath` after "UPLOAD SUCCEEDED"
 
 altool sometimes uploads the `.pkg`, prints `UPLOAD SUCCEEDED with no errors`, and then logs `ERROR: … Failed to create URL for 'CDUploaderStateInfoResumeFilePath'. The file doesn't exist.` fastlane fails the upload on that line. Desktop 0.4.4 builds 74 and 76 hit it: the builds were in App Store Connect, but the lane stopped before the release notes, the released-issue comments and the `desktop@` tag.
 
 `mac beta` now treats that one error as spurious if App Store Connect lists the build it just uploaded, under the same build number and version. It polls for up to 10 minutes, logs `altool's error was spurious — continuing`, and finishes the lane. Any other upload error still fails the lane. So does this one if the build never shows up, or if Apple has already marked it `INVALID`.
+
+iOS hit it too: 1.4.7 build 66 reached App Store Connect while `ios beta` failed. The mobile lane (`upload_to_testflight_checked` in `apps/mobile/fastlane/Fastfile`) now handles it the same way, polling for the iOS build under the `package.json` version.
 
 ### macOS `with-environment.sh: No such file` (`REACT_NATIVE_PATH`)
 
