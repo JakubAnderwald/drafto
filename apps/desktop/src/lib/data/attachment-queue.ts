@@ -18,7 +18,7 @@ import { database, Attachment } from "@/db";
 import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
 import type { PickedFile } from "./attachments";
-import { fetchStorageUsage } from "./storage-usage";
+import { fetchStorageUsage } from "@/lib/data/storage-usage";
 
 /** What one processPendingUploads() run did. */
 export interface UploadResult {
@@ -239,6 +239,24 @@ async function storeAttachment(attachment: Attachment, bytes: Uint8Array): Promi
 }
 
 /**
+ * Best-effort removal of the object a refused attachment's row would have pointed at
+ * (the row is known not to exist). Storage reports most failures in its result rather
+ * than throwing, so both are checked and logged. The refusal stands either way: a
+ * leftover object stays under its note, counted in the bucket policy's object term but
+ * not in usage, until the note is deleted and the server's orphan sweep removes it.
+ */
+async function removeRefusedObject(attachment: Attachment): Promise<void> {
+  try {
+    const { error } = await supabase.storage.from(BUCKET_NAME).remove([attachment.filePath]);
+    if (error) {
+      console.warn(`Failed to remove refused attachment ${attachment.fileName}:`, error);
+    }
+  } catch (err) {
+    console.warn(`Failed to remove refused attachment ${attachment.fileName}:`, err);
+  }
+}
+
+/**
  * Uploads one queued attachment and records the outcome on it. Returns false when it
  * failed; the caller tells a quota refusal (`attachment.isStorageFull`) from a
  * transient failure.
@@ -250,13 +268,7 @@ async function uploadQueuedAttachment(attachment: Attachment): Promise<boolean> 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (isStorageQuotaError(err)) {
-      // Best-effort removal of an object the refused row would have pointed at: the
-      // row is known not to exist, and nothing else sweeps orphaned storage objects.
-      try {
-        await supabase.storage.from(BUCKET_NAME).remove([attachment.filePath]);
-      } catch (removeErr) {
-        console.warn(`Failed to remove refused attachment ${attachment.fileName}:`, removeErr);
-      }
+      await removeRefusedObject(attachment);
       // Terminal: processPendingUploads only retries "pending" / "failed".
       await database.write(async () => {
         await attachment.update((record) => {

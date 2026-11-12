@@ -483,6 +483,24 @@ describe("storage quota (issue #794)", () => {
     expect(fields.uploadStatus).toBe("quota_exceeded");
   });
 
+  it("logs a removal Storage reports as failed, and still records storage full", async () => {
+    // Storage reports most failures in its result rather than throwing.
+    const removeError = { name: "StorageApiError", message: "Internal Server Error", status: 500 };
+    mockFetchStorageUsage.mockResolvedValue(FULL);
+    mockRemove.mockResolvedValue({ data: null, error: removeError });
+    const { attachment, fields } = makeAttachment();
+
+    await expect(uploadAttachment(attachment)).resolves.toBe(false);
+
+    expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/photo.jpg"]);
+    expect(console.warn).toHaveBeenCalledWith(
+      "Failed to remove refused attachment photo.jpg:",
+      removeError,
+    );
+    expect(fields.uploadStatus).toBe("quota_exceeded");
+    expect(fields.uploadError).toBe(storageFullMessage(FULL.usedBytes, FULL.quotaBytes));
+  });
+
   // The picker reports its own upload's refusal, so a sync that only shares or
   // follows that attempt mustn't count it: the user would get two toasts.
   it("doesn't count a refusal by a direct upload the sync joined mid-flight", async () => {

@@ -382,6 +382,30 @@ describe("processPendingUploads", () => {
       expect(attachment.uploadError).toBe(storageFullMessage(undefined, undefined));
     });
 
+    it("logs a removal Storage reports as failed, and still marks the refusal", async () => {
+      const attachment = makeLiveAttachment();
+      queue(attachment);
+      mockUpload.mockResolvedValue({ error: null });
+      mockUpsert.mockResolvedValue({ error: { message: STORAGE_QUOTA_EXCEEDED_CODE } });
+      // Storage reports most failures in its result rather than throwing.
+      const removeError = {
+        name: "StorageApiError",
+        message: "Internal Server Error",
+        status: 500,
+      };
+      mockRemove.mockResolvedValue({ data: null, error: removeError });
+
+      const result = await processPendingUploads();
+
+      expect(mockRemove).toHaveBeenCalledWith([attachment.filePath]);
+      expect(console.warn).toHaveBeenCalledWith(
+        `Failed to remove refused attachment ${attachment.fileName}:`,
+        removeError,
+      );
+      expect(result).toEqual({ uploaded: 0, storageFull: 1 });
+      expect(attachment.uploadStatus).toBe("quota_exceeded");
+    });
+
     it("refuses at the pre-check without uploading when the file can't fit", async () => {
       const attachment = makeLiveAttachment();
       queue(attachment);

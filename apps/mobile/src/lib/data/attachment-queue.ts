@@ -281,19 +281,32 @@ export async function processPendingUploads(): Promise<UploadResult> {
 }
 
 /**
+ * Best-effort removal of the object a refused attachment's row would have pointed at
+ * (the row is known not to exist). Storage reports most failures in its result rather
+ * than throwing, so both are checked and logged. The refusal stands either way: a
+ * leftover object stays under its note, counted in the bucket policy's object term but
+ * not in usage, until the note is deleted and the server's orphan sweep removes it.
+ */
+async function removeRefusedObject(attachment: Attachment): Promise<void> {
+  try {
+    const { error } = await supabase.storage.from(BUCKET_NAME).remove([attachment.filePath]);
+    if (error) {
+      console.warn(`Failed to remove refused attachment ${attachment.fileName}:`, error);
+    }
+  } catch (err) {
+    console.warn(`Failed to remove refused attachment ${attachment.fileName}:`, err);
+  }
+}
+
+/**
  * Record a quota refusal (issue #794) as the terminal "quota_exceeded" status,
  * with the storage-full message. The row is known not to be on the server, so
- * an object an earlier attempt uploaded is an orphan nothing else sweeps:
- * remove it, best effort.
+ * an object an earlier attempt uploaded belongs to nothing: remove it first.
  */
 async function recordStorageFull(attachment: Attachment, err: unknown): Promise<void> {
   const message = err instanceof StorageQuotaError ? err.message : storageFullMessage(null, null);
   console.warn(`Attachment ${attachment.fileName} refused: storage quota exceeded`);
-  try {
-    await supabase.storage.from(BUCKET_NAME).remove([attachment.filePath]);
-  } catch {
-    // Best effort: a leftover object only takes space, and no row references it.
-  }
+  await removeRefusedObject(attachment);
   await database.write(async () => {
     await attachment.update((record) => {
       record.uploadStatus = "quota_exceeded";

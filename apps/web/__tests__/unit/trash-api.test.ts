@@ -125,28 +125,36 @@ describe("Trash API", () => {
     // before its files are removed, so a failed or raced delete never costs a
     // live note its files.
     let calls: string[];
+    // The delete's .eq() filters, as [column, value]: the route may only delete the
+    // user's own note, and only while it is in the trash.
+    let deleteFilters: Array<[string, unknown]>;
+    const OWN_TRASHED_NOTE_FILTERS = [
+      ["id", "note-1"],
+      ["user_id", "user-1"],
+      ["is_trashed", true],
+    ];
 
-    function mockNoteDelete(
-      result: { data: { id: string } | null; error: { message: string } | null } = {
-        data: { id: "note-1" },
-        error: null,
-      },
-    ) {
+    type DeleteResult = { data: { id: string } | null; error: { message: string } | null };
+    interface DeleteFilter {
+      eq: (column: string, value: unknown) => DeleteFilter;
+      select: () => { single: () => Promise<DeleteResult> };
+    }
+
+    function mockNoteDelete(result: DeleteResult = { data: { id: "note-1" }, error: null }) {
       mockFrom.mockImplementation((table: string) => {
         if (table === "profiles") return approvedProfile;
         if (table === "notes") {
           return {
             delete: () => {
               calls.push("delete-note");
-              return {
-                eq: () => ({
-                  eq: () => ({
-                    eq: () => ({
-                      select: () => ({ single: () => Promise.resolve(result) }),
-                    }),
-                  }),
-                }),
+              const filter: DeleteFilter = {
+                eq: (column: string, value: unknown) => {
+                  deleteFilters.push([column, value]);
+                  return filter;
+                },
+                select: () => ({ single: () => Promise.resolve(result) }),
               };
+              return filter;
             },
           };
         }
@@ -164,6 +172,7 @@ describe("Trash API", () => {
 
     beforeEach(() => {
       calls = [];
+      deleteFilters = [];
       afterTasks.length = 0;
       mockRemoveUserOrphanedAttachments.mockImplementation(() => {
         calls.push("remove-files");
@@ -185,6 +194,7 @@ describe("Trash API", () => {
 
       const response = await callDelete();
       expect(response.status).toBe(404);
+      expect(deleteFilters).toEqual(OWN_TRASHED_NOTE_FILTERS);
       expect(afterTasks).toHaveLength(0);
       expect(mockRemoveUserOrphanedAttachments).not.toHaveBeenCalled();
     });
@@ -195,6 +205,7 @@ describe("Trash API", () => {
 
       const response = await callDelete();
       expect(response.status).toBe(200);
+      expect(deleteFilters).toEqual(OWN_TRASHED_NOTE_FILTERS);
       // Deferred: nothing is swept until after() runs its task.
       expect(calls).toEqual(["delete-note"]);
       await runAfterTasks();
