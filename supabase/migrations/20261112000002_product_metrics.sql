@@ -7,7 +7,7 @@
 --
 -- Ground rules:
 --   - Metadata only. The functions read timestamps, character counts
---     (note_text_chars, 20261111000001) and client tags; none returns note
+--     (note_text_chars, 20261112000001) and client tags; none returns note
 --     text, titles or notebook names.
 --   - Writes (metrics_write_events, behind writers and depth) are counted
 --     from note_content_history (one row per content overwrite, tagged with

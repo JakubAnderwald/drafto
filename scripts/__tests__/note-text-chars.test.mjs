@@ -1,4 +1,4 @@
-// Runs supabase/migrations/20261111000001_note_text_chars.sql, verbatim, in
+// Runs supabase/migrations/20261112000001_note_text_chars.sql, verbatim, in
 // PGlite (Postgres compiled to WASM, in process) and checks what
 // public.note_text_chars counts. The product metrics (ADR 0075) count a note
 // version as writing by this number, so a double count (lax `.**`) or a missed
@@ -17,7 +17,7 @@ const MIGRATION = path.join(
   REPO_ROOT,
   "supabase",
   "migrations",
-  "20261111000001_note_text_chars.sql",
+  "20261112000001_note_text_chars.sql",
 );
 
 let db;

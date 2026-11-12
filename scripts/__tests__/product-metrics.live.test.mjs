@@ -1,5 +1,5 @@
 // Live check of the product metrics (ADR 0075,
-// supabase/migrations/20261111000002_product_metrics.sql) against the DEV
+// supabase/migrations/20261112000002_product_metrics.sql) against the DEV
 // Supabase project, over plain fetch to GoTrue and PostgREST.
 //
 // It creates a throwaway user with notes, and drives real content overwrites

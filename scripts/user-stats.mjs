@@ -2,7 +2,7 @@
 // Prints Drafto's product metrics for an operator: `pnpm users:stats`.
 //
 // Every number comes from the service-role SQL functions in
-// supabase/migrations/20261111000002_product_metrics.sql (ADR 0075); this
+// supabase/migrations/20261112000002_product_metrics.sql (ADR 0075); this
 // script only calls them and lays the rows out. Definitions:
 // docs/features/product-metrics.md.
 //

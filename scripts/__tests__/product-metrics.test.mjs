@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const MIGRATIONS = ["20261111000001_note_text_chars.sql", "20261111000002_product_metrics.sql"].map(
+const MIGRATIONS = ["20261112000001_note_text_chars.sql", "20261112000002_product_metrics.sql"].map(
   (f) => path.join(REPO_ROOT, "supabase", "migrations", f),
 );
 

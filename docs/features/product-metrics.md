@@ -111,8 +111,8 @@ Don't grant `select` on the whole table: the functions read nothing else, and th
 
 | Concern                                                | Path                                                     |
 | ------------------------------------------------------ | -------------------------------------------------------- |
-| `note_text_chars`                                      | `supabase/migrations/20261111000001_note_text_chars.sql` |
-| Exclusion table, helpers, the six metrics, permissions | `supabase/migrations/20261111000002_product_metrics.sql` |
+| `note_text_chars`                                      | `supabase/migrations/20261112000001_note_text_chars.sql` |
+| Exclusion table, helpers, the six metrics, permissions | `supabase/migrations/20261112000002_product_metrics.sql` |
 | CLI (`pnpm users:stats`)                               | `scripts/user-stats.mjs`                                 |
 | Service-role key reader shared with `users:delete`     | `scripts/lib/service-keys-txt.mjs`                       |
 | Operator-only guard for the verification lane          | `scripts/lib/verify-guard.mjs`                           |

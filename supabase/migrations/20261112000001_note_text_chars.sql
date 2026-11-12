@@ -1,6 +1,6 @@
 -- note_text_chars(content): how many characters of text a note version holds.
 --
--- The product metrics (20261111000002_product_metrics.sql, ADR 0075) count a
+-- The product metrics (20261112000002_product_metrics.sql, ADR 0075) count a
 -- version as real writing by its text length, not by updated_at, which also
 -- moves on title, trash and notebook changes. This sums char_length over every
 -- string-valued `text` key anywhere in the editor JSON: BlockNote blocks
