@@ -65,6 +65,14 @@ The file wires up three hooks:
 
 The file also lists the always-denied Chrome tools under `permissions.deny`.
 
+**Opt-in capabilities** ([ADR-0073](../adr/0073-factory-verification-data-checks-live-tests-uploads-admin-js.md)) come from the run's guard config (`--capability uploads|js|inspect`), never by default:
+
+- **uploads** moves `file_upload` off the deny list, for regular files inside the run's `fixtures/` only.
+- **js** moves `javascript_tool` off it, for code `jsVerdict` accepts: no cookies or storage, no navigation, no network requests, no dynamic code.
+- **inspect** adds a second PreToolUse hook on `Bash` and `--tools Bash`. The same guard allows exactly `dev-inspect` with plain words.
+
+`upload_image` stays denied in every config.
+
 Every hook command uses absolute paths to node and the guard. Only the PreToolUse command ends in `|| exit 2`, so a pre guard that can't run blocks the call instead of letting it through. SessionStart and PostToolUse always exit 0. A missing SessionStart record is caught by `verify`. A failed post poisons the session or leaves its in-flight marker, and either one makes the next pre deny.
 
 **`claude -p` drops a settings file that fails validation without saying so,** and would run the session with Chrome and no guard. The canary is the check. After each run, `browser-guard.mjs verify` looks for the SessionStart record. If it is missing, the factory turns the runner off until `factory:browser-reset`.
@@ -83,6 +91,8 @@ The file wires up two hooks:
 The file also lists `Edit`, `Write`, `NotebookEdit`, `WebFetch` and `WebSearch` under `permissions.deny`, on top of `--tools Bash,Read,Grep,Glob`.
 
 It is defense in depth, not a sandbox. A shell can run a script it wrote to a file, which no pattern guard follows, and the PR's own code (its install scripts and the tests the lane runs) runs with the factory user's access, outside any hook, as it already does in the implement and fix stages. So a session set on misbehaving can read whatever the factory user can: `~/drafto-secrets`, the run's `private/` curl config, the gh credentials. The OS user is the only hard boundary, as it is for the implement stage, which runs with `--dangerously-skip-permissions`.
+
+Two opt-in wrappers ([ADR-0073](../adr/0073-factory-verification-data-checks-live-tests-uploads-admin-js.md)) sit beside `preview-curl` in the run's `bin/`, and the guard lets the session name all three by full path: `dev-inspect` and `live-tests`. Their configs, `private/dev-inspect.cfg` and `private/lane-tests.cfg`, are protected names like the curl configs. The guard still denies `test:live` and `run-dev-live-tests` by name.
 
 What the lane adds keeps secrets off its ordinary path: an allowlisted environment (no tokens), an empty `GH_CONFIG_DIR`, the bypass secret and session cookie handed to `preview-curl` through its config and never to the model as text, and the report composer's secret scan, which withholds a lane whose output carries a known secret. That scan matches literals, so a secret encoded on the way out would get past it. Moving the curl config into a supervisor-held proxy wouldn't change this, because the secret's source file stays readable by the same user. The bypass secret only unlocks this project's protected deployments (its previews), and it can be regenerated in the Vercel dashboard. A real wall would be a separate OS user, or a sandbox that denies those reads and limits the network to the preview host. That's a possible follow-up.
 

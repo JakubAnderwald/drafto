@@ -96,7 +96,13 @@ describe("factory-agent.sh browser runner: static wiring", () => {
   it("locks the runner call down", () => {
     const [runner] = claudeCalls(script).filter((c) => /\s--chrome\b/.test(c));
     assert.match(runner, /--permission-mode dontAsk/);
-    assert.match(runner, /--tools ""/, "no built-in tools: no Bash, files, gh or subagents");
+    // No built-in tools (no files, gh or subagents): "" from the guard, or
+    // "Bash" when the run has dev-inspect, whose hook allows only that command.
+    assert.match(runner, /--tools "\$tools"/);
+    assert.match(
+      extract("run_browser_task"),
+      /tools=\$\(node "\$guard" session-tools --config "\$cfg"/,
+    );
     assert.match(runner, /--allowedTools "\$allowed"/);
     assert.match(runner, /--settings "\$settings"/);
     // Nothing but the prompt and the guard reach the runner: no user/project
@@ -111,7 +117,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     assert.match(runner, /run-claude\.mjs" -p --chrome/);
     assert.match(
       extract("run_browser_task"),
-      /printf '%s' "\$input" \| CLAUDE_CALL_TIMEOUT_SEC="\$FACTORY_BROWSER_TIMEOUT_SEC" \\\n\s+node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p --chrome/,
+      /printf '%s' "\$input" \| PATH="\$path_prefix\$PATH" CLAUDE_CALL_TIMEOUT_SEC="\$FACTORY_BROWSER_TIMEOUT_SEC" \\\n\s+node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p --chrome/,
     );
   });
 
@@ -528,6 +534,7 @@ node() {
     *) command node "$@" ;;
   esac
 }
+${extract("browser_capabilities_cleanup")}
 ${extract("run_browser_task")}
 rc=0
 run_browser_task intest ${JSON.stringify(join(dir, "run"))} https://drafto-x-jakubanderwalds-projects.vercel.app '{"account":{"password":"s3cret-pw"}}' || rc=$?
@@ -744,6 +751,7 @@ REPO_ROOT=${JSON.stringify(repoRoot)}
 FACTORY_SIGNIN_ROUTE_PATH=${JSON.stringify(routePath)}
 ${extract("browser_record_result")}
 ${extract("browser_signin_release")}
+${extract("browser_admin_link")}
 ${extract("browser_refund_attempt")}
 ${extract("head_has_signin_route")}
 ${extract("iso_age_min")}

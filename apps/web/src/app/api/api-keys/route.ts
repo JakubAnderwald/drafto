@@ -22,9 +22,19 @@ export async function GET(request: NextRequest) {
 }
 
 /**
+ * Longest API key name accepted, measured after trimming in UTF-16 code units
+ * (`.length`, the same unit as an input's `maxLength`).
+ */
+const MAX_API_KEY_NAME_LENGTH = 100;
+
+/**
  * POST /api/api-keys — Generate a new API key.
- * Body: { name?: string }
+ * Body: { name?: string } — `name` is trimmed; a missing, empty or
+ * whitespace-only name defaults to "Untitled key".
  * Returns: { id, key, key_prefix, name } where `key` is the raw key (shown once).
+ * 400 when the body is not a JSON object, when `name` is present but not a
+ * string (including `null`), or when the trimmed `name` is longer than
+ * MAX_API_KEY_NAME_LENGTH characters. Nothing is generated or stored on a 400.
  */
 export async function POST(request: NextRequest) {
   const { data: auth, error: authError } = await getAuthenticatedUserFast(request);
@@ -32,8 +42,26 @@ export async function POST(request: NextRequest) {
 
   const { supabase, user } = auth;
 
-  const body = (await request.json()) as { name?: string };
-  const name = (body.name ?? "").trim() || "Untitled key";
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse("Invalid JSON body", 400);
+  }
+  // `null`, arrays and bare primitives parse fine but aren't a `{ name? }` body.
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return errorResponse("Invalid JSON body", 400);
+  }
+
+  const rawName = "name" in body ? body.name : undefined;
+  if (rawName !== undefined && typeof rawName !== "string") {
+    return errorResponse("name must be a string", 400);
+  }
+  const trimmedName = typeof rawName === "string" ? rawName.trim() : "";
+  if (trimmedName.length > MAX_API_KEY_NAME_LENGTH) {
+    return errorResponse(`name must be at most ${MAX_API_KEY_NAME_LENGTH} characters`, 400);
+  }
+  const name = trimmedName || "Untitled key";
 
   // Generate a random API key: "dk_" prefix + 48 random hex chars
   const randomBytes = new Uint8Array(24);

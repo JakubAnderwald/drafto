@@ -3,6 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-10-21
 - **Authors**: Jakub Anderwald (with Claude Code)
+- **Amended by**: [0073](./0073-factory-verification-data-checks-live-tests-uploads-admin-js.md) (the shell lane's opt-in `dev-inspect` and `live-tests`)
 
 > **Update 2026-10-21 (shell lane)**: Decision 6's "never as text", and the `vercel curl` alternative's "keeps the secret out of the model's hands", describe the lane's ordinary path. The secret is handed to `preview-curl` through a mode-600 curl config, never put in the prompt, the environment or a command line. That isn't a wall. The session runs as the factory's OS user, which also owns the secret file. A session that gets past the guard, with a script it wrote or through the PR's own tests, can read it, just as the implement stage can read every factory secret. A loopback proxy holding the secret in the supervisor's memory was considered and not adopted, because the source file would stay readable. The secret only unlocks this project's protected previews, and it can be regenerated in the Vercel dashboard. A separate OS user or a sandbox would make it a wall; that's a follow-up. See [claude-code-hooks.md](../operations/claude-code-hooks.md#the-verification-lanes-guard).
 

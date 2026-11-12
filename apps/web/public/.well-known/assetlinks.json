@@ -4,7 +4,10 @@
     "target": {
       "namespace": "android_app",
       "package_name": "eu.drafto.mobile",
-      "sha256_cert_fingerprints": ["REPLACE_WITH_SHA256_FINGERPRINT"]
+      "sha256_cert_fingerprints": [
+        "BC:EB:77:9A:4E:86:89:C8:00:48:52:CC:B5:89:24:F1:34:D4:D3:7A:7E:B6:33:30:1F:95:76:10:6E:3F:24:92",
+        "4F:E5:1B:59:E2:10:2F:27:27:A3:92:BC:8A:59:01:B9:73:49:A8:A9:2E:F9:C9:5A:8F:7A:63:6C:DC:E9:C3:78"
+      ]
     }
   }
 ]

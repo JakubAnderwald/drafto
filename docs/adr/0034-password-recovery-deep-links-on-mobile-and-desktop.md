@@ -4,6 +4,8 @@
 - **Date**: 2026-09-11
 - **Authors**: Drafto dark factory (issue [#537](https://github.com/JakubAnderwald/drafto/issues/537))
 
+> **Update 2026-11-11**: The association files are no longer placeholders, and App Links / Universal Links now verify on `drafto.eu` ([ADR-0074](./0074-app-links-verify-on-apex-only.md)). The decision below stands. Moving it onto verified links is a separate change.
+
 ## Context
 
 Forgot-password existed only on the web app. A user who forgot their password on iOS, Android, or macOS was locked out until they switched to a browser.
