@@ -100,11 +100,15 @@ These files hold Expo public env vars (Supabase URL/anon key, Google iOS URL sch
 
 ### TestFlight upload (macOS and iOS): `CDUploaderStateInfoResumeFilePath` after "UPLOAD SUCCEEDED"
 
-altool sometimes uploads the `.pkg`, prints `UPLOAD SUCCEEDED with no errors`, and then logs `ERROR: … Failed to create URL for 'CDUploaderStateInfoResumeFilePath'. The file doesn't exist.` fastlane fails the upload on that line. Desktop 0.4.4 builds 74 and 76 hit it: the builds were in App Store Connect, but the lane stopped before the release notes, the released-issue comments and the `desktop@` tag.
+altool sometimes uploads the build (the macOS `.pkg` or the iOS `.ipa`), reports that the upload succeeded, and then logs `ERROR: … Failed to create URL for 'CDUploaderStateInfoResumeFilePath'. The file doesn't exist.` fastlane fails the upload on that line. The lane then stops before the release notes, the released-issue comments and the release tag, although the build is in App Store Connect. Desktop 0.4.4 builds 74 and 76 and iOS 1.4.7 build 66 hit it.
 
-`mac beta` now treats that one error as spurious if App Store Connect lists the build it just uploaded, under the same build number and version. It polls for up to 10 minutes, logs `altool's error was spurious — continuing`, and finishes the lane. Any other upload error still fails the lane. So does this one if the build never shows up, or if Apple has already marked it `INVALID`.
+`mac beta` and `ios beta` treat that one error as spurious only if App Store Connect lists the build they just uploaded, under the same build number, platform and version, in the `PROCESSING` or `VALID` state. They poll for up to 10 minutes, log `altool's error was spurious — continuing`, and finish the lane (`upload_to_testflight_checked` in each app's `fastlane/Fastfile`). Anything else still fails the lane:
 
-iOS hit it too: 1.4.7 build 66 reached App Store Connect while `ios beta` failed. The mobile lane (`upload_to_testflight_checked` in `apps/mobile/fastlane/Fastfile`) now handles it the same way, polling for the iOS build under the `package.json` version.
+- any other upload error
+- this error when the build never shows up. The failure message includes the last App Store Connect lookup error, if any.
+- this error when Apple has marked the build `INVALID` or `FAILED`
+
+The production rebuild lanes (`pnpm release:prod:ios`, `pnpm release:production`) are **not** covered, because they submit for review in the same call. If one stops on this error, check App Store Connect: if the build is there, submit it with the promote lane (`pnpm release:promote:ios` / `pnpm release:promote`) instead of rebuilding.
 
 ### macOS `with-environment.sh: No such file` (`REACT_NATIVE_PATH`)
 
