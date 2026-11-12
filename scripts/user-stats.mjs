@@ -178,7 +178,9 @@ export function createStatsClient({ ref, serviceKey, fetchImpl = fetch }) {
     });
     const text = await res.text();
     if (!res.ok) {
-      throw new Error(redact(`${fn} -> HTTP ${res.status} ${text.slice(0, 300)}`, serviceKey));
+      // Redact before cutting: a key the body echoes across the cut would
+      // otherwise survive as a fragment that redact() can't recognise.
+      throw new Error(`${fn} -> HTTP ${res.status} ${redact(text, serviceKey).slice(0, 300)}`);
     }
     let rows;
     try {

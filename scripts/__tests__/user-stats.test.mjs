@@ -299,6 +299,23 @@ describe("createStatsClient", () => {
     });
   });
 
+  it("masks a long key the body echoes across the 300-character cut", async () => {
+    // A JWT-length key starting at character 200 runs past character 300, so
+    // cutting before redacting would leave its first 100 characters unmasked.
+    const longKey = `eyJ${"k".repeat(217)}`;
+    const body = `${"x".repeat(200)}${longKey} tail`;
+    const client = createStatsClient({
+      ref: "abc",
+      serviceKey: longKey,
+      fetchImpl: async () => new Response(body, { status: 500 }),
+    });
+    await assert.rejects(client.rpc("metrics_signups", { p_weeks: 1 }), (err) => {
+      assert.match(err.message, /^metrics_signups -> HTTP 500 x+\[redacted\] tail$/);
+      assert.ok(!err.message.includes(longKey.slice(0, 20)));
+      return true;
+    });
+  });
+
   it("fails a list the API's max_rows cut short, and passes a complete one", async () => {
     const two = [{ note_id: "n1" }, { note_id: "n2" }];
     const fetch = fakeFetch({
