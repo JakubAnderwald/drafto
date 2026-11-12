@@ -398,6 +398,17 @@ end
 # build under this version: any other upload error, this one without the build, or
 # a build Apple marked INVALID still fails the lane.
 ALTOOL_SPURIOUS_RESUME_ERROR = "CDUploaderStateInfoResumeFilePath"
+# fastlane joins every altool diagnostic into one exception, one
+# "[Application Loader Error Output]: …" line each (FastlaneCore::AltoolTransporterExecutor
+# #displayable_errors), and adds a line of its own when altool exits non-zero. The error is
+# only spurious when it is the sole kind of diagnostic: one more error, or a non-zero exit,
+# still fails the lane.
+ALTOOL_DIAGNOSTIC_LINE = /^\s*\[(?:Application Loader|Transporter) Error Output\]: /
+
+def only_spurious_resume_error?(message)
+  diagnostics = message.to_s.lines.grep(ALTOOL_DIAGNOSTIC_LINE)
+  !diagnostics.empty? && diagnostics.all? { |line| line.include?(ALTOOL_SPURIOUS_RESUME_ERROR) }
+end
 UPLOADED_BUILD_POLL_ATTEMPTS = 30
 UPLOADED_BUILD_POLL_SECONDS = 20
 # Processing states that mean the upload landed. Anything else (INVALID, FAILED) means it didn't.
@@ -415,7 +426,7 @@ def upload_to_testflight_checked(api_key:, pkg:, build_number:, app_version:)
     skip_waiting_for_build_processing: true
   )
 rescue StandardError => e
-  raise unless e.message.include?(ALTOOL_SPURIOUS_RESUME_ERROR)
+  raise unless only_spurious_resume_error?(e.message)
 
   UI.important(
     "altool failed the upload on '#{ALTOOL_SPURIOUS_RESUME_ERROR}' — checking whether build " \

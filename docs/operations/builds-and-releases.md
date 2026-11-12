@@ -104,7 +104,7 @@ altool sometimes uploads the build (the macOS `.pkg` or the iOS `.ipa`), reports
 
 `mac beta` and `ios beta` treat that one error as spurious only if App Store Connect lists the build they just uploaded, under the same build number, platform and version, in the `PROCESSING` or `VALID` state. They poll for up to 10 minutes, log `altool's error was spurious — continuing`, and finish the lane (`upload_to_testflight_checked` in each app's `fastlane/Fastfile`). Anything else still fails the lane:
 
-- any other upload error
+- any other upload error, including another altool diagnostic or a non-zero altool exit reported alongside this one
 - this error when the build never shows up. The failure message includes the last App Store Connect lookup error, if any.
 - this error when Apple has marked the build `INVALID` or `FAILED`
 
