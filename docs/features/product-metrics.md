@@ -81,7 +81,31 @@ pnpm users:stats -- --project prod --keys-txt <file>
 - **Interactive sessions only.** It refuses `DRAFTO_UNATTENDED` (factory, support, nightly, the verification lane) and `node --test` before reading any key file, and the verification lane's guard denies any command naming it.
 - `--weeks` sets the weekly tables' range, and the emptied-notes check looks back as far.
 - One failing metric doesn't hide the others. The run prints them and exits 1.
+- PostgREST caps every response at the project's `max_rows` (1000 by default), stored procedures included, without saying so. Each call asks for the exact count (`Prefer: count=exact`), and a list shorter than its count fails instead of printing part of it. In practice only the emptied notes can grow that long. Rerun with a smaller `--weeks`.
 - Exit codes: 0 when every metric was read, 1 on a failure or refusal, 2 on bad arguments.
+
+## If sign-ups and activation fail with permission denied
+
+`metrics_signups` and `metrics_activation` read `auth.users` as `service_role`, so the migration grants it `select (id, created_at, raw_app_meta_data)` on that table. Where the migration's role can't make that grant, the migration doesn't fail. It warns `product metrics: service_role cannot read auth.users …` and points here. Those two functions then fail with `permission denied` (`42501`), in `pnpm users:stats` and in `pnpm test:live:supabase -- --only metrics`. The other four metrics still work.
+
+Check in the project's SQL editor. All four values must be `true`:
+
+```sql
+select
+  has_schema_privilege('service_role', 'auth', 'usage') as auth_usage,
+  has_column_privilege('service_role', 'auth.users', 'id', 'select') as id,
+  has_column_privilege('service_role', 'auth.users', 'created_at', 'select') as created_at,
+  has_column_privilege('service_role', 'auth.users', 'raw_app_meta_data', 'select') as raw_app_meta_data;
+```
+
+To restore access, grant the same three columns, and no others, as a role that holds the grant option on `auth.users`. On prod, run it only after an explicit yes:
+
+```sql
+grant usage on schema auth to service_role;
+grant select (id, created_at, raw_app_meta_data) on auth.users to service_role;
+```
+
+Don't grant `select` on the whole table: the functions read nothing else, and the [invariants](#modifying-safely) keep it that way. Then run the check again, and on dev also the live test. If no role you can use holds the grant option, a grant made by hand can't fix it. Reading `auth.users` another way, for example through a `SECURITY DEFINER` wrapper, is a design change: it needs a new migration and an ADR that supersedes [0075](../adr/0075-product-metrics-as-service-role-sql-functions.md).
 
 ## Code paths
 
@@ -113,7 +137,7 @@ None. The metrics read the server tables every platform writes to. They see a na
 - Invariants:
   - Every function is `SECURITY INVOKER`, `set search_path = public, pg_catalog`, `STABLE` (`note_text_chars` is `IMMUTABLE`), and revokes `execute` from `public`, `anon` and `authenticated`, granting it to `service_role` only. A new function does the same, in the migration that creates it. `scripts/__tests__/product-metrics.test.mjs` fails on any public function it doesn't list.
   - Every per-user metric excludes through `metrics_excluded_user_ids()`. Don't re-state the rule.
-  - The functions read `auth.users` through three columns only (`id`, `created_at`, `raw_app_meta_data`), the ones the migration grants to `service_role`. Reading another column (`email`) fails with permission denied where `service_role` has no table-wide grant.
+  - The functions read `auth.users` through three columns only (`id`, `created_at`, `raw_app_meta_data`), the ones the migration grants to `service_role`. Reading another column (`email`) fails with permission denied where `service_role` has no table-wide grant. When the migration couldn't grant these columns, see [If sign-ups and activation fail with permission denied](#if-sign-ups-and-activation-fail-with-permission-denied).
   - No function returns note text, titles or notebook names.
 - Files that must change together:
   - A new editor content shape → `note_text_chars` (a new migration) and its PGlite test, alongside `extract_text_from_jsonb` and `packages/shared/src/editor/extract-text.ts`.
@@ -124,7 +148,7 @@ None. The metrics read the server tables every platform writes to. They see a na
 ## Verify
 
 ```bash
-cd scripts && node --test __tests__/note-text-chars.test.mjs __tests__/product-metrics.test.mjs __tests__/user-stats.test.mjs
+(cd scripts && node --test __tests__/note-text-chars.test.mjs __tests__/product-metrics.test.mjs __tests__/user-stats.test.mjs)
 pnpm migration:check
 
 # Operator, interactive session, after the migrations reach dev:

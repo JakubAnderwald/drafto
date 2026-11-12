@@ -146,10 +146,21 @@ export function redact(text, secret) {
   return secret ? s.split(secret).join("[redacted]") : s;
 }
 
+/** The total after the slash in a PostgREST Content-Range header ("0-9/42"), or null. */
+export function contentRangeTotal(header) {
+  const m = /\/(\d+)$/.exec(header ?? "");
+  return m ? Number(m[1]) : null;
+}
+
 /**
  * A client for the metric functions over PostgREST RPC. It only sends GET, the
  * read-only RPC method, and only to /rest/v1/rpc/metrics_*. The key goes in
  * headers, never in the URL, and errors never quote it.
+ *
+ * PostgREST caps every response at the project's max_rows (1000 by default),
+ * stored procedures included, and says nothing when it does. So each call asks
+ * for the exact count, and a list shorter than its count fails instead of
+ * passing for the whole of it.
  */
 export function createStatsClient({ ref, serviceKey, fetchImpl = fetch }) {
   const base = `https://${ref}.supabase.co/rest/v1/rpc/`;
@@ -162,17 +173,26 @@ export function createStatsClient({ ref, serviceKey, fetchImpl = fetch }) {
         apikey: serviceKey,
         Authorization: `Bearer ${serviceKey}`,
         Accept: "application/json",
+        Prefer: "count=exact",
       },
     });
     const text = await res.text();
     if (!res.ok) {
       throw new Error(redact(`${fn} -> HTTP ${res.status} ${text.slice(0, 300)}`, serviceKey));
     }
+    let rows;
     try {
-      return JSON.parse(text);
+      rows = JSON.parse(text);
     } catch {
       throw new Error(`${fn} -> HTTP ${res.status}, not JSON`);
     }
+    const total = contentRangeTotal(res.headers.get("content-range"));
+    if (Array.isArray(rows) && total !== null && rows.length < total) {
+      throw new Error(
+        `${fn} -> only ${rows.length} of ${total} rows: the API's max_rows limit cut the list short; try a smaller --weeks`,
+      );
+    }
+    return rows;
   }
   return { rpc };
 }

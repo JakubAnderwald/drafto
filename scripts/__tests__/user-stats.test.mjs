@@ -2,7 +2,8 @@
 // the session refusal, the read-only RPC client, table and JSON output, and a
 // whole run against a fake fetch. What must hold: it only ever sends GET to
 // /rest/v1/rpc/metrics_*, the service-role key travels in headers only and is
-// never printed, and a metric that fails doesn't hide the others. No network:
+// never printed, a list the API cut short fails, and a metric that fails
+// doesn't hide the others. No network:
 // every call goes to a fake, and every key here is fake.
 
 import { describe, it } from "node:test";
@@ -22,6 +23,7 @@ import {
   buildJson,
   collectMetrics,
   columnsFor,
+  contentRangeTotal,
   createStatsClient,
   formatReport,
   formatTable,
@@ -106,9 +108,10 @@ const ROWS = {
 
 /**
  * A fetch fake answering /rest/v1/rpc/<fn> from <rows>; a function listed in
- * <fail> answers with an error status instead. Records every call.
+ * <fail> answers with an error status instead, and one in <ranges> with that
+ * Content-Range header. Records every call.
  */
-function fakeFetch({ rows = ROWS, fail = {} } = {}) {
+function fakeFetch({ rows = ROWS, fail = {}, ranges = {} } = {}) {
   const calls = [];
   const impl = async (url, init = {}) => {
     const u = new URL(url);
@@ -118,7 +121,8 @@ function fakeFetch({ rows = ROWS, fail = {} } = {}) {
       return new Response(JSON.stringify(fail[fn].body), { status: fail[fn].status });
     }
     if (!Object.hasOwn(rows, fn)) return new Response("{}", { status: 404 });
-    return new Response(JSON.stringify(rows[fn]), { status: 200 });
+    const headers = Object.hasOwn(ranges, fn) ? { "Content-Range": ranges[fn] } : {};
+    return new Response(JSON.stringify(rows[fn]), { status: 200, headers });
   };
   return { impl, calls };
 }
@@ -263,6 +267,7 @@ describe("createStatsClient", () => {
     assert.equal(first.url.search, "?p_weeks=3");
     assert.equal(first.headers.apikey, PROD_KEY);
     assert.equal(first.headers.Authorization, `Bearer ${PROD_KEY}`);
+    assert.equal(first.headers.Prefer, "count=exact");
     assert.equal(second.url.search, "");
     for (const call of fetch.calls) assert.ok(!call.url.href.includes(PROD_KEY));
   });
@@ -292,6 +297,28 @@ describe("createStatsClient", () => {
       assert.match(err.message, /\[redacted\]/);
       return true;
     });
+  });
+
+  it("fails a list the API's max_rows cut short, and passes a complete one", async () => {
+    const two = [{ note_id: "n1" }, { note_id: "n2" }];
+    const fetch = fakeFetch({
+      rows: { metrics_emptied_notes: two, metrics_signups: two, metrics_depth: [] },
+      ranges: { metrics_emptied_notes: "0-1/1500", metrics_signups: "0-1/2", metrics_depth: "*/0" },
+    });
+    const client = createStatsClient({ ref: "abc", serviceKey: PROD_KEY, fetchImpl: fetch.impl });
+    await assert.rejects(
+      client.rpc("metrics_emptied_notes", { p_since: NOW.toISOString() }),
+      /^Error: metrics_emptied_notes -> only 2 of 1500 rows: the API's max_rows limit/,
+    );
+    assert.deepEqual(await client.rpc("metrics_signups", { p_weeks: 1 }), two);
+    assert.deepEqual(await client.rpc("metrics_depth"), []);
+  });
+
+  it("reads the total from a Content-Range header", () => {
+    assert.equal(contentRangeTotal("0-999/1500"), 1500);
+    assert.equal(contentRangeTotal("*/0"), 0);
+    assert.equal(contentRangeTotal("0-999/*"), null);
+    assert.equal(contentRangeTotal(null), null);
   });
 
   it("reports a body that isn't JSON", async () => {

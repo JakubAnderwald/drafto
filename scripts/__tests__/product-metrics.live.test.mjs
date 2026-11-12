@@ -15,7 +15,8 @@
 //     invoker functions (metrics_signups, metrics_platform_limits);
 //   - that anon and a signed-in user get permission denied on every function
 //     and on metrics_excluded_users.
-// The user is deleted in the `after` hook, which cascades to everything above.
+// The user is deleted in the `after` hook, which cascades to everything above;
+// a failed deletion fails the run, since a user left behind stays in dev's metrics.
 //
 // The deltas run on shared dev data, so a sign-up or a write by someone else
 // between two back-to-back calls could flake one of them; rerun if so.
@@ -292,10 +293,15 @@ describe(
 
     after(
       async () => {
+        // A user left behind stays in dev's metrics, so a failed cleanup fails
+        // the run. Every user is tried before it does.
+        const failed = [];
         for (const id of createdIds) {
           const res = await call(`/auth/v1/admin/users/${id}`, { method: "DELETE", ...SERVICE });
-          if (!res.ok)
-            console.warn(`[product-metrics.live] cleanup of ${id} failed:`, formatResponse(res));
+          if (!res.ok) failed.push(`${id}: ${formatResponse(res)}`);
+        }
+        if (failed.length) {
+          assert.fail(`cleanup failed; delete these dev users by hand: ${failed.join("; ")}`);
         }
       },
       { timeout: 60_000 },
