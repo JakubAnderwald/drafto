@@ -197,6 +197,68 @@ pr_head_oid() { cat "$PR_HEAD_FILE"; }
     );
     assert.match(out, /WHY=the resolution never reached the PR/);
   });
+
+  // GitHub's PR view lags a push by a few seconds. Reading it right after the
+  // push saw the old head, and all nine "never reached the PR" warnings up to
+  // 2026-11-10 were this race on merges that had landed (ADR-0076). The push's
+  // own success is the proof.
+  it("accepts a pushed resolution while GitHub's PR view still shows the old head", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       node() {
+         case "$2" in
+           merge-check) echo "$CHECK" ;;
+           push) echo "PUSH $*" >>"$CALLS"; echo '{"pushed":true,"branch":"factory/issue-797","head":"abc"}' ;;
+         esac
+       }
+       pr_head_oid() { echo old; }
+       LOCAL=abc; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' && echo VERIFIED`,
+    );
+    assert.match(out, /PUSH /);
+    assert.match(out, /VERIFIED/);
+    assert.match(
+      out,
+      /LOG Conflict pass for PR #755: push of abc accepted; GitHub's PR view still shows old/,
+    );
+  });
+
+  it("still rejects a resolution whose push failed", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       node() {
+         case "$2" in
+           merge-check) echo "$CHECK" ;;
+           push) echo "PUSH $*" >>"$CALLS"; echo "rejected: non-fast-forward" >&2; return 1 ;;
+         esac
+       }
+       pr_head_oid() { echo old; }
+       LOCAL=abc; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' || echo "WHY=$CONFLICT_PASS_WHY"`,
+    );
+    assert.match(out, /PUSH /);
+    assert.match(out, /WHY=the resolution never reached the PR \(local abc, PR old\)/);
+    assert.doesNotMatch(out, /accepted/);
+  });
+
+  it("rejects a push that reports a different head than the verified one", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       node() {
+         case "$2" in
+           merge-check) echo "$CHECK" ;;
+           push) echo '{"pushed":true,"branch":"factory/issue-797","head":"zzz"}' ;;
+         esac
+       }
+       pr_head_oid() { echo old; }
+       LOCAL=abc; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' || echo "WHY=$CONFLICT_PASS_WHY"`,
+    );
+    assert.match(out, /WHY=the resolution never reached the PR/);
+  });
 });
 
 describe("rollback_conflict_pass", () => {

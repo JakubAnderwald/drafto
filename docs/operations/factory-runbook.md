@@ -1151,21 +1151,25 @@ Collision avoidance is **factory-side**: the `--implement` queue excludes `suppo
 
 ## Claude effort & timeouts
 
-The factory runs its **code-writing** stages (`--implement`, `--watch`) at **ultracode** effort (xhigh reasoning + dynamic multi-agent workflow orchestration) and its **read-only planning** stages (`--plan`, replan) at **xhigh**. Effort is passed to `claude` via `--effort`; if the Workflows feature is disabled on the account, ultracode degrades safely to plain xhigh (no error). ultracode multiplies token usage on the shared subscription, so dial `FACTORY_EFFORT` down if it pressures rate limits. All values are env knobs on the launchd plist's `EnvironmentVariables`:
+The factory runs `--implement` at **ultracode** effort (xhigh reasoning + dynamic multi-agent workflow orchestration). It runs `--watch` fix passes and the **read-only planning** stages (`--plan`, replan) at **xhigh**. Effort is passed to `claude` via `--effort`; if the Workflows feature is disabled on the account, ultracode degrades safely to plain xhigh (no error). ultracode multiplies token usage on the shared subscription, so dial `FACTORY_EFFORT` down if it pressures rate limits.
 
-| Var                             | Default     | Purpose                                                                                               |
-| ------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `FACTORY_EFFORT`                | `ultracode` | `--effort` for `--implement` / `--watch` (the code-writing stages). Set `xhigh`/`high`/… to cut cost. |
-| `FACTORY_PLAN_EFFORT`           | `xhigh`     | `--effort` for `--plan` / replan (read-only planning).                                                |
-| `FACTORY_PLAN_TIMEOUT_SEC`      | `360`       | Wall-clock cap per `--plan`/replan Claude call (was 180; xhigh planning thinks longer).               |
-| `FACTORY_IMPLEMENT_TIMEOUT_SEC` | `2700`      | Wall-clock cap per `--implement` Claude call (was 1800; ultracode workflows run longer).              |
-| `FACTORY_WATCH_TIMEOUT_SEC`     | `1800`      | Wall-clock cap per `--watch` fix Claude call (was 900).                                               |
-| `FACTORY_REVIEW_TIMEOUT_SEC`    | `900`       | Wall-clock cap per code-review Claude call (read-only; runs once per PR head SHA).                    |
-| `FACTORY_BG_WAIT_CEILING_MS`    | `0`         | How long `claude -p` waits for background workflows/subagents after its last turn (0 = no ceiling).   |
+`--watch` moved from ultracode to xhigh with [ADR-0076](../adr/0076-factory-watch-effort-and-retry-budget.md). At ultracode, a fix pass on #797 finished its fix, then started a review workflow and waited on it until the 1800s cap killed it with nothing committed. All values are env knobs on the launchd plist's `EnvironmentVariables`:
+
+| Var                             | Default     | Purpose                                                                                                                                                            |
+| ------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FACTORY_EFFORT`                | `ultracode` | `--effort` for `--implement`. Set `xhigh`/`high`/… to cut cost.                                                                                                    |
+| `FACTORY_WATCH_EFFORT`          | `xhigh`     | `--effort` for `--watch` fix passes: CI fixes, review-thread fixes and conflict passes.                                                                            |
+| `FACTORY_PLAN_EFFORT`           | `xhigh`     | `--effort` for `--plan` / replan (read-only planning).                                                                                                             |
+| `FACTORY_MAX_ATTEMPTS`          | `10`        | Retry budget per card, shared by `--plan`, `--implement` and `--watch`. Spent → the card goes to Blocked. Was 5 until ADR-0076; an invalid value falls back to 10. |
+| `FACTORY_PLAN_TIMEOUT_SEC`      | `360`       | Wall-clock cap per `--plan`/replan Claude call (was 180; xhigh planning thinks longer).                                                                            |
+| `FACTORY_IMPLEMENT_TIMEOUT_SEC` | `2700`      | Wall-clock cap per `--implement` Claude call (was 1800; ultracode workflows run longer).                                                                           |
+| `FACTORY_WATCH_TIMEOUT_SEC`     | `1800`      | Wall-clock cap per `--watch` fix Claude call (was 900).                                                                                                            |
+| `FACTORY_REVIEW_TIMEOUT_SEC`    | `900`       | Wall-clock cap per code-review Claude call (read-only; runs once per PR head SHA).                                                                                 |
+| `FACTORY_BG_WAIT_CEILING_MS`    | `0`         | How long `claude -p` waits for background workflows/subagents after its last turn (0 = no ceiling).                                                                |
 
 > **Background-task wait.** `claude -p` normally kills background tasks 600s after its final turn and exits 0. At ultracode that cut implement runs off mid-workflow with no summary line, burning an attempt each time (#623 was Blocked after four). The factory exports `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` from `FACTORY_BG_WAIT_CEILING_MS` (default `0`, wait indefinitely); the per-stage wall caps above still bound every call. A log line `Background tasks still running after …s; terminating` means the ceiling is set too low. A non-zero ceiling only applies on a `claude` CLI that has the ceiling feature (CodeRabbit on #637 put it at 2.1.182+; the Mac mini runs 2.1.270, whose termination log names the variable). An older CLI ignores the variable, waits without a ceiling and never prints that log line, so check `claude --version` before relying on a non-zero value.
 
-> **Rollout precondition.** The loop self-updates the repo each tick but **not** the `claude` CLI. The Mac mini's `claude` must accept `--effort` — verify with `claude --effort ultracode -p 'reply with OK'` (must exit 0 and print `OK`). An older CLI would fail every Claude call and Block cards within `FACTORY_MAX_ATTEMPTS` ticks. Rollback needs no code redeploy: set `FACTORY_EFFORT` / `FACTORY_PLAN_EFFORT` to a base level (or lower the timeouts) in the plist.
+> **Rollout precondition.** The loop self-updates the repo each tick but **not** the `claude` CLI. The Mac mini's `claude` must accept `--effort` — verify with `claude --effort ultracode -p 'reply with OK'` (must exit 0 and print `OK`). An older CLI would fail every Claude call and Block cards within `FACTORY_MAX_ATTEMPTS` ticks. Rollback needs no code redeploy: set `FACTORY_EFFORT` / `FACTORY_WATCH_EFFORT` / `FACTORY_PLAN_EFFORT` to a base level (or lower the timeouts) in the plist.
 
 ## Worktree installs & disk
 
