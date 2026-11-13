@@ -140,18 +140,20 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 
 - Node's built-in test runner (`node --test`) against `scripts/__tests__/*.test.mjs`, which covers the Mac mini automation: the factory, the support agent and the nightly jobs.
 - Node >= 22 (`engines` in `scripts/package.json`).
-- No external services required, as long as `SUPABASE_SERVICE_ROLE_KEY` is unset. If it is exported along with the dev URL and anon key, for example after you source an `apps/web/.env.local` that holds the admin specs' key, the glob's `profile-privilege-guard.live.test.mjs` and `storage-quota.live.test.mjs` run against dev and create users there. Neither test checks `DRAFTO_UNATTENDED`, so an unattended session runs them too. Run `unset SUPABASE_SERVICE_ROLE_KEY` before an ordinary run, and run those tests with [`pnpm test:live:supabase`](#dev-live-tests-pnpm-testlivesupabase).
+- SQL migrations that need executing, not just pattern checks, run in [PGlite](https://pglite.dev) (Postgres compiled to WASM, in process; a root dev dependency, so `pnpm install` first). `note-text-chars.test.mjs` and `product-metrics.test.mjs` run the product-metrics migrations verbatim over stand-in tables ([product metrics](../features/product-metrics.md)).
+- No external services required, as long as `SUPABASE_SERVICE_ROLE_KEY` is unset. If it is exported along with the dev URL and anon key, for example after you source an `apps/web/.env.local` that holds the admin specs' key, the glob's `profile-privilege-guard.live.test.mjs`, `product-metrics.live.test.mjs` and `storage-quota.live.test.mjs` run against dev and create users there. None of them checks `DRAFTO_UNATTENDED`, so an unattended session runs them too. Run `unset SUPABASE_SERVICE_ROLE_KEY` before an ordinary run, and run those tests with [`pnpm test:live:supabase`](#dev-live-tests-pnpm-testlivesupabase).
 
 ### Dev live tests (`pnpm test:live:supabase`)
 
-Three opt-in tests run against the real **dev** Supabase project (`huhzactreblzcogqkbsd`). They aren't rows in the matrix above, and CI skips them. The Scripts row's glob does pick up `profile-privilege-guard.live.test.mjs` and `storage-quota.live.test.mjs`, but each skips unless the dev project's URL, anon key and service-role key are in the environment, and CI's `scripts-tests` job sets none of them. An operator runs them from an interactive session when a change touches what they cover, as the feature docs' Verify blocks note:
+Four opt-in tests run against the real **dev** Supabase project (`huhzactreblzcogqkbsd`). They aren't rows in the matrix above, and CI skips them. The Scripts row's glob does pick up `profile-privilege-guard.live.test.mjs`, `product-metrics.live.test.mjs` and `storage-quota.live.test.mjs`, but each skips unless the dev project's URL, anon key and service-role key are in the environment, and CI's `scripts-tests` job sets none of them. An operator runs them from an interactive session when a change touches what they cover, as the feature docs' Verify blocks note:
 
 - `scripts/__tests__/profile-privilege-guard.live.test.mjs` (`--only profile-guard`) checks the `profiles` privilege guard ([auth](../features/auth.md)).
 - `apps/web/__tests__/integration/account-deletion.live.test.ts` (`--only account-deletion`) checks `deleteUserAccount`.
+- `scripts/__tests__/product-metrics.live.test.mjs` (`--only metrics`) checks the product-metrics functions and who may call them ([product metrics](../features/product-metrics.md)). It needs both product-metrics migrations applied to dev.
 - `scripts/__tests__/storage-quota.live.test.mjs` (`--only storage-quota`) checks the per-user attachment storage quota: the `attachments` trigger (including a row counted at its object's real size), the upsert retry, the bucket's upload policies and their object byte count, and who may call the usage RPCs ([editor](../features/editor.md), [ADR-0072](../adr/0072-per-user-attachment-storage-quota.md)).
 
 ```bash
-pnpm test:live:supabase                          # all three
+pnpm test:live:supabase                          # all four
 pnpm test:live:supabase -- --only profile-guard  # one
 pnpm test:live:supabase -- --dry-run             # print the commands and env var names, run nothing
 ```

@@ -809,6 +809,12 @@ export function protectedTextReason(text, config) {
   if (/delete-users(?!\.test\.mjs)/.test(lower) || lower.includes("users:delete")) {
     return "deleting user accounts (pnpm users:delete) is for interactive sessions only";
   }
+  // Reads the service-role key of the project --project names (prod or dev):
+  // operators only.
+  // Its unit tests (fakes only) stay runnable.
+  if (/user-stats(?!\.test\.mjs)/.test(lower) || lower.includes("users:stats")) {
+    return "the product metrics (pnpm users:stats) read a service-role key and are for interactive sessions only";
+  }
   if (/drafto\.eu\b/i.test(s))
     return "production (drafto.eu) is off limits; the preview is the only target";
   if (lower.includes(".config/gh")) return "the gh config is off limits";
@@ -1309,11 +1315,15 @@ const NODE_VALUE_OPTS = new Set([
   "--test-reporter-destination",
 ]);
 
-// Operator-only scripts: the dev live-test runner and account deletion. The
-// text rules catch their names; this catches a glob that could expand to one
-// (`cd scripts && node run-*`, or node --test's own globbing of
-// `'scripts/run-*.mjs'`).
-const OPERATOR_ONLY_FILES = Object.freeze(["run-dev-live-tests.mjs", "delete-users.mjs"]);
+// Operator-only scripts: the dev live-test runner, account deletion and the
+// product metrics. The text rules catch their names; this catches a glob that
+// could expand to one (`cd scripts && node run-*`, or node --test's own
+// globbing of `'scripts/run-*.mjs'`).
+const OPERATOR_ONLY_FILES = Object.freeze([
+  "run-dev-live-tests.mjs",
+  "delete-users.mjs",
+  "user-stats.mjs",
+]);
 
 function globCouldNameOperatorScript(word) {
   const seg = String(word).slice(String(word).lastIndexOf("/") + 1);
@@ -1332,7 +1342,7 @@ function checkNode(args, ctx) {
   if (url) return deny(`network access goes through preview-curl only (${url})`);
   if (args.some((a) => !a.startsWith("-") && globCouldNameOperatorScript(a))) {
     return deny(
-      "this pattern could name the dev live-test runner or the account-deletion script, which are for operators only",
+      "this pattern could name the dev live-test runner, the account-deletion script or the product-metrics script, which are for operators only",
     );
   }
   if (args.includes("--test")) return allow("node --test");

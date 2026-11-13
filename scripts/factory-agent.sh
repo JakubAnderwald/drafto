@@ -373,7 +373,8 @@ case "$FACTORY_BROWSER_ACCOUNT_FILE" in "~/"*) FACTORY_BROWSER_ACCOUNT_FILE="$HO
 #   FACTORY_BROWSER_JS      — javascript_tool, for read-only page checks;
 #   FACTORY_BROWSER_ADMIN   — steps marked `(admin)`, signed in as the admin
 #     account in FACTORY_BROWSER_ADMIN_ACCOUNT_FILE (its email only, as
-#     FACTORY_BROWSER_ADMIN_EMAIL=; the CI E2E admin on dev) by one-time link.
+#     FACTORY_BROWSER_ADMIN_EMAIL=; the factory's own admin account on dev,
+#     jakub+factory-admin@anderwald.info) by one-time link.
 # FACTORY_DEV_INSPECT (the verification block below) also gives the runner
 # Bash for exactly `dev-inspect`.
 FACTORY_BROWSER_UPLOADS="${FACTORY_BROWSER_UPLOADS:-0}"

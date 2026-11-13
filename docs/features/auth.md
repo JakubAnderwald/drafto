@@ -549,9 +549,11 @@ node --test scripts/__tests__/profile-privilege-guard.test.mjs
 # Interactive sessions only. The runner reads the service-role key from
 # ~/drafto-secrets/dev-supabase-admin.env (Mac mini) or the DEV: line of
 # "supabase service keys.txt", and the anon key from apps/web/.env.local. It refuses
-# any other project and fails, rather than skips, when a key is missing.
-pnpm test:live:supabase
-# or one of them: pnpm test:live:supabase -- --only profile-guard|account-deletion
+# any other project and fails, rather than skips, when a key is missing. A bare
+# `pnpm test:live:supabase` also runs the product-metrics test, which needs its
+# migrations on dev, so name the auth ones:
+pnpm test:live:supabase -- --only profile-guard
+pnpm test:live:supabase -- --only account-deletion
 
 # Web E2E (requires E2E_TEST_EMAIL / E2E_TEST_PASSWORD in apps/web/.env.local)
 set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth

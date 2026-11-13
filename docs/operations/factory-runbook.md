@@ -589,8 +589,10 @@ How `verify` and `intest` run:
 | `FACTORY_BROWSER_UPLOADS`            | `0`                                          | Uploads in the runner's intest and verify runs: files from the scenario's `### Fixtures` section, generated into the run's `fixtures/` before the session ([ADR-0073](../adr/0073-factory-verification-data-checks-live-tests-uploads-admin-js.md)). The guard allows `file_upload` for those files only.                                                           |
 | `FACTORY_BROWSER_JS`                 | `0`                                          | Read-only page JavaScript (`javascript_tool`) in intest and verify runs, checked by the guard's `jsVerdict` (ADR-0073).                                                                                                                                                                                                                                             |
 | `FACTORY_BROWSER_ADMIN`              | `0`                                          | Steps marked `(admin)`, signed in as the admin account by one-time link (ADR-0073). Needs `FACTORY_BROWSER_ADMIN_ACCOUNT_FILE`.                                                                                                                                                                                                                                     |
-| `FACTORY_BROWSER_ADMIN_ACCOUNT_FILE` | `~/drafto-secrets/browser-admin-account.env` | `FACTORY_BROWSER_ADMIN_EMAIL=` of the CI E2E admin on dev, mode `600`. The email only: the admin signs in by link, never with a password. A missing or unusable file means no admin steps (they're SKIP), never a failed run.                                                                                                                                       |
+| `FACTORY_BROWSER_ADMIN_ACCOUNT_FILE` | `~/drafto-secrets/browser-admin-account.env` | `FACTORY_BROWSER_ADMIN_EMAIL=` of the factory admin account on dev (setup step 4), mode `600`. The email only: the admin signs in by link, never with a password. A missing or unusable file means no admin steps (they're SKIP), never a failed run.                                                                                                               |
 | `FACTORY_BROWSER_SIGNIN_KEY_FILE`    | `~/drafto-secrets/dev-supabase-admin.env`    | `DEV_SUPABASE_URL=` / `DEV_SUPABASE_SERVICE_ROLE_KEY=` of the **dev** project. Mode `600`. The factory uses it only to mint the runner's one-time preview sign-in link (`browser-signin.mjs`); minting refuses any other project. Never reaches the runner. Operators also read it via `pnpm test:live:supabase`, in interactive sessions only.                     |
+
+With `FACTORY_BROWSER_UPLOADS=1`, the run's settings also share its `fixtures/` with the session (`permissions.additionalDirectories`). Claude Code's `file_upload` takes only files the session may read, and the runner's working directory is an empty one elsewhere, so without it every upload is refused ("only files this session is allowed to read can be uploaded"). The session has no file tools, so this lets it upload those files and nothing more.
 
 ### One-time setup
 
@@ -602,10 +604,18 @@ How `verify` and `intest` run:
    where id = (select id from auth.users where email = 'jakub+factory-browser@anderwald.info');
    ```
    It's a separate account from the CI E2E user (`E2E_TEST_EMAIL`), so the runner's test data never collides with CI's.
-4. **Optional, ADR-0073: uploads, page JavaScript, admin steps and data checks.** Each has its own switch in the plist, `FACTORY_BROWSER_UPLOADS`, `FACTORY_BROWSER_JS`, `FACTORY_BROWSER_ADMIN` and `FACTORY_DEV_INSPECT`, and each is off by default. Turn them on one at a time and watch a run's guard log (`logs/factory/browser-guard/`) before the next. For admin steps, write the admin's email, never a password:
-   ```bash
-   (umask 077 && printf 'FACTORY_BROWSER_ADMIN_EMAIL=%s\n' '<the CI E2E admin email>' > ~/drafto-secrets/browser-admin-account.env)
-   ```
+4. **Optional, ADR-0073: uploads, page JavaScript, admin steps and data checks.** Each has its own switch in the plist, `FACTORY_BROWSER_UPLOADS`, `FACTORY_BROWSER_JS`, `FACTORY_BROWSER_ADMIN` and `FACTORY_DEV_INSPECT`, and each is off by default. Turn them on one at a time and watch a run's guard log (`logs/factory/browser-guard/`) before the next. Admin steps need a dev admin account of their own, separate from the test account and from your own account:
+   - **The account:** `jakub+factory-admin@anderwald.info` in `huhzactreblzcogqkbsd`, **never prod**. It was created through the dev Auth admin API with no password, since the factory only signs in by link, then approved and made admin:
+     ```sql
+     update public.profiles set is_approved = true, is_admin = true
+     where id = (select id from auth.users where email = 'jakub+factory-admin@anderwald.info');
+     ```
+     To recreate it, sign up as that address on a preview and run the same SQL.
+   - **The file on the Mac mini:** the email only, never a password:
+     ```bash
+     (umask 077 && printf 'FACTORY_BROWSER_ADMIN_EMAIL=%s\n' 'jakub+factory-admin@anderwald.info' > ~/drafto-secrets/browser-admin-account.env)
+     node scripts/lib/browser-report.mjs admin-email --account-file ~/drafto-secrets/browser-admin-account.env   # prints the email
+     ```
 5. **The account file.** Write it with an editor rather than `echo`, which would leave the password in shell history:
    ```bash
    # ~/drafto-secrets also holds the factory's other secrets (support-env.sh, zoho-oauth.json)
