@@ -112,6 +112,13 @@ already handled.
   `git rebase`, `git config`, `git commit --amend`, any other `git merge` (bash
   starts merges, never you), and any other `git mv`.
 - `gh pr view <n> --repo JakubAnderwald/drafto --json ...` — inspect PR / checks.
+- `gh pr diff <n> --repo JakubAnderwald/drafto --name-only` — list the PR's own
+  changed files. Use it whenever a step needs that list: `gh pr view --json files`
+  stops at 100 files, so on a large PR it can leave out the very file you check.
+  `gh pr diff` reads the whole diff, which GitHub refuses (HTTP 406) for a very
+  large PR. Only then, list them with
+  `gh api --paginate repos/JakubAnderwald/drafto/pulls/<n>/files --jq '.[].filename'`
+  instead, a read-only call that lists up to 3,000 files.
 - `gh pr comment <n> --repo JakubAnderwald/drafto --body "..."` — only to post a
   one-line note when emitting `action=blocked`, or the migration-renumber note
   in decision-flow step 3.
@@ -186,7 +193,7 @@ flow below and do this instead, then emit the directive line (step 7):
    one-line PR comment naming the file and the reason, and emit `action=blocked`.
 3. **Renumber a clashing ADR.** Each entry in `mergeConflict.adrCollisions`
    pairs main's ADR with this PR's. Only the PR's own file moves: it must be in
-   `gh pr view <n> --repo JakubAnderwald/drafto --json files`. If neither file is,
+   `gh pr diff <n> --repo JakubAnderwald/drafto --name-only`. If neither file is,
    rename nothing and emit `action=blocked`. Otherwise:
    - `git mv docs/adr/<NNNN>-<slug>.md docs/adr/<next>-<slug>.md`, where
      `<next>` is `mergeConflict.nextFreeAdr` (one more for each further clash);
@@ -197,8 +204,8 @@ flow below and do this instead, then emit the directive line (step 7):
      `ADR-<NNNN>` / `[<NNNN>` mention **the PR added**. Main's ADR has the same
      number and its references must not change, so check each bare mention
      against the PR's side of the diff (step 1) before editing it.
-4. **Migrations.** If main gained a newer migration than one this PR adds,
-   decision-flow step 3, "Migration order", applies as written.
+4. **Migrations.** Leave a migration order error for the end of step 6: a
+   migration is renumbered only once the merge is committed.
 5. **Check what the merge touched.** `pnpm format:check`, plus lint, typecheck
    and tests for each package a resolved file belongs to (for example
    `pnpm --filter @drafto/desktop typecheck`). Fix only what the merge broke.
@@ -208,6 +215,22 @@ flow below and do this instead, then emit the directive line (step 7):
    `fix: renumber ADR-<old> to ADR-<new> after main moved`. **Do not run
    `git push`** on a conflict pass: bash pushes only a resolution that passes
    its checks, so a bad one never reaches the PR.
+
+   Then run `pnpm migration:check`. If it reports an order error for a
+   migration this PR adds, follow decision-flow step 3, "Migration order", with
+   three differences on a conflict pass:
+   - **Don't run `git fetch` at all.** Bash fetched `origin/main` for this
+     merge, so the check already compares against the main being merged, and
+     `git diff origin/main...HEAD` is the PR's side. Fetching again could move
+     `origin/main` past it. A flagged file that isn't one of the PR's own means
+     the merge itself went wrong: rename nothing and emit `action=blocked`.
+   - Commit the renames and reference updates as a commit of their own on top
+     of the merge, `fix: renumber migration after main moved`, and don't push.
+     Name each old and new version in the commit message body, with the
+     dev-repair note.
+   - **Post no PR comment.** Bash may still roll the pass back, and then a
+     comment would describe a rename that never reached the PR. The commit
+     message carries the note instead.
 
 Emit `action=fixed` once the commit is made. Bash doesn't take your word for
 it. It checks the commit it would push, not your working tree: the merge is
@@ -241,14 +264,22 @@ attempt.
    would require going outside the approved plan, emit `action=blocked` and
    explain — the operator can re-plan.
 
-   **Migration order.** When `pnpm migration:check` reports
-   `new migration version <v> is not newer than <base>'s newest migration`,
-   main gained a newer migration after this PR's was written (often because
-   `--release` merged main into the branch), and `supabase db push` would
-   refuse this one. Renumbering the PR's own migrations is in scope; nothing
-   else changes:
+   **Migration order.** `pnpm migration:check` reports an order error for a
+   migration this PR adds. A rename fixes these three:
+   - `new migration version <v> is not newer than <base>'s newest migration`:
+     main gained a newer migration after this PR's was written (often because
+     `--release` merged main into the branch), and `supabase db push` would
+     refuse this one;
+   - `new migration version <v> is already used by <file>, which <base> has`:
+     another PR merged first with a migration at the same version. Supabase
+     tracks migrations by version only, so `supabase db push` would treat this
+     PR's migration as applied and skip it without an error;
+   - `version <v> is also used by <file>`: two of this PR's own migrations
+     share a version.
+
+   Renumbering the PR's own migrations is in scope; nothing else changes:
    - list the PR's own changed files with
-     `gh pr view <n> --repo JakubAnderwald/drafto --json files`. **Every file
+     `gh pr diff <n> --repo JakubAnderwald/drafto --name-only`. **Every file
      you rename must be in that list.** If a flagged file isn't, your
      `origin/main` is stale: `git fetch origin main` and re-run
      `pnpm migration:check`. If a flagged file is still not one of the PR's
@@ -262,8 +293,13 @@ attempt.
    - an order error with no `git mv` under it (a renamed migration main
      already has, or a version that isn't 14 digits) needs a human: rename
      nothing and emit `action=blocked` with the check's message;
-   - update every reference to each old version or file name
-     (`git grep <old version>`): docs, tests, comments;
+   - update every reference **the PR added** to each old version or file name
+     (`git grep <old version>`): docs, tests, comments. Search for the full
+     file name (`<old version>_<name>`) first. When main has a migration at the
+     same version (the second error above), main's file and main's references
+     to it carry that version too and must not change: check each bare mention
+     of the version against the PR's side of the diff
+     (`git diff origin/main...HEAD`) before editing it;
    - re-run `pnpm migration:check` until it passes;
    - commit as `fix: renumber migration after main moved` and push;
    - post one PR comment naming each old and new version and saying: if an old
