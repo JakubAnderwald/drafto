@@ -89,7 +89,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     // --no-chrome sits AFTER --effort so factory-agent-effort.test.mjs's
     // `--dangerously-skip-permissions --effort "$X"` counts keep holding.
     for (const c of noChrome) {
-      assert.match(c, /--effort "\$FACTORY(_PLAN)?_EFFORT" --no-chrome --strict-mcp-config/);
+      assert.match(c, /--effort "\$FACTORY(_PLAN|_WATCH)?_EFFORT" --no-chrome --strict-mcp-config/);
     }
   });
 

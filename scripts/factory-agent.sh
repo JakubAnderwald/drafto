@@ -61,10 +61,10 @@
 # issue (mirrors the `nightly-failure` pattern in support-agent.sh /
 # nightly-support.sh).
 #
-# Claude effort: the code-writing stages (--implement/--watch) run at ultracode
-# (FACTORY_EFFORT — xhigh reasoning + dynamic multi-agent workflows); the read-
-# only planning stages (--plan/replan) run at xhigh (FACTORY_PLAN_EFFORT). See
-# the effort block below.
+# Claude effort: --implement runs at ultracode (FACTORY_EFFORT — xhigh reasoning
+# + dynamic multi-agent workflows); --watch fix passes run at xhigh
+# (FACTORY_WATCH_EFFORT, ADR-0076); the read-only planning stages (--plan/
+# replan) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below.
 
 set -euo pipefail
 
@@ -94,9 +94,10 @@ if ! [[ "$CLAUDE_CALL_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # --implement and --watch run Claude through edits + the verification matrix
-# (lint/typecheck/test) at ultracode effort (multi-agent workflows, materially
-# longer than a plain run), so they carry generous caps and override the plan
-# cap per-call via an inline env prefix on the node invocation (below).
+# (lint/typecheck/test) — --implement at ultracode effort (multi-agent workflows,
+# materially longer than a plain run), --watch at xhigh — so they carry generous
+# caps and override the plan cap per-call via an inline env prefix on the node
+# invocation (below).
 IMPLEMENT_TIMEOUT_SEC="${FACTORY_IMPLEMENT_TIMEOUT_SEC:-2700}"
 WATCH_TIMEOUT_SEC="${FACTORY_WATCH_TIMEOUT_SEC:-1800}"
 # Validate like the plan cap: a non-numeric override would flow to
@@ -129,7 +130,16 @@ fi
 
 # Retry budget shared by --plan / --implement / --watch. After this many failed
 # Claude invocations on one issue, the card is parked in Blocked for a human.
-FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
+# Raised from 5 to 10 (ADR-0076): review-thread fix passes spend from the same
+# budget, and #797 was parked over a one-line docs nit after two of its five
+# attempts went to factory-side failures.
+FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-10}"
+# No leading zeros: bash arithmetic reads "08" as invalid octal, and a failed
+# -ge comparison would mean an unlimited budget.
+if ! [[ "$FACTORY_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_MAX_ATTEMPTS='$FACTORY_MAX_ATTEMPTS'; defaulting to 10" >&2
+  FACTORY_MAX_ATTEMPTS=10
+fi
 
 # Automatic re-runs per PR head SHA for required checks GitHub cancelled before
 # they could judge the code (no runner acquired). Spent → one comment and a hold.
@@ -163,21 +173,31 @@ if ! [[ "$FACTORY_LIMIT_FALLBACK_MIN" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # ── Claude effort levels ────────────────────────────────────────────────────
-# Code-writing stages (--implement / --watch) run at "ultracode": xhigh
-# reasoning + dynamic multi-agent workflow orchestration. Read-only planning
-# (--plan / replan) runs at plain "xhigh": deeper reasoning, no workflow fan-out
-# (cheaper on the shared subscription). Both are env knobs; run-claude.mjs
-# forwards --effort verbatim to `claude`. If the Workflows feature is disabled
-# on the account, ultracode degrades safely to xhigh (no error). Plain strings,
+# --implement runs at "ultracode": xhigh reasoning + dynamic multi-agent
+# workflow orchestration. --watch fix passes (CI fixes, review threads, conflict
+# passes) run at plain "xhigh" (ADR-0076): they are small, and at ultracode the
+# agent would finish the fix, then start a review workflow and wait on it until
+# the wall cap killed it with nothing committed (#797, 2026-11-10). Read-only
+# planning (--plan / replan) runs at plain "xhigh": deeper reasoning, no
+# workflow fan-out (cheaper on the shared subscription). All three are env
+# knobs; run-claude.mjs forwards --effort verbatim to `claude`. If the Workflows
+# feature is disabled on the account, ultracode degrades safely to xhigh (no
+# error). Plain strings,
 # never arrays — expanding an empty array under `set -u` throws "unbound
 # variable" on the Mac mini's bash 3.2 (see the parity_violation note below).
 # The `case` allowlist doubles as the no-word-split / no-empty guard so
 # `--effort "$VAR"` is always a single safe token.
-FACTORY_EFFORT="${FACTORY_EFFORT:-ultracode}"          # --implement / --watch
+FACTORY_EFFORT="${FACTORY_EFFORT:-ultracode}"          # --implement
 case "$FACTORY_EFFORT" in
   ultracode|max|xhigh|high|medium|low) : ;;
   *) echo "WARNING: invalid FACTORY_EFFORT='$FACTORY_EFFORT'; defaulting to ultracode" >&2
      FACTORY_EFFORT="ultracode" ;;
+esac
+FACTORY_WATCH_EFFORT="${FACTORY_WATCH_EFFORT:-xhigh}"  # --watch fix passes
+case "$FACTORY_WATCH_EFFORT" in
+  ultracode|max|xhigh|high|medium|low) : ;;
+  *) echo "WARNING: invalid FACTORY_WATCH_EFFORT='$FACTORY_WATCH_EFFORT'; defaulting to xhigh" >&2
+     FACTORY_WATCH_EFFORT="xhigh" ;;
 esac
 FACTORY_PLAN_EFFORT="${FACTORY_PLAN_EFFORT:-xhigh}"    # --plan / replan
 case "$FACTORY_PLAN_EFFORT" in
@@ -2150,6 +2170,15 @@ pr_head_oid() {
   gh pr view "$1" --repo JakubAnderwald/drafto --json headRefOid --jq '.headRefOid' 2>>"$LOG_FILE" || echo ""
 }
 
+# Head branch of PR <n> when that branch lives in this repo (the one the
+# factory pushes to as `origin`), or "" for a PR from a fork or on any failure.
+# Unlike the head OID it doesn't change after a push, so reading it before one
+# has no lag. Callers treat "" as "unknown" and fail closed.
+pr_head_branch() {
+  gh pr view "$1" --repo JakubAnderwald/drafto --json headRefName,isCrossRepository \
+    --jq 'if .isCrossRepository then "" else .headRefName end' 2>>"$LOG_FILE" || echo ""
+}
+
 # implement_queue_order <items-json> — the In Progress items in the order
 # --implement should take them: cards already holding a slot first (they never
 # need a free one, and only they can free one mid-sweep), then cards with an
@@ -2730,11 +2759,19 @@ rollback_conflict_pass() {
 # in it, no conflict marker or new ADR-number clash left. Only then is it pushed
 # (the agent commits but never pushes on a conflict pass), so a resolution that
 # fails the check never reaches the PR and the rollback can undo all of it.
-# Succeeds once the PR's head is the verified commit. Sets CONFLICT_PASS_WHY on
-# failure.
+# Succeeds once the verified commit is on the PR's branch: either the PR already
+# shows it, or our push of it was accepted. GitHub's PR view lags a push by a
+# few seconds, so reading it right after pushing used to see the old head and
+# spend an attempt on a merge that had landed. Every one of the nine "never
+# reached the PR" warnings up to 2026-11-10 was that race (ADR-0076). worktree-
+# cli's push is a plain, non-force `git push` to origin: it prints
+# {"pushed":true,branch,head} only after GitHub accepted the ref, so that output
+# is the proof, provided its branch is the PR's own head branch in this repo
+# (pr_head_branch, read before the push). Anything else falls back to the PR
+# view, as before. Sets CONFLICT_PASS_WHY on failure.
 conflict_pass_verified() {
   local wt_path="$1" pr_num="$2" merge_json="$3"
-  local main_sha files check head pr_head
+  local main_sha files check head pr_head pr_branch push_out pushed_head=""
   CONFLICT_PASS_WHY=""
   main_sha=$(echo "$merge_json" | jq -r '.mainSha // ""')
   files=$(echo "$merge_json" | jq -c '.conflictedFiles // []')
@@ -2749,8 +2786,19 @@ conflict_pass_verified() {
   head=$(echo "$check" | jq -r '.head // ""')
   pr_head=$(pr_head_oid "$pr_num")
   if [[ -n "$head" && "$pr_head" != "$head" ]]; then
+    pr_branch=$(pr_head_branch "$pr_num")
     log "Conflict pass for PR #$pr_num verified; pushing ${head:0:12}"
-    node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" >>"$LOG_FILE" 2>&1 || true
+    push_out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" 2>>"$LOG_FILE") || push_out=""
+    [[ -n "$push_out" ]] && echo "$push_out" >>"$LOG_FILE"
+    pushed_head=$(echo "$push_out" | jq -r --arg b "$pr_branch" \
+      'select(.pushed == true and $b != "" and .branch == $b) | .head // ""' 2>/dev/null) || pushed_head=""
+    if [[ -n "$pushed_head" && "$pushed_head" == "$head" ]]; then
+      log "Conflict pass for PR #$pr_num: push of ${head:0:12} to $pr_branch accepted (the PR view can take a few seconds to show it)"
+      return 0
+    fi
+    # No proof from the push (it failed, its output didn't parse, or it went to
+    # a branch that isn't this PR's): fall back to what the PR shows, in case it
+    # landed anyway.
     pr_head=$(pr_head_oid "$pr_num")
   fi
   if [[ -z "$head" || "$pr_head" != "$head" ]]; then
@@ -5092,7 +5140,8 @@ review_stage() {
 # One exemption (ADR-0036): a pass whose open threads are ALL CodeRabbit CLI
 # findings from the latest CLI run is free. Without it the gap-fill lane would
 # eat the review budget — bot fix, Claude fix, CLI fix, re-review fix, CLI #2 fix
-# is five passes and a Blocked card for doing exactly what the lane exists for.
+# is five passes, which was the whole budget until ADR-0076 raised it to 10, and
+# still half of it, spent on doing exactly what the lane exists for.
 # The exemption is itself bounded, so the termination guarantee above still
 # holds: coderabbit-cli.mjs grants at most ONE free pass per CLI run (keyed on
 # crLastCoveredSha, recorded as crCliFreePassSha), a card gets at most
@@ -6477,7 +6526,7 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
       fi
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: orphaned in Planning, no plan comment, retry budget exhausted ($ATTEMPTS) → Blocked"
         # Idempotent: post the exhaustion notice at most once. If a prior tick
         # already posted it but the → Blocked transition then failed (leaving
@@ -6666,7 +6715,7 @@ See \`docs/features/dark-factory.md\` for the spec contract.
       # to invoke claude.
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: retry budget exhausted ($ATTEMPTS attempts); advancing to Blocked"
         gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
           --body "🏭 **Planning retry budget exhausted ($ATTEMPTS attempts).**
@@ -6899,7 +6948,7 @@ and drag the card back to **Ready** to retry.
       rm -f "$CLAUDE_OUTPUT_FILE"
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: replan retry budget exhausted ($ATTEMPTS attempts); advancing to Blocked"
         gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
           --body "🏭 **Replan retry budget exhausted ($ATTEMPTS attempts).**
@@ -7875,12 +7924,12 @@ A human should take a look. Reset with \
 
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
-      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
+      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_WATCH_EFFORT)"
       CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
       CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       EXIT_CODE=0
       ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
-          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config ) \
+          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_WATCH_EFFORT" --no-chrome --strict-mcp-config ) \
           >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
       if [[ $EXIT_CODE -ne 0 ]]; then
