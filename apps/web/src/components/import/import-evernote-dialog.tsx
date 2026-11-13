@@ -186,8 +186,8 @@ interface ImportContext {
  * `ImportItem.uploaded`); only the ones not uploaded yet are tried again.
  *
  * When the storage quota refuses an attachment, the note's remaining attachments
- * are not tried and the note is finalized with the ones already uploaded, so its
- * text is kept. The refusal is returned so the caller stops the import, or thrown
+ * are not tried and the note is finalized with the ones already uploaded (this
+ * attempt's, and an earlier attempt's after the refused one), so its text is kept. The refusal is returned so the caller stops the import, or thrown
  * if the finalize failed too.
  */
 async function importSingleNote(
@@ -226,19 +226,22 @@ async function importSingleNote(
   const attachments: ImportAttachmentRef[] = [];
   let storageFull: StorageQuotaError | null = null;
   for (const [index, resource] of note.resources.entries()) {
+    // An upload an earlier attempt confirmed is kept even after a quota refusal: its
+    // row is on the note, and finalize only links the references it is given.
     const reused = uploaded.get(index);
     if (reused) {
       attachments.push(reused);
       continue;
     }
+    if (storageFull) continue; // every further upload would be refused too
     try {
       const ref = await uploadAttachment(noteId, resource, ctx.supabase);
       uploaded.set(index, ref);
       attachments.push(ref);
     } catch (err) {
       if (err instanceof StorageQuotaError) {
-        storageFull = err; // every further upload would be refused too
-        break;
+        storageFull = err;
+        continue;
       }
       // A failed attachment must not lose the note's text — record and skip.
       ctx.onSkippedAttachment({

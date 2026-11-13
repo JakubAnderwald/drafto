@@ -97,6 +97,33 @@ describe("discardRefusedUploadBlock", () => {
     expect(editor.getBlock("eggs")).toBeDefined();
   });
 
+  it("leaves a placeholder the user turned into text while it uploaded", () => {
+    // The upload is async: by the time it is refused, the block may no longer be
+    // a file block, and what the user typed in it must survive.
+    const editor = editorWith([
+      { id: "upload", type: "image", props: { name: "photo.png" } },
+      { id: "after", type: "paragraph", content: "After" },
+    ]);
+    editor.updateBlock("upload", { type: "paragraph", content: "Typed meanwhile" });
+    const before = JSON.stringify(editor.document);
+
+    discardRefusedUploadBlock(editor, "upload");
+
+    expect(JSON.stringify(editor.document)).toBe(before);
+    expect(outline(editor).map((node) => node.text)).toEqual(["Typed meanwhile", "After"]);
+  });
+
+  it("leaves a placeholder turned into an empty block of another type", () => {
+    const editor = editorWith([{ id: "upload", type: "image", props: { name: "photo.png" } }]);
+    editor.updateBlock("upload", { type: "heading", content: [] });
+    const before = JSON.stringify(editor.document);
+
+    discardRefusedUploadBlock(editor, "upload");
+
+    expect(JSON.stringify(editor.document)).toBe(before);
+    expect(editor.getBlock("upload")?.type).toBe("heading");
+  });
+
   it("does nothing when the block is already gone", () => {
     const editor = editorWith([{ id: "keep", type: "paragraph", content: "Keep" }]);
     const before = JSON.stringify(editor.document);

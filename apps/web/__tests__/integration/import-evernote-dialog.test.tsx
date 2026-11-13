@@ -544,6 +544,65 @@ describe("ImportEvernoteDialog", () => {
       expect(finalized[1].attachments[0]).toEqual(finalized[0].attachments[0]);
     });
 
+    it("still links an earlier attempt's upload that comes after the refused attachment", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(note({ title: "Alpha", resources: [pic("a.png"), pic("b.png")] })),
+      );
+      // First run: a.png's upload fails (skipped), b.png is confirmed, the finalize fails.
+      // Retry: a.png is tried again and refused for the quota.
+      mockUploadToSignedUrl.mockResolvedValueOnce({ error: { message: "network down" } });
+      let retrying = false;
+      let uploadUrlCalls = 0;
+      let confirmCalls = 0;
+      const finalized: Array<{ noteId: string; attachments: unknown[] }> = [];
+      global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/import/evernote/note")) {
+          return jsonOk({ notebookId: "nb-1", noteId: "note-1" });
+        }
+        if (url.includes("/api/import/evernote/finalize")) {
+          finalized.push(JSON.parse(String(init?.body)));
+          return retrying
+            ? jsonOk({ noteId: "note-1" })
+            : Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ error: "boom" }),
+              });
+        }
+        if (url.includes("/upload-url")) {
+          uploadUrlCalls += 1;
+          if (retrying) return quotaRefusal();
+          return jsonOk({ token: "t", filePath: `user-1/note-1/f-${uploadUrlCalls}.png` });
+        }
+        if (url.includes("/confirm")) {
+          confirmCalls += 1;
+          return jsonOk({ file_path: `user-1/note-1/f-${confirmCalls}.png` });
+        }
+        return jsonOk({});
+      }) as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "0 imported, 1 failed",
+      );
+      expect(finalized[0].attachments).toHaveLength(1);
+
+      retrying = true;
+      await user.click(screen.getByTestId("retry-failed-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      // a.png was tried once more and refused; b.png wasn't uploaded again, but its
+      // confirmed row is still linked into the note.
+      expect(uploadUrlCalls).toBe(3);
+      expect(confirmCalls).toBe(1);
+      expect(finalized[1].noteId).toBe("note-1");
+      expect(finalized[1].attachments).toEqual(finalized[0].attachments);
+    });
+
     it("keeps the untried notes on the retry list when a retry stops at the quota", async () => {
       const user = userEvent.setup();
       mockParseEnexStream.mockImplementation(() =>
