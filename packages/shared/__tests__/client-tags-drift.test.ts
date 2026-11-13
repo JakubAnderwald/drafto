@@ -17,7 +17,7 @@ import { DRAFTO_CLIENT_TAGS } from "../src/constants";
 
 const MIGRATION_PATH = resolve(
   __dirname,
-  "../../../supabase/migrations/20261113000001_usage_daily.sql",
+  "../../../supabase/migrations/20261113000003_usage_daily.sql",
 );
 
 /** Every list of 2+ quoted SQL strings in <sql>, comment lines left out. */
@@ -30,7 +30,7 @@ function quotedLists(sql: string): string[][] {
   return lists.map((list) => [...list.matchAll(/'([^']*)'/g)].map((m) => m[1]));
 }
 
-describe("client tags drift: DRAFTO_CLIENT_TAGS vs 20261113000001_usage_daily.sql", () => {
+describe("client tags drift: DRAFTO_CLIENT_TAGS vs 20261113000003_usage_daily.sql", () => {
   let tagLists: string[][];
 
   beforeAll(() => {

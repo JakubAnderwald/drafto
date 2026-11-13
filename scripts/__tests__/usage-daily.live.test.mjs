@@ -1,5 +1,5 @@
 // Live check of activity days (ADR 0077,
-// supabase/migrations/20261113000001_usage_daily.sql) against the DEV Supabase
+// supabase/migrations/20261113000003_usage_daily.sql) against the DEV Supabase
 // project, over plain fetch to GoTrue and PostgREST: the same path a client
 // holding the public anon key and its own JWT would use.
 //

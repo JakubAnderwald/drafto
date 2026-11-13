@@ -29,7 +29,7 @@ export const SIGNUP_CONFIRMATION_SENT =
 export const EMAIL_CONFIRMED = "Email confirmed. Log in to continue, here or in the Drafto app.";
 
 // The `x-drafto-client` tags (ADR 0023), one per client. `usage_daily.client`
-// (20261113000001_usage_daily.sql) mirrors this list in its check constraint,
+// (20261113000003_usage_daily.sql) mirrors this list in its check constraint,
 // and record_activity rejects any other tag; packages/shared's
 // client-tags-drift test keeps the two in step.
 export const DRAFTO_CLIENT_TAGS = [

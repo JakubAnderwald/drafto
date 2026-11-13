@@ -27,7 +27,7 @@
 --   - Rows are kept 13 months; deleting the account deletes them (on delete
 --     cascade). Days and weeks are UTC; ISO weeks start on Monday.
 --
--- The nightly pg_cron job lives in 20261113000002_usage_daily_cron.sql, so the
+-- The nightly pg_cron job lives in 20261113000004_usage_daily_cron.sql, so the
 -- PGlite tests (scripts/__tests__/usage-daily.test.mjs) can run this file
 -- verbatim.
 
@@ -135,7 +135,7 @@ grant execute on function public.record_activity(date[], text) to authenticated;
 -- =============================================================================
 
 -- Fills content_changes for UTC day p_day (default: yesterday), run nightly by
--- pg_cron (20261113000002_usage_daily_cron.sql):
+-- pg_cron (20261113000004_usage_daily_cron.sql):
 --   1. Every row of p_day goes back to 0, so a rerun sets the same numbers
 --      instead of adding to them.
 --   2. Content overwrites (note_content_history rows archived that day) tagged

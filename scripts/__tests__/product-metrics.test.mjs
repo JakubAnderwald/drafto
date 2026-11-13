@@ -5,7 +5,7 @@
 // saves, so it covers the week buckets, the 14-day window, the retention nulls
 // and the 24-hour emptying rule.
 //
-// The activity-days migration (20261113000001_usage_daily.sql, ADR 0077) runs
+// The activity-days migration (20261113000003_usage_daily.sql, ADR 0077) runs
 // after them, because it re-creates metrics_activation over the per-user
 // metrics_cohort_activation: every activation case below runs against that
 // definition. Its own functions are tested in usage-daily.test.mjs.
@@ -33,7 +33,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const MIGRATIONS = [
   "20261112000001_note_text_chars.sql",
   "20261112000002_product_metrics.sql",
-  "20261113000001_usage_daily.sql",
+  "20261113000003_usage_daily.sql",
 ].map((f) => path.join(REPO_ROOT, "supabase", "migrations", f));
 
 const STUB_SQL = `
@@ -51,7 +51,7 @@ create table auth.users (
   created_at timestamptz not null default now(),
   raw_app_meta_data jsonb
 );
--- Supabase's auth.uid(), which record_activity (20261113000001) reads.
+-- Supabase's auth.uid(), which record_activity (20261113000003) reads.
 create function auth.uid() returns uuid
 language sql stable
 as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
@@ -461,7 +461,7 @@ describe("product metrics: excluded accounts, sign-ups, activation and writers (
       "metrics_active_users(int)",
       "metrics_retention(int)",
     ];
-    // The activity-days writers (20261113000001): SECURITY DEFINER, since
+    // The activity-days writers (20261113000003): SECURITY DEFINER, since
     // neither caller may write usage_daily itself. record_activity is for
     // signed-in users only; the rollup for service_role (and pg_cron).
     const DEFINER_FUNCTIONS = {

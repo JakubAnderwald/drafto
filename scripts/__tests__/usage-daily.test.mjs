@@ -1,4 +1,4 @@
-// Runs the activity-days migration (20261113000001_usage_daily.sql, ADR 0077)
+// Runs the activity-days migration (20261113000003_usage_daily.sql, ADR 0077)
 // verbatim in PGlite (Postgres compiled to WASM, in process), after the two
 // #820 product-metrics migrations it builds on, over stand-ins for the Supabase
 // tables it reads. Unlike the dev live test (usage-daily.live.test.mjs), this
@@ -9,7 +9,7 @@
 // The stand-ins are the ones product-metrics.test.mjs uses, plus an auth.uid()
 // that reads request.jwt.claim.sub like Supabase's does. A "signed-in user" is
 // the authenticated role with that setting, inside one transaction. PGlite has
-// no pg_cron, so the cron migration (20261113000002) is checked as text.
+// no pg_cron, so the cron migration (20261113000004) is checked as text.
 //
 // History rows follow archive_note_content() (20260425000001): an overwrite
 // archives the PRIOR content, archived_at = when the new content was saved,
@@ -28,9 +28,9 @@ const migrationPath = (f) => path.join(REPO_ROOT, "supabase", "migrations", f);
 const MIGRATIONS = [
   "20261112000001_note_text_chars.sql",
   "20261112000002_product_metrics.sql",
-  "20261113000001_usage_daily.sql",
+  "20261113000003_usage_daily.sql",
 ].map(migrationPath);
-const CRON_MIGRATION = migrationPath("20261113000002_usage_daily_cron.sql");
+const CRON_MIGRATION = migrationPath("20261113000004_usage_daily_cron.sql");
 
 const STUB_SQL = `
 create role anon;
@@ -994,7 +994,7 @@ describe("usage_daily: metrics_retention before and at the start of tracking (PG
   });
 });
 
-describe("usage_daily: nightly cron job (20261113000002)", () => {
+describe("usage_daily: nightly cron job (20261113000004)", () => {
   const sql = readFileSync(CRON_MIGRATION, "utf8");
 
   it("schedules rollup-usage-daily at 00:30 UTC, calling rollup_usage_daily()", () => {
