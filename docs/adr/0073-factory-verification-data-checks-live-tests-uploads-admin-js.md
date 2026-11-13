@@ -56,7 +56,8 @@ The shell lane's supervisor runs the scenario's `### Live tests` **before the cl
 
 ### 4. Admin steps (`FACTORY_BROWSER_ADMIN=1`)
 
-- **Which account:** the runner can sign in as the CI E2E admin account on dev, with a one-time magic link minted like the test account's (`browser-signin.mjs mint --account admin`). No password is involved, so CI's password sign-in is unaffected.
+- **Which account:** the runner can sign in as a dedicated factory admin account on dev, `jakub+factory-admin@anderwald.info`, with a one-time magic link minted like the test account's (`browser-signin.mjs mint --account admin`). The account has no password, since the factory only ever signs in by link.
+  - _Amended 2026-11-11, before first use:_ this first said the runner reuses the CI E2E admin account. That account was never set up: the repo has no `E2E_ADMIN_EMAIL` secret, so CI's admin specs skip. The only admin on dev was the operator's own account, and the factory shouldn't act as the operator, so it got its own account.
 - **Where its email lives:** the admin's email is in `~/drafto-secrets/browser-admin-account.env` (`FACTORY_BROWSER_ADMIN_EMAIL=`, mode 600). The admin has its own sign-in lease, `logs/factory/factory-signin-admin.lease`.
 - **When it's minted:** only for a scenario with a Web step marked `(admin)`. A failed mint costs the run its admin steps, which become SKIP, never the run.
 - **Order:** each sign-in link works once, so the runner can't go back to the test account after signing in as the admin. The scenario writer puts admin steps last, and a test-account step after one is SKIP.
@@ -101,5 +102,6 @@ The runner's output becomes a GitHub comment, so after the session `browser-repo
 
 - **Running the live tests from the factory's `main` checkout only.** No PR code would ever run with the key, but a PR's new or changed live tests, the ones that matter, wouldn't be covered until after the merge.
 - **Data checks only at the end of the run, from the shell lane.** The browser runner would keep Chrome alone, but a check could only describe the final state, not what one step did.
-- **A dedicated dev admin account created by a setup script.** That would mean one more account to look after. The CI E2E admin is dev-only already, and a magic-link sign-in leaves its password alone.
+- **Reusing the CI E2E admin account.** First chosen, then dropped because that account doesn't exist (see the amendment under "Admin steps").
+- **Using the operator's own dev account, the only admin on dev.** No setup, but the factory's admin steps would run as the operator.
 - **Giving the session the key and relying on the report's scan.** Rejected: the scan matches literals, and the rule that the model never holds a secret is what keeps it simple to reason about.
