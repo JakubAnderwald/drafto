@@ -86,6 +86,9 @@
 //     "replyDir":      "<factory>/logs/factory/replies/issue-<n>" | null,
 //     "priorPr":       { "number", "url", "headRef", "state" } | null,
 //     "attempts":      <number>,
+//     "migrations"?:   { "mainNewest", "nextVersion", "claimed": [{ "pr", "file" }] }
+//                      (migration-renumber.mjs next-version; only when the spec
+//                      says schema changes, ADR-0079),
 //     "config":        { "phase", ... },
 //     "repo":          { "nameWithOwner", "headRef" }
 //   }
@@ -595,6 +598,36 @@ export function buildFactoryPlanBundle({
   return bundle;
 }
 
+// The migration versions the implementer must use (ADR-0079), from
+// `migration-renumber.mjs next-version`. Other open PRs' file names reach the
+// model here, and anyone can open a PR on this public repo, so only names of
+// the strict `<14 digits>_<word chars>.sql` shape get through, and the list is
+// capped. Null unless nextVersion is a 14-digit version.
+const MAX_CLAIMED_MIGRATIONS = 200;
+const VERSION_14 = /^\d{14}$/;
+const CLAIMED_FILE = /^(\d{14})_[A-Za-z0-9_.-]{1,120}\.sql$/;
+
+export function shapeMigrations(m) {
+  if (!m || typeof m !== "object") return null;
+  if (typeof m.nextVersion !== "string" || !VERSION_14.test(m.nextVersion)) return null;
+  return {
+    mainNewest:
+      typeof m.mainNewest === "string" && VERSION_14.test(m.mainNewest) ? m.mainNewest : null,
+    nextVersion: m.nextVersion,
+    claimed: (Array.isArray(m.claimed) ? m.claimed : [])
+      .filter(
+        (c) =>
+          c &&
+          Number.isInteger(c.pr) &&
+          c.pr > 0 &&
+          typeof c.file === "string" &&
+          CLAIMED_FILE.test(c.file),
+      )
+      .slice(0, MAX_CLAIMED_MIGRATIONS)
+      .map((c) => ({ pr: c.pr, file: c.file, version: CLAIMED_FILE.exec(c.file)[1] })),
+  };
+}
+
 export function buildFactoryImplementBundle({
   issue,
   approvedPlan,
@@ -605,6 +638,7 @@ export function buildFactoryImplementBundle({
   replyDir = null,
   priorPr = null,
   attempts = 0,
+  migrations = null,
   config,
   repo,
   nowIso,
@@ -663,6 +697,10 @@ export function buildFactoryImplementBundle({
         }
       : null,
     attempts: Number.isInteger(attempts) ? attempts : 0,
+    // The version for a new migration, clear of main and of every open PR's
+    // (ADR-0079). Only for a spec that says schema changes; null otherwise, or
+    // when bash couldn't work it out, and the prompt's date rule applies.
+    migrations: spec.schemaChanges === true ? shapeMigrations(migrations) : null,
     config: shapeConfig(config),
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
@@ -1350,6 +1388,7 @@ async function main() {
       replyDir: input.replyDir,
       priorPr: input.priorPr,
       attempts: input.attempts,
+      migrations: input.migrations,
       config: input.config,
       repo: input.repo,
       nowIso: input.nowIso,

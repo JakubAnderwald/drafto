@@ -20,6 +20,9 @@ import {
   formatFinding,
   isValidMigrationName,
   migrationNamesAt,
+  newestVersion,
+  nextMigrationVersion,
+  openPrs,
   suggestVersion,
   versionOf,
 } from "../lib/check-migration-order.mjs";
@@ -79,6 +82,107 @@ describe("check-migration-order: suggestVersion", () => {
 
   it("only ever suggests 14 digits", () => {
     assert.throws(() => suggestVersion("99999999999999", TODAY), /no 14-digit migration version/);
+  });
+});
+
+// ADR-0079. The implement prompt named every migration <today>000001, so two
+// cards implemented the same day took the same version (#802 and #829 both
+// used 20261111000001). The factory now hands the implementer a version clear
+// of main and of every open PR's.
+describe("check-migration-order: nextMigrationVersion", () => {
+  const next = (o) => nextMigrationVersion({ today: TODAY, ...o });
+
+  it("is today's first slot when main's newest is older", () => {
+    assert.equal(next({ mainNames: [A, B] }), "20261025000001");
+    assert.equal(next({}), "20261025000001", "an empty main too");
+  });
+
+  it("is one past main's newest when that is today or later", () => {
+    assert.equal(next({ mainNames: [A, "20261025000003_x.sql"] }), "20261025000004");
+    assert.equal(next({ mainNames: ["20261101000001_future.sql"] }), "20261101000002");
+  });
+
+  it("skips a version another open PR already adds (#802/#829)", () => {
+    const claimed = [{ pr: 829, file: "20261025000001_note_text_chars.sql" }];
+    assert.equal(next({ mainNames: [A, B], claimed }), "20261025000002");
+  });
+
+  it("skips a chain of claimed versions, in any form, and ignores junk", () => {
+    const claimed = [
+      { pr: 829, file: "20261025000002_b.sql" },
+      "20261025000001_a.sql",
+      "20261025000003",
+      { pr: 830, file: "README.md" },
+      "junk",
+      null,
+    ];
+    assert.equal(next({ mainNames: [A, B], claimed }), "20261025000004");
+  });
+
+  it("ignores claimed versions it would never pick anyway", () => {
+    // A stale claim below main's newest, and one far in the future.
+    const claimed = ["20260101000001", "20261201000001"];
+    assert.equal(next({ mainNames: [A, B], claimed }), "20261025000001");
+  });
+
+  it("reads main's newest from valid names only", () => {
+    assert.equal(newestVersion([A, B, "seed.sql", "9_short.sql"]), "20260301000001");
+    assert.equal(newestVersion([]), null);
+  });
+});
+
+// The implement post-check (ADR-0079): an added file whose version an older
+// open PR already adds moves too, the way a stale one does.
+describe("check-migration-order: moveOff (claimed)", () => {
+  const C = "20261025000001_c.sql";
+  const D = "20261025000002_d.sql";
+  const check = (localFiles, moveOff, extra = {}) =>
+    checkMigrationOrder({ localFiles, baseFiles: [A, B], today: TODAY, moveOff, ...extra });
+
+  it("reports nothing without moveOff, as CI and the CLI run it", () => {
+    assert.deepEqual(check([A, B, C], []), []);
+    assert.deepEqual(checkMigrationOrder({ localFiles: [A, B, C], baseFiles: [A, B] }), []);
+  });
+
+  it("moves an added file off an older open PR's version, naming that PR", () => {
+    const [finding, ...rest] = check([A, B, C], [{ pr: 829, file: "20261025000001_other.sql" }]);
+    assert.deepEqual(rest, []);
+    assert.deepEqual(finding, {
+      kind: "error",
+      reason: "claimed",
+      file: C,
+      version: "20261025000001",
+      suggested: "20261025000002",
+      baseMax: "20260301000001",
+      others: ["20261025000001_other.sql"],
+      prs: [829],
+    });
+  });
+
+  it("keeps the branch's order: a later migration moves after the claimed one", () => {
+    const findings = check(
+      [A, B, C, D],
+      [{ pr: 829, file: "20261025000001_x.sql" }],
+      // Another open PR (newer, so not in moveOff) uses 000003: skipped too.
+      { extraTaken: ["20261025000003_y.sql"] },
+    );
+    assert.deepEqual(
+      findings.map((f) => [f.reason, f.file, f.suggested]),
+      [
+        ["claimed", C, "20261025000004"],
+        ["order", D, "20261025000005"],
+      ],
+    );
+  });
+
+  it("formats the finding for the CLI's shape", () => {
+    const [finding] = check([A, B, C], [{ pr: 829, file: "20261025000001_x.sql" }]);
+    assert.equal(
+      formatFinding(finding, { dir: "supabase/migrations", ref: "origin/main" }),
+      "error\tsupabase/migrations/20261025000001_c.sql\tversion 20261025000001 is also used by open PR #829 (20261025000001_x.sql); the newer PR moves\tgit mv supabase/migrations/20261025000001_c.sql supabase/migrations/20261025000002_c.sql",
+    );
+    assert.equal(openPrs([829, 830]), "open PRs #829, #830");
+    assert.equal(openPrs([]), "another open PR");
   });
 });
 
@@ -298,12 +402,30 @@ describe("factory implement prompt — migration versions", () => {
       prompt,
       /must be 14 digits and newer than the newest file in `supabase\/migrations\/` on `origin\/main`/,
     );
-    assert.match(prompt, /normally today's UTC date as `YYYYMMDD000001_<name>\.sql`/);
+    assert.match(
+      prompt,
+      /When `bundle\.migrations` is null, use today's UTC date as `YYYYMMDD000001_<name>\.sql`/,
+    );
     assert.match(
       prompt,
       /if main already has a file dated today or later, the next version after it/,
     );
     assert.match(prompt, /"Migration versions must sort last"/);
+  });
+
+  // ADR-0079: two cards implemented the same day both took <today>000001.
+  it("names the first new migration with bundle.migrations.nextVersion, skipping claimed", () => {
+    assert.match(
+      prompt,
+      /When `bundle\.migrations` is set, the factory has picked the version: name your first new migration `<bundle\.migrations\.nextVersion>_<name>\.sql` and any further ones with the versions after it, in order, skipping every version in `bundle\.migrations\.claimed`/,
+    );
+    // The bundle shape documents the field the rule names.
+    assert.match(prompt, /"migrations": \{ "mainNewest": .*"nextVersion": .*"claimed": \[/);
+    // The local warning isn't a failure the implementer must chase.
+    assert.match(
+      prompt,
+      /`WARN` that another open PR adds the same version is not a failure: after you open the PR, the factory moves your migrations off any version an older open PR also adds \(ADR-0079\)/,
+    );
   });
 });
 

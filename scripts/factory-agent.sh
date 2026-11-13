@@ -1587,6 +1587,9 @@ issue_already_impl_stubbed() {
 # reply markers, a JSON array of {commentId, marker} ("[]" on a first
 # implementation — see revise_replies_check); $8 is the directory the
 # implementer writes those replies to (reply_dir_for).
+# When the spec says schema changes, the bundle also carries `migrations`
+# (implement_migration_versions, ADR-0079): the version the implementer names
+# its first new migration with, clear of main and of every open PR's.
 build_implement_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1596,9 +1599,9 @@ build_implement_bundle() {
   local screenshot_sources="${6:-[]}"
   local reply_markers="${7:-[]}"
   local reply_dir="${8:-}"
-  local repo_head_ref
+  local repo_head_ref input bundle migrations
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-  jq -n \
+  input=$(jq -n \
     --argjson issue "$issue_entry" \
     --argjson plan "$approved_plan" \
     --argjson priorPr "$prior_pr" \
@@ -1634,8 +1637,39 @@ build_implement_bundle() {
          oauthUserEmail: $oauthUserEmail
        },
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
-     }' \
-    | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+     }') || return 1
+  bundle=$(node "$SCRIPT_DIR/lib/factory-bundle.mjs" <<<"$input") || return 1
+  # The spec, as the bundle parses it, decides: the lookup costs a fetch and a
+  # gh call per open PR, so only a card that says it changes the schema pays.
+  if jq -e '.spec.schemaChanges == true' <<<"$bundle" >/dev/null 2>&1; then
+    migrations=$(implement_migration_versions)
+    if [[ "$migrations" != "null" ]]; then
+      bundle=$(jq -c --argjson migrations "$migrations" '. + {migrations: $migrations}' <<<"$input" \
+        | node "$SCRIPT_DIR/lib/factory-bundle.mjs") || return 1
+    fi
+  fi
+  printf '%s\n' "$bundle"
+}
+
+# implement_migration_versions — the `migrations` field of the implement bundle
+# (ADR-0079): {mainNewest, nextVersion, claimed} from migration-renumber.mjs
+# next-version, which fetches main and lists every open PR's migration files.
+# The implement prompt names `<today>000001_<name>.sql` by default, so two cards
+# implemented the same day picked the same version (#802 and #829). This card's
+# own open PR isn't excluded, so a revision doesn't reuse its own version for a
+# new migration. Prints "null" on any failure, with a warning in the log: the
+# prompt then falls back to its date rule, and implement_migration_claim_check
+# still catches a clash after the run. Never fails the implement. Logs only
+# through logerr, because build_implement_bundle's stdout is the bundle.
+implement_migration_versions() {
+  local out
+  if out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" next-version --root "$REPO_ROOT" 2>>"$LOG_FILE") \
+      && jq -e '(.nextVersion | type) == "string"' <<<"$out" >/dev/null 2>&1; then
+    jq -c '{mainNewest, nextVersion, claimed}' <<<"$out"
+    return 0
+  fi
+  logerr "WARNING: couldn't pick a migration version for the implement bundle (see the log); the implementer falls back to the date rule"
+  echo "null"
 }
 
 # owner_comments_since <comments-json> <since-iso> [<issue>]
@@ -1951,6 +1985,31 @@ implement_park_blocked() {
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
   log "Issue #$issue_num: $reason → Blocked; slot $slot released"
+}
+
+# implement_migration_claim_check <issue> <pr-num> — the --implement post-check
+# for migration versions (ADR-0079), run after the parity post-check. The bundle
+# gave the implementer a version clear of every open PR's, but a PR opened while
+# it ran, or an implementer that ignored it, can still share one. When this PR
+# adds a migration whose version an open PR with a LOWER number also adds,
+# migration_renumber_gate (mode "claimed") renames this PR's, with the same
+# proven-mechanical commit and comment as ADR-0077: the newer PR moves, the
+# older one never does. Implement runs one card at a time under the loop lock,
+# so two cards can't both move. It counts toward migrationRenumbers. It never
+# blocks the implement: a rename that needs a person, a spent cap or an error is
+# logged and the card goes on to In Review; the merge-time gate catches the
+# clash once the older PR merges. Always returns 0.
+implement_migration_claim_check() {
+  local issue_num="$1" pr_num="$2" head_sha
+  head_sha=$(pr_head_oid "$pr_num")
+  migration_renumber_gate "$issue_num" "$pr_num" "$head_sha" "In Progress" "" claimed || true
+  case "$MIGRATION_RENUMBER_RESULT" in
+    clean|renumbered) ;;
+    *)
+      log "Issue #$issue_num: migration version post-check on PR #$pr_num ended '$MIGRATION_RENUMBER_RESULT'; going on (the merge-time renumber catches a clash later)"
+      ;;
+  esac
+  return 0
 }
 
 # implement_parity_gate <item-id> <issue> <slot> <pr-num> <affected-csv>
@@ -2617,6 +2676,12 @@ migration_approval_vouch_view() {
 # Args: $1 issue  $2 PR  $3 head SHA  $4 where (the column, for the comment)
 #       $5 the PR's changed files, when the caller has them (gh pr diff
 #          --name-only, which has no file cap; never gh pr view --json files)
+#       $6 "claimed" from implement_migration_claim_check only (ADR-0079): also
+#          move this PR's migrations off versions an open PR with a lower number
+#          already adds (--move-off-claimed). --watch and --release never pass
+#          it, or the older PR would move too. In this mode manual and capped
+#          only log: their comments describe the red-CI fallback, and nothing is
+#          red yet; the merge-time gate catches the clash once the older merges.
 # Returns 0 when there is nothing to renumber, 1 otherwise, and
 # MIGRATION_RENUMBER_RESULT says which: clean | renumbered | manual | capped |
 # error. Callers hold the card only on renumbered (CI runs on the new head), and
@@ -2624,9 +2689,12 @@ migration_approval_vouch_view() {
 # a few ticks per head at most (migration_renumber_error_hold). manual and
 # capped go on as before, to the fix loop's recipe.
 migration_renumber_gate() {
-  local issue_num="$1" pr_num="$2" head_sha="$3" where="$4" diff_files="${5:-}"
+  local issue_num="$1" pr_num="$2" head_sha="$3" where="$4" diff_files="${5:-}" mode="${6:-}"
   local out status reason map_json map_text to count comment marker seen try
-  local claimed_args=()
+  local claimed_args=() move_args=()
+  if [[ "$mode" == "claimed" ]]; then
+    move_args=(--move-off-claimed 1)
+  fi
   MIGRATION_RENUMBER_RESULT="error"
   if [[ -z "$diff_files" ]] \
       && ! diff_files=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
@@ -2644,7 +2712,8 @@ migration_renumber_gate() {
     return 1
   fi
   if ! out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" precheck --root "$REPO_ROOT" \
-      --pr "$pr_num" --head "$head_sha" --where "$where" 2>>"$LOG_FILE"); then
+      --pr "$pr_num" --head "$head_sha" --where "$where" \
+      ${move_args[@]+"${move_args[@]}"} 2>>"$LOG_FILE"); then
     log "WARNING: migration renumber precheck failed for PR #$pr_num at ${head_sha:0:12} (see the log)"
     return 1
   fi
@@ -2661,7 +2730,8 @@ migration_renumber_gate() {
       log "Issue #$issue_num: PR #$pr_num's migrations need a person to renumber them: $reason"
       marker="drafto-factory-migration-renumber-manual:${head_sha:0:12}"
       comment=$(jq -r '.comment // ""' <<<"$out" 2>/dev/null || echo "")
-      if [[ "$DRY_RUN" -eq 0 && -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+      if [[ "$mode" != "claimed" && "$DRY_RUN" -eq 0 && -n "$comment" ]] \
+          && ! issue_has_marker "$issue_num" "$marker"; then
         gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$comment
 
 <!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
@@ -2695,7 +2765,7 @@ migration_renumber_gate() {
     MIGRATION_RENUMBER_RESULT="capped"
     log "Issue #$issue_num: PR #$pr_num needs another migration renumber ($map_text), but $count of $FACTORY_MAX_MIGRATION_RENUMBERS are spent; leaving it to the fix loop"
     marker="drafto-factory-migration-renumber-cap:${head_sha:0:12}"
-    if ! issue_has_marker "$issue_num" "$marker"; then
+    if [[ "$mode" != "claimed" ]] && ! issue_has_marker "$issue_num" "$marker"; then
       gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **PR #$pr_num's migrations fell behind \`main\` again.**
 
 The factory has renumbered them $count time(s), its limit (\`FACTORY_MAX_MIGRATION_RENUMBERS\`), \
@@ -2722,7 +2792,7 @@ renumber mechanically once more, reset the count with \
   status=""
   if out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" apply --root "$REPO_ROOT" \
       --issue "$issue_num" --pr "$pr_num" --head "$head_sha" --where "$where" \
-      ${claimed_args[@]+"${claimed_args[@]}"} 2>>"$LOG_FILE"); then
+      ${claimed_args[@]+"${claimed_args[@]}"} ${move_args[@]+"${move_args[@]}"} 2>>"$LOG_FILE"); then
     status=$(jq -r '.status // ""' <<<"$out" 2>/dev/null || echo "")
     reason=$(jq -r '.reason // ""' <<<"$out" 2>/dev/null || echo "")
   fi
@@ -2740,7 +2810,7 @@ renumber mechanically once more, reset the count with \
         log "Issue #$issue_num: PR #$pr_num's migrations need a person to renumber them: $reason"
         marker="drafto-factory-migration-renumber-manual:${head_sha:0:12}"
         comment=$(jq -r '.comment // ""' <<<"$out" 2>/dev/null || echo "")
-        if [[ -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+        if [[ "$mode" != "claimed" && -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
           gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$comment
 
 <!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
@@ -7884,6 +7954,9 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
             "$AFFECTED" "$PARITY_OVERRIDE"; then
           continue
         fi
+        # Migration versions: move this PR's off any an older open PR already
+        # adds (ADR-0079). Never blocks; the card goes on either way.
+        implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM"
         # Happy path: advance to In Review. KEEP slot + worktree for --watch.
         # Advancing lastFeedbackAt to FEEDBACK_MARK marks the comments this run
         # applied as consumed, so a revision we just applied can't re-trigger

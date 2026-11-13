@@ -9,12 +9,14 @@ import { fileURLToPath } from "node:url";
 import { checkMigrationOrder } from "../lib/check-migration-order.mjs";
 import {
   addedLineNumbers,
+  claimedCheck,
   claimedVersions,
   makeRewriter,
   manualComment,
   mergedMigrationNames,
   objectOverlap,
   objectsTouched,
+  olderClaims,
   planRenumber,
   pushRenumber,
   renumberComment,
@@ -204,6 +206,34 @@ describe("planRenumber", () => {
       mainSql: { [NOTE]: "create or replace function public.note_text_chars() returns int;" },
     });
     assert.equal(r.status, "fixable");
+  });
+
+  // ADR-0079: the implement post-check, before either PR merged.
+  it("moves a fresh migration off an older open PR's version, only when asked", () => {
+    const mine = "20261113000001_mine.sql";
+    const args = { mbNames: [BASE], headNames: [BASE, mine], mainNames: [BASE] };
+    const older = [{ pr: 829, file: "20261113000001_theirs.sql" }];
+    assert.equal(plan({ ...args, extraTaken: older }).status, "clean", "no moveOff, no move");
+    const r = plan({ ...args, extraTaken: older, moveOff: older });
+    assert.equal(r.status, "fixable");
+    assert.deepEqual(r.map, { [mine]: "20261113000002_mine.sql" });
+    assert.equal(r.findings[0].reason, "claimed");
+    assert.deepEqual(r.findings[0].prs, [829]);
+  });
+});
+
+describe("olderClaims", () => {
+  it("keeps only claims of open PRs numbered below this one", () => {
+    const claimed = [
+      { pr: 829, file: "a.sql" },
+      { pr: 835, file: "b.sql" },
+      { pr: 840, file: "c.sql" },
+      "20261113000001",
+      { file: "no-pr.sql" },
+    ];
+    assert.deepEqual(olderClaims(claimed, 835), [{ pr: 829, file: "a.sql" }]);
+    assert.deepEqual(olderClaims(claimed, "841"), claimed.slice(0, 3));
+    assert.deepEqual(olderClaims(null, 835), []);
   });
 });
 
@@ -395,6 +425,39 @@ describe("comments", () => {
     );
     assert.match(body, /Prod needs nothing: it is pushed only from `main`, after the merge/);
     assert.doesNotMatch(body, /tbmjbxxseonkciqovnpl/);
+  });
+
+  // ADR-0079: the implement post-check's renumber says which open PR had the
+  // version, not that main moved.
+  it("says which older open PR already used the version", () => {
+    const mine = "20261113000001_mine.sql";
+    const body = renumberComment({
+      pr: 835,
+      to: "e".repeat(40),
+      map: { [mine]: "20261113000002_mine.sql" },
+      findings: [
+        {
+          reason: "claimed",
+          file: mine,
+          version: "20261113000001",
+          others: ["20261113000001_theirs.sql"],
+          prs: [829],
+        },
+      ],
+    });
+    assert.match(
+      body,
+      /^🏭 \*\*Renumbered PR #835's migrations: an older open PR already uses their version\.\*\*/,
+    );
+    assert.match(
+      body,
+      /- `20261113000001` was already used by open PR #829 \(`20261113000001_theirs\.sql`\)\./,
+    );
+    assert.match(body, /so the newer PR moves/);
+    assert.doesNotMatch(body, /after `main` moved|update-branch merges/);
+    assert.doesNotMatch(body, /past the ones `main` gained/);
+    assert.match(body, /\| `20261113000001_mine\.sql` \| `20261113000002_mine\.sql` \|/);
+    assert.match(body, /supabase migration repair --status reverted 20261113000001/);
   });
 
   // Not a hold: the card goes on to the fix loop's recipe, and from Approved
@@ -802,6 +865,193 @@ describe("migration-renumber end to end (#802/#829)", () => {
     assert.match(r.out.reason, /function public\.note_text_chars/);
   });
 
+  // A gh on PATH for the CLI's open-PR sweep: `pr list` lists the PRs in
+  // `prs`, `api … pulls/<n>/files` prints that PR's files, anything else fails.
+  function ghBin(name, prs) {
+    const bin = join(dir, `bin-${name}`);
+    mkdirSync(bin, { recursive: true });
+    const list = JSON.stringify(Object.keys(prs).map((n) => ({ number: Number(n) })));
+    const cases = Object.entries(prs)
+      .map(([n, files]) => `  *pulls/${n}/files*) printf '%s\\n' ${files.join(" ")} ;;`)
+      .join("\n");
+    write(
+      bin,
+      "gh",
+      `#!/bin/sh\nif [ "$1 $2" = "pr list" ]; then echo '${list}'; exit 0; fi\ncase "$*" in\n${cases}\n  *) exit 1 ;;\nesac\n`,
+    );
+    chmodSync(join(bin, "gh"), 0o755);
+    return { PATH: `${bin}:${process.env.PATH}` };
+  }
+
+  // ADR-0079: the implement bundle's version, clear of main and every open PR.
+  describe("next-version", () => {
+    it("prints main's newest and the next version no open PR uses", () => {
+      const env = ghBin("next", {
+        802: ["supabase/migrations/20261113000001_x.sql", "apps/web/a.ts"],
+        901: ["supabase/migrations/20261113000002_y.sql"],
+      });
+      const args = ["next-version", "--root", factory, "--today", "2026-11-13"];
+      const r = cli(factory, args, env);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(r.out, {
+        mainNewest: "20261111000001",
+        nextVersion: "20261113000003",
+        claimed: [
+          { pr: 802, file: "20261113000001_x.sql" },
+          { pr: 901, file: "20261113000002_y.sql" },
+        ],
+        skipped: [],
+      });
+      const mine = cli(factory, [...args, "--exclude-pr", "802"], env);
+      assert.equal(mine.status, 0, mine.stderr);
+      assert.equal(mine.out.nextVersion, "20261113000001");
+    });
+
+    it("is today's first slot with no open PRs", () => {
+      const r = cli(
+        factory,
+        ["next-version", "--root", factory, "--today", "2026-11-13"],
+        ghBin("none", {}),
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.out.nextVersion, "20261113000001");
+      assert.deepEqual(r.out.claimed, []);
+    });
+
+    it("fails when the open PRs can't be listed, so the bundle falls back to null", () => {
+      const bin = join(dir, "bin-down");
+      mkdirSync(bin, { recursive: true });
+      write(bin, "gh", "#!/bin/sh\necho 'HTTP 502' >&2\nexit 1\n");
+      chmodSync(join(bin, "gh"), 0o755);
+      const down = cli(factory, ["next-version", "--root", factory], {
+        PATH: `${bin}:${process.env.PATH}`,
+      });
+      assert.equal(down.status, 1);
+      assert.equal(down.out, null);
+      assert.match(down.stderr, /"error":"gh pr list failed/);
+    });
+  });
+
+  // ADR-0079: the implement post-check moves the newer PR off an older open
+  // PR's version, before either merged. Main hasn't moved, so nothing else would.
+  describe("--move-off-claimed", () => {
+    const MINE = "20261113000001_mine.sql";
+    const older = [{ pr: 975, file: "20261113000001_older.sql" }];
+    let head;
+    before(() => {
+      head = openPr(980, 981, {
+        [`supabase/migrations/${MINE}`]: "select 5;\n",
+        "docs/mine.md": "Adds 20261113000001_mine.\n",
+      });
+    });
+    const precheck = (...extra) =>
+      cli(factory, [
+        "precheck",
+        "--root",
+        factory,
+        "--pr",
+        "981",
+        "--head",
+        head,
+        "--today",
+        "2026-11-13",
+        ...extra,
+      ]);
+
+    it("moves this PR off an older open PR's version, and only when asked", () => {
+      const asked = precheck("--claimed-json", JSON.stringify(older), "--move-off-claimed", "1");
+      assert.equal(asked.status, 0, asked.stderr);
+      assert.equal(asked.out.status, "fixable", asked.out.reason);
+      assert.deepEqual(asked.out.map, { [MINE]: "20261113000002_mine.sql" });
+      assert.equal(asked.out.findings[0].reason, "claimed");
+      // --watch and --release don't ask: the same claims leave it alone.
+      const notAsked = precheck("--claimed-json", JSON.stringify(older));
+      assert.equal(notAsked.out.status, "clean");
+      const off = precheck("--claimed-json", JSON.stringify(older), "--move-off-claimed", "0");
+      assert.equal(off.out.status, "clean");
+    });
+
+    it("never moves this PR off a newer PR's version: that one moves instead", () => {
+      const newer = [{ pr: 990, file: "20261113000001_newer.sql" }];
+      const r = precheck("--claimed-json", JSON.stringify(newer), "--move-off-claimed", "1");
+      assert.equal(r.out.status, "clean");
+    });
+
+    it("sweeps the open PRs itself before planning, skipping every claimed version", () => {
+      const env = ghBin("move", {
+        975: [`supabase/migrations/${older[0].file}`],
+        981: [`supabase/migrations/${MINE}`],
+        990: ["supabase/migrations/20261113000002_newer.sql"],
+      });
+      const r = cli(
+        factory,
+        [
+          "precheck",
+          "--root",
+          factory,
+          "--pr",
+          "981",
+          "--head",
+          head,
+          "--today",
+          "2026-11-13",
+          "--move-off-claimed",
+          "1",
+        ],
+        env,
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.out.status, "fixable", r.out.reason);
+      assert.deepEqual(r.out.map, { [MINE]: "20261113000003_mine.sql" });
+      assert.deepEqual(r.out.claimed, [
+        { pr: 975, file: older[0].file },
+        { pr: 990, file: "20261113000002_newer.sql" },
+      ]);
+    });
+
+    it("rejects a value other than 1 or 0", () => {
+      const r = precheck("--claimed-json", "[]", "--move-off-claimed", "yes");
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /--move-off-claimed takes 1 or 0/);
+    });
+
+    it("apply pushes the proven rename, with a comment naming the older PR", () => {
+      const r = cli(factory, [
+        "apply",
+        "--root",
+        factory,
+        "--issue",
+        "980",
+        "--pr",
+        "981",
+        "--head",
+        head,
+        "--today",
+        "2026-11-13",
+        "--claimed-json",
+        JSON.stringify(older),
+        "--move-off-claimed",
+        "1",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.out.status, "pushed", r.out.reason);
+      const to = r.out.to;
+      assert.equal(gitIn(origin, ["rev-parse", "refs/heads/factory/issue-980"]), to);
+      assert.equal(
+        gitIn(factory, ["log", "-1", "--format=%s", to]),
+        "chore(migrations): renumber this PR's migrations off an older open PR's versions",
+      );
+      assert.equal(gitIn(factory, ["show", `${to}:docs/mine.md`]), "Adds 20261113000002_mine.");
+      assert.match(r.out.comment, /already uses their version/);
+      assert.match(r.out.comment, /`20261113000001` was already used by open PR #975/);
+      const map = { [MINE]: "20261113000002_mine.sql" };
+      assert.deepEqual(verifyRenumber({ cwd: factory, from: head, to, map }), {
+        ok: true,
+        reasons: [],
+      });
+    });
+  });
+
   it("reports an unreachable PR head instead of planning on nothing", () => {
     const r = cli(factory, [
       "precheck",
@@ -911,6 +1161,7 @@ describe("migration_renumber_gate (stubbed)", () => {
     preFails = 0,
     marker = 1,
     headAfter = 1,
+    mode = "",
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "renumber-gate-"));
     const q = (o) => JSON.stringify(o).replaceAll("'", "'\\''");
@@ -945,7 +1196,7 @@ gh() {
   esac
 }
 eval "$(awk '/^migration_renumber_gate\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${AGENT}")"
-if migration_renumber_gate 794 802 ${H} "Approved"; then rc=0; else rc=$?; fi
+if migration_renumber_gate 794 802 ${H} "Approved" ${mode ? `"" ${mode}` : ""}; then rc=0; else rc=$?; fi
 echo "RC=$rc RESULT=$MIGRATION_RENUMBER_RESULT"
 echo "---"
 cat "$CALLS"
@@ -1093,5 +1344,166 @@ cat "$CALLS"
   it("reports an error when the precheck can't run", () => {
     const r = gate({ preFails: 1 });
     assert.equal(r.out, "RC=1 RESULT=error");
+  });
+
+  // ADR-0079: only the implement post-check passes "claimed".
+  describe("claimed mode (the implement post-check)", () => {
+    it("asks precheck and apply to move off older PRs' versions; the default never does", () => {
+      const r = gate({ mode: "claimed" });
+      assert.equal(r.out, "RC=1 RESULT=renumbered");
+      const pre = r.calls.find((c) => c.startsWith("PRECHECK"));
+      const apply = r.calls.find((c) => c.startsWith("APPLY"));
+      assert.ok(pre.endsWith("--where Approved --move-off-claimed 1"), pre);
+      assert.ok(apply.endsWith("--where Approved --move-off-claimed 1"), apply);
+      // The renumber is recorded, counted and commented like any other.
+      assert.ok(r.calls.includes("SET migrationRenumbers 1"));
+      assert.ok(r.calls.includes(`SET renumberTo ${R}`));
+      assert.ok(r.calls.some((c) => c.startsWith("COMMENT") && c.includes("RENUMBERED")));
+      const plain = gate();
+      assert.ok(!plain.calls.some((c) => c.includes("--move-off-claimed")));
+    });
+
+    it("puts precheck's claims before the flag on apply", () => {
+      const claimed = [{ pr: 829, file: "20261111000001_note_text_chars.sql" }];
+      const r = gate({ mode: "claimed", precheck: { status: "fixable", map: MAP, claimed } });
+      const apply = r.calls.find((c) => c.startsWith("APPLY"));
+      assert.ok(
+        apply.endsWith(`--claimed-json ${JSON.stringify(claimed)} --move-off-claimed 1`),
+        apply,
+      );
+    });
+
+    // Their comments describe the red-CI fallback; nothing is red at implement.
+    it("only logs a plan that needs a person, or a spent cap", () => {
+      const manual = gate({
+        mode: "claimed",
+        precheck: { status: "manual", reason: "overlap", comment: "HOLD" },
+      });
+      assert.equal(manual.out, "RC=1 RESULT=manual");
+      assert.ok(!manual.calls.some((c) => c.startsWith("COMMENT") || c.startsWith("MARKER?")));
+      const applyManual = gate({
+        mode: "claimed",
+        apply: { status: "manual", reason: "overlap", comment: "HOLD" },
+      });
+      assert.equal(applyManual.out, "RC=1 RESULT=manual");
+      assert.ok(!applyManual.calls.some((c) => c.startsWith("COMMENT")));
+      const capped = gate({ mode: "claimed", count: "3" });
+      assert.equal(capped.out, "RC=1 RESULT=capped");
+      assert.ok(!capped.calls.some((c) => c.startsWith("COMMENT")));
+    });
+  });
+});
+
+// Only the implement post-check may move a PR off another open PR's version:
+// at --watch or --release the older PR would move too (ADR-0079).
+describe("migration_renumber_gate call sites", () => {
+  const script = readFileSync(AGENT, "utf8");
+  it("pass the claimed mode from implement_migration_claim_check alone", () => {
+    const calls = script
+      .split("\n")
+      .filter((l) => /^\s+(?:&& ! |if ! )?migration_renumber_gate /.test(l));
+    assert.ok(calls.length >= 4, `found ${calls.length} call sites`);
+    const claimed = calls.filter((l) => /\bclaimed\b/.test(l));
+    assert.deepEqual(claimed, [
+      '  migration_renumber_gate "$issue_num" "$pr_num" "$head_sha" "In Progress" "" claimed || true',
+    ]);
+  });
+});
+
+// `pnpm migration:check`'s open-PR warning (ADR-0079), with gh injected.
+describe("claimedCheck", () => {
+  const MINE = "20261113000001_mine.sql";
+  let repo;
+  before(() => {
+    repo = mkdtempSync(join(tmpdir(), "claimed-check-"));
+    gitIn(repo, ["init", "-q", "-b", "main"]);
+    gitIn(repo, ["config", "user.email", "t@example.com"]);
+    gitIn(repo, ["config", "user.name", "T"]);
+    gitIn(repo, ["config", "commit.gpgsign", "false"]);
+    write(repo, `supabase/migrations/${BASE}`, "select 1;\n");
+    gitIn(repo, ["add", "-A"]);
+    gitIn(repo, ["commit", "-q", "--no-verify", "-m", "base"]);
+    // Added on this branch, uncommitted: the check reads the working tree.
+    write(repo, `supabase/migrations/${MINE}`, "select 2;\n");
+    write(repo, "supabase/migrations/20261113000002_alone.sql", "select 3;\n");
+  });
+  after(() => repo && rmSync(repo, { recursive: true, force: true }));
+
+  // gh as the check calls it. `files` maps a PR number to its file paths.
+  function fakeGh({ auth = true, view = "835", viewError, listError, files = {} } = {}) {
+    const calls = [];
+    const gh = (args) => {
+      calls.push(args.join(" "));
+      if (args[0] === "auth") {
+        if (!auth) throw new Error("gh auth status failed: not logged in");
+        return "";
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        if (viewError) throw new Error(`gh pr view failed: ${viewError}`);
+        return `${view}\n`;
+      }
+      if (args[0] === "pr" && args[1] === "list") {
+        if (listError) throw new Error("gh pr list failed: HTTP 502");
+        return JSON.stringify(Object.keys(files).map((n) => ({ number: Number(n) })));
+      }
+      const n = /pulls\/(\d+)\/files/.exec(args[2] ?? "")?.[1];
+      if (files[n] === null) throw new Error("gh api failed: HTTP 500");
+      return (files[n] ?? []).join("\n");
+    };
+    return { gh, calls };
+  }
+  const run = (opts) => {
+    const { gh, calls } = fakeGh(opts);
+    return { lines: claimedCheck({ root: repo, base: "HEAD" }, { gh }), calls };
+  };
+
+  it("warns for each added migration another open PR adds, never this branch's own PR", () => {
+    const { lines, calls } = run({
+      files: {
+        829: ["supabase/migrations/20261113000001_theirs.sql", "apps/web/x.ts"],
+        835: [`supabase/migrations/${MINE}`],
+        840: ["supabase/migrations/20261201000001_later.sql"],
+      },
+    });
+    assert.deepEqual(lines, [
+      `warn\tsupabase/migrations/${MINE}\tversion 20261113000001 is also added by open PR #829 (20261113000001_theirs.sql); the PR that merges second must renumber`,
+    ]);
+    assert.ok(!calls.some((c) => c.includes("pulls/835/")), "this branch's PR is skipped");
+  });
+
+  it("compares every open PR when the branch has no PR yet", () => {
+    const { lines } = run({
+      viewError: 'no pull requests found for branch "feature"',
+      files: { 835: [`supabase/migrations/${MINE}`] },
+    });
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /also added by open PR #835/);
+  });
+
+  it("says nothing when gh isn't logged in, and lists no PRs", () => {
+    const { lines, calls } = run({ auth: false, files: { 829: [] } });
+    assert.deepEqual(lines, []);
+    assert.deepEqual(calls, ["auth status"]);
+  });
+
+  it("fails open with a note when GitHub can't be read", () => {
+    assert.deepEqual(run({ viewError: "HTTP 502" }).lines, [
+      "note\tOpen-PR migration version check skipped (couldn't read this branch's PR).",
+    ]);
+    assert.deepEqual(run({ listError: true }).lines, [
+      "note\tOpen-PR migration version check skipped (couldn't list the open PRs).",
+    ]);
+    const partial = run({
+      files: { 829: ["supabase/migrations/20261113000001_theirs.sql"], 840: null },
+    }).lines;
+    assert.equal(partial.length, 2);
+    assert.match(partial[1], /^note\tCouldn't list the files of open PR #840/);
+  });
+
+  it("calls gh only when the checkout adds a migration", () => {
+    const { gh, calls } = fakeGh();
+    const lines = claimedCheck({ root: repo, base: "HEAD", dir: "docs" }, { gh });
+    assert.deepEqual(lines, []);
+    assert.deepEqual(calls, []);
   });
 });

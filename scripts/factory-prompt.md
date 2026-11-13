@@ -70,6 +70,15 @@ last fenced ` ```json ` block). It has shape:
   "reporter": { "allowlisted": true|false, "email": "...", "zohoThreadId": "..." },
   "priorPr": { "number", "url", "headRef", "state" } | null,
   "attempts": 0,
+  // Set only when spec.schemaChanges is true: the version the factory picked
+  // for your first new migration, clear of main and of every open PR's, and
+  // the migration files open PRs (this one's too, on a revision) already add.
+  // null otherwise, or when the lookup failed. See step 5's naming rule.
+  "migrations": {
+    "mainNewest": "20261112000002" | null,
+    "nextVersion": "20261113000001",
+    "claimed": [ { "pr": 829, "file": "20261113000001_<name>.sql", "version": "20261113000001" } ]
+  } | null,
   "config": { "phase": "A"|"B"|"C"|"D", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },
   "nowIso": "..."
@@ -405,12 +414,20 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    `hosted-config-applied` label.
 
    A new migration's version must be 14 digits and newer than the newest file
-   in `supabase/migrations/` on `origin/main` — normally today's UTC date as
+   in `supabase/migrations/` on `origin/main`. When `bundle.migrations` is
+   set, the factory has picked the version: name your first new migration
+   `<bundle.migrations.nextVersion>_<name>.sql` and any further ones with the
+   versions after it, in order, skipping every version in
+   `bundle.migrations.claimed`. Other open PRs already add those, and two open
+   PRs with one version collide once the first merges. When
+   `bundle.migrations` is null, use today's UTC date as
    `YYYYMMDD000001_<name>.sql`; if main already has a file dated today or
    later, the next version after it. `supabase db push` refuses a migration
    that sorts before one already applied, and `pnpm migration:check` fails it
    with the `git mv` to apply (docs/operations/migrations.md → "Migration
-   versions must sort last").
+   versions must sort last"). Its `WARN` that another open PR adds the same
+   version is not a failure: after you open the PR, the factory moves your
+   migrations off any version an older open PR also adds (ADR-0079).
 
    On failure, fix the underlying issue and re-run. Don't swallow errors,
    don't add `// @ts-ignore`, don't suppress lint rules without a `-- <reason>`
