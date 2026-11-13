@@ -9,7 +9,7 @@ export const FILE_EMPTY_MESSAGE = "File is empty";
 export const MAX_FILE_NAME_LENGTH = 255;
 // Per-user attachment storage quota (issue #794, ADR 0072). The database default of
 // profiles.storage_quota_bytes; NULL there means unlimited (admins). Keep in step with
-// supabase/migrations/20261108000001_per_user_storage_quota.sql.
+// supabase/migrations/20261113000001_per_user_storage_quota.sql.
 export const DEFAULT_STORAGE_QUOTA_BYTES = 52428800; // 50MB in bytes
 // The message the attachments quota trigger raises, and the `code` of the web API's
 // quota 413. Every platform recognises a refused upload by it (isStorageQuotaError).

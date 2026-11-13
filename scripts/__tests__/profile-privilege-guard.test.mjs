@@ -93,7 +93,7 @@ describe("profiles privilege guard migration", () => {
     const files = DEFINITIONS.map((d) => d.file);
     assert.equal(files[0], GUARD_FILE);
     assert.ok(
-      files.includes("20261108000001_per_user_storage_quota.sql"),
+      files.includes("20261113000001_per_user_storage_quota.sql"),
       `definitions found in: ${files.join(", ")}`,
     );
   });

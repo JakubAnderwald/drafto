@@ -3,7 +3,7 @@
 // with plain fetch, the same path mobile and desktop (supabase-js) and a
 // tampering client holding the public anon key and their own JWT would use.
 //
-// What it checks, from supabase/migrations/20261108000001_per_user_storage_quota.sql:
+// What it checks, from supabase/migrations/20261113000001_per_user_storage_quota.sql:
 //   - the attachments trigger refuses a row that would take usage over the
 //     quota (message `storage_quota_exceeded`) and allows landing exactly on it;
 //   - the mobile/desktop retry (an upsert with ON CONFLICT DO NOTHING of a row
@@ -18,7 +18,7 @@
 //   - the API roles can't call the internal per-user helpers, can read only
 //     their own usage, can't call the admin RPC, and can't lift their own quota.
 //
-// And from supabase/migrations/20261111000001_attachment_orphan_sweep.sql:
+// And from supabase/migrations/20261113000002_attachment_orphan_sweep.sql:
 //   - once a note is deleted, orphaned_attachment_objects() lists its objects
 //     (only that user's with `only_user`), and storage_object_bytes() no longer
 //     counts them, so a user who frees space isn't refused before the sweep;

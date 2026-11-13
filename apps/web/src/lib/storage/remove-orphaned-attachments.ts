@@ -16,7 +16,7 @@ export const MAX_ORPHAN_BATCHES = 10;
  * Deleting a note cascades its attachment rows but leaves its files in the
  * bucket, and once the note is gone the bucket's policies stop the user's own
  * client from removing them. `orphaned_attachment_objects()` lists those files
- * (see supabase/migrations/20261111000001_attachment_orphan_sweep.sql), and this
+ * (see supabase/migrations/20261113000002_attachment_orphan_sweep.sql), and this
  * removes them through the Storage API, one batch of at most REMOVE_BATCH_SIZE
  * per listing. `client` must be a service-role client.
  *
