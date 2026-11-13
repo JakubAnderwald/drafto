@@ -103,6 +103,7 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0069](./0069-web-nonce-csp-and-security-headers.md)                           | Web Nonce CSP and Security Headers                                              | Accepted           | 2026-11-09 |
 | [0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)            | In Test Frees Its Slot; Behind PRs Get Updated                                  | Accepted           | 2026-11-09 |
 | [0071](./0071-plan-stage-browser-probe.md)                                     | Plan-Stage Browser Probe                                                        | Accepted           | 2026-11-09 |
+| [0072](./0072-per-user-attachment-storage-quota.md)                            | Per-User Attachment Storage Quota in the Database                               | Accepted           | 2026-11-08 |
 | [0073](./0073-factory-verification-data-checks-live-tests-uploads-admin-js.md) | Factory Verification: Data Checks, Live Tests, Uploads, Admin Steps and Page JS | Accepted           | 2026-11-11 |
 | [0074](./0074-app-links-verify-on-apex-only.md)                                | App Links and Universal Links Verify on the Apex Only                           | Accepted           | 2026-11-11 |
 | [0075](./0075-product-metrics-as-service-role-sql-functions.md)                | Product Metrics as Service-Role SQL Functions                                   | Accepted           | 2026-11-12 |

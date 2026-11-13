@@ -35,6 +35,7 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER = path.resolve(HERE, "..", "run-dev-live-tests.mjs");
 const LIVE_GUARD_TEST = path.resolve(HERE, "profile-privilege-guard.live.test.mjs");
+const LIVE_QUOTA_TEST = path.resolve(HERE, "storage-quota.live.test.mjs");
 const LIVE_METRICS_TEST = path.resolve(HERE, "product-metrics.live.test.mjs");
 
 const DEV_REF = "huhzactreblzcogqkbsd";
@@ -166,6 +167,10 @@ describe("run-dev-live-tests CLI --dry-run", () => {
       assert.match(
         r.stdout,
         /\[metrics\] node --test scripts\/__tests__\/product-metrics\.live\.test\.mjs\n {6}sets NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, DRAFTO_LIVE_REQUIRED\n/,
+      );
+      assert.match(
+        r.stdout,
+        /\[storage-quota\] node --test scripts\/__tests__\/storage-quota\.live\.test\.mjs\n {6}sets NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, DRAFTO_LIVE_REQUIRED\n/,
       );
       for (const name of [
         "NEXT_PUBLIC_SUPABASE_URL",
@@ -382,6 +387,7 @@ describe("run-dev-live-tests CLI --dry-run", () => {
         assert.equal(r.status, 0, r.stderr);
         assert.match(r.stdout, /\[account-deletion\]/);
         assert.doesNotMatch(r.stdout, /\[profile-guard\]/);
+        assert.doesNotMatch(r.stdout, /\[storage-quota\]/);
         assert.doesNotMatch(r.stdout, /NEXT_PUBLIC_SUPABASE_ANON_KEY/);
         assertNoValues(r.all);
       },
@@ -408,6 +414,11 @@ describe("run-dev-live-tests CLI --dry-run", () => {
       const ok = runCli(fx, ["--", "--only", "profile-guard", "--dry-run"]);
       assert.equal(ok.status, 0, ok.stderr);
       assert.doesNotMatch(ok.stdout, /\[account-deletion\]/);
+      assert.doesNotMatch(ok.stdout, /\[storage-quota\]/);
+      const quota = runCli(fx, ["--only", "storage-quota", "--dry-run"]);
+      assert.equal(quota.status, 0, quota.stderr);
+      assert.match(quota.stdout, /\[storage-quota\]/);
+      assert.doesNotMatch(quota.stdout, /\[profile-guard\]|\[account-deletion\]/);
       for (const help of ["--help", "-h"]) {
         const h = runCli(fx, [help]);
         assert.equal(h.status, 0, h.stderr);
@@ -604,6 +615,7 @@ describe("planRuns + describePlan", () => {
       );
       const byName = Object.fromEntries(plan.runs.map((r) => [r.name, r.env]));
       assert.deepEqual(byName["profile-guard"], plan.env);
+      assert.deepEqual(byName["storage-quota"], plan.env);
       assert.deepEqual(byName["account-deletion"], {
         NEXT_PUBLIC_SUPABASE_URL: DEV_SUPABASE_URL,
         SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
@@ -733,8 +745,8 @@ describe("runPlan", () => {
 describe("live tests with DRAFTO_LIVE_REQUIRED", () => {
   // cleanEnv drops every Supabase var from the caller's shell, so the live
   // tests can never actually run (and reach dev) here.
-  function runGuard(extra) {
-    const r = spawnSync(process.execPath, ["--test", LIVE_GUARD_TEST], {
+  function runNodeLive(file, extra) {
+    const r = spawnSync(process.execPath, ["--test", file], {
       encoding: "utf8",
       env: cleanEnv(extra),
     });
@@ -759,37 +771,42 @@ describe("live tests with DRAFTO_LIVE_REQUIRED", () => {
     return { ...r, all: `${r.stdout}\n${r.stderr}` };
   }
 
-  it("profile guard: skips (exit 0) without DRAFTO_LIVE_REQUIRED, as in CI", () => {
-    const r = runGuard({});
-    assert.equal(r.status, 0, r.all);
-    assert.match(r.all, /SKIP|skipped/i);
-  });
+  for (const [label, file] of [
+    ["profile guard", LIVE_GUARD_TEST],
+    ["storage quota", LIVE_QUOTA_TEST],
+  ]) {
+    it(`${label}: skips (exit 0) without DRAFTO_LIVE_REQUIRED, as in CI`, () => {
+      const r = runNodeLive(file, {});
+      assert.equal(r.status, 0, r.all);
+      assert.match(r.all, /SKIP|skipped/i);
+    });
 
-  it("profile guard: fails naming every missing variable with DRAFTO_LIVE_REQUIRED=1", () => {
-    const r = runGuard({ DRAFTO_LIVE_REQUIRED: "1" });
-    assert.notEqual(r.status, 0, r.all);
-    assert.match(
-      r.all,
-      /DRAFTO_LIVE_REQUIRED=1, but the live test can't run\. Missing or wrong: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY/,
-    );
-  });
-
-  it("profile guard: fails on a non-dev or plain-http URL without printing the keys", () => {
-    for (const url of [`https://${PROD_REF}.supabase.co`, `http://${DEV_REF}.supabase.co`]) {
-      const r = runGuard({
-        DRAFTO_LIVE_REQUIRED: "1",
-        NEXT_PUBLIC_SUPABASE_URL: url,
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_KEY,
-        SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
-      });
+    it(`${label}: fails naming every missing variable with DRAFTO_LIVE_REQUIRED=1`, () => {
+      const r = runNodeLive(file, { DRAFTO_LIVE_REQUIRED: "1" });
       assert.notEqual(r.status, 0, r.all);
       assert.match(
         r.all,
-        /Missing or wrong: NEXT_PUBLIC_SUPABASE_URL \(not https:\/\/huhzactreblzcogqkbsd\.supabase\.co\)(?!, )/,
+        /DRAFTO_LIVE_REQUIRED=1, but the live test can't run\. Missing or wrong: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY/,
       );
-      assertNoValues(r.all);
-    }
-  });
+    });
+
+    it(`${label}: fails on a non-dev or plain-http URL without printing the keys`, () => {
+      for (const url of [`https://${PROD_REF}.supabase.co`, `http://${DEV_REF}.supabase.co`]) {
+        const r = runNodeLive(file, {
+          DRAFTO_LIVE_REQUIRED: "1",
+          NEXT_PUBLIC_SUPABASE_URL: url,
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_KEY,
+          SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+        });
+        assert.notEqual(r.status, 0, r.all);
+        assert.match(
+          r.all,
+          /Missing or wrong: NEXT_PUBLIC_SUPABASE_URL \(not https:\/\/huhzactreblzcogqkbsd\.supabase\.co\)(?!, )/,
+        );
+        assertNoValues(r.all);
+      }
+    });
+  }
 
   it("metrics: skips without the flag, fails naming the variables with it", () => {
     const skipped = runMetrics({});

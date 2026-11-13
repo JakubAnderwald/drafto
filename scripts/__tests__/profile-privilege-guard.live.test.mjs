@@ -1,5 +1,6 @@
-// Live check of the profiles privilege guard (issue #457) against the DEV
-// Supabase project. It talks to GoTrue and PostgREST with plain fetch, the same
+// Live check of the profiles privilege guard (issues #457 and #794) against the
+// DEV Supabase project: users can't change their own is_admin, is_approved or
+// storage_quota_bytes. It talks to GoTrue and PostgREST with plain fetch, the same
 // path an attacker holding the public anon key and their own JWT would use.
 //
 // Opt-in: it runs only when NEXT_PUBLIC_SUPABASE_ANON_KEY and
@@ -14,7 +15,8 @@
 //
 // Run it once BEFORE applying the migration to dev as well. The self-escalation
 // test must fail then, which proves dev's `authenticated` role really holds
-// UPDATE on profiles and that this check can see the hole.
+// UPDATE on profiles and that this check can see the hole. (The
+// storage_quota_bytes cases need #794's migration, which adds the column.)
 //
 // Creating users fires the dev project's new-signup webhook, if dev has one
 // configured. Every user created here is deleted in the `after` hook.
@@ -117,9 +119,10 @@ function patchProfile(id, fields, auth) {
 }
 
 async function readProfile(id) {
-  const res = await call(`/rest/v1/profiles?id=eq.${id}&select=is_admin,is_approved,display_name`, {
-    ...SERVICE,
-  });
+  const res = await call(
+    `/rest/v1/profiles?id=eq.${id}&select=is_admin,is_approved,display_name,storage_quota_bytes`,
+    { ...SERVICE },
+  );
   assert.equal(res.status, 200, formatResponse(res));
   assert.equal(res.body.length, 1, `profile ${id} not found`);
   return res.body[0];
@@ -182,6 +185,25 @@ describe(
       },
     );
 
+    it(
+      "rejects a user lifting their own storage_quota_bytes (issue #794)",
+      { timeout: 30_000 },
+      async () => {
+        const quota = (await readProfile(attacker.id)).storage_quota_bytes;
+        assert.equal(typeof quota, "number", "a new user starts with a finite quota");
+        // NULL is unlimited; a bigger number is a raise. Both are admin-only.
+        for (const fields of [
+          { storage_quota_bytes: null },
+          { storage_quota_bytes: quota * 100 },
+        ]) {
+          const res = await patchProfile(attacker.id, fields, attacker.auth);
+          assert.equal(res.status, 403, `${JSON.stringify(fields)} → ${formatResponse(res)}`);
+          assert.equal(res.body?.code, "42501");
+        }
+        assert.equal((await readProfile(attacker.id)).storage_quota_bytes, quota);
+      },
+    );
+
     it("still lets a user edit their own display_name", { timeout: 30_000 }, async () => {
       const res = await patchProfile(
         attacker.id,
@@ -192,10 +214,17 @@ describe(
       assert.equal(res.body.length, 1);
       assert.equal((await readProfile(attacker.id)).display_name, "Guard live test");
 
-      // A full-row PATCH that re-sends the flags unchanged is not a flag change.
+      // A full-row PATCH that re-sends the flags and the quota unchanged is not a
+      // flag change.
+      const { storage_quota_bytes: quota } = await readProfile(attacker.id);
       const fullRow = await patchProfile(
         attacker.id,
-        { display_name: "Guard live test 2", is_admin: false, is_approved: false },
+        {
+          display_name: "Guard live test 2",
+          is_admin: false,
+          is_approved: false,
+          storage_quota_bytes: quota,
+        },
         attacker.auth,
       );
       assert.equal(fullRow.status, 200, formatResponse(fullRow));
@@ -209,6 +238,24 @@ describe(
       assert.equal(res.body.length, 1);
       assert.equal((await readProfile(pendingForAdmin.id)).is_approved, true);
     });
+
+    it(
+      "lets an admin set a user's storage quota through their own session",
+      { timeout: 30_000 },
+      async () => {
+        // Mirrors the admin page's quota editor (POST /api/admin/storage-quota).
+        for (const quota of [null, 1234]) {
+          const res = await patchProfile(
+            pendingForAdmin.id,
+            { storage_quota_bytes: quota },
+            admin.auth,
+          );
+          assert.equal(res.status, 200, `${quota} → ${formatResponse(res)}`);
+          assert.equal(res.body.length, 1);
+          assert.equal((await readProfile(pendingForAdmin.id)).storage_quota_bytes, quota);
+        }
+      },
+    );
 
     it("lets the service role approve a user", { timeout: 30_000 }, async () => {
       // Mirrors apps/web/src/app/api/admin/approve-user/one-click/route.ts.

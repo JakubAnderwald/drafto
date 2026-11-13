@@ -1,5 +1,6 @@
 import React from "react";
 import { Alert } from "react-native";
+import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage } from "@drafto/shared";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
@@ -9,8 +10,10 @@ const mockPickImage = jest.fn();
 const mockPickDocument = jest.fn();
 const mockQueueAttachment = jest.fn();
 const mockUploadAttachment = jest.fn();
+const mockFetchStorageUsage = jest.fn();
 
 jest.mock("@/lib/data", () => ({
+  fetchStorageUsage: () => mockFetchStorageUsage(),
   pickImage: () => mockPickImage(),
   pickDocument: () => mockPickDocument(),
   queueAttachment: (...args: unknown[]) => mockQueueAttachment(...args),
@@ -53,6 +56,7 @@ describe("AttachmentPicker", () => {
     mockIsConnected = true;
     mockPickImage.mockResolvedValue(FILE);
     mockPickDocument.mockResolvedValue(FILE);
+    mockFetchStorageUsage.mockResolvedValue(null);
     mockQueueAttachment.mockImplementation(async () => {
       calls.push("queue");
       return ATTACHMENT;
@@ -128,6 +132,81 @@ describe("AttachmentPicker", () => {
     // The attachment is still inserted (it is saved locally) and retried by sync.
     expect(onReady).toHaveBeenCalledWith(ATTACHMENT);
     expect(mockSync).toHaveBeenCalled();
+  });
+
+  describe("storage quota (issue #794)", () => {
+    const FULL = {
+      usedBytes: DEFAULT_STORAGE_QUOTA_BYTES - FILE.fileSize + 1,
+      quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+    };
+
+    it("says storage is full, without saving the file, when it would go over the quota", async () => {
+      mockFetchStorageUsage.mockResolvedValue(FULL);
+      const onReady = jest.fn();
+
+      const { findByText } = pickWith("Attach image", onReady);
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          storageFullMessage(FULL.usedBytes, FULL.quotaBytes),
+          "warning",
+        ),
+      );
+      expect(mockQueueAttachment).not.toHaveBeenCalled();
+      expect(mockUploadAttachment).not.toHaveBeenCalled();
+      expect(onReady).not.toHaveBeenCalled();
+      expect(await findByText("Image")).toBeTruthy();
+    });
+
+    it("attaches a file that lands exactly on the quota", async () => {
+      mockFetchStorageUsage.mockResolvedValue({
+        usedBytes: DEFAULT_STORAGE_QUOTA_BYTES - FILE.fileSize,
+        quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      });
+
+      pickWith("Attach image");
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith("Attachment uploaded", "success"),
+      );
+      expect(mockQueueAttachment).toHaveBeenCalled();
+    });
+
+    it("says storage is full, not that it will retry, when the server refuses the upload", async () => {
+      const message = storageFullMessage(FULL.usedBytes, FULL.quotaBytes);
+      const refused = {
+        ...ATTACHMENT,
+        isStorageFull: true,
+        uploadError: message,
+      } as unknown as Attachment;
+      mockQueueAttachment.mockResolvedValue(refused);
+      mockUploadAttachment.mockResolvedValue(false);
+      const onReady = jest.fn();
+
+      pickWith("Attach file", onReady);
+
+      await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith(message, "warning"));
+      expect(mockShowToast).not.toHaveBeenCalledWith(
+        "Upload failed — will retry automatically",
+        "warning",
+      );
+      // Never reaches the server, so the note must not reference it.
+      expect(onReady).not.toHaveBeenCalled();
+    });
+
+    it("skips the check offline", async () => {
+      mockIsConnected = false;
+
+      pickWith("Attach image");
+
+      await waitFor(() =>
+        expect(mockShowToast).toHaveBeenCalledWith(
+          "Attachment saved — will upload when online",
+          "info",
+        ),
+      );
+      expect(mockFetchStorageUsage).not.toHaveBeenCalled();
+    });
   });
 
   it("saves offline without trying to upload", async () => {

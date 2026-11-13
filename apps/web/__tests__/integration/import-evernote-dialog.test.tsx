@@ -3,6 +3,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
 import type { EnexNote } from "@/lib/import/types";
+import {
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  STORAGE_QUOTA_EXCEEDED_CODE,
+  STORAGE_QUOTA_EXCEEDED_MESSAGE,
+  storageFullMessage,
+} from "@drafto/shared";
 
 const mockParseEnexStream = vi.fn();
 
@@ -145,6 +151,109 @@ describe("ImportEvernoteDialog", () => {
     expect(screen.queryByTestId("retry-failed-button")).not.toBeInTheDocument();
   });
 
+  describe("retrying a note whose finalize failed", () => {
+    const pic = (fileName: string) => ({ data: "aGVsbG8=", mime: "image/png", fileName });
+
+    /** Counts each request; `finalize` answers the finalize calls in order (1-based). */
+    function retryFetch(finalize: (call: number) => Promise<unknown>) {
+      const calls = {
+        note: 0,
+        uploadUrl: 0,
+        confirm: 0,
+        finalize: [] as Array<{ noteId: string; attachments: unknown[] }>,
+      };
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/import/evernote/note")) {
+          calls.note += 1;
+          return jsonOk({ notebookId: "nb-1", noteId: `note-${calls.note}` });
+        }
+        if (url.includes("/api/import/evernote/finalize")) {
+          calls.finalize.push(JSON.parse(String(init?.body)));
+          return finalize(calls.finalize.length);
+        }
+        if (url.includes("/upload-url")) {
+          calls.uploadUrl += 1;
+          return jsonOk({ token: "t", filePath: `user-1/note-1/f-${calls.uploadUrl}.png` });
+        }
+        if (url.includes("/confirm")) {
+          calls.confirm += 1;
+          return jsonOk({ file_path: `user-1/note-1/f-${calls.confirm}.png` });
+        }
+        return jsonOk({});
+      });
+      return { fetchMock, calls };
+    }
+
+    const finalizeFailure = () =>
+      Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: "boom" }) });
+
+    it("reuses the attachments the failed attempt confirmed instead of uploading them again", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(note({ title: "Alpha", resources: [pic("a.png"), pic("b.png")] })),
+      );
+      const { fetchMock, calls } = retryFetch((call) =>
+        call === 1 ? finalizeFailure() : jsonOk({ noteId: "note-1" }),
+      );
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "0 imported, 1 failed",
+      );
+      expect(calls.uploadUrl).toBe(2);
+      expect(calls.confirm).toBe(2);
+
+      await user.click(screen.getByTestId("retry-failed-button"));
+
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "1 notes imported",
+      );
+      // Same row, and no second upload: the confirmed rows are still on the note,
+      // so uploading again would charge the storage quota twice.
+      expect(calls.note).toBe(1);
+      expect(calls.uploadUrl).toBe(2);
+      expect(calls.confirm).toBe(2);
+      expect(calls.finalize).toHaveLength(2);
+      expect(calls.finalize[1].noteId).toBe("note-1");
+      expect(calls.finalize[1].attachments).toHaveLength(2);
+      expect(calls.finalize[1].attachments).toEqual(calls.finalize[0].attachments);
+    });
+
+    it("keeps the row and its uploads resumable when the finalize request itself fails", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(note({ title: "Alpha", resources: [pic("a.png")] })),
+      );
+      const { fetchMock, calls } = retryFetch((call) =>
+        call === 1
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : jsonOk({ noteId: "note-1" }),
+      );
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+      expect((await screen.findByTestId("import-failed-list")).textContent).toContain(
+        "Failed to fetch",
+      );
+
+      await user.click(screen.getByTestId("retry-failed-button"));
+
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "1 notes imported",
+      );
+      expect(calls.note).toBe(1);
+      expect(calls.uploadUrl).toBe(1);
+      expect(calls.finalize[1].noteId).toBe("note-1");
+      expect(calls.finalize[1].attachments).toEqual(calls.finalize[0].attachments);
+    });
+  });
+
   it("shows a fatal error when the stream cannot be parsed", async () => {
     const user = userEvent.setup();
     mockParseEnexStream.mockImplementation(async function* () {
@@ -214,5 +323,382 @@ describe("ImportEvernoteDialog", () => {
     await user.click(screen.getByTestId("start-import-button"));
 
     expect((await screen.findByTestId("import-error")).textContent).toContain("No notes found");
+  });
+
+  describe("storage quota", () => {
+    const usedBytes = DEFAULT_STORAGE_QUOTA_BYTES - 2;
+    const quotaRefusal = () =>
+      Promise.resolve({
+        ok: false,
+        status: 413,
+        json: () =>
+          Promise.resolve({
+            error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+            code: STORAGE_QUOTA_EXCEEDED_CODE,
+            usedBytes,
+            quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+            status: 413,
+          }),
+      });
+    const pic = (fileName: string) => ({ data: "aGVsbG8=", mime: "image/png", fileName });
+
+    /**
+     * Routes the import's requests: each created note gets its own id, and `refuse`
+     * decides which upload step answers the quota 413.
+     */
+    function quotaFetch(refuse: (step: "upload-url" | "confirm", call: number) => boolean) {
+      const calls = { note: 0, finalize: [] as Array<{ noteId: string; attachments: unknown[] }> };
+      let uploadUrlCalls = 0;
+      let confirmCalls = 0;
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/import/evernote/note")) {
+          calls.note += 1;
+          return jsonOk({ notebookId: "nb-1", noteId: `note-${calls.note}` });
+        }
+        if (url.includes("/api/import/evernote/finalize")) {
+          calls.finalize.push(JSON.parse(String(init?.body)));
+          return jsonOk({ noteId: "note-x" });
+        }
+        if (url.includes("/upload-url")) {
+          uploadUrlCalls += 1;
+          if (refuse("upload-url", uploadUrlCalls)) return quotaRefusal();
+          return jsonOk({ token: "t", filePath: `user-1/f-${uploadUrlCalls}.png` });
+        }
+        if (url.includes("/confirm")) {
+          confirmCalls += 1;
+          if (refuse("confirm", confirmCalls)) return quotaRefusal();
+          return jsonOk({ file_path: `user-1/f-${confirmCalls}.png` });
+        }
+        return jsonOk({});
+      });
+      return {
+        fetchMock,
+        calls,
+        uploadUrlCalls: () => uploadUrlCalls,
+      };
+    }
+
+    const expectedMessage = `${storageFullMessage(usedBytes, DEFAULT_STORAGE_QUOTA_BYTES)} The remaining notes weren't imported.`;
+
+    it("stops at the first quota refusal, keeps the earlier notes and doesn't retry", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(
+          note({ title: "First", resources: [pic("a.png")] }),
+          note({ title: "Second", resources: [pic("b.png"), pic("c.png")] }),
+          note({ title: "Third", resources: [pic("d.png")] }),
+        ),
+      );
+      // The second note's second attachment (upload-url call #3) hits the quota.
+      const { fetchMock, calls, uploadUrlCalls } = quotaFetch(
+        (step, call) => step === "upload-url" && call === 3,
+      );
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      // The third note was never created, and the refused upload was not tried again.
+      expect(calls.note).toBe(2);
+      expect(uploadUrlCalls()).toBe(3);
+      // The second note was still finalized — its text kept, with the attachment that fit.
+      expect(calls.finalize).toHaveLength(2);
+      expect(calls.finalize[1].noteId).toBe("note-2");
+      expect(calls.finalize[1].attachments).toHaveLength(1);
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "Stopped: 2 imported",
+      );
+      // Nothing offers to retry the notes the quota cut off, and the refusal isn't a skip.
+      expect(screen.queryByTestId("retry-failed-button")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("import-failed-list")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("import-skipped-list")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("start-import-button")).not.toBeInTheDocument();
+      // The message stays up until the user closes; closing opens the notebook.
+      expect(mockOnComplete).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: /close/i }));
+      expect(mockOnComplete).toHaveBeenCalledWith("nb-1");
+      expect(mockOnClose).not.toHaveBeenCalled();
+    });
+
+    it("stops when confirm refuses for the quota", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(
+          note({ title: "First", resources: [pic("a.png")] }),
+          note({ title: "Second", resources: [pic("b.png")] }),
+        ),
+      );
+      const { fetchMock, calls } = quotaFetch((step, call) => step === "confirm" && call === 1);
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      expect(calls.note).toBe(1);
+      expect(calls.finalize).toHaveLength(1);
+      expect(calls.finalize[0].attachments).toHaveLength(0);
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "Stopped: 1 imported",
+      );
+    });
+
+    it("stops when the refused note's finalize fails, and lists that note for retry", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(
+          note({ title: "First", resources: [pic("a.png")] }),
+          note({ title: "Second", resources: [] }),
+        ),
+      );
+      let noteCalls = 0;
+      global.fetch = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/import/evernote/note")) {
+          noteCalls += 1;
+          return jsonOk({ notebookId: "nb-1", noteId: `note-${noteCalls}` });
+        }
+        if (url.includes("/api/import/evernote/finalize")) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () => Promise.resolve({ error: "boom" }),
+          });
+        }
+        if (url.includes("/upload-url")) return quotaRefusal();
+        return jsonOk({});
+      }) as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      expect(noteCalls).toBe(1);
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "Stopped: 0 imported",
+      );
+      // Its text was never written, so it must stay retryable.
+      expect(await screen.findByTestId("retry-failed-button")).toBeInTheDocument();
+    });
+
+    it("retries only the refused attachment once the quota stop's note is retried", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(note({ title: "Alpha", resources: [pic("a.png"), pic("b.png")] })),
+      );
+      // First run: a.png fits, b.png is refused, and the finalize fails.
+      // Retry (space freed): b.png fits and the finalize succeeds.
+      let retrying = false;
+      let uploadUrlCalls = 0;
+      let confirmCalls = 0;
+      const finalized: Array<{ noteId: string; attachments: unknown[] }> = [];
+      global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/import/evernote/note")) {
+          return jsonOk({ notebookId: "nb-1", noteId: "note-1" });
+        }
+        if (url.includes("/api/import/evernote/finalize")) {
+          finalized.push(JSON.parse(String(init?.body)));
+          return retrying
+            ? jsonOk({ noteId: "note-1" })
+            : Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ error: "boom" }),
+              });
+        }
+        if (url.includes("/upload-url")) {
+          uploadUrlCalls += 1;
+          if (!retrying && uploadUrlCalls === 2) return quotaRefusal();
+          return jsonOk({ token: "t", filePath: `user-1/note-1/f-${uploadUrlCalls}.png` });
+        }
+        if (url.includes("/confirm")) {
+          confirmCalls += 1;
+          return jsonOk({ file_path: `user-1/note-1/f-${confirmCalls}.png` });
+        }
+        return jsonOk({});
+      }) as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      expect(finalized[0].attachments).toHaveLength(1);
+
+      retrying = true;
+      await user.click(screen.getByTestId("retry-failed-button"));
+
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "1 notes imported",
+      );
+      // a.png was reused; only b.png went through upload-url and confirm again.
+      expect(uploadUrlCalls).toBe(3);
+      expect(confirmCalls).toBe(2);
+      expect(finalized[1].noteId).toBe("note-1");
+      expect(finalized[1].attachments).toHaveLength(2);
+      expect(finalized[1].attachments[0]).toEqual(finalized[0].attachments[0]);
+    });
+
+    it("still links an earlier attempt's upload that comes after the refused attachment", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(note({ title: "Alpha", resources: [pic("a.png"), pic("b.png")] })),
+      );
+      // First run: a.png's upload fails (skipped), b.png is confirmed, the finalize fails.
+      // Retry: a.png is tried again and refused for the quota.
+      mockUploadToSignedUrl.mockResolvedValueOnce({ error: { message: "network down" } });
+      let retrying = false;
+      let uploadUrlCalls = 0;
+      let confirmCalls = 0;
+      const finalized: Array<{ noteId: string; attachments: unknown[] }> = [];
+      global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/import/evernote/note")) {
+          return jsonOk({ notebookId: "nb-1", noteId: "note-1" });
+        }
+        if (url.includes("/api/import/evernote/finalize")) {
+          finalized.push(JSON.parse(String(init?.body)));
+          return retrying
+            ? jsonOk({ noteId: "note-1" })
+            : Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ error: "boom" }),
+              });
+        }
+        if (url.includes("/upload-url")) {
+          uploadUrlCalls += 1;
+          if (retrying) return quotaRefusal();
+          return jsonOk({ token: "t", filePath: `user-1/note-1/f-${uploadUrlCalls}.png` });
+        }
+        if (url.includes("/confirm")) {
+          confirmCalls += 1;
+          return jsonOk({ file_path: `user-1/note-1/f-${confirmCalls}.png` });
+        }
+        return jsonOk({});
+      }) as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "0 imported, 1 failed",
+      );
+      expect(finalized[0].attachments).toHaveLength(1);
+
+      retrying = true;
+      await user.click(screen.getByTestId("retry-failed-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      // a.png was tried once more and refused; b.png wasn't uploaded again, but its
+      // confirmed row is still linked into the note.
+      expect(uploadUrlCalls).toBe(3);
+      expect(confirmCalls).toBe(1);
+      expect(finalized[1].noteId).toBe("note-1");
+      expect(finalized[1].attachments).toEqual(finalized[0].attachments);
+    });
+
+    it("keeps the untried notes on the retry list when a retry stops at the quota", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(
+          note({ title: "Alpha", resources: [pic("a.png")] }),
+          note({ title: "Bravo", resources: [pic("b.png")] }),
+          note({ title: "Charlie", resources: [pic("c.png")] }),
+        ),
+      );
+      // First run: every upload fails (skipped, not refused) and every finalize fails,
+      // so all three notes go on the retry list with nothing uploaded.
+      // Retry: the first retried note's upload hits the quota.
+      let retrying = false;
+      let noteCalls = 0;
+      const finalized: string[] = [];
+      global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/import/evernote/note")) {
+          noteCalls += 1;
+          return jsonOk({ notebookId: "nb-1", noteId: `note-${noteCalls}` });
+        }
+        if (url.includes("/api/import/evernote/finalize")) {
+          if (!retrying) {
+            return Promise.resolve({
+              ok: false,
+              status: 500,
+              json: () => Promise.resolve({ error: "boom" }),
+            });
+          }
+          finalized.push(JSON.parse(String(init?.body)).noteId);
+          return jsonOk({ noteId: "note-x" });
+        }
+        if (url.includes("/upload-url")) {
+          return retrying
+            ? quotaRefusal()
+            : Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ error: "Failed to create upload URL" }),
+              });
+        }
+        return jsonOk({});
+      }) as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "0 imported, 3 failed",
+      );
+
+      retrying = true;
+      await user.click(screen.getByTestId("retry-failed-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      // The retry resumed the first note's row and stopped there: no note was created again.
+      expect(noteCalls).toBe(3);
+      expect(finalized).toEqual(["note-1"]);
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "Stopped: 1 imported, 2 failed",
+      );
+      // The two notes the retry never reached can still be resumed.
+      const failedList = screen.getByTestId("import-failed-list");
+      expect(failedList.textContent).not.toContain("Alpha");
+      expect(failedList.textContent).toContain("Bravo");
+      expect(failedList.textContent).toContain("Charlie");
+      expect(screen.getByTestId("retry-failed-button")).toBeInTheDocument();
+    });
+
+    it("treats a 413 without the quota code as a skipped attachment", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(note({ title: "Only", resources: [pic("big.png")] })),
+      );
+      const base = routeFetch();
+      global.fetch = vi.fn((input: RequestInfo | URL) =>
+        String(input).includes("/upload-url")
+          ? Promise.resolve({
+              ok: false,
+              status: 413,
+              json: () => Promise.resolve({ error: "File size exceeds 50MB limit", status: 413 }),
+            })
+          : base(input),
+      ) as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+
+      expect((await screen.findByTestId("import-skipped-list")).textContent).toContain(
+        "File size exceeds 50MB limit",
+      );
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "1 notes imported",
+      );
+      expect(screen.queryByTestId("import-error")).not.toBeInTheDocument();
+    });
   });
 });

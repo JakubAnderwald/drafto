@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { DEFAULT_STORAGE_QUOTA_BYTES, formatMegabytes } from "@drafto/shared";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { outlineEntry, type OutlineEntry } from "@/components/legal/document-outline";
@@ -112,7 +113,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;8,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;11,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -180,6 +181,12 @@ export default function PrivacyPolicyPage() {
             (hosted by Supabase) so they can sync across your devices. Content is associated with
             your user account. When you edit a note, we keep the earlier versions of its content for
             30 days so they can be recovered after an accidental overwrite.
+          </p>
+          <p>
+            Each account has an attachment storage quota (
+            {formatMegabytes(DEFAULT_STORAGE_QUOTA_BYTES)} by default), which we store with your
+            account. We work out how much of it you use from the sizes of your attachments. Our
+            administrator can see each account&apos;s storage usage and quota.
           </p>
           <p>
             Imports from Evernote (.enex) and TickTick (CSV) are processed from files you upload. We
@@ -541,8 +548,9 @@ export default function PrivacyPolicyPage() {
               Earlier versions of a note&apos;s content are deleted automatically after 30 days
             </li>
             <li>
-              Attachment files of permanently deleted notes may stay in storage until you delete
-              your account
+              Attachment files of permanently deleted notes are deleted from storage too: right away
+              when you delete on the web, and within a day when the note is deleted by the 30-day
+              trash cleanup or in the iOS, Android and macOS apps
             </li>
           </ul>
 

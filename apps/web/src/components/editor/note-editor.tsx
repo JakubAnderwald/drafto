@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
-import type { Block } from "@blocknote/core";
+import type { Block, BlockNoteEditor } from "@blocknote/core";
 import "@blocknote/mantine/style.css";
 import { useTheme } from "@/hooks/use-theme";
 import {
@@ -12,8 +12,11 @@ import {
   BUCKET_NAME,
   FILE_TOO_LARGE_MESSAGE,
   FILE_EMPTY_MESSAGE,
+  storageQuotaErrorFromResponse,
+  StorageQuotaError,
 } from "@drafto/shared";
 import { useAttachmentUrlResolver } from "@/components/editor/use-attachment-url-resolver";
+import { discardRefusedUploadBlock } from "@/components/editor/discard-refused-upload-block";
 import { createClient } from "@/lib/supabase/client";
 
 interface NoteEditorProps {
@@ -25,8 +28,11 @@ interface NoteEditorProps {
 export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps) {
   const { resolvedTheme } = useTheme();
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // uploadFile is handed to useCreateBlockNote before the editor exists, so it
+  // reaches the editor through this ref.
+  const editorRef = useRef<BlockNoteEditor | null>(null);
   const uploadFile = useCallback(
-    async (file: File): Promise<string> => {
+    async (file: File, blockId?: string): Promise<string> => {
       setUploadError(null);
       try {
         if (file.size === 0) {
@@ -49,7 +55,10 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
 
         if (!urlResponse.ok) {
           const error = await urlResponse.json().catch(() => null);
-          throw new Error(error?.error || `Failed to prepare upload (${urlResponse.status})`);
+          throw (
+            storageQuotaErrorFromResponse(urlResponse.status, error) ??
+            new Error(error?.error || `Failed to prepare upload (${urlResponse.status})`)
+          );
         }
 
         const { token, filePath } = await urlResponse.json();
@@ -79,7 +88,10 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
 
         if (!confirmResponse.ok) {
           const error = await confirmResponse.json().catch(() => null);
-          throw new Error(error?.error || `Failed to confirm upload (${confirmResponse.status})`);
+          throw (
+            storageQuotaErrorFromResponse(confirmResponse.status, error) ??
+            new Error(error?.error || `Failed to confirm upload (${confirmResponse.status})`)
+          );
         }
 
         const data = await confirmResponse.json();
@@ -89,6 +101,15 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
         return toAttachmentUrl(data.file_path);
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : "Upload failed");
+        // A storage-full refusal is final: retrying from the same block can't
+        // succeed. Take back the placeholder BlockNote made for the file, so the
+        // banner above is the only message, but never a block that already has
+        // its file (Replace) or the children of a block converted in place.
+        // Other failures keep the block, so the user can pick another file.
+        const editor = editorRef.current;
+        if (err instanceof StorageQuotaError && blockId && editor) {
+          discardRefusedUploadBlock(editor, blockId);
+        }
         throw err;
       }
     },
@@ -102,6 +123,10 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
     uploadFile,
     resolveFileUrl,
   });
+
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
 
   return (
     <div data-testid="editor-scroll-container" className="min-h-0 flex-1 overflow-y-auto">

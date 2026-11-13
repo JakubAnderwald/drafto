@@ -1,8 +1,15 @@
 import { useState, useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { storageFullMessage, wouldExceedQuota } from "@drafto/shared";
 
-import { pickImage, pickDocument, queueAttachment, uploadAttachment } from "@/lib/data";
+import {
+  fetchStorageUsage,
+  pickImage,
+  pickDocument,
+  queueAttachment,
+  uploadAttachment,
+} from "@/lib/data";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -36,6 +43,17 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
 
       setUploading(true);
 
+      // A full account (issue #794) is told so up front, instead of saving a file
+      // the server will refuse. Offline, or when usage can't be read, the upload
+      // queue's own check and the database decide.
+      if (isConnected) {
+        const usage = await fetchStorageUsage();
+        if (usage && wouldExceedQuota(usage, file.fileSize)) {
+          showToast(storageFullMessage(usage.usedBytes, usage.quotaBytes), "warning");
+          return;
+        }
+      }
+
       // Always save locally first, so the file survives a failed or offline upload.
       const attachment = await queueAttachment(user.id, noteId, file);
 
@@ -45,7 +63,11 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
       // once, so "Attachment uploaded" showed for a file that hadn't uploaded.
       const uploaded = isConnected ? await uploadAttachment(attachment) : false;
 
-      await onAttachmentReady?.(attachment);
+      // Refused for the storage quota: it never reaches the server and is never
+      // retried, so the note doesn't reference it (same as desktop).
+      if (!attachment.isStorageFull) {
+        await onAttachmentReady?.(attachment);
+      }
 
       // Retry anything still queued (e.g. this file, if its upload failed) and
       // push, without holding up the editor. The editor also syncs after writing
@@ -54,6 +76,9 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
 
       if (uploaded) {
         showToast("Attachment uploaded", "success");
+      } else if (attachment.isStorageFull) {
+        // Refused for the storage quota: not retried, so don't promise a retry.
+        showToast(attachment.uploadError ?? storageFullMessage(null, null), "warning");
       } else if (isConnected) {
         showToast("Upload failed — will retry automatically", "warning");
       } else {

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import {
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  STORAGE_QUOTA_EXCEEDED_CODE,
+  STORAGE_QUOTA_EXCEEDED_MESSAGE,
+} from "@drafto/shared";
 
 vi.mock("@/env", () => ({
   env: {
@@ -8,17 +13,32 @@ vi.mock("@/env", () => ({
   },
 }));
 
+const mockCaptureException = vi.fn();
+vi.mock("@sentry/nextjs", () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+}));
+
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
 const mockStorageFrom = vi.fn();
+const mockRpc = vi.fn();
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: () => ({
     auth: { getUser: mockGetUser },
     from: mockFrom,
+    rpc: mockRpc,
     storage: { from: mockStorageFrom },
   }),
 }));
+
+/** What get_my_storage_usage returns for the caller: one row; quota null = unlimited. */
+function mockStorageUsage(usedBytes: number, quotaBytes: number | null) {
+  mockRpc.mockResolvedValue({
+    data: [{ used_bytes: usedBytes, quota_bytes: quotaBytes }],
+    error: null,
+  });
+}
 
 vi.mock("next/headers", () => ({
   cookies: () => ({
@@ -130,6 +150,7 @@ function mockNoteNotFound() {
 describe("POST /api/notes/[id]/attachments/upload-url", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockStorageUsage(0, DEFAULT_STORAGE_QUOTA_BYTES);
   });
 
   it("returns 401 when not authenticated", async () => {
@@ -201,6 +222,9 @@ describe("POST /api/notes/[id]/attachments/upload-url", () => {
     });
     const response = await POST(request, { params });
     expect(response.status).toBe(413);
+    const body = await response.json();
+    // The per-file limit is not the storage quota: no quota code on this 413.
+    expect(body.code).toBeUndefined();
   });
 
   it("returns signed upload URL on success", async () => {
@@ -255,6 +279,139 @@ describe("POST /api/notes/[id]/attachments/upload-url", () => {
   });
 });
 
+describe("POST /api/notes/[id]/attachments/upload-url storage quota", () => {
+  const mockCreateSignedUploadUrl = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authenticateAs("user-1");
+    mockNoteExists();
+    mockCreateSignedUploadUrl.mockResolvedValue({
+      data: { signedUrl: "https://test.supabase.co/signed", token: "tok" },
+      error: null,
+    });
+    mockStorageFrom.mockReturnValue({ createSignedUploadUrl: mockCreateSignedUploadUrl });
+  });
+
+  async function requestUploadUrl(fileSize: number) {
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    return POST(
+      createUploadUrlRequest({ fileName: "photo.png", fileSize, mimeType: "image/png" }),
+      { params },
+    );
+  }
+
+  it("hands out an upload URL when the file fits under the quota", async () => {
+    mockStorageUsage(10 * 1024 * 1024, DEFAULT_STORAGE_QUOTA_BYTES);
+
+    const response = await requestUploadUrl(1024);
+
+    expect(response.status).toBe(200);
+    expect(mockRpc).toHaveBeenCalledWith("get_my_storage_usage");
+    expect(mockCreateSignedUploadUrl).toHaveBeenCalled();
+  });
+
+  it("allows an upload that lands exactly on the quota", async () => {
+    mockStorageUsage(DEFAULT_STORAGE_QUOTA_BYTES - 1024, DEFAULT_STORAGE_QUOTA_BYTES);
+
+    const response = await requestUploadUrl(1024);
+
+    expect(response.status).toBe(200);
+    expect(mockCreateSignedUploadUrl).toHaveBeenCalled();
+  });
+
+  it("refuses an upload that would go over the quota with the quota 413", async () => {
+    const usedBytes = DEFAULT_STORAGE_QUOTA_BYTES - 1000;
+    mockStorageUsage(usedBytes, DEFAULT_STORAGE_QUOTA_BYTES);
+
+    const response = await requestUploadUrl(1024);
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+      code: STORAGE_QUOTA_EXCEEDED_CODE,
+      usedBytes,
+      quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      status: 413,
+    });
+    expect(mockCreateSignedUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it("refuses any upload once the storage is full", async () => {
+    mockStorageUsage(DEFAULT_STORAGE_QUOTA_BYTES, DEFAULT_STORAGE_QUOTA_BYTES);
+
+    const response = await requestUploadUrl(1);
+
+    expect(response.status).toBe(413);
+    expect((await response.json()).code).toBe(STORAGE_QUOTA_EXCEEDED_CODE);
+  });
+
+  it("parses bigint usage that arrives as numeric strings", async () => {
+    mockRpc.mockResolvedValue({
+      data: [{ used_bytes: String(DEFAULT_STORAGE_QUOTA_BYTES), quota_bytes: "52428800" }],
+      error: null,
+    });
+
+    const response = await requestUploadUrl(1024);
+
+    expect(response.status).toBe(413);
+  });
+
+  it("never refuses a user with an unlimited quota", async () => {
+    mockStorageUsage(10 * DEFAULT_STORAGE_QUOTA_BYTES, null);
+
+    const response = await requestUploadUrl(1024);
+
+    expect(response.status).toBe(200);
+    expect(mockCreateSignedUploadUrl).toHaveBeenCalled();
+  });
+
+  it("lets the upload through when the usage can't be read (the trigger still enforces)", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockRpc.mockResolvedValue({ data: null, error: { message: "function does not exist" } });
+
+    const response = await requestUploadUrl(1024);
+
+    expect(response.status).toBe(200);
+    expect(mockCreateSignedUploadUrl).toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[storage-quota] Failed to read storage usage:",
+      "function does not exist",
+    );
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      { message: "function does not exist" },
+      { extra: { where: "storage-quota:get-usage" } },
+    );
+    consoleError.mockRestore();
+  });
+
+  it("lets the upload through when the usage RPC throws", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = new Error("fetch failed");
+    mockRpc.mockRejectedValue(failure);
+
+    const response = await requestUploadUrl(1024);
+
+    expect(response.status).toBe(200);
+    expect(mockCreateSignedUploadUrl).toHaveBeenCalled();
+    expect(mockCaptureException).toHaveBeenCalledWith(failure, {
+      extra: { where: "storage-quota:get-usage" },
+    });
+    consoleError.mockRestore();
+  });
+
+  it("lets the upload through when the usage RPC returns no row", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockRpc.mockResolvedValue({ data: [], error: null });
+
+    const response = await requestUploadUrl(1024);
+
+    expect(response.status).toBe(200);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+});
+
 // ============================================================
 // confirm endpoint tests
 // ============================================================
@@ -262,6 +419,7 @@ describe("POST /api/notes/[id]/attachments/upload-url", () => {
 describe("POST /api/notes/[id]/attachments/confirm", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockStorageUsage(0, DEFAULT_STORAGE_QUOTA_BYTES);
   });
 
   it("returns 401 when not authenticated", async () => {
@@ -464,5 +622,126 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     expect(response.status).toBe(500);
     expect(mockDelete).toHaveBeenCalledWith("id", "att-1");
     expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/test.png"]);
+  });
+
+  function mockAttachmentInsertFails(error: { message: string; code?: string }) {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      if (table === "notes") {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: { id: "note-1" }, error: null }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === "attachments") {
+        return {
+          insert: () => ({
+            select: () => ({
+              single: () => Promise.resolve({ data: null, error }),
+            }),
+          }),
+        };
+      }
+      return {};
+    });
+  }
+
+  it("maps the quota trigger's refusal to the quota 413 and removes the uploaded object", async () => {
+    authenticateAs("user-1");
+    mockAttachmentInsertFails({ message: "storage_quota_exceeded", code: "P0001" });
+    const usedBytes = DEFAULT_STORAGE_QUOTA_BYTES - 512;
+    mockStorageUsage(usedBytes, DEFAULT_STORAGE_QUOTA_BYTES);
+    const mockRemove = vi.fn().mockResolvedValue({ error: null });
+    mockStorageFrom.mockReturnValue({
+      createSignedUrl: vi.fn().mockResolvedValue({
+        data: { signedUrl: "https://test.supabase.co/ok" },
+        error: null,
+      }),
+      remove: mockRemove,
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const response = await POST(
+      createConfirmRequest({
+        filePath: "user-1/note-1/photo.png",
+        fileSize: 1024,
+        mimeType: "image/png",
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+      code: STORAGE_QUOTA_EXCEEDED_CODE,
+      usedBytes,
+      quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      status: 413,
+    });
+    expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/photo.png"]);
+  });
+
+  it("still answers the quota 413, without numbers, when the usage can't be read", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    authenticateAs("user-1");
+    mockAttachmentInsertFails({ message: "storage_quota_exceeded", code: "P0001" });
+    mockRpc.mockResolvedValue({ data: null, error: { message: "timeout" } });
+    mockStorageFrom.mockReturnValue({
+      createSignedUrl: vi.fn().mockResolvedValue({
+        data: { signedUrl: "https://test.supabase.co/ok" },
+        error: null,
+      }),
+      remove: vi.fn().mockResolvedValue({ error: null }),
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const response = await POST(
+      createConfirmRequest({
+        filePath: "user-1/note-1/photo.png",
+        fileSize: 1024,
+        mimeType: "image/png",
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(413);
+    const body = await response.json();
+    expect(body.code).toBe(STORAGE_QUOTA_EXCEEDED_CODE);
+    expect(body.usedBytes).toBeNull();
+    expect(body.quotaBytes).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  it("keeps answering 500 for any other insert failure", async () => {
+    authenticateAs("user-1");
+    mockAttachmentInsertFails({ message: "duplicate key value", code: "23505" });
+    const mockRemove = vi.fn().mockResolvedValue({ error: null });
+    mockStorageFrom.mockReturnValue({
+      createSignedUrl: vi.fn().mockResolvedValue({
+        data: { signedUrl: "https://test.supabase.co/ok" },
+        error: null,
+      }),
+      remove: mockRemove,
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/confirm/route");
+    const response = await POST(
+      createConfirmRequest({
+        filePath: "user-1/note-1/photo.png",
+        fileSize: 1024,
+        mimeType: "image/png",
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(500);
+    expect((await response.json()).error).toBe("Failed to save attachment record");
+    expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/photo.png"]);
+    expect(mockRpc).not.toHaveBeenCalled();
   });
 });

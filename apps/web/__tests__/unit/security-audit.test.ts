@@ -25,6 +25,16 @@ vi.mock("@/lib/supabase/server", () => ({
   }),
 }));
 
+const mockAdminRpc = vi.fn();
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => ({ rpc: mockAdminRpc }),
+}));
+
+vi.mock("@/lib/storage/remove-orphaned-attachments", () => ({
+  removeOrphanedAttachments: vi.fn().mockResolvedValue(0),
+  removeUserOrphanedAttachments: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("next/headers", () => ({
   cookies: () => ({
     getAll: () => [],
@@ -786,7 +796,7 @@ describe("Security Audit", () => {
         data: { user: null },
         error: { message: "Not authenticated" },
       });
-      mockRpc.mockResolvedValue({ data: 3, error: null });
+      mockAdminRpc.mockResolvedValue({ data: 3, error: null });
 
       const { POST } = await import("@/app/api/cron/cleanup-trash/route");
       const request = new NextRequest("http://localhost:3000/api/cron/cleanup-trash", {

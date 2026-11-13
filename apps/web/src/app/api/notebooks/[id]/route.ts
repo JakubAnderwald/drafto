@@ -1,5 +1,6 @@
-import type { NextRequest } from "next/server";
+import { after, type NextRequest } from "next/server";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
+import { removeUserOrphanedAttachments } from "@/lib/storage/remove-orphaned-attachments";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -67,6 +68,10 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   if (error) {
     return errorResponse("Failed to delete notebook", 500);
   }
+
+  // The notebook's trashed notes went with it (ON DELETE CASCADE); remove their
+  // files once the response is sent.
+  after(() => removeUserOrphanedAttachments(user.id, "web-notebooks"));
 
   return successResponse({ success: true });
 }

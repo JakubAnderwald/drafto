@@ -1,7 +1,9 @@
 import { useState, useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import { storageFullMessage, wouldExceedQuota } from "@drafto/shared";
 
-import { pickImage, pickDocument, queueAttachment } from "@/lib/data";
+import { fetchStorageUsage, pickImage, pickDocument, queueAttachment } from "@/lib/data";
+import { STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -32,12 +34,32 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
 
       setUploading(true);
 
+      // Storage quota pre-check (issue #794): a file that can't fit is never saved or
+      // queued. Unknown usage skips it; the server refuses the upload either way.
+      if (isConnected) {
+        const usage = await fetchStorageUsage();
+        if (usage && wouldExceedQuota(usage, file.fileSize)) {
+          Alert.alert(
+            STORAGE_FULL_ALERT_TITLE,
+            storageFullMessage(usage.usedBytes, usage.quotaBytes),
+          );
+          return;
+        }
+      }
+
       // Always save locally first, then try uploading
       const attachment = await queueAttachment(user.id, noteId, file);
 
       if (isConnected) {
         // Trigger sync to upload immediately
         await sync();
+
+        if (attachment.isStorageFull) {
+          // Refused for the quota: it never reaches the server and is never retried,
+          // so the note doesn't reference it. DatabaseProvider owns the alert: the
+          // sync's upload run counted this refusal and reported it.
+          return;
+        }
       }
 
       onAttachmentReady?.(attachment);

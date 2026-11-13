@@ -1,11 +1,13 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedNoteOwner, errorResponse, successResponse } from "@/lib/api/utils";
+import { getStorageUsage, storageQuotaExceededResponse } from "@/lib/api/storage-quota";
 import {
   BUCKET_NAME,
   MAX_FILE_SIZE,
   SIGNED_URL_EXPIRY_SECONDS,
   FILE_TOO_LARGE_MESSAGE,
   isStorageSafeFileName,
+  isStorageQuotaError,
 } from "@drafto/shared";
 
 interface RouteParams {
@@ -85,6 +87,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   if (dbError || !attachment) {
     // Clean up the orphaned storage object
     await supabase.storage.from(BUCKET_NAME).remove([filePath]);
+    // The attachments trigger refuses a row that would go over the storage quota.
+    if (isStorageQuotaError(dbError)) {
+      return storageQuotaExceededResponse(await getStorageUsage(supabase));
+    }
     return errorResponse("Failed to save attachment record", 500);
   }
 
