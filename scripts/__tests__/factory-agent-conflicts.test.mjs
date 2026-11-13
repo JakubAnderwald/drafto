@@ -474,7 +474,7 @@ describe("--watch conflict pass wiring", () => {
     assert.match(outcome, /continue/);
   });
 
-  // ADR-0076: a conflict or red CI after main moved can be a migration of this
+  // ADR-0077: a conflict or red CI after main moved can be a migration of this
   // PR's that no longer sorts after main's. The renumber gate gets it first, so
   // neither the merge nor a fix pass (and its attempt) is spent on a rename.
   it("runs the migration renumber gate before merge-main and before any attempt is spent", () => {

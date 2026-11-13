@@ -622,7 +622,7 @@ function adrState(files, wtPath, mainSha) {
 // main: <names> are the supabase/migrations/*.sql basenames the merge holds,
 // judged against main's at <mainSha>. A clean merge can carry one (a PR whose
 // migration main moved past), and CI would go red on it, so the conflict pass
-// never pushes such a merge; the renumber gate fixes it (ADR-0076).
+// never pushes such a merge; the renumber gate fixes it (ADR-0077).
 const MIGRATIONS_DIR = "supabase/migrations";
 
 function migrationBasenames(paths) {

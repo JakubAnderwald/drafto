@@ -219,7 +219,7 @@ describe("--release engine wiring", () => {
     assert.doesNotMatch(script, /comment a change request/);
   });
 
-  // ADR-0076. #802 and #829 shared a migration version; once #829 merged,
+  // ADR-0077. #802 and #829 shared a migration version; once #829 merged,
   // #802 went red and the CI gate sent it back for an LLM pass and a second
   // Approved drag. The renumber gate now runs first and keeps the card here.
   it("runs the migration renumber gate after the label and conflict gates, before the CI gate", () => {
@@ -244,7 +244,7 @@ describe("--release engine wiring", () => {
   // back to In Review for the fix loop's recipe, instead of parking the card
   // in Approved for good.
   it("keeps a renumbered or erroring card in Approved, and lets manual and capped go on", () => {
-    const start = releaseBlock.indexOf("    # Migration renumber gate (ADR-0076)");
+    const start = releaseBlock.indexOf("    # Migration renumber gate (ADR-0077)");
     const end = releaseBlock.indexOf("    # CI gate.", start);
     assert.ok(start !== -1 && end !== -1);
     for (const [result, expected] of [
@@ -269,7 +269,7 @@ done`;
     }
   });
 
-  describe("the BEHIND step (ADR-0076)", () => {
+  describe("the BEHIND step (ADR-0077)", () => {
     const start = releaseBlock.indexOf("    # Branch-protection merge state.");
     const end = releaseBlock.indexOf(
       '    log "Issue #$ISSUE_NUM: PR #$PR_NUM green + mergeable',

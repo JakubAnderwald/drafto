@@ -354,7 +354,7 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["9"].ciRerun, null);
   });
 
-  it("tracks the migration renumber gate's fields (ADR-0076)", () => {
+  it("tracks the migration renumber gate's fields (ADR-0077)", () => {
     // The gate won't renumber unless it can record the count, and carry-over
     // reads the rest; a rejected write must not fail silently.
     const s = emptyFactoryState();

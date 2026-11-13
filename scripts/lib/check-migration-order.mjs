@@ -96,7 +96,7 @@ function byVersionThenName(a, b) {
 // Every suggestion is free: it skips the versions of every local and base file and
 // every earlier suggestion, so no `git mv` target collides with an existing file.
 // `extraTaken` (versions or file names) only makes suggestions skip more versions:
-// the factory passes the ones other open PRs use (ADR-0076). It never changes what
+// the factory passes the ones other open PRs use (ADR-0077). It never changes what
 // is reported, so CI and the CLI, which don't pass it, behave as before.
 export function checkMigrationOrder({
   localFiles,

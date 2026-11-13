@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Mechanical migration renumber for factory PRs (ADR-0076).
+// Mechanical migration renumber for factory PRs (ADR-0077).
 //
 // Two factory PRs written on the same day used the same migration version (#802
 // and #829 both added 20261111000001). Once one merged, the other only went red
@@ -672,7 +672,7 @@ function commitMessage(map) {
     "",
     ...rows,
     "",
-    "Renamed mechanically by the dark factory (ADR-0076): only these file",
+    "Renamed mechanically by the dark factory (ADR-0077): only these file",
     "names and the references this PR added to them changed.",
     "",
   ].join("\n");
@@ -983,12 +983,12 @@ export function renumberComment({ pr, to, map, findings = [] }) {
     ...(shared.length > 0 ? ["", ...shared] : []),
     "",
     `Prod needs nothing: it is pushed only from \`main\`, after the merge. See \`${DOC}\`, ` +
-      '"Migration versions must sort last" (ADR-0076).',
+      '"Migration versions must sort last" (ADR-0077).',
   ].join("\n");
 }
 
 // The issue comment when the factory can't renumber the PR itself. The card
-// isn't held: it takes the path it took before ADR-0076, so the fix loop's
+// isn't held: it takes the path it took before ADR-0077, so the fix loop's
 // "Migration order" recipe renumbers it and a person checks that rename.
 export function manualComment({ pr, reason, where = "its column" }) {
   const approved = where === "Approved";
@@ -997,7 +997,7 @@ export function manualComment({ pr, reason, where = "its column" }) {
     "",
     `Reason: ${reason}.`,
     "",
-    "The fix loop renumbers them instead, as it did before ADR-0076: with CI red for " +
+    "The fix loop renumbers them instead, as it did before ADR-0077: with CI red for " +
       "migration order, its pass in **In Review** renames them with the `git mv` lines " +
       "`pnpm migration:check` prints, and the card comes back to In Test." +
       (approved
@@ -1005,7 +1005,7 @@ export function manualComment({ pr, reason, where = "its column" }) {
         : "") +
       " Check that rename before you approve it, above all when the reason is SQL that " +
       "touches an object one of main's newer migrations also touches: the new version " +
-      `decides which definition runs last. See \`${DOC}\`, "Migration versions must sort last" (ADR-0076).`,
+      `decides which definition runs last. See \`${DOC}\`, "Migration versions must sort last" (ADR-0077).`,
   ].join("\n");
 }
 

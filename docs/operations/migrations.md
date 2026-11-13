@@ -123,7 +123,7 @@ Never run this against prod unless prod applied the old version too. Then it is 
 
 ### When the factory renumbers a PR's migrations
 
-PRs #802 and #829 were open at the same time and both added `20261111000001`. Once #829 merged, #802 failed the order check. The factory now renames such a PR's migrations itself ([ADR 0076](../adr/0076-factory-renumbers-migrations-mechanically.md)):
+PRs #802 and #829 were open at the same time and both added `20261111000001`. Once #829 merged, #802 failed the order check. The factory now renames such a PR's migrations itself ([ADR 0077](../adr/0077-factory-renumbers-migrations-mechanically.md)):
 
 - **When.** `--release` checks every Approved card whose PR adds a file under `supabase/migrations/`, before the CI gate. `--watch` checks an In Review card when its PR is behind main, when CI is red, and before it merges main into a conflicting PR.
 - **What it changes.** It plans with the same order check, run on the files the merge with main would hold. It commits on the PR's head, as `Drafto factory`:

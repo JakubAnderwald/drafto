@@ -643,7 +643,7 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // hosted-config-applied label vouched for. A rejected write would make the
   // label vouch for every later version, the hole this field closes.
   "hostedConfigVouched",
-  // Migration renumber gate (ADR-0076). renumberFrom / renumberTo are the PR
+  // Migration renumber gate (ADR-0077). renumberFrom / renumberTo are the PR
   // head the factory renamed and its renumber commit, renumberMap the old →
   // new file map (a JSON string) its verify checks: a rejected write only costs
   // a fresh code review of the merged head. migrationRenumbers is the count

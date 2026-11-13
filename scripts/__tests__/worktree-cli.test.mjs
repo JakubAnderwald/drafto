@@ -722,7 +722,7 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
     assert.equal(out.nextFreeAdr, "0010");
   });
 
-  // ADR-0076: #802 and #829 both added 20261111000001. Merging main into the
+  // ADR-0077: #802 and #829 both added 20261111000001. Merging main into the
   // second is clean for git and red for CI, so the conflict pass must see it.
   it("reports a migration-order error that git merged without a conflict", () => {
     const wt = prWorktree(209, {

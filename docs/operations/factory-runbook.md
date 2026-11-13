@@ -1051,7 +1051,7 @@ Log lines: `PR #<n> was <k> commit(s) behind main; updated the branch`, `… car
 
 PRs #802 and #829 were open at the same time, and both added migration `20261111000001`. Once #829 merged, #802 would have gone red on the order check. `--release` would have handed it back to In Review, and it would have taken an LLM fix pass, a fresh review and a second Approved drag, all for a rename. `--release` also merged a PR whose `mergeStateStatus` read `UNKNOWN`, which it does right after `main` moves.
 
-Now the factory renames such a PR's migrations itself ([ADR-0076](../adr/0076-factory-renumbers-migrations-mechanically.md)):
+Now the factory renames such a PR's migrations itself ([ADR-0077](../adr/0077-factory-renumbers-migrations-mechanically.md)):
 
 - **When.** Only for a PR whose `gh pr diff --name-only` lists a `supabase/migrations/*.sql` file.
   - `--release` checks it on every tick, after the `migration-approved` and conflict gates and before the CI gate.
@@ -1069,7 +1069,7 @@ Now the factory renames such a PR's migrations itself ([ADR-0076](../adr/0076-fa
   - the PR's migrations touch an object that one of `main`'s newer migrations also touches. Renumbering changes which definition runs last;
   - a line the PR added names a bare version that may mean another migration.
 
-  The card isn't held. It goes on as before ADR-0076: the plain update-branch, then the fix loop's "Migration order" recipe on the red CI. In Approved the CI gate hands it back to In Review, and it needs approval again. Check the rename before you approve, especially for an object overlap. To rename by hand instead, use the `git mv` lines `pnpm migration:check` prints and push; the new head goes through the gate again.
+  The card isn't held. It goes on as before ADR-0077: the plain update-branch, then the fix loop's "Migration order" recipe on the red CI. In Approved the CI gate hands it back to In Review, and it needs approval again. Check the rename before you approve, especially for an object overlap. To rename by hand instead, use the `git mv` lines `pnpm migration:check` prints and push; the new head goes through the gate again.
 
 - **Cap.** At most `FACTORY_MAX_MIGRATION_RENUMBERS` (default `3`) renumbers per card, stored as `migrationRenumbers` and never reset by the factory. Past it, or when the count can't be read, the gate renames nothing and posts one comment per head (`<!-- drafto-factory-migration-renumber-cap:<sha12> -->`), and the card goes on to the fix loop as above. To grant more, run `node scripts/lib/state-cli.mjs factory:set-issue-field <n> migrationRenumbers "" --state-file logs/factory-state.json` in `drafto-factory`.
 - **Errors.** A failed lookup, precheck or push (`migration renumber of PR #<n> didn't land (rejected: …)`) holds an Approved card for the tick. In `--watch` the old path runs instead: the plain update-branch, or the fix or conflict pass. A push the remote rejected because the branch moved gives the count back.

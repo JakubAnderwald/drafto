@@ -480,7 +480,7 @@ gh() { echo "GH $2" >>"$CALLS"; [[ ${gh} -eq 0 ]] || return 1; echo '${commit}';
     }
   });
 
-  // ADR-0076: a migration renumber keeps the review too. R renames the PR's
+  // ADR-0077: a migration renumber keeps the review too. R renames the PR's
   // migrations on the reviewed head; GitHub then merges main onto R.
   describe("across a migration renumber", () => {
     const R = "d".repeat(40);
@@ -686,7 +686,7 @@ done`;
     ]);
   });
 
-  // ADR-0076: main may have moved past a migration the PR adds. The renumber
+  // ADR-0077: main may have moved past a migration the PR adds. The renumber
   // gate runs first and, when it renames them, updates the branch itself.
   it("renumbers the PR's migrations instead of a plain update, spending no branch update", () => {
     const r = gate({ behind: "2", renumber: "renumbered" });

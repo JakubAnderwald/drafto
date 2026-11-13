@@ -162,7 +162,7 @@ if ! [[ "$FACTORY_MAX_BRANCH_UPDATES" =~ ^(0|[1-9][0-9]*)$ ]]; then
   FACTORY_MAX_BRANCH_UPDATES=3
 fi
 
-# Times the migration renumber gate (ADR-0076) may rename one card's migrations
+# Times the migration renumber gate (ADR-0077) may rename one card's migrations
 # after main moved past them. Stored per issue as migrationRenumbers and never
 # reset by the factory: past the cap the gate renames nothing and posts a
 # comment, and the card goes on to the fix loop's recipe as before.
@@ -2261,7 +2261,7 @@ update_pr_branch() {
 # what update-branch writes. The conflict pass and a local merge commit as the
 # factory's own user, so a conflict resolution is reviewed as usual, as is any
 # other new head.
-# A migration renumber (ADR-0076) carries over the same way: <head-sha> is the
+# A migration renumber (ADR-0077) carries over the same way: <head-sha> is the
 # renumber commit R (renumberTo) or GitHub's merge of main onto it, the commit R
 # renamed (renumberFrom), or R itself, was the last one reviewed, and
 # migration-renumber.mjs verify proves R changes nothing but the migration
@@ -2431,7 +2431,7 @@ migration_violation() {
   echo ""
 }
 
-# ── Migration renumber gate (ADR-0076) ──────────────────────────────────────
+# ── Migration renumber gate (ADR-0077) ──────────────────────────────────────
 # Two factory PRs written the same day share a migration version (#802 and #829
 # both added 20261111000001), and a PR open while main gains a newer migration
 # goes stale. Once main moves, CI goes red on the PR. Instead of an LLM fix pass,
@@ -2528,7 +2528,7 @@ migration_renumber_gate() {
 
 The factory has renumbered them $count time(s), its limit (\`FACTORY_MAX_MIGRATION_RENUMBERS\`), \
 and would now rename: $map_text. It doesn't, so the fix loop renumbers them instead, as before \
-ADR-0076: once CI is red for migration order, its pass in **In Review** renames them, and from \
+ADR-0077: once CI is red for migration order, its pass in **In Review** renames them, and from \
 **Approved** the card goes back to In Review and needs your approval again. To let the factory \
 renumber mechanically once more, reset the count with \
 \`node scripts/lib/state-cli.mjs factory:set-issue-field $issue_num migrationRenumbers \"\"\`.
@@ -7967,7 +7967,7 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM is green but has $THREAD_COUNT open review thread(s) → fix loop"
       fi
 
-      # Migration renumber (ADR-0076), before the conflict pass's merge-main and
+      # Migration renumber (ADR-0077), before the conflict pass's merge-main and
       # before a fix pass spends an attempt: red CI or a conflict after main
       # moved can be a migration this PR adds that no longer sorts after main's.
       # The gate renames it mechanically and updates the branch, with no Claude
@@ -8113,7 +8113,7 @@ A human should take a look. Reset with \
             ;;
           up-to-date|clean)
             # A merge git made on its own can still leave a migration that no
-            # longer sorts after main's (ADR-0076), when the renumber gate above
+            # longer sorts after main's (ADR-0077), when the renumber gate above
             # couldn't rename it mechanically (a plan that needs a person, a
             # spent budget, an error). CI would go red on it, so it isn't pushed
             # as it stands: like an ADR clash, the agent gets the merge and
@@ -8350,7 +8350,7 @@ A human should take a look. Reset with \
     # updates it at merge time. "" (the compare failed) also goes on.
     BEHIND_BY=$(pr_behind_main "$HEAD_SHA")
     if [[ -n "$BEHIND_BY" && "$BEHIND_BY" -gt 0 ]]; then
-      # Main may have moved past a migration this PR adds (ADR-0076). Renumber
+      # Main may have moved past a migration this PR adds (ADR-0077). Renumber
       # it first, so CI on the updated head doesn't go red for migration order;
       # the gate updates the branch itself and spends no branch update. When it
       # can't (a plan that needs a person, a spent budget, an error), the
@@ -8946,7 +8946,7 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
       continue
     fi
 
-    # Migration renumber gate (ADR-0076), ahead of the CI gate: a PR whose
+    # Migration renumber gate (ADR-0077), ahead of the CI gate: a PR whose
     # migrations main has moved past is red for migration order, and the CI gate
     # would send it back to In Review for an LLM fix pass and a second Approved
     # drag. The gate renames them mechanically and updates the branch instead,

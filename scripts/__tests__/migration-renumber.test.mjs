@@ -23,7 +23,7 @@ import {
   writeRenumberCommit,
 } from "../lib/migration-renumber.mjs";
 
-// ADR-0076. PRs #802 (storage quota) and #829 (product metrics) both added
+// ADR-0077. PRs #802 (storage quota) and #829 (product metrics) both added
 // migration 20261111000001. Once #829 merged, #802 only went red after an
 // update-branch, and the way back was an LLM fix pass, a re-review and a second
 // Approved drag. The factory now renames the stale PR's migrations itself, in a

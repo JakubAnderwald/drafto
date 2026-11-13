@@ -1,4 +1,4 @@
-# 0076 — The Factory Renumbers Stale Migrations Mechanically
+# 0077 — The Factory Renumbers Stale Migrations Mechanically
 
 - **Status**: Accepted
 - **Date**: 2026-11-13
@@ -40,7 +40,7 @@ ADR 0057 rejected "rename at merge time with a bot" (its alternative 4) because 
 4. **The review and the approval carry over.** `carry_across_branch_update` also accepts R itself, or a web-flow `Merge branch 'main' into …` commit whose first parent is R. It requires that the commit R renamed (or R) was the last one reviewed, and that `verify` passes. The Approved drag stays valid: the decision with the user was that a verified mechanical renumber keeps it, as an update-branch merge already does ([ADR 0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)).
 5. **Dev gets an exact repair in the comment.** It is `supabase migration repair --status reverted <old>`, then `--status applied <new>`, needed only if dev applied the old version. When the old version is also one of main's migrations, the comment says to check which file dev actually ran first. This answers ADR 0057's alternative 4: the rename still leaves dev holding the old version, but the factory now says exactly what to run, and only edits to dev's migration history are needed.
 6. **Prod is pushed only from main, after the merge.** A merge-time renumber therefore never touches prod: prod only ever sees the new versions. This invariant is what makes a renumber before the merge safe.
-7. **Some cases the factory leaves to the fix loop, with one comment per head.** The card isn't held: it goes on as before ADR 0076, so with CI red for migration order the watch prompt's "Migration order" recipe renumbers it in In Review (from Approved, the CI gate hands it back there first, and the card needs approval again). Holding it instead would park it for good. The comment names the reason, so the person approving checks the rename. The cases:
+7. **Some cases the factory leaves to the fix loop, with one comment per head.** The card isn't held: it goes on as it did before this decision, so with CI red for migration order the watch prompt's "Migration order" recipe renumbers it in In Review (from Approved, the CI gate hands it back there first, and the card needs approval again). Holding it instead would park it for good. The comment names the reason, so the person approving checks the rename. The cases:
    - a version that isn't 14 digits, or a renamed main migration;
    - a flagged file that isn't one the PR adds;
    - an object overlap: the PR's added migrations create, alter or drop a function, table, view, policy, trigger, type, index or sequence (schema-qualified, case-insensitive) that one of main's migrations added since the merge base also touches. Renumbering changes which definition runs last;
