@@ -196,8 +196,9 @@ function emptyIssue() {
     // Hosted-config gate (ADR-0065): hash of the supabase/config.toml that the
     // hosted-config-applied label vouched for, "" or null while there is none.
     hostedConfigVouched: null,
-    // Migration approval (ADR-0078): hash of the migration SQL, with the PR's
-    // own versions left out, that the migration-approved label vouched for.
+    // Migration approval (ADR-0078): `<PR>:<head sha>:<hash>`, the PR, head
+    // and hash of the migration SQL (the PR's own versions left out) that the
+    // migration-approved label vouched for.
     migrationApprovedVouched: null,
     // Re-runs spent on required checks GitHub cancelled (no runner acquired),
     // as "<head sha>:<count>". Head-SHA keyed like the rest: a new push re-arms
@@ -646,8 +647,8 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // hosted-config-applied label vouched for. A rejected write would make the
   // label vouch for every later version, the hole this field closes.
   "hostedConfigVouched",
-  // Migration approval (ADR-0078): hash of the migration SQL the
-  // migration-approved label vouched for. A rejected write leaves it unset, so
+  // Migration approval (ADR-0078): `<PR>:<head sha>:<hash>` of the migration
+  // SQL the migration-approved label vouched for. A rejected write leaves it unset, so
   // the label is vouched for afresh each tick and an SQL edit never voids it.
   "migrationApprovedVouched",
   // Migration renumber gate (ADR-0077). renumberFrom / renumberTo are the PR

@@ -382,8 +382,9 @@ describe("per-issue counters", () => {
     // would never be tied to the SQL it was first seen with.
     const s = emptyFactoryState();
     assert.equal(getIssue(s, 802).migrationApprovedVouched, null);
-    setIssueField(s, 802, "migrationApprovedVouched", "0123456789abcdef");
-    assert.equal(s.issues["802"].migrationApprovedVouched, "0123456789abcdef");
+    const rec = `802:${"a".repeat(40)}:0123456789abcdef`;
+    setIssueField(s, 802, "migrationApprovedVouched", rec);
+    assert.equal(s.issues["802"].migrationApprovedVouched, rec);
     setIssueField(s, 802, "migrationApprovedVouched", "");
     assert.equal(s.issues["802"].migrationApprovedVouched, null);
   });

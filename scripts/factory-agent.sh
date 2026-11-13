@@ -2445,36 +2445,50 @@ migration_violation() {
 
 # ── Migration approval tied to the SQL (ADR-0078) ───────────────────────────
 # The migration-approved label vouches for one version of the PR's migration
-# SQL: the one it was first seen with, as hosted-config-applied does for
-# config.toml (ADR-0065). scripts/lib/migration-approval.mjs hashes the PR's
-# migration files with the PR's own version numbers left out, so the factory's
-# mechanical renumber (ADR-0077) keeps the label and any other edit voids it.
-#   - label present, no hash vouched: record the hash (migrationApprovedVouched);
-#   - label present, another hash: remove the label, then forget the old hash
-#     (only once the removal worked, so a failed one is retried next tick) and
-#     comment once per new hash (drafto-factory-migration-approval-void:<hash>);
-#   - label absent, a hash vouched: forget it.
-# It never voids on an error: when the state or the hash can't be read, nothing
-# changes this tick. Respects DRY_RUN (logs only).
+# SQL: the one it was first seen with. scripts/lib/migration-approval.mjs hashes
+# every file the PR touches under supabase/migrations with the PR's own version
+# numbers left out (their order kept), so the factory's mechanical renumber
+# (ADR-0077) keeps the label and any other edit voids it. migrationApprovedVouched
+# holds `<PR>:<head sha>:<hash>`; a value for another PR, or one that isn't that
+# shape, counts as nothing recorded.
+#   - label present, the recorded head is this head: nothing to do (no fetch);
+#   - label present, nothing recorded: record this head and its hash;
+#   - label present, the same hash at a new head: record the new head;
+#   - label present, another hash: make sure the void comment is on the issue
+#     (drafto-factory-migration-approval-void:<hash>), then remove the label,
+#     then forget the record. Each step waits for the one before it to work, so
+#     a failure keeps the label (and the record) for the next tick to retry;
+#   - label absent, something recorded: forget it.
+# Called in every column the factory processes with the PR (In Review, Testing,
+# In Test, Approved, and In Progress before a revision run), so the label covers
+# at most one tick of pushes nobody reviewed. It never voids on an error: when
+# the state, the diff or the hash can't be read, nothing changes this tick.
+# Respects DRY_RUN (logs only).
 # Args: $1 issue  $2 PR  $3 head SHA  $4 PR labels CSV
-#       $5 the PR's changed files (gh pr diff --name-only)
+#       $5 the PR's changed files (gh pr diff --name-only), when the caller has
+#          them. Without $5 they are fetched here, and only when needed: the
+#          label is on and the head isn't the one recorded.
 # Sets MIGRATION_APPROVAL_LABELS to the labels the caller goes on with: $4, less
-# migration-approved when this call voided it (under DRY_RUN too). Returns 0.
+# migration-approved when this call voided it (whether or not the removal has
+# worked yet, and under DRY_RUN too). Returns 0.
 migration_approval_vouch() {
-  local issue_num="$1" pr_num="$2" head_sha="$3" pr_labels="$4" diff_files="$5"
-  local state vouched out sql_hash files marker
+  local issue_num="$1" pr_num="$2" head_sha="$3" pr_labels="$4"
+  local have_files=0 diff_files="" state raw v_hash="" v_head="" out sql_hash files marker rc
+  if [[ $# -ge 5 ]]; then have_files=1; diff_files="$5"; fi
   MIGRATION_APPROVAL_LABELS="$pr_labels"
   # A here-string, not a pipe: under pipefail, grep -q closing the pipe early
   # would fail the printf and skip the check.
-  grep -qE '^supabase/migrations/' <<<"$diff_files" || return 0
+  if [[ "$have_files" -eq 1 ]] && ! grep -qE '^supabase/migrations/' <<<"$diff_files"; then
+    return 0
+  fi
   if ! state=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
       --state-file "$STATE_FILE" 2>>"$LOG_FILE") \
-      || ! vouched=$(jq -r '.migrationApprovedVouched // ""' <<<"$state" 2>>"$LOG_FILE"); then
+      || ! raw=$(jq -r '.migrationApprovedVouched // ""' <<<"$state" 2>>"$LOG_FILE"); then
     log "WARNING: migration approval: couldn't read #$issue_num's state; leaving PR #$pr_num's labels as they are this tick"
     return 0
   fi
   if [[ ",$pr_labels," != *",migration-approved,"* ]]; then
-    [[ -n "$vouched" ]] || return 0
+    [[ -n "$raw" ]] || return 0
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "DRY-RUN: would forget the migration SQL hash #$issue_num's migration-approved vouched for"
       return 0
@@ -2483,9 +2497,28 @@ migration_approval_vouch() {
       --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     return 0
   fi
+  if [[ "$raw" =~ ^([0-9]+):([0-9a-f]{7,40}):([0-9a-f]{16})$ ]]; then
+    if [[ "${BASH_REMATCH[1]}" == "$pr_num" ]]; then
+      v_head="${BASH_REMATCH[2]}"
+      v_hash="${BASH_REMATCH[3]}"
+    else
+      log "Issue #$issue_num: the recorded migration approval is for PR #${BASH_REMATCH[1]}, not PR #$pr_num; vouching afresh"
+    fi
+  elif [[ -n "$raw" ]]; then
+    log "WARNING: migration approval: #$issue_num's migrationApprovedVouched isn't <PR>:<head sha>:<hash>; treating it as nothing recorded"
+  fi
   if [[ -z "$head_sha" ]]; then
     log "WARNING: migration approval: no head SHA for PR #$pr_num; leaving migration-approved as it is this tick"
     return 0
+  fi
+  # The head the record was made at: the SQL can't have changed since.
+  [[ -n "$v_hash" && "$v_head" == "$head_sha" ]] && return 0
+  if [[ "$have_files" -eq 0 ]]; then
+    if ! diff_files=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+      log "WARNING: migration approval: gh pr diff #$pr_num failed (transient?); leaving migration-approved as it is this tick"
+      return 0
+    fi
+    grep -qE '^supabase/migrations/' <<<"$diff_files" || return 0
   fi
   if ! out=$(node "$SCRIPT_DIR/lib/migration-approval.mjs" hash --root "$REPO_ROOT" \
       --pr "$pr_num" --head "$head_sha" 2>>"$LOG_FILE") \
@@ -2494,44 +2527,71 @@ migration_approval_vouch() {
     log "WARNING: migration approval: couldn't hash PR #$pr_num's migrations at ${head_sha:0:12} (see the log); leaving migration-approved as it is this tick"
     return 0
   fi
-  if [[ -z "$vouched" ]]; then
-    log "Issue #$issue_num: migration-approved on PR #$pr_num covers its migration SQL as of ${head_sha:0:12} ($sql_hash)"
+  if [[ -z "$v_hash" || "$v_hash" == "$sql_hash" ]]; then
+    if [[ -z "$v_hash" ]]; then
+      log "Issue #$issue_num: migration-approved on PR #$pr_num covers its migration SQL as of ${head_sha:0:12} ($sql_hash)"
+    fi
     if [[ "$DRY_RUN" -eq 0 ]] && ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-        migrationApprovedVouched "$sql_hash" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+        migrationApprovedVouched "$pr_num:$head_sha:$sql_hash" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
       log "WARNING: couldn't record #$issue_num's migration SQL hash; retrying next tick"
     fi
     return 0
   fi
-  [[ "$vouched" == "$sql_hash" ]] && return 0
 
   MIGRATION_APPROVAL_LABELS=$(tr ',' '\n' <<<"$pr_labels" | grep -vxF migration-approved | paste -sd, - || true)
-  log "Issue #$issue_num: PR #$pr_num's migration SQL changed since migration-approved was added ($vouched -> $sql_hash at ${head_sha:0:12}); removing the label"
+  log "Issue #$issue_num: PR #$pr_num's migration SQL changed since migration-approved was added ($v_hash -> $sql_hash at ${head_sha:0:12}); removing the label"
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "DRY-RUN: would remove migration-approved from PR #$pr_num and comment on #$issue_num"
+    log "DRY-RUN: would comment on #$issue_num and remove migration-approved from PR #$pr_num"
     return 0
   fi
-  # Forget the vouched hash only once the label is really gone: keeping it makes
-  # the next tick see the mismatch again and retry the removal.
+  # The comment first, so the label never comes off without the operator being
+  # told why. A comment check that couldn't read the comments is not "absent".
+  marker="drafto-factory-migration-approval-void:$sql_hash"
+  rc=0
+  issue_marker_check "$issue_num" "$marker" || rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    log "WARNING: couldn't read #$issue_num's comments; keeping migration-approved on PR #$pr_num until the void comment can be checked (next tick)"
+    return 0
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    files=$(jq -r '(.files // []) | map("`" + . + "`") | join(", ")' <<<"$out" 2>/dev/null || echo "")
+    if ! gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **Migration approval withdrawn — the SQL changed.**
+
+PR #$pr_num's migration SQL changed after \`migration-approved\` was added, so the factory \
+is removing the label. The PR's migration files at \`${head_sha:0:12}\`: ${files:-none}. Review \
+them and add \`migration-approved\` again. The factory won't merge the PR until the label is back.
+
+A renumber by the factory (ADR-0077) doesn't remove the label: it covers the SQL with the \
+PR's own version numbers left out (ADR-0078).
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: couldn't comment on #$issue_num about the voided migration approval; keeping migration-approved on PR #$pr_num until it is posted (next tick)"
+      return 0
+    fi
+  fi
+  # Forget the record only once the label is really gone: keeping it makes the
+  # next tick see the mismatch again and retry the removal.
   if ! gh pr edit "$pr_num" --repo JakubAnderwald/drafto --remove-label migration-approved >>"$LOG_FILE" 2>&1; then
     log "WARNING: couldn't remove migration-approved from PR #$pr_num; retrying next tick"
     return 0
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationApprovedVouched "" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  files=$(jq -r '(.files // []) | map("`" + . + "`") | join(", ")' <<<"$out" 2>/dev/null || echo "")
-  marker="drafto-factory-migration-approval-void:$sql_hash"
-  if ! issue_has_marker "$issue_num" "$marker"; then
-    gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **Migration approval withdrawn — the SQL changed.**
+  return 0
+}
 
-PR #$pr_num's migration SQL changed after \`migration-approved\` was added, so the factory \
-removed the label. The PR's migration files at \`${head_sha:0:12}\`: ${files:-none}. Review \
-them and add \`migration-approved\` again. The factory won't merge the PR until the label is back.
-
-A renumber by the factory (ADR-0077) doesn't remove the label: it covers the SQL with the \
-PR's own version numbers left out (ADR-0078).
-
-<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
-  fi
+# migration_approval_vouch_view <issue> <PR> <view JSON> — migration_approval_vouch
+# for a caller that holds a `gh pr view --json state,headRefOid,labels` snapshot
+# but not the PR's changed files (fetched by the vouch only when it needs them).
+# A PR that isn't open is skipped, and so is a view without labels (a failed or
+# partial read), rather than reading as a removed label. Returns 0: the caller's
+# flow never depends on it.
+migration_approval_vouch_view() {
+  local view="$3" labels
+  [[ "$(jq -r '.state // ""' <<<"$view" 2>/dev/null || true)" == "OPEN" ]] || return 0
+  labels=$(jq -er '.labels | map(.name) | join(",")' <<<"$view" 2>/dev/null) || return 0
+  migration_approval_vouch "$1" "$2" "$(jq -r '.headRefOid // ""' <<<"$view" 2>/dev/null || true)" \
+    "$labels" || true
   return 0
 }
 
@@ -3091,6 +3151,19 @@ issue_has_marker() {
     return 0
   fi
   echo "$comments" | jq -e --arg m "$marker" 'any(.[]; .body | test($m))' >/dev/null 2>&1
+}
+
+# issue_marker_check <issue> <marker> — like issue_has_marker, for a caller that
+# must not act until it knows the answer: 0 when a comment from the factory's
+# identity (OWNER) carries <marker>, 1 when none does, 2 when the comments
+# couldn't be fetched. issue_has_marker stays fail-closed for its callers.
+issue_marker_check() {
+  local comments
+  if ! comments=$(fetch_issue_comments "$1" 2>/dev/null) || [[ -z "$comments" ]]; then
+    return 2
+  fi
+  comments_have_marker "$comments" "$2" && return 0
+  return 1
 }
 
 # ── Merge conflicts with main (ADR-0061) ────────────────────────────────────
@@ -6670,7 +6743,7 @@ verify_sweep_card() {
   fi
   pr_num=$(echo "$pr_obj" | jq -r '.number')
   if ! pr_view=$(gh pr view "$pr_num" --repo JakubAnderwald/drafto \
-      --json state,statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE") || [[ -z "$pr_view" ]]; then
+      --json state,statusCheckRollup,comments,headRefOid,labels 2>>"$LOG_FILE") || [[ -z "$pr_view" ]]; then
     log "WARNING: gh pr view #$pr_num failed (transient?); Testing card #$issue_num waits for the next tick"
     return 0
   fi
@@ -6680,6 +6753,10 @@ verify_sweep_card() {
     log "WARNING: PR #$pr_num has no head SHA in the snapshot (transient?); Testing card #$issue_num waits for the next tick"
     return 0
   fi
+  # Migration approval (ADR-0078), every tick the card is in Testing, as in
+  # In Review: a label the SQL changed under comes off here. Reads the head and
+  # labels from pr_view (an open PR only); never changes the decision below.
+  migration_approval_vouch_view "$issue_num" "$pr_num" "$pr_view" || true
   # A failed read is not an empty record: read as one, it would hand the card
   # back as "not reviewed", with a public comment saying so.
   if ! state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
@@ -7589,6 +7666,18 @@ Drag it back to **Ready** so the factory can plan it first.
 
     PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
 
+    # Migration approval (ADR-0078), before Claude runs on a card that came back
+    # with an open PR (a revision from In Test, a retry): the label covers the
+    # migration SQL it was first seen with, so a push since the column that last
+    # checked it can't ride on it. One view for the head and labels; the vouch
+    # fetches the changed files only when the label is on and the head moved.
+    # It never changes this run.
+    if [[ "$(echo "$PRIOR_PR" | jq -r '.state // ""' 2>/dev/null || true)" == "OPEN" ]]; then
+      PRIOR_PR_NUM=$(echo "$PRIOR_PR" | jq -r '.number')
+      migration_approval_vouch_view "$ISSUE_NUM" "$PRIOR_PR_NUM" \
+        "$(gh pr view "$PRIOR_PR_NUM" --repo JakubAnderwald/drafto --json state,headRefOid,labels 2>>"$LOG_FILE" || true)" || true
+    fi
+
     # Revision feedback: when a PR already exists, new OWNER comments since the
     # last consumed feedback are change requests from the In Test preview to
     # apply on the same branch. Fresh implementations have none — the approved
@@ -8061,6 +8150,14 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     if [[ -z "$PR_VIEW" ]]; then
       log "WARNING: gh pr view #$PR_NUM failed (transient?); skipping this tick"; continue
     fi
+
+    # Migration approval (ADR-0078), every tick the card is in In Review: the
+    # label covers the migration SQL it was first seen with, so a fix pass or a
+    # conflict pass that changes that SQL voids it here, a tick after the push.
+    # Reads the head and labels from PR_VIEW; the changed files are fetched only
+    # when the label is on and the head isn't the one recorded. It never holds
+    # the card or changes what happens to it below.
+    migration_approval_vouch_view "$ISSUE_NUM" "$PR_NUM" "$PR_VIEW" || true
 
     # Gate only on branch-protection *required* contexts: an advisory bot's red
     # or pending check (e.g. CodeRabbit, including its "Review rate limited"

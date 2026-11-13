@@ -25,54 +25,81 @@ const quotaSql = (v) =>
   `-- ${v}_storage_quota: per-user storage quota (applied to dev as ${v})\n` +
   "alter table public.profiles add column storage_bytes bigint;\n";
 
+const mig = (name) => `supabase/migrations/${name}`;
+
 describe("migrationSqlHash", () => {
   const hash = (files) => migrationSqlHash({ files });
+  const added = (name, content) => ({ path: mig(name), content, added: true });
 
   it("is 16 hex characters", () => {
-    assert.match(
-      hash([{ name: QUOTA, content: quotaSql("20261111000001"), added: true }]),
-      /^[0-9a-f]{16}$/,
-    );
+    assert.match(hash([added(QUOTA, quotaSql("20261111000001"))]), /^[0-9a-f]{16}$/);
   });
 
   it("keeps the hash across a renumber, self-references inside the SQL included", () => {
     const before = [
-      { name: QUOTA, content: quotaSql("20261111000001"), added: true },
-      {
-        name: "20261111000002_storage_quota_policy.sql",
-        content: "-- after 20261111000001_storage_quota.sql\ncreate policy q on public.profiles;\n",
-        added: true,
-      },
+      added(QUOTA, quotaSql("20261111000001")),
+      added(
+        "20261111000002_storage_quota_policy.sql",
+        "-- after 20261111000001_storage_quota.sql\ncreate policy q on public.profiles;\n",
+      ),
     ];
     const after = [
-      {
-        name: "20261113000001_storage_quota.sql",
-        content: quotaSql("20261113000001"),
-        added: true,
-      },
-      {
-        name: "20261113000002_storage_quota_policy.sql",
-        content: "-- after 20261113000001_storage_quota.sql\ncreate policy q on public.profiles;\n",
-        added: true,
-      },
+      added("20261113000001_storage_quota.sql", quotaSql("20261113000001")),
+      added(
+        "20261113000002_storage_quota_policy.sql",
+        "-- after 20261113000001_storage_quota.sql\ncreate policy q on public.profiles;\n",
+      ),
     ];
     assert.equal(hash(after), hash(before));
   });
 
   it("keeps the hash when a renumber splits two files that shared a version", () => {
     const before = [
-      { name: "20261201000001_x.sql", content: "-- then 20261201000001_y.sql\n", added: true },
-      { name: "20261201000001_y.sql", content: "-- after 20261201000001_x\n", added: true },
+      added("20261201000001_x.sql", "-- then 20261201000001_y.sql\n"),
+      added("20261201000001_y.sql", "-- after 20261201000001_x\n"),
     ];
     const after = [
-      { name: "20261201000001_x.sql", content: "-- then 20261201000002_y.sql\n", added: true },
-      { name: "20261201000002_y.sql", content: "-- after 20261201000001_x\n", added: true },
+      added("20261201000001_x.sql", "-- then 20261201000002_y.sql\n"),
+      added("20261201000002_y.sql", "-- after 20261201000001_x\n"),
     ];
     assert.equal(hash(after), hash(before));
   });
 
+  it("changes when two of the PR's migrations swap versions, so the order they run in changes", () => {
+    const create = "create table public.quota (id int);\n";
+    const alter = "alter table public.quota add column n int;\n";
+    const inOrder = [
+      added("20261111000001_create_quota.sql", create),
+      added("20261111000002_alter_quota.sql", alter),
+    ];
+    const swapped = [
+      added("20261111000002_create_quota.sql", create),
+      added("20261111000001_alter_quota.sql", alter),
+    ];
+    assert.notEqual(hash(swapped), hash(inOrder));
+    // Moving both while keeping their order (a renumber) doesn't.
+    const moved = [
+      added("20261113000001_create_quota.sql", create),
+      added("20261113000002_alter_quota.sql", alter),
+    ];
+    assert.equal(hash(moved), hash(inOrder));
+  });
+
+  it("keeps the hash when a 13-digit version is renumbered to 14 digits", () => {
+    const sql = (v) => `-- ${v}_storage_quota\nalter table public.profiles add column q int;\n`;
+    const later = added("20261114000001_later.sql", "-- after 20261114000001_later\nselect 1;\n");
+    const before = [added("2026111300001_storage_quota.sql", sql("2026111300001")), later];
+    const after = [added("20261113000001_storage_quota.sql", sql("20261113000001")), later];
+    assert.equal(hash(after), hash(before));
+    // The 13-digit version is the PR's own: editing the SQL around it still counts.
+    assert.notEqual(
+      hash([added("2026111300001_storage_quota.sql", `${sql("2026111300001")}select 2;\n`), later]),
+      hash(before),
+    );
+  });
+
   it("changes on any SQL edit", () => {
-    const base = [{ name: QUOTA, content: quotaSql("20261111000001"), added: true }];
+    const base = [added(QUOTA, quotaSql("20261111000001"))];
     for (const content of [
       quotaSql("20261111000001").replace("bigint", "int"),
       `${quotaSql("20261111000001")}drop table public.notes;\n`,
@@ -83,53 +110,86 @@ describe("migrationSqlHash", () => {
   });
 
   it("changes when a file is added, deleted or renamed to another name", () => {
-    const quota = { name: QUOTA, content: quotaSql("20261111000001"), added: true };
+    const quota = added(QUOTA, quotaSql("20261111000001"));
     const base = hash([quota]);
+    assert.notEqual(hash([quota, added("20261111000002_more.sql", "select 1;\n")]), base);
     assert.notEqual(
-      hash([quota, { name: "20261111000002_more.sql", content: "select 1;\n", added: true }]),
+      hash([quota, { path: mig(BASE), content: null, added: false, deleted: true }]),
       base,
     );
-    assert.notEqual(
-      hash([quota, { name: BASE, content: null, added: false, deleted: true }]),
-      base,
-    );
-    assert.notEqual(hash([{ ...quota, name: "20261111000001_storage_limit.sql" }]), base);
+    assert.notEqual(hash([{ ...quota, path: mig("20261111000001_storage_limit.sql") }]), base);
   });
 
-  it("keys a changed existing migration by its full name, version included", () => {
-    const changed = (name) => [{ name, content: "select 1;\n", added: false }];
+  it("covers every file under supabase/migrations, at any depth and with any extension", () => {
+    const quota = added(QUOTA, quotaSql("20261111000001"));
+    const base = hash([quota]);
+    for (const extra of [
+      { path: mig("README.md"), content: "Notes.\n", added: true },
+      { path: mig("seed_data.sql"), content: "insert into t values (1);\n", added: true },
+      { path: mig("archive/20250101000001_old.sql"), content: "select 1;\n", added: true },
+      { path: mig("archive/20250101000001_old.sql"), content: "select 1;\n", added: false },
+      { path: mig("archive/20250101000001_old.sql"), content: null, added: false, deleted: true },
+    ]) {
+      const withExtra = hash([quota, extra]);
+      assert.notEqual(withExtra, base, JSON.stringify(extra));
+      // And an edit to it changes the hash too.
+      if (!extra.deleted) {
+        assert.notEqual(
+          hash([quota, { ...extra, content: `${extra.content}-- edit\n` }]),
+          withExtra,
+        );
+      }
+    }
+  });
+
+  it("keys a file in a subfolder by its full path, never by rank", () => {
+    // A versioned name one level down isn't a migration the CLI runs: renaming
+    // it changes the hash, where renaming a direct one wouldn't.
+    const sub = (name) => [
+      added(QUOTA, quotaSql("20261111000001")),
+      { path: mig(`archive/${name}`), content: "select 1;\n", added: true },
+    ];
+    assert.notEqual(hash(sub("20250101000002_old.sql")), hash(sub("20250101000001_old.sql")));
+  });
+
+  it("normalizes the PR's versions in files that aren't its migrations, so a renumber keeps them", () => {
+    const readme = (v) => ({ path: mig("README.md"), content: `See ${v}.\n`, added: false });
+    const before = [added(QUOTA, quotaSql("20261111000001")), readme("20261111000001")];
+    const after = [
+      added("20261113000001_storage_quota.sql", quotaSql("20261113000001")),
+      readme("20261113000001"),
+    ];
+    assert.equal(hash(after), hash(before));
+  });
+
+  it("keys a changed existing migration by its full path, version included", () => {
+    const changed = (name) => [{ path: mig(name), content: "select 1;\n", added: false }];
     assert.notEqual(
       hash(changed("20261020000002_explicit_data_api_grants.sql")),
       hash(changed(BASE)),
     );
     // Added, the same file's version is left out.
-    const added = (name) => [{ name, content: "select 1;\n", added: true }];
-    assert.equal(hash(added("20261020000002_explicit_data_api_grants.sql")), hash(added(BASE)));
+    const one = (name) => [added(name, "select 1;\n")];
+    assert.equal(hash(one("20261020000002_explicit_data_api_grants.sql")), hash(one(BASE)));
     // And an added file never hashes like a changed one.
-    assert.notEqual(hash(added(BASE)), hash(changed(BASE)));
+    assert.notEqual(hash(one(BASE)), hash(changed(BASE)));
   });
 
   it("normalizes the PR's versions in a changed existing migration too", () => {
     const line = (v) => `select 1;\n-- see ${v}_storage_quota\n`;
     const before = [
-      { name: QUOTA, content: quotaSql("20261111000001"), added: true },
-      { name: BASE, content: line("20261111000001"), added: false },
+      added(QUOTA, quotaSql("20261111000001")),
+      { path: mig(BASE), content: line("20261111000001"), added: false },
     ];
     const after = [
-      {
-        name: "20261113000001_storage_quota.sql",
-        content: quotaSql("20261113000001"),
-        added: true,
-      },
-      { name: BASE, content: line("20261113000001"), added: false },
+      added("20261113000001_storage_quota.sql", quotaSql("20261113000001")),
+      { path: mig(BASE), content: line("20261113000001"), added: false },
     ];
     assert.equal(hash(after), hash(before));
   });
 
   it("leaves versions the PR doesn't add alone, and only digit-bounded ones", () => {
-    const withRef = (ref) => [
-      { name: QUOTA, content: `-- after ${ref}\nselect 1;\n`, added: true },
-    ];
+    const withRef = (ref) => [added(QUOTA, `-- after ${ref}\nselect 1;\n`)];
     // main's version, not the PR's: changing it changes the hash.
     assert.notEqual(hash(withRef("20261020000001")), hash(withRef("20261020000002")));
     // A longer number that merely contains the PR's version isn't normalized.
@@ -138,19 +198,16 @@ describe("migrationSqlHash", () => {
 
   it("doesn't depend on the order of the files", () => {
     const files = [
-      { name: QUOTA, content: quotaSql("20261111000001"), added: true },
-      { name: BASE, content: "select 2;\n", added: false },
-      { name: "20261111000002_more.sql", content: "select 3;\n", added: true },
+      added(QUOTA, quotaSql("20261111000001")),
+      { path: mig(BASE), content: "select 2;\n", added: false },
+      added("20261111000002_more.sql", "select 3;\n"),
     ];
     assert.equal(hash([...files].reverse()), hash(files));
     assert.equal(hash([files[1], files[0], files[2]]), hash(files));
   });
 
   it("tells two added files with the same name apart", () => {
-    const pair = (a, b) => [
-      { name: "20261111000001_fix.sql", content: a, added: true },
-      { name: "20261112000001_fix.sql", content: b, added: true },
-    ];
+    const pair = (a, b) => [added("20261111000001_fix.sql", a), added("20261112000001_fix.sql", b)];
     assert.notEqual(
       hash(pair("select 1;\n", "select 2;\n")),
       hash(pair("select 2;\n", "select 1;\n")),
@@ -229,8 +286,9 @@ describe("migration-approval.mjs hash (end to end, #802/#829)", () => {
     );
     commit(author, "pr 829");
     // #802 at the same version: a self-reference and a bare version in its own
-    // SQL, a line added to a migration main already has, and a file the hash
-    // doesn't cover (not *.sql).
+    // SQL, a line added to a migration main already has, and a file that isn't
+    // a migration (README.md), which the hash covers too and the renumber
+    // rewrites.
     gitIn(author, ["checkout", "-q", "-b", "issue-794", "main"]);
     write(author, `supabase/migrations/${QUOTA}`, quotaSql("20261111000001"));
     write(
@@ -250,19 +308,20 @@ describe("migration-approval.mjs hash (end to end, #802/#829)", () => {
 
   after(() => dir && rmSync(dir, { recursive: true, force: true }));
 
-  it("hashes the PR's added and changed *.sql files directly under supabase/migrations", () => {
+  it("hashes every file the PR adds or changes under supabase/migrations", () => {
     const r = hashAt(bHead);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.out.hash, /^[0-9a-f]{16}$/);
-    assert.deepEqual(r.out.files, [BASE, QUOTA]);
+    assert.deepEqual(r.out.files, [mig(BASE), mig(QUOTA), mig("README.md")]);
     approved = r.out.hash;
     // The library agrees with the CLI, and reads main's NOTE as main's, not the PR's.
     const { files } = prMigrationFiles({ cwd: factory, head: bHead, main: mainAfterA });
     assert.deepEqual(
-      files.map((f) => [f.name, f.added]),
+      files.map((f) => [f.path, f.added]),
       [
-        [BASE, false],
-        [QUOTA, true],
+        [mig(BASE), false],
+        [mig(QUOTA), true],
+        [mig("README.md"), false],
       ],
     );
     assert.equal(migrationSqlHash({ files }), approved);
@@ -286,7 +345,15 @@ describe("migration-approval.mjs hash (end to end, #802/#829)", () => {
     publish(factory, R);
     const r = hashAt(R);
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(r.out.files, [BASE, "20261113000001_storage_quota.sql"]);
+    assert.match(
+      gitIn(factory, ["show", `${R}:supabase/migrations/README.md`]),
+      /^Migrations, with 20261113000001\.$/m,
+    );
+    assert.deepEqual(r.out.files, [
+      mig(BASE),
+      mig("20261113000001_storage_quota.sql"),
+      mig("README.md"),
+    ]);
     assert.equal(r.out.hash, approved);
   });
 
