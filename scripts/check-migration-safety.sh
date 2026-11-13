@@ -21,10 +21,12 @@
 # work tree, the rule is skipped with a note.
 #
 # The open-PR warning (migration-renumber.mjs claimed-check, ADR 0079) runs after the
-# order rule, only on a developer's machine: not in CI ($CI set), not outside a drafto
-# checkout, not without a logged-in gh. It WARNs, never errs, for each migration this
-# checkout adds whose version another open PR also adds (this branch's own PR aside),
-# and gives up quietly when GitHub is slow or unreachable.
+# order rule, only on a developer's machine: not in CI ($CI set), not in a factory,
+# support or nightly session ($DRAFTO_UNATTENDED set; the factory moves its own PRs'
+# clashing migrations itself), not outside a drafto checkout, not without a logged-in
+# gh. It WARNs, never errs, for each migration this checkout adds whose version
+# another open PR also adds (this checkout's own PR aside), and gives up with a note
+# when GitHub is slow or unreachable.
 
 set -euo pipefail
 
@@ -239,10 +241,13 @@ ERRORS=$((ERRORS + ORDER_ERRORS + ORDER_SETUP_ERRORS))
 
 # Versions other open PRs also add (ADR 0079): two open PRs that both pass the order
 # rule can still share a version, and whichever merges second then fails it. Local
-# only, so CI's output stays as it was; never an error. Any failure skips it.
+# only, so CI's output stays as it was; never an error. Any failure skips it. An
+# unattended session skips it too: the factory checks its PRs after each implement
+# run, so the sweep here would only repeat that.
 claimed_check() {
   local base="$1" findings url
   [ -z "${CI:-}" ] || return 0
+  [ -z "${DRAFTO_UNATTENDED:-}" ] || return 0
   command -v gh >/dev/null 2>&1 || return 0
   url=$(git remote get-url origin 2>/dev/null || true)
   [[ "$url" =~ github\.com[:/]JakubAnderwald/drafto(\.git)?/?$ ]] || return 0

@@ -165,7 +165,8 @@ fi
 # Times the migration renumber gate (ADR-0077) may rename one card's migrations
 # after main moved past them. Stored per issue as migrationRenumbers and never
 # reset by the factory: past the cap the gate renames nothing and posts a
-# comment, and the card goes on to the fix loop's recipe as before.
+# comment, and the card goes on to the fix loop's recipe as before. The
+# implement post-check's renames (ADR-0079) neither read nor spend it.
 FACTORY_MAX_MIGRATION_RENUMBERS="${FACTORY_MAX_MIGRATION_RENUMBERS:-3}"
 if ! [[ "$FACTORY_MAX_MIGRATION_RENUMBERS" =~ ^(0|[1-9][0-9]*)$ ]]; then
   echo "WARNING: invalid FACTORY_MAX_MIGRATION_RENUMBERS='$FACTORY_MAX_MIGRATION_RENUMBERS'; defaulting to 3" >&2
@@ -1588,8 +1589,11 @@ issue_already_impl_stubbed() {
 # implementation — see revise_replies_check); $8 is the directory the
 # implementer writes those replies to (reply_dir_for).
 # When the spec says schema changes, the bundle also carries `migrations`
-# (implement_migration_versions, ADR-0079): the version the implementer names
-# its first new migration with, clear of main and of every open PR's.
+# (implement_migration_versions, ADR-0079): the versions the implementer names
+# its new migrations with, in order, clear of main and of every other open
+# PR's. If the bundle with them can't be built, the first one (migrations
+# null) is used, with a warning: the prompt's date rule and the post-check
+# cover it.
 build_implement_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1599,7 +1603,7 @@ build_implement_bundle() {
   local screenshot_sources="${6:-[]}"
   local reply_markers="${7:-[]}"
   local reply_dir="${8:-}"
-  local repo_head_ref input bundle migrations
+  local repo_head_ref input bundle migrations with_migrations own_pr
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   input=$(jq -n \
     --argjson issue "$issue_entry" \
@@ -1642,30 +1646,44 @@ build_implement_bundle() {
   # The spec, as the bundle parses it, decides: the lookup costs a fetch and a
   # gh call per open PR, so only a card that says it changes the schema pays.
   if jq -e '.spec.schemaChanges == true' <<<"$bundle" >/dev/null 2>&1; then
-    migrations=$(implement_migration_versions)
+    # A revision's own PR: its migrations raise the floor instead of being claims.
+    own_pr=$(jq -r 'if type == "object" then (.number // "" | tostring) else "" end' \
+      <<<"$prior_pr" 2>/dev/null || echo "")
+    migrations=$(implement_migration_versions "$own_pr")
     if [[ "$migrations" != "null" ]]; then
-      bundle=$(jq -c --argjson migrations "$migrations" '. + {migrations: $migrations}' <<<"$input" \
-        | node "$SCRIPT_DIR/lib/factory-bundle.mjs") || return 1
+      if with_migrations=$(jq -c --argjson migrations "$migrations" '. + {migrations: $migrations}' <<<"$input" \
+          | node "$SCRIPT_DIR/lib/factory-bundle.mjs"); then
+        bundle="$with_migrations"
+      else
+        logerr "WARNING: couldn't add the migration versions to the implement bundle; the implementer falls back to the date rule"
+      fi
     fi
   fi
   printf '%s\n' "$bundle"
 }
 
-# implement_migration_versions — the `migrations` field of the implement bundle
-# (ADR-0079): {mainNewest, nextVersion, claimed} from migration-renumber.mjs
-# next-version, which fetches main and lists every open PR's migration files.
-# The implement prompt names `<today>000001_<name>.sql` by default, so two cards
-# implemented the same day picked the same version (#802 and #829). This card's
-# own open PR isn't excluded, so a revision doesn't reuse its own version for a
-# new migration. Prints "null" on any failure, with a warning in the log: the
-# prompt then falls back to its date rule, and implement_migration_claim_check
-# still catches a clash after the run. Never fails the implement. Logs only
-# through logerr, because build_implement_bundle's stdout is the bundle.
+# implement_migration_versions [<own-pr>] — the `migrations` field of the
+# implement bundle (ADR-0079): {mainNewest, ownNewest, versions, claimed} from
+# migration-renumber.mjs next-version, which fetches main and lists every open
+# PR's migration files. `versions` are the versions the card's new migrations
+# take, in order. The implement prompt named `<today>000001_<name>.sql`, so two
+# cards implemented the same day picked the same version (#802 and #829).
+# <own-pr> is the card's PR on a revision (--own-pr): its migrations aren't
+# claims, and every version sorts after its newest, so a revision's new
+# migration never reuses or precedes one the PR already has. Prints "null" on
+# any failure, with a warning in the log: the prompt then falls back to its
+# date rule, and implement_migration_claim_check still catches a clash after
+# the run. Never fails the implement. Logs only through logerr, because
+# build_implement_bundle's stdout is the bundle.
 implement_migration_versions() {
-  local out
-  if out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" next-version --root "$REPO_ROOT" 2>>"$LOG_FILE") \
-      && jq -e '(.nextVersion | type) == "string"' <<<"$out" >/dev/null 2>&1; then
-    jq -c '{mainNewest, nextVersion, claimed}' <<<"$out"
+  local own_pr="${1:-}" out own_args=()
+  if [[ "$own_pr" =~ ^[0-9]+$ ]]; then
+    own_args=(--own-pr "$own_pr")
+  fi
+  if out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" next-version --root "$REPO_ROOT" \
+      ${own_args[@]+"${own_args[@]}"} 2>>"$LOG_FILE") \
+      && jq -e '(.versions | type) == "array" and (.versions | length) > 0' <<<"$out" >/dev/null 2>&1; then
+    jq -c '{mainNewest, ownNewest, versions, claimed}' <<<"$out"
     return 0
   fi
   logerr "WARNING: couldn't pick a migration version for the implement bundle (see the log); the implementer falls back to the date rule"
@@ -1987,22 +2005,32 @@ implement_park_blocked() {
   log "Issue #$issue_num: $reason → Blocked; slot $slot released"
 }
 
-# implement_migration_claim_check <issue> <pr-num> — the --implement post-check
-# for migration versions (ADR-0079), run after the parity post-check. The bundle
-# gave the implementer a version clear of every open PR's, but a PR opened while
-# it ran, or an implementer that ignored it, can still share one. When this PR
-# adds a migration whose version an open PR with a LOWER number also adds,
-# migration_renumber_gate (mode "claimed") renames this PR's, with the same
-# proven-mechanical commit and comment as ADR-0077: the newer PR moves, the
-# older one never does. Implement runs one card at a time under the loop lock,
-# so two cards can't both move. It counts toward migrationRenumbers. It never
-# blocks the implement: a rename that needs a person, a spent cap or an error is
-# logged and the card goes on to In Review; the merge-time gate catches the
-# clash once the older PR merges. Always returns 0.
+# implement_migration_claim_check <issue> <pr-num> <head-sha> <new-since>
+#   <claimed-json> — the --implement post-check for migration versions
+# (ADR-0079), run after the parity post-check. The bundle gave the implementer
+# versions clear of every open PR's, but an implementer that ignored them, or
+# needed more than the list had, can still share one. migration_renumber_gate
+# (mode "claimed") renames this PR's migrations, with the same proven-mechanical
+# commit and comment as ADR-0077, when:
+#   - one this PR adds has a version an open PR with a LOWER number also adds:
+#     the newer PR moves, the older one never does; or
+#   - one this run added (not in <new-since>, the PR head before the run; "all"
+#     for a brand-new PR) has a version ANY open PR adds.
+# <head-sha> is the PR head bash read after the run (POST_HEAD_OID on a
+# revision); empty reads it here. <claimed-json> is the bundle's claims, so the
+# open PRs aren't swept again; empty (no claims in the bundle) sweeps them.
+# Implement runs one card at a time under the loop lock, so two cards can't
+# both move. It doesn't spend migrationRenumbers: one post-check per implement
+# run bounds it. It never blocks the implement: a rename that needs a person or
+# an error is logged and the card goes on to In Review; the merge-time gate
+# catches the clash once the other PR merges. Always returns 0.
 implement_migration_claim_check() {
-  local issue_num="$1" pr_num="$2" head_sha
-  head_sha=$(pr_head_oid "$pr_num")
-  migration_renumber_gate "$issue_num" "$pr_num" "$head_sha" "In Progress" "" claimed || true
+  local issue_num="$1" pr_num="$2" head_sha="${3:-}" new_since="${4:-}" claimed_json="${5:-}"
+  if [[ -z "$head_sha" ]]; then
+    head_sha=$(pr_head_oid "$pr_num")
+  fi
+  migration_renumber_gate "$issue_num" "$pr_num" "$head_sha" "In Progress" "" claimed \
+    "$claimed_json" "$new_since" || true
   case "$MIGRATION_RENUMBER_RESULT" in
     clean|renumbered) ;;
     *)
@@ -2679,9 +2707,18 @@ migration_approval_vouch_view() {
 #       $6 "claimed" from implement_migration_claim_check only (ADR-0079): also
 #          move this PR's migrations off versions an open PR with a lower number
 #          already adds (--move-off-claimed). --watch and --release never pass
-#          it, or the older PR would move too. In this mode manual and capped
-#          only log: their comments describe the red-CI fallback, and nothing is
-#          red yet; the merge-time gate catches the clash once the older merges.
+#          it, or the older PR would move too. In this mode manual only logs:
+#          its comment describes the red-CI fallback, and nothing is red yet;
+#          the merge-time gate catches the clash once the other PR merges. Nor
+#          does it read or spend migrationRenumbers: the post-check runs once
+#          per implement run, which bounds it, and the merge-time budget stays
+#          whole.
+#       $7 claimed mode only: the open PRs' claims as JSON (the implement
+#          bundle's), handed to precheck as --claimed-json so it doesn't sweep
+#          them again; empty sweeps.
+#       $8 claimed mode only: the PR head before the implement run, or "all"
+#          for a brand-new PR (--new-since): a migration the run added also
+#          moves off a version ANY open PR adds.
 # Returns 0 when there is nothing to renumber, 1 otherwise, and
 # MIGRATION_RENUMBER_RESULT says which: clean | renumbered | manual | capped |
 # error. Callers hold the card only on renumbered (CI runs on the new head), and
@@ -2690,10 +2727,17 @@ migration_approval_vouch_view() {
 # capped go on as before, to the fix loop's recipe.
 migration_renumber_gate() {
   local issue_num="$1" pr_num="$2" head_sha="$3" where="$4" diff_files="${5:-}" mode="${6:-}"
+  local given_claims="${7:-}" new_since="${8:-}"
   local out status reason map_json map_text to count comment marker seen try
-  local claimed_args=() move_args=()
+  local claimed_args=() move_args=() pre_args=()
   if [[ "$mode" == "claimed" ]]; then
     move_args=(--move-off-claimed 1)
+    if [[ -n "$new_since" ]]; then
+      move_args+=(--new-since "$new_since")
+    fi
+    if [[ -n "$given_claims" ]]; then
+      pre_args=(--claimed-json "$given_claims")
+    fi
   fi
   MIGRATION_RENUMBER_RESULT="error"
   if [[ -z "$diff_files" ]] \
@@ -2713,7 +2757,7 @@ migration_renumber_gate() {
   fi
   if ! out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" precheck --root "$REPO_ROOT" \
       --pr "$pr_num" --head "$head_sha" --where "$where" \
-      ${move_args[@]+"${move_args[@]}"} 2>>"$LOG_FILE"); then
+      ${pre_args[@]+"${pre_args[@]}"} ${move_args[@]+"${move_args[@]}"} 2>>"$LOG_FILE"); then
     log "WARNING: migration renumber precheck failed for PR #$pr_num at ${head_sha:0:12} (see the log)"
     return 1
   fi
@@ -2754,18 +2798,23 @@ migration_renumber_gate() {
     MIGRATION_RENUMBER_RESULT="renumbered"
     return 1
   fi
-  # The budget fails closed: unreadable counts as spent.
-  count=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
-    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.migrationRenumbers // "0"' 2>/dev/null || echo "")
-  if ! [[ "$count" =~ ^[0-9]+$ ]]; then
-    log "WARNING: couldn't read #$issue_num's migration renumber count; counting it as spent"
-    count="$FACTORY_MAX_MIGRATION_RENUMBERS"
+  # The budget fails closed: unreadable counts as spent. The implement
+  # post-check (claimed mode) neither reads nor spends it: it runs once per
+  # implement run, and the merge-time renumbers keep the whole budget.
+  count=""
+  if [[ "$mode" != "claimed" ]]; then
+    count=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.migrationRenumbers // "0"' 2>/dev/null || echo "")
+    if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+      log "WARNING: couldn't read #$issue_num's migration renumber count; counting it as spent"
+      count="$FACTORY_MAX_MIGRATION_RENUMBERS"
+    fi
   fi
-  if [[ "$count" -ge "$FACTORY_MAX_MIGRATION_RENUMBERS" ]]; then
+  if [[ "$mode" != "claimed" && "$count" -ge "$FACTORY_MAX_MIGRATION_RENUMBERS" ]]; then
     MIGRATION_RENUMBER_RESULT="capped"
     log "Issue #$issue_num: PR #$pr_num needs another migration renumber ($map_text), but $count of $FACTORY_MAX_MIGRATION_RENUMBERS are spent; leaving it to the fix loop"
     marker="drafto-factory-migration-renumber-cap:${head_sha:0:12}"
-    if [[ "$mode" != "claimed" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+    if ! issue_has_marker "$issue_num" "$marker"; then
       gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **PR #$pr_num's migrations fell behind \`main\` again.**
 
 The factory has renumbered them $count time(s), its limit (\`FACTORY_MAX_MIGRATION_RENUMBERS\`), \
@@ -2784,7 +2833,8 @@ renumber mechanically once more, reset the count with \
     log "WARNING: issue #$issue_num's worktree has commits PR #$pr_num lacks; not renumbering its migrations"
     return 1
   fi
-  if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationRenumbers \
+  if [[ "$mode" != "claimed" ]] \
+      && ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationRenumbers \
       "$((count + 1))" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
     log "WARNING: couldn't record a migration renumber for #$issue_num; not renumbering"
     return 1
@@ -2798,8 +2848,10 @@ renumber mechanically once more, reset the count with \
   fi
   if [[ "$status" != "pushed" ]]; then
     # Nothing reached the PR: give the renumber back.
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationRenumbers \
-      "$count" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    if [[ "$mode" != "claimed" ]]; then
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationRenumbers \
+        "$count" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    fi
     case "$status" in
       clean)
         MIGRATION_RENUMBER_RESULT="clean"
@@ -7954,9 +8006,20 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
             "$AFFECTED" "$PARITY_OVERRIDE"; then
           continue
         fi
-        # Migration versions: move this PR's off any an older open PR already
-        # adds (ADR-0079). Never blocks; the card goes on either way.
-        implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM"
+        # Migration versions (ADR-0079): move this PR's off any an older open
+        # PR already adds, and the ones this run added off any open PR's. A
+        # revision reuses the head read above and names the head before the
+        # run; a fresh PR has neither, so every migration it adds is this
+        # run's. The bundle's claims spare a second sweep of the open PRs.
+        # Never blocks; the card goes on either way.
+        CLAIM_HEAD=""
+        CLAIM_SINCE="all"
+        if [[ -n "$PRE_HEAD_OID" ]]; then
+          CLAIM_HEAD="$POST_HEAD_OID"
+          CLAIM_SINCE="$PRE_HEAD_OID"
+        fi
+        CLAIM_JSON=$(jq -c '.migrations.claimed // empty | map({pr, file})' <<<"$BUNDLE" 2>/dev/null || echo "")
+        implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM" "$CLAIM_HEAD" "$CLAIM_SINCE" "$CLAIM_JSON"
         # Happy path: advance to In Review. KEEP slot + worktree for --watch.
         # Advancing lastFeedbackAt to FEEDBACK_MARK marks the comments this run
         # applied as consumed, so a revision we just applied can't re-trigger

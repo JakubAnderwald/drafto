@@ -350,18 +350,31 @@ describe("check-migration-safety: versions other open PRs add (local warning)", 
     assert.equal(r.status, 0, `git ${args.join(" ")} failed: ${r.stderr}`);
   }
 
-  // No CI flag, base ref or git plumbing variables from the caller, unless given.
+  // No CI or unattended flag, base ref or git plumbing variables from the caller,
+  // unless given (the factory runs these tests with DRAFTO_UNATTENDED=1).
   function cleanEnv(extra = {}) {
     const env = { ...process.env, ...extra };
-    for (const key of ["CI", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "MIGRATION_BASE_REF"]) {
+    for (const key of [
+      "CI",
+      "DRAFTO_UNATTENDED",
+      "GIT_DIR",
+      "GIT_WORK_TREE",
+      "GIT_INDEX_FILE",
+      "MIGRATION_BASE_REF",
+    ]) {
       if (!(key in extra)) delete env[key];
     }
     return env;
   }
 
-  // gh as this repo would answer it: logged in, this branch is PR #835, and
-  // open PR #829 adds the same version. GH_STUB=nologin / =down change that.
+  // gh as this repo would answer it: logged in, this branch (feature) is PR
+  // #835, and open PR #829 adds the same version. GH_STUB=nologin / =down
+  // change that. Files come as the files API's `<status>\t<path>`.
   function writeGh() {
+    const list = JSON.stringify([
+      { number: 829, headRefName: "other", headRefOid: "1".repeat(40) },
+      { number: 835, headRefName: "feature", headRefOid: "2".repeat(40) },
+    ]);
     writeFileSync(
       join(bin, "gh"),
       `#!/bin/sh
@@ -369,13 +382,12 @@ echo "$*" >>"${ghLog}"
 case "$GH_STUB:$1 $2" in
   nologin:auth\\ status) exit 1 ;;
   *:auth\\ status) exit 0 ;;
-  *:pr\\ view) echo 835 ;;
   down:pr\\ list) echo "HTTP 502" >&2; exit 1 ;;
-  *:pr\\ list) echo '[{"number":829},{"number":835}]' ;;
+  *:pr\\ list) echo '${list}' ;;
   *)
     case "$*" in
-      *pulls/829/files*) echo supabase/migrations/20261113000001_theirs.sql ;;
-      *pulls/835/files*) echo supabase/migrations/${MINE} ;;
+      *pulls/829/files*) printf 'added\\tsupabase/migrations/20261113000001_theirs.sql\\n' ;;
+      *pulls/835/files*) printf 'added\\tsupabase/migrations/${MINE}\\n' ;;
       *) exit 1 ;;
     esac ;;
 esac
@@ -412,6 +424,7 @@ esac
     // Only a drafto checkout asks GitHub. Nothing here fetches it.
     git("remote", "add", "origin", "https://github.com/JakubAnderwald/drafto.git");
     git("update-ref", "refs/remotes/origin/main", "HEAD");
+    git("checkout", "-q", "-b", "feature");
     writeFileSync(join(repo, "supabase", "migrations", MINE), "select 2;\n");
   });
 
@@ -427,9 +440,20 @@ esac
     assert.equal(res.status, 0, res.stdout + res.stderr);
     assert.ok(res.stdout.includes(WARN), res.stdout);
     assert.match(res.stdout, /Results: 0 error\(s\), 1 warning\(s\)/);
-    // This branch's own PR (#835) adds the same file, and isn't a clash.
+    // This branch's own PR (#835) adds the same file, and isn't a clash. The
+    // list says which PR is this branch's: no `gh pr view`.
     assert.ok(!res.gh.some((c) => c.includes("pulls/835/")), res.gh.join("\n"));
+    assert.ok(!res.gh.some((c) => c.startsWith("pr view")), res.gh.join("\n"));
     assert.doesNotMatch(res.stdout, /#835/);
+  });
+
+  // ADR 0079: the factory exports DRAFTO_UNATTENDED, and moves its own PRs'
+  // clashing migrations itself, so the sweep would only repeat that.
+  it("stays out of unattended sessions: no gh call, the same output as CI's", () => {
+    const res = check({ DRAFTO_UNATTENDED: "1" });
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.deepEqual(res.gh, []);
+    assert.equal(res.stdout, check({ CI: "true" }).stdout);
   });
 
   it("stays out of CI: no gh call, and the output is the same but for the warning", () => {

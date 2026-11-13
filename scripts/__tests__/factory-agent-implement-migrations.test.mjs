@@ -59,15 +59,18 @@ function bash(snippet, env = {}) {
 }
 
 describe("build_implement_bundle — migrations (ADR-0079)", () => {
+  const VERSIONS = ["20261113000002", "20261113000003", "20261113000004"];
   const NEXT = {
     mainNewest: "20261112000002",
-    nextVersion: "20261113000002",
+    ownNewest: null,
+    versions: VERSIONS,
     claimed: [{ pr: 829, file: "20261113000001_note_text_chars.sql" }],
-    skipped: [{ pr: 840 }],
+    skipped: [840],
   };
   // The real builder and allocator, the real factory-bundle.mjs; only the
   // next-version helper is stubbed ($NEXT is its stdout, "fail" a failure).
-  function build(schema, next = JSON.stringify(NEXT)) {
+  // FAIL_SECOND_BUILD makes the second factory-bundle.mjs run fail.
+  function build(schema, next = JSON.stringify(NEXT), { priorPr = "null", failSecond = 0 } = {}) {
     const snippet = `
 set -euo pipefail
 CALLS="$DIR/calls"; : >"$CALLS"
@@ -83,32 +86,65 @@ node() {
     printf '%s\\n' "$NEXT"
     return 0
   fi
+  if [[ "$1" == *factory-bundle.mjs ]]; then
+    echo x >>"$DIR/builds"
+    if [[ "$FAIL_SECOND_BUILD" == 1 && $(wc -l <"$DIR/builds") -ge 2 ]]; then
+      cat >/dev/null
+      return 1
+    fi
+  fi
   command node "$@"
 }
 ${extract("build_implement_bundle")}
 ${extract("implement_migration_versions")}
-build_implement_bundle "$ISSUE" null null 0 "[]" "[]" "[]" ""
+build_implement_bundle "$ISSUE" null "$PRIOR_PR" 0 "[]" "[]" "[]" ""
 `;
     const issue = JSON.stringify({ number: 794, title: "t", body: body(schema), labels: [] });
-    const r = bash(snippet, { ISSUE: issue, NEXT: next });
+    const r = bash(snippet, {
+      ISSUE: issue,
+      NEXT: next,
+      PRIOR_PR: priorPr,
+      FAIL_SECOND_BUILD: String(failSecond),
+    });
     assert.equal(r.status, 0, r.stderr);
     return { bundle: JSON.parse(r.stdout), calls: r.calls };
   }
 
-  it("asks the helper for a version when the spec says schema changes", () => {
+  it("asks the helper for versions when the spec says schema changes", () => {
     const { bundle, calls } = build("yes");
     assert.deepEqual(bundle.migrations, {
       mainNewest: "20261112000002",
-      nextVersion: "20261113000002",
+      ownNewest: null,
+      versions: VERSIONS,
       claimed: [{ pr: 829, file: "20261113000001_note_text_chars.sql", version: "20261113000001" }],
     });
-    // This card's own PR isn't excluded: a revision must not reuse its version.
+    // A first implementation has no PR of its own.
     assert.ok(
       calls.some((c) => /^HELPER next-version --root \S+$/.test(c)),
       calls.join("\n"),
     );
     assert.equal(bundle.kind, "factory_implement");
     assert.equal(bundle.issue.number, 794);
+  });
+
+  // A revision: its own PR's migrations raise the floor instead of being claims.
+  it("names the card's own PR on a revision", () => {
+    const priorPr = JSON.stringify({
+      number: 835,
+      url: "u",
+      headRef: "factory/issue-794",
+      state: "OPEN",
+    });
+    const { bundle, calls } = build(
+      "yes",
+      JSON.stringify({ ...NEXT, ownNewest: "20261113000001" }),
+      { priorPr },
+    );
+    assert.ok(
+      calls.some((c) => /^HELPER next-version --root \S+ --own-pr 835$/.test(c)),
+      calls.join("\n"),
+    );
+    assert.equal(bundle.migrations.ownNewest, "20261113000001");
   });
 
   it("never runs the helper for a card without schema changes", () => {
@@ -120,7 +156,12 @@ build_implement_bundle "$ISSUE" null null 0 "[]" "[]" "[]" ""
   });
 
   it("falls back to null with a warning when the helper fails, and still builds", () => {
-    for (const next of ["fail", "not json", '{"nextVersion":null}']) {
+    for (const next of [
+      "fail",
+      "not json",
+      '{"versions":[]}',
+      '{"nextVersion":"20261113000001"}',
+    ]) {
       const { bundle, calls } = build("yes", next);
       assert.equal(bundle.migrations, null, next);
       assert.equal(bundle.kind, "factory_implement");
@@ -134,34 +175,59 @@ build_implement_bundle "$ISSUE" null null 0 "[]" "[]" "[]" ""
       assert.ok(!calls.some((c) => c.startsWith("LOG ")));
     }
   });
+
+  // The versions are a help, not a precondition: a failed rebuild keeps the first bundle.
+  it("keeps the first bundle, with a warning, when the rebuild with versions fails", () => {
+    const { bundle, calls } = build("yes", JSON.stringify(NEXT), { failSecond: 1 });
+    assert.equal(bundle.kind, "factory_implement");
+    assert.equal(bundle.issue.number, 794);
+    assert.equal(bundle.migrations, null);
+    assert.ok(
+      calls.some((c) =>
+        /^LOGERR WARNING: couldn't add the migration versions to the implement bundle/.test(c),
+      ),
+      calls.join("\n"),
+    );
+  });
 });
 
 describe("implement_migration_claim_check (ADR-0079)", () => {
-  function check(result) {
+  const HEAD = "a".repeat(40);
+  function check(result, args = `"${HEAD}" all ""`) {
     const snippet = `
 set -euo pipefail
 CALLS="$DIR/calls"; : >"$CALLS"
 log() { echo "LOG $*" >>"$CALLS"; }
-pr_head_oid() { echo "HEADOID $1" >>"$CALLS"; echo "${"a".repeat(40)}"; }
+pr_head_oid() { echo "HEADOID $1" >>"$CALLS"; echo "${"b".repeat(40)}"; }
 migration_renumber_gate() {
   echo "GATE $(printf '<%s>' "$@")" >>"$CALLS"
   MIGRATION_RENUMBER_RESULT="${result}"
   [[ "${result}" == clean ]]
 }
 ${extract("implement_migration_claim_check")}
-if implement_migration_claim_check 794 835; then echo "RC=0"; else echo "RC=$?"; fi
+if implement_migration_claim_check 794 835 ${args}; then echo "RC=0"; else echo "RC=$?"; fi
 `;
     const r = bash(snippet);
     assert.equal(r.status, 0, r.stderr);
     return { out: r.stdout.trim(), calls: r.calls };
   }
 
-  it("runs the gate in claimed mode on the PR's current head", () => {
-    const { out, calls } = check("renumbered");
+  // The head bash read after the run, and the bundle's claims: no gh pr view, no sweep.
+  it("runs the gate in claimed mode on the head it was given, with the claims and the old head", () => {
+    const claims = '[{"pr":829,"file":"20261113000001_x.sql"}]';
+    const { out, calls } = check("renumbered", `"${HEAD}" "${"c".repeat(40)}" '${claims}'`);
     assert.equal(out, "RC=0");
+    assert.deepEqual(calls.slice(0, 1), [
+      `GATE <794><835><${HEAD}><In Progress><><claimed><${claims}><${"c".repeat(40)}>`,
+    ]);
+    assert.ok(!calls.some((c) => c.startsWith("HEADOID")), "no second read of the head");
+  });
+
+  it("reads the head only when it wasn't given (a fresh PR)", () => {
+    const { calls } = check("clean", `"" all ""`);
     assert.deepEqual(calls.slice(0, 2), [
       "HEADOID 835",
-      `GATE <794><835><${"a".repeat(40)}><In Progress><><claimed>`,
+      `GATE <794><835><${"b".repeat(40)}><In Progress><><claimed><><all>`,
     ]);
   });
 
@@ -189,19 +255,72 @@ if implement_migration_claim_check 794 835; then echo "RC=0"; else echo "RC=$?";
 describe("factory-agent.sh --implement — migration post-check wiring (ADR-0079)", () => {
   const start = script.indexOf("      implemented)");
   const arm = script.slice(start, script.indexOf("      noop)", start));
+  const CALL =
+    'implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM" "$CLAIM_HEAD" "$CLAIM_SINCE" "$CLAIM_JSON"';
 
   it("runs after the parity post-check and before the move to In Review, without blocking", () => {
     const parityAt = arm.indexOf("if ! implement_parity_gate ");
-    const checkAt = arm.indexOf('implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM"\n');
+    const checkAt = arm.indexOf(`${CALL}\n`);
     const moveAt = arm.indexOf('transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review"');
     assert.ok(parityAt !== -1 && checkAt !== -1 && moveAt !== -1);
     assert.ok(parityAt < checkAt, "a parity violation parks the card before any renumber");
     assert.ok(checkAt < moveAt, "the card reaches In Review with the renumbered head");
     // A plain call: nothing in the implement depends on its result.
-    assert.match(arm, /\n {8}implement_migration_claim_check "\$ISSUE_NUM" "\$PR_NUM"\n/);
+    assert.ok(arm.includes(`\n        ${CALL}\n`));
+  });
+
+  // A revision reuses POST_HEAD_OID and names the head before the run; a fresh
+  // PR has neither, so every migration it adds counts as the run's.
+  it("passes the head it read, the head before the run, and the bundle's claims", () => {
+    const block = arm.slice(arm.indexOf('CLAIM_HEAD=""'), arm.indexOf(CALL));
+    assert.match(block, /^CLAIM_HEAD=""\n\s+CLAIM_SINCE="all"\n/);
+    assert.match(
+      block,
+      /if \[\[ -n "\$PRE_HEAD_OID" \]\]; then\n\s+CLAIM_HEAD="\$POST_HEAD_OID"\n\s+CLAIM_SINCE="\$PRE_HEAD_OID"\n\s+fi/,
+    );
+    assert.match(
+      block,
+      /CLAIM_JSON=\$\(jq -c '\.migrations\.claimed \/\/ empty \| map\(\{pr, file\}\)' <<<"\$BUNDLE"/,
+    );
+    // POST_HEAD_OID is read earlier in this arm, only on a revision.
+    assert.ok(arm.indexOf('POST_HEAD_OID=$(pr_head_oid "$PR_NUM")') < arm.indexOf(CALL));
+  });
+
+  it("turns the bundle's claims into --claimed-json, and nothing when the bundle had none", () => {
+    const jq = (bundle) =>
+      spawnSync("jq", ["-c", ".migrations.claimed // empty | map({pr, file})"], {
+        input: JSON.stringify(bundle),
+        encoding: "utf8",
+      }).stdout.trim();
+    assert.equal(
+      jq({
+        migrations: {
+          claimed: [{ pr: 829, file: "20261113000001_x.sql", version: "20261113000001" }],
+        },
+      }),
+      '[{"pr":829,"file":"20261113000001_x.sql"}]',
+    );
+    assert.equal(jq({ migrations: { claimed: [] } }), "[]");
+    assert.equal(jq({ migrations: null }), "");
   });
 
   it("runs only on the implemented arm", () => {
     assert.equal((script.match(/implement_migration_claim_check "\$ISSUE_NUM"/g) || []).length, 1);
+  });
+});
+
+// The open-PR sweep in `pnpm migration:check` is skipped when DRAFTO_UNATTENDED
+// is set; the implementer's and fix loop's claude runs must inherit it.
+describe("factory-agent.sh — DRAFTO_UNATTENDED reaches its claude runs", () => {
+  it("is exported at the top level, before any claude call", () => {
+    const at = script.indexOf("\nexport DRAFTO_UNATTENDED=1\n");
+    assert.ok(at !== -1);
+    assert.ok(at < script.indexOf("run-claude.mjs"));
+  });
+
+  it("isn't stripped on the way: run-with-timeout spawns claude with the inherited env", () => {
+    const runner = readFileSync(resolve(SCRIPTS, "lib", "run-with-timeout.mjs"), "utf8");
+    assert.match(runner, /spawn\(command, args, \{ stdio: "inherit" \}\)/);
+    assert.doesNotMatch(script, /env -i[^\n]*run-claude/);
   });
 });

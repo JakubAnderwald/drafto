@@ -103,17 +103,49 @@ function versionsIn(entries) {
   return out;
 }
 
-// The version a new migration takes (ADR-0079): today's first slot or one past
-// main's newest, whichever is later (suggestVersion), skipping every version in
-// `claimed`, which other open PRs already add. The factory hands it to the
-// implementer, so two cards implemented on the same day don't both pick
-// <today>000001. A further migration takes the versions after it, skipping
-// `claimed` the same way.
-export function nextMigrationVersion({ mainNames = [], claimed = [], today = new Date() } = {}) {
+// The versions a card's new migrations take, in order (ADR-0079). Each is after
+// main's newest, after the newest migration the card's own open PR already adds
+// (`ownNames`, on a revision) and after today's 000000, and none is in
+// `claimed`, which other open PRs already add. They are strictly increasing.
+// The factory hands them to the implementer, so two cards implemented on the
+// same day don't both pick <today>000001, and a revision's new migration sorts
+// after the ones its PR already has.
+export function allocateMigrationVersions({
+  mainNames = [],
+  ownNames = [],
+  claimed = [],
+  today = new Date(),
+  count = 5,
+} = {}) {
   const taken = versionsIn(claimed);
-  let version = suggestVersion(newestVersion(mainNames), today);
-  while (taken.has(version)) version = nextVersion(version);
-  return version;
+  const mainNewest = newestVersion(mainNames);
+  const ownNewest = newestVersion(ownNames);
+  const floor = mainNewest && ownNewest ? later(mainNewest, ownNewest) : (mainNewest ?? ownNewest);
+  const versions = [];
+  let version = suggestVersion(floor, today);
+  while (versions.length < count) {
+    while (taken.has(version)) version = nextVersion(version);
+    versions.push(version);
+    version = nextVersion(version);
+  }
+  return versions;
+}
+
+// version → {prs, files} of the open PRs whose claims (`{pr, file}` entries,
+// versions or file names) name it.
+function claimIndex(claims) {
+  const by = new Map();
+  for (const entry of claims ?? []) {
+    for (const version of versionsIn([entry])) {
+      const at = by.get(version) ?? { prs: [], files: [] };
+      if (Number.isInteger(entry?.pr) && !at.prs.includes(entry.pr)) at.prs.push(entry.pr);
+      if (typeof entry?.file === "string" && !at.files.includes(entry.file)) {
+        at.files.push(entry.file);
+      }
+      by.set(version, at);
+    }
+  }
+  return by;
 }
 
 function byVersionThenName(a, b) {
@@ -129,7 +161,8 @@ function byVersionThenName(a, b) {
 //   duplicate-base error the version is also a base file's that is still present
 //   stale         error  the version is not newer than the base's newest
 //   duplicate     error  the version is also an earlier added file's
-//   claimed       error  the version is one `moveOff` names (only when it's passed)
+//   claimed       error  the version is one `moveOff` names, or `moveNewOff` for a
+//                        file in `newFiles` (only when they're passed)
 //   order         move   a fresh file renumbered to stay after a renamed one
 // Every suggestion is free: it skips the versions of every local and base file and
 // every earlier suggestion, so no `git mv` target collides with an existing file.
@@ -139,13 +172,19 @@ function byVersionThenName(a, b) {
 // `moveOff` ({pr, file} entries, versions or file names) is the factory's
 // implement post-check (ADR-0079): an added file whose version an older open PR
 // already adds moves too, reported as `claimed` with that PR's `prs` and files
-// (`others`). Its versions are skipped like `extraTaken`'s. Nothing else passes it.
+// (`others`). `moveNewOff` is the same for the files in `newFiles` only, the
+// migrations the implement run itself added: they move off any open PR's
+// version, and their finding has `addedInRun: true` unless `moveOff` also names
+// the version. Both lists' versions are skipped like `extraTaken`'s. Nothing
+// else passes them.
 export function checkMigrationOrder({
   localFiles,
   baseFiles,
   today = new Date(),
   extraTaken = [],
   moveOff = [],
+  moveNewOff = [],
+  newFiles = [],
 }) {
   const baseSet = new Set(baseFiles);
   const localSet = new Set(localFiles);
@@ -182,20 +221,20 @@ export function checkMigrationOrder({
   }
   candidates.sort(byVersionThenName);
 
-  // version → {prs, files} of the open PRs that already add it.
-  const claimedBy = new Map();
-  for (const entry of moveOff ?? []) {
-    for (const version of versionsIn([entry])) {
-      const by = claimedBy.get(version) ?? { prs: [], files: [] };
-      if (Number.isInteger(entry?.pr) && !by.prs.includes(entry.pr)) by.prs.push(entry.pr);
-      if (typeof entry?.file === "string" && !by.files.includes(entry.file)) {
-        by.files.push(entry.file);
-      }
-      claimedBy.set(version, by);
-    }
-  }
+  const claimedBy = claimIndex(moveOff);
+  const newClaimedBy = claimIndex(moveNewOff);
+  const newSet = new Set(newFiles ?? []);
+  // The claims an added file moves off, or null: `moveOff`'s for any added
+  // file, and `moveNewOff`'s for a file the implement run added.
+  const claimOf = (c) => {
+    const older = claimedBy.get(c.version);
+    const any = newSet.has(c.file) ? newClaimedBy.get(c.version) : undefined;
+    if (!older && !any) return null;
+    const union = (key) => [...new Set([...(older?.[key] ?? []), ...(any?.[key] ?? [])])];
+    return { prs: union("prs"), files: union("files"), addedInRun: !older };
+  };
   const isStale = (c) => baseMax !== null && c.version <= baseMax;
-  const isClaimed = (c) => claimedBy.has(c.version);
+  const isClaimed = (c) => claimOf(c) !== null;
   const uses = new Map();
   for (const c of candidates) uses.set(c.version, (uses.get(c.version) ?? 0) + 1);
   const needsRenumber = candidates.some(
@@ -209,6 +248,7 @@ export function checkMigrationOrder({
   }
   for (const version of versionsIn(extraTaken)) taken.add(version);
   for (const version of claimedBy.keys()) taken.add(version);
+  for (const version of newClaimedBy.keys()) taken.add(version);
   const floor = suggestVersion(baseMax, today);
   const seen = new Map();
   let prev = baseMax;
@@ -236,8 +276,15 @@ export function checkMigrationOrder({
     } else if (isStale(c)) {
       findings.push({ kind: "error", reason: "stale", ...base });
     } else if (isClaimed(c)) {
-      const by = claimedBy.get(c.version);
-      findings.push({ kind: "error", reason: "claimed", ...base, others: by.files, prs: by.prs });
+      const by = claimOf(c);
+      findings.push({
+        kind: "error",
+        reason: "claimed",
+        ...base,
+        others: by.files,
+        prs: by.prs,
+        ...(by.addedInRun ? { addedInRun: true } : {}),
+      });
     } else if (earlier.length > 0) {
       findings.push({ kind: "error", reason: "duplicate", ...base, others: earlier });
     } else {
@@ -334,7 +381,8 @@ function messageFor(finding, label) {
     case "claimed":
       return (
         `version ${finding.version} is also used by ${openPrs(finding.prs)}` +
-        `${others ? ` (${others})` : ""}; the newer PR moves`
+        `${others ? ` (${others})` : ""}; ` +
+        (finding.addedInRun ? "this run added it, so it moves" : "the newer PR moves")
       );
     case "order":
       return `renumbered to stay after ${finding.after}`;

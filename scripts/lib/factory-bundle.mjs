@@ -86,7 +86,8 @@
 //     "replyDir":      "<factory>/logs/factory/replies/issue-<n>" | null,
 //     "priorPr":       { "number", "url", "headRef", "state" } | null,
 //     "attempts":      <number>,
-//     "migrations"?:   { "mainNewest", "nextVersion", "claimed": [{ "pr", "file" }] }
+//     "migrations"?:   { "mainNewest", "ownNewest", "versions": [...],
+//                        "claimed": [{ "pr", "file" }] }
 //                      (migration-renumber.mjs next-version; only when the spec
 //                      says schema changes, ADR-0079),
 //     "config":        { "phase", ... },
@@ -599,21 +600,40 @@ export function buildFactoryPlanBundle({
 }
 
 // The migration versions the implementer must use (ADR-0079), from
-// `migration-renumber.mjs next-version`. Other open PRs' file names reach the
-// model here, and anyone can open a PR on this public repo, so only names of
-// the strict `<14 digits>_<word chars>.sql` shape get through, and the list is
-// capped. Null unless nextVersion is a 14-digit version.
+// `migration-renumber.mjs next-version`: `versions` in order, one per new
+// migration. Other open PRs' file names reach the model here, and anyone can
+// open a PR on this public repo, so only names of the strict `<14
+// digits>_<word chars>.sql` shape get through. Claims at or below main's
+// newest can't collide with a new version, so they are dropped before the list
+// is capped. Null unless `versions` is a non-empty, strictly increasing list of
+// 14-digit versions.
 const MAX_CLAIMED_MIGRATIONS = 200;
+const MAX_VERSIONS = 20;
 const VERSION_14 = /^\d{14}$/;
 const CLAIMED_FILE = /^(\d{14})_[A-Za-z0-9_.-]{1,120}\.sql$/;
 
+function shapeVersions(versions) {
+  if (!Array.isArray(versions) || versions.length === 0 || versions.length > MAX_VERSIONS) {
+    return null;
+  }
+  for (let i = 0; i < versions.length; i++) {
+    const v = versions[i];
+    if (typeof v !== "string" || !VERSION_14.test(v)) return null;
+    if (i > 0 && v <= versions[i - 1]) return null;
+  }
+  return [...versions];
+}
+
 export function shapeMigrations(m) {
   if (!m || typeof m !== "object") return null;
-  if (typeof m.nextVersion !== "string" || !VERSION_14.test(m.nextVersion)) return null;
+  const versions = shapeVersions(m.versions);
+  if (!versions) return null;
+  const version14 = (v) => (typeof v === "string" && VERSION_14.test(v) ? v : null);
+  const mainNewest = version14(m.mainNewest);
   return {
-    mainNewest:
-      typeof m.mainNewest === "string" && VERSION_14.test(m.mainNewest) ? m.mainNewest : null,
-    nextVersion: m.nextVersion,
+    mainNewest,
+    ownNewest: version14(m.ownNewest),
+    versions,
     claimed: (Array.isArray(m.claimed) ? m.claimed : [])
       .filter(
         (c) =>
@@ -621,7 +641,8 @@ export function shapeMigrations(m) {
           Number.isInteger(c.pr) &&
           c.pr > 0 &&
           typeof c.file === "string" &&
-          CLAIMED_FILE.test(c.file),
+          CLAIMED_FILE.test(c.file) &&
+          (mainNewest === null || CLAIMED_FILE.exec(c.file)[1] > mainNewest),
       )
       .slice(0, MAX_CLAIMED_MIGRATIONS)
       .map((c) => ({ pr: c.pr, file: c.file, version: CLAIMED_FILE.exec(c.file)[1] })),
@@ -697,9 +718,10 @@ export function buildFactoryImplementBundle({
         }
       : null,
     attempts: Number.isInteger(attempts) ? attempts : 0,
-    // The version for a new migration, clear of main and of every open PR's
-    // (ADR-0079). Only for a spec that says schema changes; null otherwise, or
-    // when bash couldn't work it out, and the prompt's date rule applies.
+    // The versions for new migrations, clear of main and of every other open
+    // PR's (ADR-0079). Only for a spec that says schema changes; null
+    // otherwise, or when bash couldn't work them out, and the prompt's date
+    // rule applies.
     migrations: spec.schemaChanges === true ? shapeMigrations(migrations) : null,
     config: shapeConfig(config),
     repo: shapeRepo(repo),

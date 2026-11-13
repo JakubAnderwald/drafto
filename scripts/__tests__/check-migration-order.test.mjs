@@ -15,13 +15,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  allocateMigrationVersions,
   checkMigrationOrder,
   directMigrationNames,
   formatFinding,
   isValidMigrationName,
   migrationNamesAt,
   newestVersion,
-  nextMigrationVersion,
   openPrs,
   suggestVersion,
   versionOf,
@@ -87,42 +87,76 @@ describe("check-migration-order: suggestVersion", () => {
 
 // ADR-0079. The implement prompt named every migration <today>000001, so two
 // cards implemented the same day took the same version (#802 and #829 both
-// used 20261111000001). The factory now hands the implementer a version clear
-// of main and of every open PR's.
-describe("check-migration-order: nextMigrationVersion", () => {
-  const next = (o) => nextMigrationVersion({ today: TODAY, ...o });
+// used 20261111000001). The factory now hands the implementer the versions to
+// use, clear of main and of every other open PR's.
+describe("check-migration-order: allocateMigrationVersions", () => {
+  const alloc = (o) => allocateMigrationVersions({ today: TODAY, count: 3, ...o });
 
-  it("is today's first slot when main's newest is older", () => {
-    assert.equal(next({ mainNames: [A, B] }), "20261025000001");
-    assert.equal(next({}), "20261025000001", "an empty main too");
+  it("starts at today's first slot when main's newest is older", () => {
+    assert.deepEqual(alloc({ mainNames: [A, B] }), [
+      "20261025000001",
+      "20261025000002",
+      "20261025000003",
+    ]);
+    assert.deepEqual(alloc({}), ["20261025000001", "20261025000002", "20261025000003"]);
   });
 
-  it("is one past main's newest when that is today or later", () => {
-    assert.equal(next({ mainNames: [A, "20261025000003_x.sql"] }), "20261025000004");
-    assert.equal(next({ mainNames: ["20261101000001_future.sql"] }), "20261101000002");
+  it("starts one past main's newest when that is today or later", () => {
+    assert.deepEqual(alloc({ mainNames: [A, "20261025000003_x.sql"] }), [
+      "20261025000004",
+      "20261025000005",
+      "20261025000006",
+    ]);
+    assert.equal(alloc({ mainNames: ["20261101000001_future.sql"] })[0], "20261101000002");
   });
 
-  it("skips a version another open PR already adds (#802/#829)", () => {
-    const claimed = [{ pr: 829, file: "20261025000001_note_text_chars.sql" }];
-    assert.equal(next({ mainNames: [A, B], claimed }), "20261025000002");
+  // A revision: its new migration must sort after the ones its PR already adds.
+  it("starts after the newest migration the card's own PR adds", () => {
+    const ownNames = ["20261025000002_mine.sql", "20261025000004_mine_too.sql"];
+    assert.deepEqual(alloc({ mainNames: [A, B], ownNames }), [
+      "20261025000005",
+      "20261025000006",
+      "20261025000007",
+    ]);
+    // Main's newest still wins when it is later.
+    const later = alloc({ mainNames: ["20261026000001_m.sql"], ownNames });
+    assert.equal(later[0], "20261026000002");
+    // An own file older than today doesn't pull the floor below today's slot.
+    assert.equal(alloc({ ownNames: ["20261001000001_old.sql"] })[0], "20261025000001");
   });
 
-  it("skips a chain of claimed versions, in any form, and ignores junk", () => {
+  it("skips every version another open PR adds (#802/#829), in any form, ignoring junk", () => {
     const claimed = [
       { pr: 829, file: "20261025000002_b.sql" },
       "20261025000001_a.sql",
-      "20261025000003",
+      "20261025000004",
       { pr: 830, file: "README.md" },
       "junk",
       null,
     ];
-    assert.equal(next({ mainNames: [A, B], claimed }), "20261025000004");
+    assert.deepEqual(alloc({ mainNames: [A, B], claimed }), [
+      "20261025000003",
+      "20261025000005",
+      "20261025000006",
+    ]);
+  });
+
+  it("is strictly increasing, and as long as asked", () => {
+    const claimed = ["20261025000002", "20261025000003", "20261025000006"];
+    for (const count of [1, 5, 12]) {
+      const versions = allocateMigrationVersions({ today: TODAY, claimed, count });
+      assert.equal(versions.length, count);
+      for (let i = 1; i < versions.length; i++) assert.ok(versions[i] > versions[i - 1]);
+      for (const v of versions) assert.ok(!claimed.includes(v), v);
+      assert.ok(versions.every((v) => /^\d{14}$/.test(v)));
+    }
+    assert.equal(allocateMigrationVersions({ today: TODAY }).length, 5, "five by default");
   });
 
   it("ignores claimed versions it would never pick anyway", () => {
     // A stale claim below main's newest, and one far in the future.
     const claimed = ["20260101000001", "20261201000001"];
-    assert.equal(next({ mainNames: [A, B], claimed }), "20261025000001");
+    assert.equal(alloc({ mainNames: [A, B], claimed })[0], "20261025000001");
   });
 
   it("reads main's newest from valid names only", () => {
@@ -172,6 +206,62 @@ describe("check-migration-order: moveOff (claimed)", () => {
         ["claimed", C, "20261025000004"],
         ["order", D, "20261025000005"],
       ],
+    );
+  });
+
+  // A migration the implement run added moves off ANY open PR's version; one
+  // the PR already had moves only off an older PR's (moveOff).
+  it("moves a file the run added off any open PR's version, and only that file", () => {
+    const newer = [
+      { pr: 990, file: "20261025000001_newer.sql" },
+      { pr: 991, file: "20261025000002_newest.sql" },
+    ];
+    const run = (newFiles) =>
+      checkMigrationOrder({
+        localFiles: [A, B, C, D],
+        baseFiles: [A, B],
+        today: TODAY,
+        moveNewOff: newer,
+        newFiles,
+      });
+    // D was added in this run, C was already on the PR.
+    assert.deepEqual(
+      run([D]).map((f) => [f.reason, f.file, f.suggested, f.prs, f.addedInRun]),
+      [["claimed", D, "20261025000003", [991], true]],
+    );
+    // Neither added in this run: nothing moves (no moveOff for newer PRs).
+    assert.deepEqual(run([]), []);
+    // A brand-new PR: both are the run's.
+    assert.deepEqual(
+      run([C, D]).map((f) => [f.file, f.suggested]),
+      [
+        [C, "20261025000003"],
+        [D, "20261025000004"],
+      ],
+    );
+  });
+
+  it("marks a claim an older PR also has as the older PR's, not the run's", () => {
+    const [finding] = checkMigrationOrder({
+      localFiles: [A, B, C],
+      baseFiles: [A, B],
+      today: TODAY,
+      moveOff: [{ pr: 801, file: "20261025000001_older.sql" }],
+      moveNewOff: [
+        { pr: 801, file: "20261025000001_older.sql" },
+        { pr: 990, file: "20261025000001_newer.sql" },
+      ],
+      newFiles: [C],
+    });
+    assert.equal(finding.reason, "claimed");
+    assert.deepEqual(finding.prs, [801, 990]);
+    assert.equal(finding.addedInRun, undefined);
+    assert.match(
+      formatFinding(
+        { ...finding, addedInRun: true },
+        { dir: "supabase/migrations", ref: "origin/main" },
+      ),
+      /; this run added it, so it moves\t/,
     );
   });
 
@@ -414,17 +504,25 @@ describe("factory implement prompt — migration versions", () => {
   });
 
   // ADR-0079: two cards implemented the same day both took <today>000001.
-  it("names the first new migration with bundle.migrations.nextVersion, skipping claimed", () => {
+  it("names new migrations with bundle.migrations.versions in order, never its own", () => {
     assert.match(
       prompt,
-      /When `bundle\.migrations` is set, the factory has picked the version: name your first new migration `<bundle\.migrations\.nextVersion>_<name>\.sql` and any further ones with the versions after it, in order, skipping every version in `bundle\.migrations\.claimed`/,
+      /When `bundle\.migrations` is set, the factory has picked the versions: name your new migrations with `bundle\.migrations\.versions` in order, the first new migration `<versions\[0\]>_<name>\.sql`, the second `<versions\[1\]>_<name>\.sql`, and so on\. Never work a version out yourself/,
     );
-    // The bundle shape documents the field the rule names.
-    assert.match(prompt, /"migrations": \{ "mainNewest": .*"nextVersion": .*"claimed": \[/);
-    // The local warning isn't a failure the implementer must chase.
     assert.match(
       prompt,
-      /`WARN` that another open PR adds the same version is not a failure: after you open the PR, the factory moves your migrations off any version an older open PR also adds \(ADR-0079\)/,
+      /If you need more migrations than the list has, continue from its last version \+ 1 and leave any clash to the factory's post-check/,
+    );
+    // The bundle shape documents the fields the rule names.
+    assert.match(
+      prompt,
+      /"migrations": \{ "mainNewest": .*"ownNewest": .*"versions": \[ .*"claimed": \[/,
+    );
+    assert.doesNotMatch(prompt, /nextVersion/);
+    // The local warning doesn't run in a factory session; the factory checks.
+    assert.match(
+      prompt,
+      /In a factory session \(`DRAFTO_UNATTENDED` is set\) `pnpm migration:check` skips its open-PR version warning: after you push, the factory itself moves a migration this run added off any version another open PR adds \(ADR-0079\)/,
     );
   });
 });
