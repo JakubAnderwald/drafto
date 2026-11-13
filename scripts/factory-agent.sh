@@ -1683,7 +1683,7 @@ implement_migration_versions() {
   if out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" next-version --root "$REPO_ROOT" \
       ${own_args[@]+"${own_args[@]}"} 2>>"$LOG_FILE") \
       && jq -e '(.versions | type) == "array" and (.versions | length) > 0' <<<"$out" >/dev/null 2>&1; then
-    jq -c '{mainNewest, ownNewest, versions, claimed}' <<<"$out"
+    jq -c '{mainNewest, ownNewest, versions, claimed, skipped}' <<<"$out"
     return 0
   fi
   logerr "WARNING: couldn't pick a migration version for the implement bundle (see the log); the implementer falls back to the date rule"
@@ -8082,6 +8082,10 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
             continue
           fi
           PR_URL=$(echo "$PR_OBJ" | jq -r '.url')
+          # An earlier attempt opened this PR and stopped (a timeout) before
+          # its migration post-check (ADR-0079). The PR is this card's first,
+          # so every migration it adds counts as this card's run's ("all").
+          implement_migration_claim_check "$ISSUE_NUM" "$(echo "$PR_OBJ" | jq -r '.number')" "" "all" ""
           transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true

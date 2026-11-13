@@ -1289,7 +1289,7 @@ function summarize(r) {
 }
 
 // precheck and the first half of apply.
-function plan(flags, { gh } = {}) {
+function plan(flags, { gh, now = Date.now } = {}) {
   const cwd = flags.root ?? DEFAULT_ROOT;
   const pr = requireFlag(flags, "pr", /^\d+$/);
   const head = requireFlag(flags, "head", /^[0-9a-f]{7,40}$/);
@@ -1316,9 +1316,18 @@ function plan(flags, { gh } = {}) {
   if (!headSha) return { status: "unreachable", head, reason: `${head} isn't in the fetched PR` };
   // Moving off other PRs' versions needs their claims before the first plan:
   // without them the plan is clean.
+  // Its sweeps run under the factory's budget; giving up is `unreachable`,
+  // which the gate treats as an error (bounded in --release, a fall-through in
+  // --watch, a log line at implement time).
+  const sweep = () => {
+    const res = sweepClaims({ excludePr: pr, gh, now, cwd });
+    return res.gaveUp ? { gaveUp: gaveUpReason(res) } : { claimed: res.claimed };
+  };
   let swept = given;
   if (moveOff && !swept) {
-    ({ claimed } = claimedVersions({ excludePr: pr, gh }));
+    const res = sweep();
+    if (res.gaveUp) return { status: "unreachable", head, reason: res.gaveUp };
+    ({ claimed } = res);
     swept = true;
   }
   const run = () =>
@@ -1334,7 +1343,9 @@ function plan(flags, { gh } = {}) {
     });
   let r = run();
   if (r.status === "fixable" && !swept) {
-    ({ claimed } = claimedVersions({ excludePr: pr, gh }));
+    const res = sweep();
+    if (res.gaveUp) return { status: "unreachable", head, reason: res.gaveUp };
+    ({ claimed } = res);
     r = run();
   }
   return { ...r, cwd, claimed };
@@ -1344,17 +1355,40 @@ function plan(flags, { gh } = {}) {
 // The prompt says what to do past them.
 const VERSIONS_PER_CARD = 5;
 
-// next-version's gh budget. It runs in the implement path, inside the
-// factory's loop lock, so a slow GitHub must cost about a minute in all, not
-// every open PR times the per-call cap. Past it, next-version gives up and the
-// bundle's field is left null (the implementer falls back to the date rule).
-const NEXT_VERSION_GH_TIMEOUT_MS = 20_000;
-const NEXT_VERSION_GH_BUDGET_MS = 60_000;
+// The gh budget of a factory-side open-PR sweep (next-version, and the
+// planner when it isn't handed the claims). Both run inside the factory's loop
+// lock, so a slow GitHub must cost about a minute in all, not every open PR
+// times the per-call cap.
+const SWEEP_GH_TIMEOUT_MS = 20_000;
+const SWEEP_GH_BUDGET_MS = 60_000;
+
+// claimedVersions() under SWEEP_GH_BUDGET_MS: each call gets at most
+// SWEEP_GH_TIMEOUT_MS and what's left of the budget; past it no more PRs are
+// read and the result has gaveUp. An injected `gh` (tests) skips the per-call
+// cap but not the deadline.
+export function sweepClaims({ excludePr, gh, now = Date.now, cwd } = {}) {
+  const deadline = now() + SWEEP_GH_BUDGET_MS;
+  const call =
+    gh ??
+    ((args) => {
+      const left = deadline - now();
+      if (left <= 0) throw new Error("gh ran out of time");
+      return runGh(args, { timeoutMs: Math.min(SWEEP_GH_TIMEOUT_MS, left), cwd });
+    });
+  return claimedVersions({ excludePr, gh: call, deadline, now });
+}
+
+function gaveUpReason({ checked, total }) {
+  return (
+    `gave up listing the open PRs' files after ${SWEEP_GH_BUDGET_MS / 1000}s ` +
+    `(checked ${checked} of ${total})`
+  );
+}
 
 // next-version (ADR-0079): the versions a card's new migrations take, for the
 // implement bundle. Throws when main can't be fetched, the open PRs can't be
 // listed, --own-pr's files can't be (its newest is part of the floor), or the
-// sweep doesn't finish within NEXT_VERSION_GH_BUDGET_MS; the bash side then
+// sweep doesn't finish within SWEEP_GH_BUDGET_MS; the bash side then
 // leaves the bundle's field null.
 function nextVersionCommand(flags, { gh, now = Date.now } = {}) {
   const cwd = flags.root ?? DEFAULT_ROOT;
@@ -1366,21 +1400,9 @@ function nextVersionCommand(flags, { gh, now = Date.now } = {}) {
     throw new Error(`couldn't fetch main: ${fetched.detail ?? "no origin/main"}`);
   }
   const mainNames = namesAt(cwd, fetched.main);
-  const deadline = now() + NEXT_VERSION_GH_BUDGET_MS;
-  const call =
-    gh ??
-    ((args) => {
-      const left = deadline - now();
-      if (left <= 0) throw new Error("gh ran out of time");
-      return runGh(args, { timeoutMs: Math.min(NEXT_VERSION_GH_TIMEOUT_MS, left), cwd });
-    });
-  const { claimed, skipped, checked, total, gaveUp } = claimedVersions({ gh: call, deadline, now });
-  if (gaveUp) {
-    throw new Error(
-      `gave up listing the open PRs' files after ${NEXT_VERSION_GH_BUDGET_MS / 1000}s ` +
-        `(checked ${checked} of ${total})`,
-    );
-  }
+  const sweep = sweepClaims({ gh, now, cwd });
+  if (sweep.gaveUp) throw new Error(gaveUpReason(sweep));
+  const { claimed, skipped } = sweep;
   if (ownPr !== null && skipped.includes(ownPr)) {
     throw new Error(`couldn't list PR #${ownPr}'s files, so its newest migration is unknown`);
   }
@@ -1522,7 +1544,7 @@ export function main(argv, { gh, now } = {}) {
   const where = flags.where ?? "its column";
   switch (sub) {
     case "precheck": {
-      const r = plan(flags, { gh });
+      const r = plan(flags, { gh, now });
       const out = summarize(r);
       if (r.status === "manual")
         out.comment = manualComment({ pr: flags.pr, reason: r.reason, where });
@@ -1532,7 +1554,7 @@ export function main(argv, { gh, now } = {}) {
       const issue = requireFlag(flags, "issue", /^\d+$/);
       const branch = `factory/issue-${issue}`;
       if (!FACTORY_BRANCH_RE.test(branch)) throw new Error(`refusing branch ${branch}`);
-      const r = plan(flags, { gh });
+      const r = plan(flags, { gh, now });
       const out = { ...summarize(r), from: r.head ?? flags.head };
       if (r.status === "manual") {
         out.comment = manualComment({ pr: flags.pr, reason: r.reason, where });

@@ -652,9 +652,11 @@ export function shapeMigrations(m) {
     // For bash, not the implementer: whether `claimed` holds every live claim
     // bash sent. The shaping above is for the model; the implement post-check
     // reuses `claimed` only when nothing was dropped (an odd name, a version
-    // that isn't 14 digits, the cap) and sweeps the open PRs itself otherwise.
+    // that isn't 14 digits, the cap) and the sweep read every open PR (no
+    // `skipped`), and sweeps the open PRs itself otherwise.
     claimedComplete:
       Array.isArray(m.claimed) &&
+      !(Array.isArray(m.skipped) && m.skipped.length > 0) &&
       shaped.length === all.length &&
       live.length <= MAX_CLAIMED_MIGRATIONS,
   };

@@ -954,6 +954,44 @@ describe("migration-renumber end to end (#802/#829)", () => {
     assert.equal(gitIn(origin, ["rev-parse", "refs/heads/factory/issue-900"]), moved);
   });
 
+  // The planner sweeps the open PRs when it isn't handed their claims, inside
+  // the factory's loop lock: past the budget it stops and reports unreachable,
+  // which the gate treats as an error, instead of reading every PR.
+  it("reports unreachable when the planner's open-PR sweep runs out of time", () => {
+    const head = openPr(990, 991, {
+      "supabase/migrations/20261113000001_budget.sql": "select 1;\n",
+    });
+    let clock = 0;
+    const reads = [];
+    const gh = (args) => {
+      if (args[0] === "pr" && args[1] === "list") {
+        return JSON.stringify([1, 2, 3, 4].map((number) => ({ number })));
+      }
+      reads.push(args[2]);
+      clock += 25_000;
+      return "";
+    };
+    const { out } = renumberMain(
+      [
+        "precheck",
+        "--root",
+        factory,
+        "--pr",
+        "991",
+        "--head",
+        head,
+        "--today",
+        "2026-11-13",
+        "--move-off-claimed",
+        "1",
+      ],
+      { gh, now: () => clock },
+    );
+    assert.equal(out.status, "unreachable", JSON.stringify(out));
+    assert.match(out.reason, /gave up listing the open PRs' files after 60s \(checked 3 of 4\)/);
+    assert.equal(reads.length, 3);
+  });
+
   it("holds a bare version the merge base already mentions", () => {
     // The merge base's tree names 20261111000001 (main's docs), so a bare
     // 20261111000001 the PR adds could mean that one: a person decides.

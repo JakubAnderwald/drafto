@@ -117,7 +117,8 @@ build_implement_bundle "$ISSUE" null "$PRIOR_PR" 0 "[]" "[]" "[]" ""
       ownNewest: null,
       versions: VERSIONS,
       claimed: [{ pr: 829, file: "20261113000001_note_text_chars.sql", version: "20261113000001" }],
-      claimedComplete: true,
+      // The sweep couldn't read #840, so the post-check sweeps for itself.
+      claimedComplete: false,
     });
     // A first implementation has no PR of its own.
     assert.ok(
@@ -310,8 +311,33 @@ describe("factory-agent.sh --implement — migration post-check wiring (ADR-0079
     assert.equal(jq({ migrations: null }), "");
   });
 
-  it("runs only on the implemented arm", () => {
-    assert.equal((script.match(/implement_migration_claim_check "\$ISSUE_NUM"/g) || []).length, 1);
+  // Two places open-or-update a PR on the way to In Review: the implemented
+  // arm, and a fresh run's idempotent noop (an earlier attempt opened the PR
+  // and timed out before its post-check). Both run the post-check.
+  it("runs on the implemented arm and on a fresh run's idempotent noop", () => {
+    assert.equal((script.match(/implement_migration_claim_check "\$ISSUE_NUM"/g) || []).length, 2);
+    const start = script.indexOf(
+      "# Fresh idempotency hit: a PR already exists from a prior attempt.",
+    );
+    assert.ok(start !== -1);
+    const branch = script.slice(start, script.indexOf("      blocked)", start));
+    const check = branch.indexOf(
+      `implement_migration_claim_check "$ISSUE_NUM" "$(echo "$PR_OBJ" | jq -r '.number')" "" "all" ""`,
+    );
+    assert.ok(
+      check !== -1,
+      "the noop branch runs the post-check with every migration as the run's",
+    );
+    assert.ok(check < branch.indexOf('transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review"'));
+  });
+
+  // A PR the bundle sweep couldn't read leaves its claims incomplete; bash
+  // keeps `skipped` so the bundle can say so.
+  it("keeps the sweep's skipped PRs in the bundle input", () => {
+    assert.match(
+      script,
+      /jq -c '\{mainNewest, ownNewest, versions, claimed, skipped\}' <<<"\$out"/,
+    );
   });
 });
 

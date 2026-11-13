@@ -887,6 +887,15 @@ describe("buildFactoryImplementBundle", () => {
       // The cap cut live claims, so the post-check must sweep for itself.
       assert.equal(capped.claimedComplete, false);
       assert.equal(m.claimedComplete, true);
+      // So does a sweep that couldn't read some open PR.
+      assert.equal(
+        build(SCHEMA_BODY, { ...migrations, skipped: [830] }).migrations.claimedComplete,
+        false,
+      );
+      assert.equal(
+        build(SCHEMA_BODY, { ...migrations, skipped: [] }).migrations.claimedComplete,
+        true,
+      );
     });
   });
 });
