@@ -437,7 +437,7 @@ node() {
 }
 gh() { echo "GH $2" >>"$CALLS"; [[ ${gh} -eq 0 ]] || return 1; echo '${commit}'; }`;
     return run(
-      ["carry_across_branch_update"],
+      ["carry_across_branch_update", "is_update_branch_merge"],
       `if carry_across_branch_update 794 "${head}"; then echo CARRIED; else echo REVIEW; fi`,
       stubs,
     );
@@ -480,6 +480,88 @@ gh() { echo "GH $2" >>"$CALLS"; [[ ${gh} -eq 0 ]] || return 1; echo '${commit}';
     }
   });
 
+  // ADR-0077: a migration renumber keeps the review too. R renames the PR's
+  // migrations on the reviewed head; GitHub then merges main onto R.
+  describe("across a migration renumber", () => {
+    const R = "d".repeat(40);
+    const M = "e".repeat(40);
+    const MAP = '{"20261111000001_q.sql":"20261113000001_q.sql"}';
+    function renumbered({
+      review = OLD,
+      cr = OLD,
+      head = M,
+      parents = `${R} ${MAIN}`,
+      committer = "web-flow",
+      subject = "Merge branch 'main' into factory/issue-794",
+      verify = 0,
+      rTo = R,
+    }) {
+      const state = JSON.stringify({
+        lastReviewSha: review,
+        crCoverageSha: cr,
+        renumberFrom: OLD,
+        renumberTo: rTo,
+        renumberMap: MAP,
+      }).replaceAll("'", "'\\''");
+      const commit = JSON.stringify({ parents, committer, subject }).replaceAll("'", "'\\''");
+      const stubs = `
+node() {
+  case "$2" in
+    factory:get-issue) echo '${state}' ;;
+    factory:set-issue-field) echo "SET $4 $5" >>"$CALLS" ;;
+    verify) echo "VERIFY $*" >>"$CALLS"; return ${verify} ;;
+  esac
+}
+gh() { echo "GH $2" >>"$CALLS"; echo '${commit}'; }`;
+      return run(
+        ["carry_across_branch_update", "is_update_branch_merge"],
+        `if carry_across_branch_update 794 "${head}"; then echo CARRIED; else echo REVIEW; fi`,
+        stubs,
+      );
+    }
+
+    it("carries the review onto GitHub's merge of main onto R, once verify passes", () => {
+      const r = renumbered({});
+      assert.equal(r.out, "CARRIED");
+      assert.match(
+        r.calls[1],
+        new RegExp(
+          `^VERIFY /factory/scripts/lib/migration-renumber\\.mjs verify --root \\S+/repo --issue 794 --from ${OLD} --to ${R} --map \\{`,
+        ),
+      );
+      assert.deepEqual(r.calls.toSpliced(1, 1), [
+        `GH repos/JakubAnderwald/drafto/commits/${M}`,
+        `SET lastReviewSha ${M}`,
+        `SET crCoverageSha ${M}`,
+        `LOG Issue #794: ${M.slice(0, 12)} only merges main into the migration renumber of the reviewed ${OLD.slice(0, 12)}; carried its code review and CodeRabbit coverage over`,
+      ]);
+    });
+
+    it("carries it onto R itself, and from R onto a later merge", () => {
+      const own = renumbered({ head: R });
+      assert.equal(own.out, "CARRIED");
+      assert.ok(!own.calls.some((c) => c.startsWith("GH ")), "R is known; no lookup");
+      assert.ok(own.calls.includes(`SET lastReviewSha ${R}`));
+      const later = renumbered({ review: R, cr: R });
+      assert.equal(later.out, "CARRIED");
+      assert.ok(later.calls.includes(`SET crCoverageSha ${M}`));
+    });
+
+    it("reviews again when verify fails, or the head is anything else", () => {
+      for (const [why, opts] of [
+        ["verify refuses R", { verify: 1 }],
+        ["a merge onto something else", { parents: `${MAIN} ${R}` }],
+        ["a merge the factory made locally", { committer: "JakubAnderwald" }],
+        ["a renumbered commit that was never reviewed", { review: MAIN }],
+        ["no renumber recorded", { rTo: "" }],
+      ]) {
+        const r = renumbered(opts);
+        assert.equal(r.out, "REVIEW", why);
+        assert.ok(!r.calls.some((c) => c.startsWith("SET")), why);
+      }
+    });
+  });
+
   it("runs before the code review reads lastReviewSha, outside dry runs", () => {
     const carryIdx = watchBlock.indexOf('carry_across_branch_update "$ISSUE_NUM" "$HEAD_SHA"');
     const readIdx = watchBlock.indexOf("LAST_REVIEW_SHA=$(node");
@@ -501,8 +583,14 @@ describe("--watch: a behind PR is updated before In Test (ADR-0070)", () => {
     within = 0,
     readFails = 0,
     writeFails = 0,
+    renumber = "clean",
   }) {
     const stubs = `
+migration_renumber_gate() {
+  echo "RENUMBER $*" >>"$CALLS"
+  MIGRATION_RENUMBER_RESULT="${renumber}"
+  [[ "${renumber}" == clean ]]
+}
 node() {
   case "$2" in
     factory:get-issue) [[ ${readFails} -eq 0 ]] || return 1; echo '{"branchUpdates":"${updates}"}' ;;
@@ -520,6 +608,7 @@ gh() {
     const body = `
 DRY_RUN=${dry}
 ISSUE_NUM=794; PR_NUM=802; HEAD_SHA=abc123
+INTEST_DIFF_FILES="supabase/migrations/20261111000001_storage_quota.sql"
 for _once in 1; do
 ${gateBlock}
   echo PROMOTE
@@ -536,6 +625,7 @@ done`;
     const r = gate({ behind: "3" });
     assert.equal(r.out, "");
     assert.deepEqual(r.calls, [
+      "RENUMBER 794 802 abc123 In Review supabase/migrations/20261111000001_storage_quota.sql",
       "SET 794 branchUpdates 1",
       "GH update-branch api --method PUT repos/JakubAnderwald/drafto/pulls/802/update-branch -f expected_head_sha=abc123",
       "SET 794 branchUpdatedFrom abc123",
@@ -591,8 +681,38 @@ done`;
     const r = gate({ behind: "4", dry: 1 });
     assert.equal(r.out, "");
     assert.deepEqual(r.calls, [
+      "RENUMBER 794 802 abc123 In Review supabase/migrations/20261111000001_storage_quota.sql",
       "LOG DRY-RUN: PR #802 is 4 commit(s) behind main; would update the branch before In Test",
     ]);
+  });
+
+  // ADR-0077: main may have moved past a migration the PR adds. The renumber
+  // gate runs first and, when it renames them, updates the branch itself.
+  it("renumbers the PR's migrations instead of a plain update, spending no branch update", () => {
+    const r = gate({ behind: "2", renumber: "renumbered" });
+    assert.equal(r.out, "");
+    assert.deepEqual(r.calls, [
+      "RENUMBER 794 802 abc123 In Review supabase/migrations/20261111000001_storage_quota.sql",
+    ]);
+  });
+
+  // Holding here would park the card in In Review for good. The plain update
+  // goes ahead instead, and the red CI it brings takes the fix loop's
+  // "Migration order" recipe, the fallback for what the gate can't rename.
+  it("goes on with the plain update when the renumber needs a person, is capped or errors", () => {
+    for (const renumber of ["manual", "capped", "error"]) {
+      const r = gate({ behind: "2", renumber });
+      assert.equal(r.out, "", renumber);
+      assert.ok(
+        r.calls.some((c) => c.startsWith("GH update-branch")),
+        `${renumber}: update-branch`,
+      );
+      assert.ok(r.calls.includes("SET 794 branchUpdates 1"), `${renumber}: budget`);
+    }
+  });
+
+  it("doesn't call the renumber gate when the branch is up to date", () => {
+    assert.ok(!gate({ behind: "0" }).calls.some((c) => c.startsWith("RENUMBER")));
   });
 
   it("is the last check before either promotion, after every wait a card can park in", () => {

@@ -52,12 +52,17 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   "reviewThreads": [ { "id", "path", "line", "isOutdated",
                        "comments": [ { "user": {"login"}, "body": "<review-comment>...</review-comment>" } ] } ],
   // null except on a conflict pass. Bash has already merged origin/main (at
-  // mainSha) into the branch: conflictedFiles are the files it stopped on, and
+  // mainSha) into the branch: conflictedFiles are the files it stopped on,
   // adrCollisions the ADR numbers now carried by two files (nextFreeAdr is the
-  // first unused one). See "Conflict pass".
+  // first unused one), and migrationErrors the migrations in the merge that
+  // don't sort after main's: `reason` is the order check's (stale,
+  // duplicate-base, duplicate, renamed-base, shape), `suggested` the free
+  // version it would give, when it has one. See "Conflict pass".
   "mergeConflict": { "mainSha", "conflictedFiles": ["..."],
                      "adrCollisions": [ { "number": "0059", "files": ["0059-a.md", "0059-b.md"] } ],
-                     "nextFreeAdr": "0061" } | null,
+                     "nextFreeAdr": "0061",
+                     "migrationErrors": [ { "reason": "duplicate-base", "file": "20261111000001_x.sql",
+                                            "version": "20261111000001", "suggested": "20261113000001" } ] } | null,
   "attempts": 0,
   "config": { "phase": "B", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },
@@ -169,7 +174,10 @@ Bash has fetched `origin/main` and run `git merge origin/main` in your worktree.
 Either the merge stopped on the files in `mergeConflict.conflictedFiles` (they
 hold conflict markers, and `git status` lists them as unmerged), or git merged
 everything itself and committed, but two ADRs now share a number
-(`mergeConflict.adrCollisions`). This pass resolves the merge **only**:
+(`mergeConflict.adrCollisions`), or a migration this PR adds no longer sorts
+after main's (`mergeConflict.migrationErrors`: bash renumbers those itself when
+it can, so you get one only when it couldn't). This pass resolves the merge
+**only**:
 `ciSummaryEnveloped`, `unresolvedComments` and `reviewThreads` are empty on
 purpose, because CI hasn't run on the merged head yet and the merge commit
 carries nothing but the merge. A later pass handles them. Skip the decision

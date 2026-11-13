@@ -40,7 +40,7 @@ export const DRAFTO_CLIENT_TAGS = [
   "web-mcp",
 ] as const;
 export type DraftoClientTag = (typeof DRAFTO_CLIENT_TAGS)[number];
-// Activity days (ADR 0077): how many UTC days a device keeps queued while it
+// Activity days (ADR 0078): how many UTC days a device keeps queued while it
 // can't reach the server (the newest are kept), and how many record_activity
 // accepts per call. The server also ignores days more than 30 days back.
 export const ACTIVITY_QUEUE_MAX_DAYS = 30;

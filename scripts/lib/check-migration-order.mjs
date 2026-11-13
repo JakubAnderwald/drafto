@@ -95,7 +95,15 @@ function byVersionThenName(a, b) {
 //   order         move   a fresh file renumbered to stay after a renamed one
 // Every suggestion is free: it skips the versions of every local and base file and
 // every earlier suggestion, so no `git mv` target collides with an existing file.
-export function checkMigrationOrder({ localFiles, baseFiles, today = new Date() }) {
+// `extraTaken` (versions or file names) only makes suggestions skip more versions:
+// the factory passes the ones other open PRs use (ADR-0077). It never changes what
+// is reported, so CI and the CLI, which don't pass it, behave as before.
+export function checkMigrationOrder({
+  localFiles,
+  baseFiles,
+  today = new Date(),
+  extraTaken = [],
+}) {
   const baseSet = new Set(baseFiles);
   const localSet = new Set(localFiles);
   const baseByVersion = new Map();
@@ -143,6 +151,10 @@ export function checkMigrationOrder({ localFiles, baseFiles, today = new Date() 
   for (const name of [...localFiles, ...baseFiles]) {
     if (isValidMigrationName(name)) taken.add(versionOf(name));
   }
+  for (const entry of extraTaken) {
+    const version = versionOf(entry) ?? entry;
+    if (/^\d{14}$/.test(version)) taken.add(version);
+  }
   const floor = suggestVersion(baseMax, today);
   const seen = new Map();
   let prev = baseMax;
@@ -179,16 +191,41 @@ function git(args) {
   return spawnSync("git", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
 }
 
-// File names (not paths) of the `*.sql` files directly under `dir` in `ref`'s tree.
-function baseFileNames(ref, dir) {
-  const res = git(["ls-tree", "-z", "--name-only", ref, "--", `${dir}/`]);
-  if (res.status !== 0) {
-    throw new Error(`git ls-tree ${ref} -- ${dir}/ failed: ${res.stderr.trim()}`);
+// File names (not paths) of the `*.sql` files directly under `dir` in `ref`'s
+// tree. `git ls-tree` without -r lists only that directory's own entries, so a
+// file in a subdirectory never counts. This is the one lister of a tree's
+// migrations: CI's check (below), the conflict pass (worktree-cli.mjs) and the
+// renumber gate (migration-renumber.mjs, ADR-0077) all read them through it.
+// `cwd` is the repo to read (default: this process's), `env` the git
+// environment (default: this process's). Throws when git fails.
+export function migrationNamesAt(ref, { cwd, dir = DEFAULT_DIR, env } = {}) {
+  const res = spawnSync("git", ["ls-tree", "-z", "--name-only", ref, "--", `${dir}/`], {
+    cwd,
+    env,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (res.error || res.status !== 0) {
+    const why = String(res.stderr || res.error?.message || "").trim();
+    throw new Error(`git ls-tree ${ref} -- ${dir}/ failed: ${why}`);
   }
   return res.stdout
     .split("\0")
     .filter((path) => path.endsWith(".sql"))
     .map((path) => posix.basename(path));
+}
+
+// The same names from a recursive path list, such as `git ls-files`: the
+// `*.sql` paths whose directory is exactly `dir`, as file names, deduplicated
+// (an unmerged path is listed once per stage).
+export function directMigrationNames(paths, dir = DEFAULT_DIR) {
+  return [
+    ...new Set(
+      paths
+        .filter((path) => path.endsWith(".sql") && posix.dirname(path) === dir)
+        .map((path) => posix.basename(path)),
+    ),
+  ];
 }
 
 function localFileNames(dir) {
@@ -260,7 +297,7 @@ function main(argv) {
   try {
     findings = checkMigrationOrder({
       localFiles: localFileNames(dir),
-      baseFiles: baseFileNames(ref, dir),
+      baseFiles: migrationNamesAt(ref, { dir }),
     });
   } catch (err) {
     process.stderr.write(`${err.message}\n`);

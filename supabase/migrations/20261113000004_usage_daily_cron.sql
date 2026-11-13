@@ -1,4 +1,4 @@
--- Nightly rollup of usage_daily (ADR 0077): at 00:30 UTC, fill yesterday's
+-- Nightly rollup of usage_daily (ADR 0078): at 00:30 UTC, fill yesterday's
 -- content_changes and delete rows older than 13 months, through
 -- public.rollup_usage_daily() (20261113000003_usage_daily.sql). Thirty minutes
 -- after midnight leaves room for the day's last saves to commit, and runs well

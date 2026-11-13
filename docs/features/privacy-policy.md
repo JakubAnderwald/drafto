@@ -63,7 +63,7 @@ Not processors, on purpose: Expo (builds are local Fastlane, OTA is off: `update
 - [0018 — OAuth with Google and Apple](../adr/0018-oauth-google-apple.md)
 - [0022 — Note content history](../adr/0022-note-content-history.md): the 30-day edit-history retention the page discloses
 - [0024 — Real-time support agent](../adr/0024-realtime-support-agent.md): the Zoho, Anthropic and GitHub flows
-- [0077 — Activity days instead of event analytics](../adr/0077-activity-days-instead-of-event-analytics.md): the usage days (`usage_daily`) the page discloses, and why PostHog stays off
+- [0078 — Activity days instead of event analytics](../adr/0078-activity-days-instead-of-event-analytics.md): the usage days (`usage_daily`) the page discloses, and why PostHog stays off
 
 ## Cross-platform notes
 

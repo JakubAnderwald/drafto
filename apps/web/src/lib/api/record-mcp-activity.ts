@@ -8,7 +8,7 @@ const MCP_CLIENT_TAG: DraftoClientTag = "web-mcp";
 
 /**
  * Records that <userId> used Drafto through the MCP server on the UTC day of <now>, as a
- * `web-mcp` activity day (ADR 0077). Only the day is recorded: never the tool or the note.
+ * `web-mcp` activity day (ADR 0078). Only the day is recorded: never the tool or the note.
  *
  * The MCP route can't call `record_activity`: it authenticates by API key and queries as
  * `service_role`, so `auth.uid()` is null there. It writes the row itself instead, and a

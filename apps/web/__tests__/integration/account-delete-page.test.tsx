@@ -55,7 +55,7 @@ describe("Account deletion page (/account/delete)", () => {
       expect.stringMatching(/notes/),
       expect.stringMatching(/attachments/),
       expect.stringMatching(/API keys/),
-      // usage_daily cascades on account deletion (ADR 0077).
+      // usage_daily cascades on account deletion (ADR 0078).
       expect.stringMatching(/days you used Drafto/),
     ]);
   });

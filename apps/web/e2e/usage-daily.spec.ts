@@ -5,7 +5,7 @@ import { assertNotProduction } from "./helpers/e2e-supabase";
 import { test, expect } from "./helpers/test";
 
 /**
- * The web activity-day ping (ADR 0077): opening the signed-in app sends today's UTC day
+ * The web activity-day ping (ADR 0078): opening the signed-in app sends today's UTC day
  * to `record_activity` once per browser session, and the server keeps a `usage_daily`
  * row for (E2E user, today, 'web').
  *

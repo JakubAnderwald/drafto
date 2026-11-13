@@ -29,7 +29,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 // platform did a write (see ADR 0023). Platform.OS is "ios" | "android" |
 // "web" — the mobile app ships only on iOS and Android, so anything
 // unexpected falls back to a generic "mobile" tag rather than silently
-// emitting a NULL. Exported for the activity ping (ADR-0077), which sends the
+// emitting a NULL. Exported for the activity ping (ADR-0078), which sends the
 // same tag; usage_daily doesn't accept "mobile", so that fallback never pings.
 export const clientTag: DraftoClientTag | "mobile" =
   Platform.OS === "ios" ? "mobile-ios" : Platform.OS === "android" ? "mobile-android" : "mobile";

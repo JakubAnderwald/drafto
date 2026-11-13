@@ -18,7 +18,7 @@ import { supabaseUrl, supabaseAnonKey } from "./config";
 export const cryptoReady: Promise<void> = installCryptoRandom();
 
 // Tag every request so note_content_history.archived_by records which
-// platform did a write (see ADR 0023), and the activity ping (ADR-0077) sends
+// platform did a write (see ADR 0023), and the activity ping (ADR-0078) sends
 // the same tag. The desktop app today targets macOS only — if a future build
 // lands on Windows/Linux, broaden this mapping rather than emitting a NULL.
 export const clientTag: DraftoClientTag = "desktop-macos";
