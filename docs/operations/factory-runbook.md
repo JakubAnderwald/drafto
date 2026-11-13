@@ -231,7 +231,7 @@ A dated record of actual phase changes so the current operating phase is auditab
 **`--release` runs at Phase B+.** The A→B→C→D phases control implementation _scope_ (web → web+mobile/desktop → beta dispatch); `--release` is the merge step layered on top. Each tick it scans the **Approved** column and, for a card a human dragged there, squash-merges the green PR via the GitHub API (`gh api --method PUT …/merge -f merge_method=squash`) and advances it to **Released** (Vercel auto-deploys main → prod for web). It is bounded by four hard rules:
 
 1. It only ever acts on a card a human (or an allowlisted reporter) moved to **Approved** — the Approved drag _is_ the merge-authorisation gate (ADR-0026); the factory never moves a card to Approved itself.
-2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`).
+2. It refuses to merge a PR touching `supabase/migrations/**` until `migration-approved` is on the PR — it leaves the card in Approved and comments once (`<!-- drafto-factory-migration-gate -->`). The label covers the migration SQL it was first seen with, and a later SQL change removes it. See "Migration approval" below.
 3. It refuses to merge a PR that changes `supabase/config.toml` until the hosted projects match it. This is the last check before the merge. It leaves the card in Approved, comments once per head SHA, and pins the merge to that SHA. See "Hosted Supabase config gate" below.
 4. It won't merge unless CI is green and the branch is conflict-free (a transient merge error is retried next tick, comment `<!-- drafto-factory-merge-failed -->`). Red CI moves the card back to **In Review** for the fix loop, and required checks GitHub cancelled before any runner picked them up are re-run first. See "Red or cancelled CI on a factory PR" below. A conflict with `main` moves the card back to **In Review** too, checked before the CI gate because a conflicting head gets no CI. See "A PR that conflicts with main" below. A branch that is only **behind** `main` (branch protection requires up-to-date branches) is updated with GitHub's update-branch, comments once (`<!-- drafto-factory-branch-updated -->`), and merges on a later tick once CI is green on the new head. `--watch` already did this before In Test, so this only catches a `main` that moved while the card waited for you. See "A PR that is behind main" below.
 
@@ -408,6 +408,18 @@ A held card stays where it is, with one comment per column (`in-review`, `beta`,
 The next cycle re-checks and the card carries on. **Don't use `supabase config push`**: it pushes the whole file, and `config.toml` doesn't configure prod's Resend SMTP.
 
 To run the check yourself, from a checkout of the PR branch: `pnpm hosted-config:check`. It compares `HEAD` with its merge base on `origin/main`, probes both projects, prints JSON, and exits `0` (ok), `3` (hold) or `4` (unknown). To simulate the label, add `--labels hosted-config-applied`. The `--watch` and `--release` logs say `hosted-config gate passed` or `hosted-config gate held PR #<n>`.
+
+## Migration approval (`migration-approved`)
+
+`--release` merges a PR that touches `supabase/migrations/**` only once the `migration-approved` label is on it. The label covers the migration SQL it was first seen with, so SQL changed after you approved it doesn't merge on that approval ([ADR-0078](../adr/0078-migration-approval-tied-to-sql.md)). `migration_approval_vouch` runs in the In Test sweep and in `--release`, right before the migration gate.
+
+- **Vouch.** The first time the factory sees the label, it records a hash of the PR's migration SQL in `migrationApprovedVouched` (`migration-approved on PR #<n> covers its migration SQL as of <sha12> (<hash>)`). The hash covers the `*.sql` files directly under `supabase/migrations/` that the PR adds, changes or deletes, with the PR's own version numbers left out.
+- **Void.** If a later head hashes differently, the factory removes the label (`PR #<n>'s migration SQL changed since migration-approved was added (<old> -> <new> at <sha12>); removing the label`). It comments once per new hash (`<!-- drafto-factory-migration-approval-void:<hash> -->`) and lists the PR's migration files. In Approved, the migration gate then holds the card as if the label had never been added.
+- **Kept.** The factory's own renumber ([ADR-0077](../adr/0077-factory-renumbers-migrations-mechanically.md)) and update-branch merges don't change the hash, so they keep the label.
+- **Errors.** If the label can't be removed (`couldn't remove migration-approved from PR #<n>; retrying next tick`), the hash stays recorded and the next tick tries again; that tick treats the label as missing. If the state or the hash can't be read (`migration approval: couldn't …`), nothing changes that tick: the factory never removes the label on an error.
+- **First sight.** A commit pushed after you add the label and before the next tick is vouched for as if you had reviewed it, the same window `hosted-config-applied` has. Add the label after the last migration change you reviewed.
+
+**To re-approve**, review the PR's migrations at its current head and add `migration-approved` again. The next tick records the new hash, and an Approved card merges on a later cycle. To see the hash the factory would record, run `node scripts/lib/migration-approval.mjs hash --pr <n> --head <sha>` in `drafto-factory`. It fetches `main` and the PR head and prints `{hash, files}`.
 
 ## CodeRabbit CLI gap-fill lane
 
@@ -1110,7 +1122,7 @@ The factory's blast radius is bounded by:
 1. **Pre-merge.** Worst case, a PR is opened with bad code. Closing the PR (and removing its `factory/issue-<n>` branch) reverts to zero side effects. For a salvageable PR sitting in In Test, prefer the **In Test iteration loop** — comment the change you want and the factory revises the same PR in place — over closing and re-filing.
 2. **Post-merge but pre-release.** Vercel auto-deploys main → prod on merge. If the factory merged something bad, follow the standard web rollback: `vercel rollback <previous-deployment-id>` from the Vercel dashboard. The web app is back in <60 s.
 3. **Post-merge and post-beta-dispatch (Phase D only).** TestFlight / Play internal builds are pre-authorised and reversible — the next build supersedes the bad one. No store-public users are affected (production app-store submissions stay manual; see CLAUDE.md "Release Authorization").
-4. **Schema migration.** The migration gate refuses to merge a PR with `supabase/migrations/**` files unless `migration-approved` is on the PR. If a bad migration _did_ land, follow [`docs/operations/migrations.md`](./migrations.md) → "Rolling back a migration".
+4. **Schema migration.** The migration gate refuses to merge a PR with `supabase/migrations/**` files unless `migration-approved` is on the PR, and the label comes off if the SQL changes after it was added. If a bad migration _did_ land, follow [`docs/operations/migrations.md`](./migrations.md) → "Rolling back a migration".
 
 Practice drill (do once per month while the factory is active):
 

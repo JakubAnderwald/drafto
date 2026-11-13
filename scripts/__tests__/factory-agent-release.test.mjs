@@ -135,6 +135,71 @@ describe("--release engine wiring", () => {
     assert.match(releaseBlock, /drafto-factory-migration-gate/);
   });
 
+  // ADR-0078. The label covers the migration SQL it was first seen with; a
+  // voided one must reach the gate as missing, so the existing hold applies.
+  it("ties migration-approved to the SQL right before the migration gate", () => {
+    const at = (s) => {
+      const i = releaseBlock.indexOf(s);
+      assert.ok(i !== -1, `missing: ${s}`);
+      return i;
+    };
+    const vouch = at('migration_approval_vouch "$ISSUE_NUM" "$PR_NUM"');
+    const relabel = at('PR_LABELS="$MIGRATION_APPROVAL_LABELS"');
+    const gate = at('MIG_VIOLATION=$(migration_violation "$DIFF_FILES" "$PR_LABELS")');
+    assert.ok(at("DIFF_FILES=$(gh pr diff") < vouch);
+    assert.ok(at('PR_LABELS=$(echo "$PR_VIEW" | jq -r \'(.labels // [])') < vouch);
+    assert.ok(vouch < relabel && relabel < gate);
+    assert.equal(releaseBlock.split("migration_approval_vouch ").length - 1, 1, "called once");
+    assert.match(
+      releaseBlock,
+      /migration_approval_vouch "\$ISSUE_NUM" "\$PR_NUM" "\$\(echo "\$PR_VIEW" \| jq -r '\.headRefOid \/\/ ""'\)" \\\n\s*"\$PR_LABELS" "\$DIFF_FILES"/,
+    );
+  });
+
+  function approvalStep({ keeps }) {
+    const start = releaseBlock.indexOf("    # Migration approval (ADR-0078)");
+    const end = releaseBlock.indexOf("    # Parity gate", start);
+    assert.ok(start !== -1 && end !== -1);
+    const snippet = `
+set -euo pipefail
+PR_VIEW='{"headRefOid":"abc123"}'; ISSUE_NUM=794; PR_NUM=802; DRY_RUN=0; LOG_FILE=$(mktemp)
+DIFF_FILES=supabase/migrations/20261113000001_q.sql; PR_LABELS=status:approved,migration-approved
+log() { echo "LOG $*"; }
+issue_has_marker() { return 1; }
+gh() { echo "GH $1 $2"; printf '%s\\n' "$*" | grep -o 'drafto-factory-migration-gate' || true; }
+migration_approval_vouch() {
+  echo "VOUCH $1 $2 $3 $4 $5"
+  MIGRATION_APPROVAL_LABELS=${keeps ? "$4" : "status:approved"}
+}
+eval "$(awk '/^migration_violation\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+for _once in 1; do
+${releaseBlock.slice(start, end)}
+  echo "PARITY GATE"
+done
+cat "$LOG_FILE"; rm -f "$LOG_FILE"`;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  }
+
+  it("holds a card whose label the SQL voided, with the migration gate's comment", () => {
+    const out = approvalStep({ keeps: false });
+    assert.match(
+      out,
+      /^VOUCH 794 802 abc123 status:approved,migration-approved supabase\/migrations\/20261113000001_q\.sql$/m,
+    );
+    assert.match(out, /migration gate held PR #802/);
+    assert.match(out, /^drafto-factory-migration-gate$/m);
+    assert.doesNotMatch(out, /PARITY GATE/);
+  });
+
+  it("goes on to the next gate when the label still covers the SQL", () => {
+    const out = approvalStep({ keeps: true });
+    assert.match(out, /^VOUCH /m);
+    assert.doesNotMatch(out, /migration gate held/);
+    assert.match(out, /^PARITY GATE$/m);
+  });
+
   it("requires green CI before merging (failing parks; required contexts must be green)", () => {
     // Advisory non-required reds (e.g. CodeRabbit) must not block the merge, so
     // the park-check counts only required failures.
