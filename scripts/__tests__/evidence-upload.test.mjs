@@ -1046,6 +1046,45 @@ describe("upload publishes one parentless commit on the run's own ref", () => {
     }
   });
 
+  it("drops a browser screenshot whose text shows an email address", async () => {
+    const fx = uploadFixture({
+      shots: [shot(1), shot(2)],
+      textOf: (data) =>
+        data.includes("png:1") ? "Pending users\nfactory-test@example.com\nApprove" : "Notebooks",
+    });
+    const summary = await upload(fx);
+    assert.equal(summary.ok, true);
+    const record = readJsonFile(fx.out);
+    assert.deepEqual(
+      record.images.map((i) => i.n),
+      [2],
+    );
+    assert.deepEqual(
+      record.overflow.map((o) => [o.n, o.why]),
+      [[1, "its text showed an email address"]],
+    );
+    assert.ok(!readFileSync(fx.out, "utf8").includes("factory-test@"));
+    const dir = `${ISSUE}/${SHA12}/${RUN_ID}`;
+    assert.deepEqual(commitOf(fx.origin, summary.commit).paths, [`${dir}/02.png`]);
+  });
+
+  it("publishes a macOS shot showing the signed-in account's email in the sidebar", async () => {
+    // The operator looks at each macOS shot before publishing (evidence-post).
+    const fx = uploadFixture({ shots: [], textOf: () => "Notebooks\nthrowaway@example.org" });
+    const shotsDir = join(fx.root, "macos-run", "shots");
+    mkdirSync(shotsDir, { recursive: true });
+    writeFileSync(join(shotsDir, "01-signed-in.png"), PNG("m1"));
+    const summary = await upload(fx, {
+      source: "macos",
+      "evidence-dir": shotsDir,
+      "guard-log": undefined,
+      "run-id": "macos-20261110-051950",
+    });
+    assert.equal(summary.ok, true);
+    assert.equal(summary.images, 1);
+    assert.equal(summary.overflow, 0);
+  });
+
   it("drops an image whose text shows a secret pattern such as a dk_ key", async () => {
     const fx = uploadFixture({
       shots: [shot(1), shot(2)],

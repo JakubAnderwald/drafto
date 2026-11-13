@@ -88,7 +88,7 @@ A finished run's report and screenshots can be posted on the card's issue, with 
 The shots go through the same checks as the browser runner's (see the factory runbook's "Test-run screenshots on GitHub"):
 
 - the same file checks;
-- an OCR secret scan of each one;
+- an OCR secret scan of each one, except for email addresses: the sidebar shows the signed-in account's on every screen, so a browser screenshot's email check would hold back every shot;
 - at most 20 shots and 20 MB per comment;
 - the one-time publishing selftest, and `FACTORY_EVIDENCE_UPLOAD`.
 

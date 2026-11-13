@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   CAP_WHY,
+  EMAIL_WHY,
   MAX_IMAGES,
   MAX_IMAGE_BYTES,
   MAX_TOTAL_BYTES,
@@ -30,8 +31,10 @@ import {
   helperOcr,
   macosManifest,
   ocrAvailable,
+  PUBLIC_EMAILS,
   rootProblem,
   selectImages,
+  showsEmail,
 } from "../lib/evidence-images.mjs";
 import {
   CHROME_PREFIX,
@@ -932,6 +935,39 @@ describe("evidence-images: selectImages", () => {
     assert.ok(!JSON.stringify(r.overflow).includes(password));
   });
 
+  it("drops an image whose text shows an email address, never repeating it", () => {
+    // /admin's pending-user list: the test account's row and another user's.
+    const entries = stage([
+      ["s1.png", png("admin")],
+      ["s2.png", png("support")],
+      ["s3.png", png("notes")],
+    ]);
+    const ocr = fakeOcr({
+      admin: { ok: true, text: "Pending users\nfactory-test@example.com\nApprove\nbob@mail.test" },
+      support: { ok: true, text: "Questions? Write to support@drafto.eu.\nEmail\nyou@example.com" },
+    });
+    const r = selectImages({ root, entries, ocr });
+    assert.deepEqual(
+      r.upload.map((u) => u.slot),
+      [2, 3],
+      "the addresses the web app shows every visitor don't hold an image back",
+    );
+    assert.deepEqual(r.overflow, [{ slot: 1, path: join(root, "s1.png"), why: EMAIL_WHY }]);
+    const shown = JSON.stringify(r.overflow);
+    assert.ok(!shown.includes("factory-test") && !shown.includes("bob@"));
+  });
+
+  it("keeps an image showing an email address when the caller turns the check off", () => {
+    const entries = stage([["s1.png", png("sidebar")]]);
+    const ocr = fakeOcr({ sidebar: { ok: true, text: "Notebooks\nthrowaway@example.org" } });
+    const r = selectImages({ root, entries, ocr, holdEmails: false });
+    assert.deepEqual(
+      r.upload.map((u) => u.slot),
+      [1],
+    );
+    assert.deepEqual(r.overflow, []);
+  });
+
   it("a secret-dropped image doesn't count toward the cap", () => {
     const entries = stage([
       ["s1.png", png("key", 200)],
@@ -1359,5 +1395,35 @@ describe("evidence-images: ocrAvailable", () => {
 
   it("is false for no path at all", () => {
     for (const v of [undefined, null, "", 42]) assert.equal(ocrAvailable(v), false);
+  });
+});
+
+describe("showsEmail", () => {
+  it("finds any email-shaped string in OCR text", () => {
+    for (const text of [
+      "factory-test@example.com",
+      "Pending\nalice.smith+dev@gmail.com\nApprove",
+      "Signed in as QA@Drafto.eu",
+      "We'll email <x@y.io> soon",
+      "Contactsupport@drafto.eu",
+    ]) {
+      assert.equal(showsEmail(text), true, text);
+    }
+  });
+
+  it("ignores text with no address, and the addresses the web app shows every visitor", () => {
+    for (const text of [
+      "",
+      "Notebooks\nNew note\nSaved",
+      "user @ host",
+      "a@b.c",
+      "Write to support@drafto.eu.",
+      "(Support@Drafto.EU)",
+      "Email\nyou@example.com",
+      undefined,
+    ]) {
+      assert.equal(showsEmail(text), false, String(text));
+    }
+    assert.deepEqual([...PUBLIC_EMAILS], ["support@drafto.eu", "you@example.com"]);
   });
 });

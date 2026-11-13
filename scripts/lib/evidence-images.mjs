@@ -21,7 +21,8 @@
 //     The bytes read here are the bytes scanned and the bytes uploaded.
 //   - OCR: the helper (apps/desktop/e2e/in-test/lib/ocr.swift, compiled by
 //     the caller) reads the image's text; a secret-pattern or password hit
-//     drops that image. Without the helper nothing is published at all.
+//     drops that image, and so, for a browser run, does an email address
+//     (showsEmail). Without the helper nothing is published at all.
 //   - The cap: MAX_IMAGES images and MAX_TOTAL_BYTES per comment, in slot
 //     order. What doesn't fit, fails a check, or the manifest held back (a
 //     rejected, failed or off-origin copy) is listed as kept on the Mac mini
@@ -63,6 +64,25 @@ const MACOS_SHOT_NAME = /^(\d{2,3})-([A-Za-z0-9._-]{1,80})\.png$/;
 export const CAP_WHY = `over the per-comment cap (${MAX_IMAGES} images / ${
   MAX_TOTAL_BYTES / 1024 / 1024
 } MB)`;
+
+// An email address in a screenshot's text. ADR-0073 keeps the accounts'
+// emails off the public issue (the runner's output is redacted, prompt rule
+// 9), and an `(admin)` step's /admin page lists every pending dev user's. Any
+// email-shaped string counts, not only the two accounts' own: another user's
+// is no better, and a known address the OCR misread wouldn't match a literal.
+// The only exceptions are the addresses the web app shows every visitor: the
+// support address and the sign-in forms' placeholder.
+const EMAIL_SHAPE = /[^\s@<>()[\]{}"'`,;:]+@[^\s@<>()[\]{}"'`,;:]+\.[a-z]{2,}/gi;
+export const PUBLIC_EMAILS = Object.freeze(["support@drafto.eu", "you@example.com"]);
+export const EMAIL_WHY = "its text showed an email address";
+
+/** Whether <text> shows an email address other than PUBLIC_EMAILS'. Never says which. */
+export function showsEmail(text) {
+  for (const [match] of String(text ?? "").matchAll(EMAIL_SHAPE)) {
+    if (!PUBLIC_EMAILS.includes(match.toLowerCase())) return true;
+  }
+  return false;
+}
 
 // ── manifests ───────────────────────────────────────────────────────────────
 
@@ -298,6 +318,8 @@ export function helperOcr(
  *   null when the helper is missing: then nothing is published
  * @param {{password?:string,bypass?:string,signinKey?:string}} o.secrets
  *   literals to scan the OCR text for (scanLaneText's)
+ * @param {boolean} [o.holdEmails] keep back an image whose OCR text shows an
+ *   email address (showsEmail); on unless the caller turns it off
  * @param {number} [o.ocrBudgetMs] all the OCR calls together; past it, the
  *   remaining images are kept on the Mac mini
  * @returns {{ok:true, upload:object[], overflow:{slot,path,why}[]} | {ok:false, reason:string}}
@@ -308,6 +330,7 @@ export function selectImages({
   entries,
   ocr,
   secrets = {},
+  holdEmails = true,
   maxImages = MAX_IMAGES,
   maxTotalBytes = MAX_TOTAL_BYTES,
   maxImageBytes = MAX_IMAGE_BYTES,
@@ -388,6 +411,10 @@ export function selectImages({
         path: file,
         why: `its text matched a secret pattern (${[...new Set(hits)].join(", ")})`,
       });
+      continue;
+    }
+    if (holdEmails && showsEmail(read.text)) {
+      overflow.push({ slot: e.slot, path: file, why: EMAIL_WHY });
       continue;
     }
     taken.add(e.slot);

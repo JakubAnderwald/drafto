@@ -367,7 +367,12 @@ export function prepareRun({ source, evidenceDir, guardLog, ocrBin, secrets, dep
     entries = macosManifest(evidenceDir);
   }
   const ocr = deps.ocr ?? (ocrAvailable(ocrBin) ? helperOcr(ocrBin) : null);
-  return selectImages({ root: evidenceDir, entries, ocr, secrets });
+  // A browser run's screenshots are published unattended, so one showing an
+  // email address stays on the Mac mini. A macOS run's aren't held for that:
+  // the desktop sidebar shows the signed-in account's email on every screen,
+  // and evidence-post.mjs publishes only after the operator looked at each.
+  const holdEmails = source !== "macos";
+  return selectImages({ root: evidenceDir, entries, ocr, secrets, holdEmails });
 }
 
 function overflowOut(selection) {
