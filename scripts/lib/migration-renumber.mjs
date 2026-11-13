@@ -32,7 +32,7 @@
 //            [--today YYYY-MM-DD] [--where <column>]
 //       Read-only for the remote: fetches main and the PR head, plans.
 //       {status: clean|fixable|manual|unreachable, head, mb, main, map, reason,
-//        overlap, comment?}
+//        overlap, claimed, comment?}
 //   apply --issue <i> --pr <n> --head <sha> [same options]
 //       Plans, writes commit R on the PR head, checks it, pushes it to
 //       factory/issue-<i>. {status: clean|manual|pushed|rejected|unreachable,
@@ -44,7 +44,9 @@
 // --claimed-json is a JSON array of versions or migration file names other
 // open PRs use. Without it, a fixable plan looks them up with gh
 // (claimedVersions) and is planned again so two stale PRs never both move to
-// the same version.
+// the same version. Both print the list they planned with as `claimed` (null
+// when they never got that far), so the gate passes precheck's to apply and
+// the open PRs are swept once per renumber.
 
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -52,7 +54,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkMigrationOrder, isValidMigrationName, versionOf } from "./check-migration-order.mjs";
+import {
+  checkMigrationOrder,
+  isValidMigrationName,
+  migrationNamesAt,
+  versionOf,
+} from "./check-migration-order.mjs";
 import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
@@ -137,8 +144,16 @@ export function stripSql(sql) {
       continue;
     }
     if (c === "'" || c === '"') {
+      // An escape string, E'…' (the E not ending an identifier), also takes
+      // backslash escapes: E'don\'t' is one literal, not one and a half.
+      const escapes =
+        c === "'" && /[Ee]/.test(sql[i - 1] ?? "") && !/[A-Za-z0-9_$]/.test(sql[i - 2] ?? "");
       let j = i + 1;
       while (j < sql.length) {
+        if (escapes && sql[j] === "\\") {
+          j += 2;
+          continue;
+        }
         if (sql[j] === c) {
           if (sql[j + 1] === c) {
             j += 2;
@@ -481,12 +496,11 @@ function revParse(git, ref) {
   return res.status === 0 ? res.stdout.trim() : null;
 }
 
-// Basenames of the *.sql files directly under supabase/migrations in <ref>.
-function migrationNamesAt(git, ref) {
-  return git(["ls-tree", "-z", "--name-only", ref, "--", `${MIGRATIONS_DIR}/`])
-    .stdout.split("\0")
-    .filter((p) => p.endsWith(".sql") && path.posix.dirname(p) === MIGRATIONS_DIR)
-    .map((p) => path.posix.basename(p));
+// Basenames of the *.sql files directly under supabase/migrations in <ref>,
+// through check-migration-order.mjs's lister, with the same clean git
+// environment as every other call here.
+function namesAt(cwd, ref) {
+  return migrationNamesAt(ref, { cwd, dir: MIGRATIONS_DIR, env: baseEnv() });
 }
 
 function blobAt(git, ref, filePath) {
@@ -555,9 +569,9 @@ function bareSafety(git, map, headNames, mb) {
 export function computeRenumber({ cwd, head, main, extraTaken = [], today = new Date() }) {
   const git = makeGit(cwd);
   const mb = git(["merge-base", head, main]).stdout.trim();
-  const mbNames = migrationNamesAt(git, mb);
-  const headNames = migrationNamesAt(git, head);
-  const mainNames = migrationNamesAt(git, main);
+  const mbNames = namesAt(cwd, mb);
+  const headNames = namesAt(cwd, head);
+  const mainNames = namesAt(cwd, main);
   const mbSet = new Set(mbNames);
   const read = (ref, names) =>
     Object.fromEntries(
@@ -790,8 +804,8 @@ export function verifyRenumber({ cwd, from, to, map, mb, mainRef = "refs/remotes
 
   const forward = makeRewriter(map);
   const inverse = makeRewriter(invert(map));
-  const mbNames = new Set(migrationNamesAt(git, base));
-  const fromList = migrationNamesAt(git, fromSha);
+  const mbNames = new Set(namesAt(cwd, base));
+  const fromList = namesAt(cwd, fromSha);
   const fromNames = new Set(fromList);
   const bareSafe = bareSafety(git, map, fromList, base);
   const prChanged = new Set(changedPaths(git, base, fromSha));
@@ -913,22 +927,50 @@ function runGh(args) {
   return res.stdout;
 }
 
-// Migration files other open PRs add or change: [{pr, file}]. `gh pr diff
-// --name-only` has no file cap (`gh pr view --json files` stops at 100).
-export function claimedVersions({ excludePr, gh = runGh } = {}) {
+// Migration files other open PRs add or change: {claimed: [{pr, file}],
+// skipped: [pr]}. Each PR's files come from the REST files endpoint, paginated:
+// it lists up to 3000 files and never refuses a large diff, where `gh pr diff`
+// fails with HTTP 406 on a diff GitHub finds too large and `gh pr view --json
+// files` stops at 100. A PR whose files can't be listed is skipped, named in
+// `skipped` and on stderr (the gate's log), so one bad PR can't fail the whole
+// sweep; the plan just doesn't avoid that PR's versions. Only a failing `gh pr
+// list` throws.
+export function claimedVersions({
+  excludePr,
+  gh = runGh,
+  warn = (msg) => process.stderr.write(`${msg}\n`),
+} = {}) {
   const list = JSON.parse(
     gh(["pr", "list", "--repo", REPO, "--state", "open", "--json", "number", "--limit", "200"]),
   );
-  const out = [];
+  const claimed = [];
+  const skipped = [];
   for (const { number } of list) {
     if (String(number) === String(excludePr)) continue;
-    for (const p of gh(["pr", "diff", String(number), "--repo", REPO, "--name-only"]).split("\n")) {
+    let files;
+    try {
+      files = gh([
+        "api",
+        "--paginate",
+        `repos/${REPO}/pulls/${number}/files`,
+        "--jq",
+        ".[].filename",
+      ]);
+    } catch (err) {
+      skipped.push(number);
+      warn(
+        `migration-renumber: couldn't list PR #${number}'s files, so its migration versions ` +
+          `aren't avoided: ${err.message}`,
+      );
+      continue;
+    }
+    for (const p of String(files).split("\n")) {
       if (/^supabase\/migrations\/[^/]+\.sql$/.test(p.trim())) {
-        out.push({ pr: number, file: path.posix.basename(p.trim()) });
+        claimed.push({ pr: number, file: path.posix.basename(p.trim()) });
       }
     }
   }
-  return out;
+  return { claimed, skipped };
 }
 
 function claimedToVersions(claimed) {
@@ -952,14 +994,18 @@ export function renumberComment({ pr, to, map, findings = [] }) {
   }
   const shared = findings
     .filter((f) => f.reason === "duplicate-base" && map[f.file])
-    .map(
-      (f) =>
-        `- \`${f.version}\` is also the version of main's \`${(f.others ?? []).join("`, `")}\`. ` +
+    .map((f) => {
+      const mains = `\`${(f.others ?? []).join("`, `")}\``;
+      return (
+        `- \`${f.version}\` is also the version of main's ${mains}. ` +
         "Dev keeps one row per version, so check which of the two files dev actually ran " +
-        "(for example, whether its objects exist). Repair only if it ran this PR's file. If it " +
-        "ran main's, this PR's migration never ran on dev: `supabase db push` applies it under " +
-        "the new version, with no repair.",
-    );
+        "(for example, whether its objects exist). Repair only if it ran this PR's file. After " +
+        `the repair, main's ${mains} at \`${f.version}\` shows as not applied on dev, because ` +
+        "dev never ran it, and `supabase db push --include-all` (dev only) applies it. If dev " +
+        "ran main's file, this PR's migration never ran on dev: `supabase db push` applies it " +
+        "under the new version, with no repair."
+      );
+    });
   return [
     `🏭 **Renumbered PR #${pr}'s migrations after \`main\` moved.**`,
     "",
@@ -1034,6 +1080,7 @@ function summarize(r) {
     reason: r.reason ?? "",
     overlap: r.overlap ?? [],
     findings: r.findings ?? [],
+    claimed: Array.isArray(r.claimed) ? r.claimed : null,
   };
 }
 
@@ -1063,7 +1110,7 @@ function plan(flags, { gh } = {}) {
     });
   let r = run();
   if (r.status === "fixable" && !given) {
-    claimed = claimedVersions({ excludePr: pr, gh });
+    ({ claimed } = claimedVersions({ excludePr: pr, gh }));
     r = run();
   }
   return { ...r, cwd, claimed };

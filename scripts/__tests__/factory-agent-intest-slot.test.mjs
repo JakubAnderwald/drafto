@@ -437,7 +437,7 @@ node() {
 }
 gh() { echo "GH $2" >>"$CALLS"; [[ ${gh} -eq 0 ]] || return 1; echo '${commit}'; }`;
     return run(
-      ["carry_across_branch_update"],
+      ["carry_across_branch_update", "is_update_branch_merge"],
       `if carry_across_branch_update 794 "${head}"; then echo CARRIED; else echo REVIEW; fi`,
       stubs,
     );
@@ -514,7 +514,7 @@ node() {
 }
 gh() { echo "GH $2" >>"$CALLS"; echo '${commit}'; }`;
       return run(
-        ["carry_across_branch_update"],
+        ["carry_across_branch_update", "is_update_branch_merge"],
         `if carry_across_branch_update 794 "${head}"; then echo CARRIED; else echo REVIEW; fi`,
         stubs,
       );

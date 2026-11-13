@@ -395,6 +395,9 @@ describe("build_watch_bundle carries the merge result", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [],
       nextFreeAdr: "0062",
+      migrationErrors: [
+        { reason: "stale", file: "20261101000001_q.sql", suggested: "20261113000001" },
+      ],
     });
     const out = run(
       ["build_watch_bundle"],
@@ -409,6 +412,9 @@ describe("build_watch_bundle carries the merge result", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [],
       nextFreeAdr: "0062",
+      migrationErrors: [
+        { reason: "stale", file: "20261101000001_q.sql", suggested: "20261113000001" },
+      ],
     });
   });
 });
@@ -521,6 +527,54 @@ describe("--watch conflict pass wiring", () => {
     );
     // And it runs before the push.
     assert.ok(arm.indexOf("MIG_ERRORS") < arm.indexOf('worktree-cli.mjs" push'));
+  });
+
+  // Only a merge git just made goes to the agent. up-to-date made none (the
+  // branch already holds main), so it waits for GitHub with no Claude run, as
+  // before, and the red CI reaches the fix loop on a later tick.
+  describe("the up-to-date|clean arm", () => {
+    const start = watchBlock.indexOf('        case "$MERGE_STATUS" in');
+    const end = watchBlock.indexOf("        esac", start);
+    assert.ok(start !== -1 && end !== -1, "conflict pass case not found");
+    const ERR = [{ reason: "duplicate-base", file: "20261111000001_q.sql" }];
+    function arm(status, { ahead = false, migrationErrors = [] } = {}) {
+      const json = JSON.stringify({ status, ahead, migrationErrors });
+      const out = run(
+        [],
+        `
+ISSUE_NUM=794; PR_NUM=802; WT_PATH=/wt; MERGE_BEFORE=b; ADR_CLASHES=0; STATE_FILE=/s
+MERGE_STATUS=${status}
+MERGE_JSON='${json}'
+node() { echo "NODE $*" >>"$CALLS"; }
+rollback_conflict_pass() { echo "ROLLBACK $*" >>"$CALLS"; }
+for _once in 1; do
+${watchBlock.slice(start, end)}        esac
+  echo AGENT
+done`,
+      );
+      const [stdout, calls] = out.split("---\n");
+      return { agent: stdout.includes("AGENT"), calls };
+    }
+
+    it("hands a clean merge with a migration-order error to the agent, unpushed", () => {
+      const r = arm("clean", { ahead: true, migrationErrors: ERR });
+      assert.ok(r.agent);
+      assert.match(r.calls, /leaves 1 migration-order error\(s\) \(20261111000001_q\.sql\)/);
+      assert.doesNotMatch(r.calls, /NODE .*push|ROLLBACK/);
+    });
+
+    it("waits for GitHub on up-to-date, as before, whatever the order check says", () => {
+      const r = arm("up-to-date", { migrationErrors: ERR });
+      assert.ok(!r.agent, "no Claude run when git made no merge");
+      assert.match(r.calls, /already contains main; waiting for GitHub to recompute mergeability/);
+      assert.doesNotMatch(r.calls, /handing the merge to the agent/);
+    });
+
+    it("pushes a clean merge that leaves no error, with no Claude run", () => {
+      const r = arm("clean", { ahead: true });
+      assert.ok(!r.agent);
+      assert.match(r.calls, /NODE \/factory\/scripts\/lib\/worktree-cli\.mjs push/);
+    });
   });
 
   it("counts a migration-order error left by the agent as unresolved", () => {

@@ -209,7 +209,7 @@ describe("--release engine wiring", () => {
   // an Approved card — and sat behind a CI gate a conflicting head never passes.
   it("hands a conflicting PR back to In Review, ahead of the CI gate", () => {
     const conflictAt = releaseBlock.search(/if \[\[ "\$MERGEABLE" == "CONFLICTING" \]\]; then/);
-    const ciGateAt = releaseBlock.indexOf('FAILING=$(pr_failing_required "$PR_VIEW")');
+    const ciGateAt = releaseBlock.indexOf('    FAILING=$(pr_failing_required "$PR_VIEW")');
     assert.ok(conflictAt > 0 && ciGateAt > 0, "conflict gate or CI gate not found");
     assert.ok(conflictAt < ciGateAt, "a conflicting head gets no CI, so it must be caught first");
     const gate = releaseBlock.slice(conflictAt, conflictAt + 400);
@@ -228,14 +228,16 @@ describe("--release engine wiring", () => {
       assert.ok(i !== -1, `missing: ${s}`);
       return i;
     };
-    const gateAt = at('if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM"');
+    const gateAt = at('&& ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$RELEASE_HEAD"');
     assert.ok(at('MIG_VIOLATION=$(migration_violation "$DIFF_FILES" "$PR_LABELS")') < gateAt);
     assert.ok(at('if [[ "$MERGEABLE" == "CONFLICTING" ]]; then') < gateAt);
-    assert.ok(gateAt < at('FAILING=$(pr_failing_required "$PR_VIEW")'));
-    assert.match(
-      releaseBlock,
-      /if ! migration_renumber_gate "\$ISSUE_NUM" "\$PR_NUM" "\$\(echo "\$PR_VIEW" \| jq -r '\.headRefOid \/\/ ""'\)" "Approved" "\$DIFF_FILES"; then\n\s*case "\$MIGRATION_RENUMBER_RESULT" in\n\s*renumbered\|error\) continue ;;\n\s*esac\n\s*fi/,
-    );
+    assert.ok(gateAt < at('    FAILING=$(pr_failing_required "$PR_VIEW")'));
+    // The compare runs once, before the gate, and the BEHIND step reuses it.
+    const behindAt = at('RELEASE_BEHIND=$(pr_behind_main "$RELEASE_HEAD")');
+    assert.ok(behindAt < gateAt);
+    assert.equal(releaseBlock.split("pr_behind_main ").length - 1, 1, "computed once");
+    assert.ok(at('RELEASE_HEAD=$(echo "$PR_VIEW" | jq -r \'.headRefOid // ""\')') < behindAt);
+    assert.ok(gateAt < at('if [[ "$MERGE_STATE" == "BEHIND" || ( -n "$RELEASE_BEHIND"'));
   });
 
   // A renumber waits for CI on the new head; an error retries next tick, so a
@@ -243,30 +245,126 @@ describe("--release engine wiring", () => {
   // or a spent budget goes on to the CI gate as before, which hands red CI
   // back to In Review for the fix loop's recipe, instead of parking the card
   // in Approved for good.
-  it("keeps a renumbered or erroring card in Approved, and lets manual and capped go on", () => {
-    const start = releaseBlock.indexOf("    # Migration renumber gate (ADR-0077)");
+  function renumberStep({ result = "clean", behind = "2", failing = "0", hold = 0 } = {}) {
+    const start = releaseBlock.indexOf("    # How far main is ahead of the head");
     const end = releaseBlock.indexOf("    # CI gate.", start);
     assert.ok(start !== -1 && end !== -1);
-    for (const [result, expected] of [
-      ["renumbered", "GATE 794 802 abc123 Approved x"],
-      ["error", "GATE 794 802 abc123 Approved x"],
-      ["manual", "GATE 794 802 abc123 Approved x\nCI GATE"],
-      ["capped", "GATE 794 802 abc123 Approved x\nCI GATE"],
-      ["clean", "GATE 794 802 abc123 Approved x\nCI GATE"],
-    ]) {
-      const snippet = `
+    const snippet = `
 set -euo pipefail
 PR_VIEW='{"headRefOid":"abc123"}'; ISSUE_NUM=794; PR_NUM=802; DIFF_FILES=x
 transition_status() { echo "MOVE $*"; }
+pr_behind_main() { echo "BEHIND? $*" >&2; echo "${behind}"; }
+pr_failing_required() { echo "${failing}"; }
 migration_renumber_gate() { echo "GATE $*"; MIGRATION_RENUMBER_RESULT=${result}; [[ ${result} == clean ]]; }
+migration_renumber_error_hold() { echo "ERRHOLD $*"; return ${hold}; }
 for _once in 1; do
 ${releaseBlock.slice(start, end)}
-  echo "CI GATE"
+  echo "CI GATE $RELEASE_HEAD $RELEASE_BEHIND"
 done`;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr.trim(), "BEHIND? abc123");
+    return r.stdout.trim();
+  }
+
+  // A renumber waits for CI on the new head; an error retries next tick, a few
+  // ticks per head at most. A plan that needs a person or a spent budget goes
+  // on to the CI gate as before, which hands red CI back to In Review for the
+  // fix loop's recipe, instead of parking the card in Approved for good.
+  it("keeps a renumbered card in Approved, and lets manual and capped go on", () => {
+    for (const [result, expected] of [
+      ["renumbered", "GATE 794 802 abc123 Approved x"],
+      ["manual", "GATE 794 802 abc123 Approved x\nCI GATE abc123 2"],
+      ["capped", "GATE 794 802 abc123 Approved x\nCI GATE abc123 2"],
+      ["clean", "GATE 794 802 abc123 Approved x\nCI GATE abc123 2"],
+    ]) {
+      assert.equal(renumberStep({ result }), expected, result);
+    }
+  });
+
+  it("holds an erroring card only while migration_renumber_error_hold says so", () => {
+    assert.equal(
+      renumberStep({ result: "error", hold: 0 }),
+      "GATE 794 802 abc123 Approved x\nERRHOLD 794 802 abc123",
+    );
+    assert.equal(
+      renumberStep({ result: "error", hold: 1 }),
+      "GATE 794 802 abc123 Approved x\nERRHOLD 794 802 abc123\nCI GATE abc123 2",
+    );
+  });
+
+  // A head that already contains main and isn't red has nothing to renumber.
+  it("runs the gate only when main is ahead, a required check fails, or the compare failed", () => {
+    assert.equal(renumberStep({ behind: "0", failing: "0" }), "CI GATE abc123 0");
+    assert.match(renumberStep({ behind: "0", failing: "1" }), /^GATE /);
+    assert.match(renumberStep({ behind: "3", failing: "0" }), /^GATE /);
+    assert.match(renumberStep({ behind: "", failing: "0" }), /^GATE /);
+  });
+
+  describe("migration_renumber_error_hold (ADR-0077)", () => {
+    const H = "a".repeat(40);
+    function hold({ stored = "", max = 3, dry = 0, readFails = 0, writeFails = 0, marker = 1 }) {
+      const snippet = `
+set -euo pipefail
+exec 3>&1
+DRY_RUN=${dry}; FACTORY_MAX_MIGRATION_RENUMBER_ERRORS=${max}
+SCRIPT_DIR=/factory/scripts; STATE_FILE=/s; LOG_FILE=/dev/null
+log() { echo "LOG $*"; }
+issue_has_marker() { echo "MARKER? $2"; return ${marker}; }
+gh() { echo "COMMENT $(printf '%s' "$*" | tr '\\n' ' ')" >&3; }
+node() {
+  case "$2" in
+    factory:get-issue) [[ ${readFails} -eq 0 ]] || return 1; echo '{"renumberErrors":"${stored}"}' ;;
+    factory:set-issue-field) echo "SET $4 $5" >&3; [[ ${writeFails} -eq 0 ]] ;;
+  esac
+}
+eval "$(awk '/^migration_renumber_error_hold\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+if migration_renumber_error_hold 794 802 ${H}; then echo HOLD; else echo ON; fi`;
       const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
       assert.equal(r.status, 0, r.stderr);
-      assert.equal(r.stdout.trim(), expected, result);
+      return r.stdout.trim().split("\n");
     }
+
+    it("holds and counts while under the cap, per head", () => {
+      const first = hold({});
+      assert.equal(first.at(-1), "HOLD");
+      assert.ok(first.includes(`SET renumberErrors ${H}:1`));
+      const second = hold({ stored: `${H}:1` });
+      assert.equal(second.at(-1), "HOLD");
+      assert.ok(second.includes(`SET renumberErrors ${H}:2`));
+      // Another head's count doesn't carry over.
+      const fresh = hold({ stored: `${"b".repeat(40)}:7` });
+      assert.equal(fresh.at(-1), "HOLD");
+      assert.ok(fresh.includes(`SET renumberErrors ${H}:1`));
+      assert.ok(!first.some((l) => l.startsWith("COMMENT")));
+    });
+
+    it("goes on with one comment per head once the cap is reached", () => {
+      const out = hold({ stored: `${H}:2` });
+      assert.equal(out.at(-1), "ON");
+      assert.ok(out.includes(`SET renumberErrors ${H}:3`));
+      assert.ok(out.includes(`MARKER? drafto-factory-migration-renumber-error:${H.slice(0, 12)}`));
+      const comment = out.find((l) => l.startsWith("COMMENT"));
+      assert.match(comment, /couldn't\. So the card goes on as before ADR-0077/);
+      assert.match(
+        comment,
+        /goes back to \*\*In Review\*\* for the fix loop and needs your approval again/,
+      );
+      assert.match(comment, /The factory log says what failed/);
+      assert.match(comment, /<!-- drafto-factory-migration-renumber-error:a{12} -->/);
+      const again = hold({ stored: `${H}:3`, marker: 0 });
+      assert.equal(again.at(-1), "ON");
+      assert.ok(!again.some((l) => l.startsWith("COMMENT")), "once per head");
+      assert.equal(hold({ max: 0 }).at(-1), "ON", "a cap of 0 never holds");
+    });
+
+    it("goes on when it can't read or record the count, and only logs in a dry run", () => {
+      assert.equal(hold({ readFails: 1 }).at(-1), "ON");
+      assert.equal(hold({ writeFails: 1 }).at(-1), "ON");
+      const dry = hold({ dry: 1 });
+      assert.equal(dry.at(-1), "HOLD");
+      assert.ok(!dry.some((l) => /^(SET|COMMENT)/.test(l)));
+    });
   });
 
   describe("the BEHIND step (ADR-0077)", () => {
@@ -276,6 +374,14 @@ done`;
       start,
     );
     assert.ok(start !== -1 && end !== -1, "BEHIND step not found");
+    // RELEASE_HEAD and RELEASE_BEHIND are read once, before the renumber gate.
+    const readStart = releaseBlock.indexOf('    RELEASE_HEAD=$(echo "$PR_VIEW"');
+    const readEnd = releaseBlock.indexOf(
+      "\n",
+      releaseBlock.indexOf("    RELEASE_BEHIND=", readStart),
+    );
+    assert.ok(readStart !== -1 && readEnd !== -1, "the compare read not found");
+    const readBehind = releaseBlock.slice(readStart, readEnd);
     function step(mergeState, behind) {
       const snippet = `
 set -euo pipefail
@@ -292,6 +398,7 @@ gh() {
 eval "$(awk '/^pr_behind_main\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^update_pr_branch\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 for _once in 1; do
+${readBehind}
 ${releaseBlock.slice(start, end)}
   echo MERGE
 done`;

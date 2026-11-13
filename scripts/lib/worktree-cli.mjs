@@ -60,7 +60,11 @@ import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./is-main.mjs";
 import { ADR_DIR, newAdrCollisions, nextFreeAdrNumber } from "./adr-numbers.mjs";
-import { checkMigrationOrder } from "./check-migration-order.mjs";
+import {
+  checkMigrationOrder,
+  directMigrationNames,
+  migrationNamesAt,
+} from "./check-migration-order.mjs";
 
 // Canonicalise a path for comparison: git stores worktree paths fully
 // resolved (e.g. macOS /var → /private/var), so a raw path.resolve compare
@@ -625,33 +629,27 @@ function adrState(files, wtPath, mainSha) {
 // never pushes such a merge; the renumber gate fixes it (ADR-0077).
 const MIGRATIONS_DIR = "supabase/migrations";
 
-function migrationBasenames(paths) {
-  return [
-    ...new Set(
-      paths
-        .filter((p) => p.endsWith(".sql") && path.posix.dirname(p) === MIGRATIONS_DIR)
-        .map((p) => path.posix.basename(p)),
-    ),
-  ];
-}
-
-function migrationNamesAt(wtPath, ref) {
+// The shared lister (check-migration-order.mjs), or [] when git can't read
+// <ref>, as before.
+function migrationNamesAtRef(wtPath, ref) {
   if (!ref) return [];
-  const res = git(["ls-tree", "-z", "--name-only", ref, "--", `${MIGRATIONS_DIR}/`], {
-    cwd: wtPath,
-    allowFail: true,
-  });
-  return res.status === 0 ? migrationBasenames(String(res.stdout).split("\0")) : [];
+  try {
+    return migrationNamesAt(ref, { cwd: wtPath, dir: MIGRATIONS_DIR });
+  } catch {
+    return [];
+  }
 }
 
 function migrationNamesInIndex(wtPath) {
   const res = git(["ls-files", "-z", "--", `${MIGRATIONS_DIR}/`], { cwd: wtPath, allowFail: true });
-  return res.status === 0 ? migrationBasenames(String(res.stdout).split("\0")) : [];
+  return res.status === 0
+    ? directMigrationNames(String(res.stdout).split("\0"), MIGRATIONS_DIR)
+    : [];
 }
 
 function migrationErrors(names, wtPath, mainSha) {
   if (!mainSha) return [];
-  return checkMigrationOrder({ localFiles: names, baseFiles: migrationNamesAt(wtPath, mainSha) })
+  return checkMigrationOrder({ localFiles: names, baseFiles: migrationNamesAtRef(wtPath, mainSha) })
     .filter((f) => f.kind === "error")
     .map((f) => ({
       reason: f.reason,
@@ -807,7 +805,7 @@ export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
   const mainIsAncestor = Boolean(mainSha && head && isAncestor(wtPath, mainSha, head));
   const markers = filesWithMarkers(wtPath, files);
   const { adrCollisions } = adrState(adrFileNamesAt(wtPath, "HEAD"), wtPath, mainSha);
-  const migErrors = migrationErrors(migrationNamesAt(wtPath, "HEAD"), wtPath, mainSha);
+  const migErrors = migrationErrors(migrationNamesAtRef(wtPath, "HEAD"), wtPath, mainSha);
   return {
     head,
     inProgress,

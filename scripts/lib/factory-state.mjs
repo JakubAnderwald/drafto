@@ -648,11 +648,14 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // new file map (a JSON string) its verify checks: a rejected write only costs
   // a fresh code review of the merged head. migrationRenumbers is the count
   // FACTORY_MAX_MIGRATION_RENUMBERS caps; the gate won't renumber unless it can
-  // record it.
+  // record it. renumberErrors ("<head sha>:<count>") counts --release's holds on
+  // a gate error for one head, capped by FACTORY_MAX_MIGRATION_RENUMBER_ERRORS;
+  // a rejected write stops the holds, so the card goes on as before.
   "renumberFrom",
   "renumberTo",
   "renumberMap",
   "migrationRenumbers",
+  "renumberErrors",
   // Cancelled-check re-run budget. A rejected write leaves the count at zero,
   // so the factory would re-run CI on every tick and never tell the operator.
   "ciRerun",

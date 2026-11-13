@@ -16,8 +16,10 @@ import { fileURLToPath } from "node:url";
 
 import {
   checkMigrationOrder,
+  directMigrationNames,
   formatFinding,
   isValidMigrationName,
+  migrationNamesAt,
   suggestVersion,
   versionOf,
 } from "../lib/check-migration-order.mjs";
@@ -367,6 +369,35 @@ describe("check-migration-safety: migration order in a git repo", () => {
       if (branch && branch !== "main") git("branch", "-q", "-D", branch);
     }
     git("update-ref", "refs/remotes/origin/main", baseSha);
+  });
+
+  // The one lister the CI check, the conflict pass and the renumber gate share
+  // (ADR-0077): direct *.sql children only, for any ref and any repo.
+  it("lists a ref's direct *.sql migrations, and throws on a bad ref", () => {
+    mkdirSync(join(migrations(), "nested"), { recursive: true });
+    writeFileSync(join(migrations(), "nested", "20260401000001_deep.sql"), sql);
+    writeFileSync(join(migrations(), "README.md"), "x\n");
+    addMigration("20260401000001_c.sql");
+    commitAll("more");
+    const head = git("rev-parse", "HEAD");
+    const cleanEnv = env();
+    assert.deepEqual(migrationNamesAt(head, { cwd: dir, env: cleanEnv }).sort(), [
+      A,
+      B,
+      "20260401000001_c.sql",
+    ]);
+    assert.deepEqual(migrationNamesAt(baseSha, { cwd: dir, env: cleanEnv }).sort(), [A, B]);
+    assert.throws(() => migrationNamesAt("no-such-ref", { cwd: dir, env: cleanEnv }), /ls-tree/);
+    assert.deepEqual(
+      directMigrationNames([
+        `supabase/migrations/${A}`,
+        `supabase/migrations/${A}`,
+        "supabase/migrations/nested/x.sql",
+        "supabase/migrations/README.md",
+        "other/y.sql",
+      ]),
+      [A],
+    );
   });
 
   it("fails an added migration older than origin/main's newest, with the git mv", () => {

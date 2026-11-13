@@ -19,6 +19,7 @@ import {
   pushRenumber,
   renumberComment,
   rewriteLines,
+  stripSql,
   verifyRenumber,
   writeRenumberCommit,
 } from "../lib/migration-renumber.mjs";
@@ -249,6 +250,18 @@ describe("objectsTouched / objectOverlap", () => {
     assert.deepEqual(objectsTouched(sql), ["function public.g"]);
   });
 
+  it("reads an E'' string's backslash escapes, so the next statement still counts", () => {
+    const sql = String.raw`
+      comment on function public.bar() is E'don\'t \\ stop';
+      create or replace function public.foo() returns int language sql as $$ select 1 $$;
+      select e'it\'s', 'plain\';
+      create table public.after_e (id int);
+    `;
+    assert.deepEqual(objectsTouched(sql), ["function public.foo", "table public.after_e"]);
+    // An identifier that ends in e before a quote doesn't start an escape string.
+    assert.equal(stripSql(String.raw`select some'a\';`), "select some'';");
+  });
+
   it("reads this repo's real migrations", () => {
     const sql = readFileSync(
       resolve(SCRIPTS, "..", "supabase", "migrations", "20261112000002_product_metrics.sql"),
@@ -313,19 +326,46 @@ describe("makeRewriter / rewriteLines / addedLineNumbers", () => {
 });
 
 describe("claimedVersions", () => {
-  it("lists other open PRs' migration files with the uncapped gh pr diff --name-only", () => {
+  it("lists other open PRs' migration files from the paginated files endpoint", () => {
     const calls = [];
     const gh = (args) => {
       calls.push(args.join(" "));
       if (args[1] === "list") return JSON.stringify([{ number: 802 }, { number: 829 }]);
       return "apps/web/x.ts\nsupabase/migrations/20261111000001_note_text_chars.sql\nsupabase/migrations/nested/x.sql\n";
     };
-    assert.deepEqual(claimedVersions({ excludePr: 802, gh }), [
-      { pr: 829, file: "20261111000001_note_text_chars.sql" },
-    ]);
-    assert.ok(calls.some((c) => c === "pr diff 829 --repo JakubAnderwald/drafto --name-only"));
-    assert.ok(!calls.some((c) => c.startsWith("pr diff 802")));
-    assert.ok(!calls.some((c) => c.includes("--json files")));
+    assert.deepEqual(claimedVersions({ excludePr: 802, gh, warn: () => {} }), {
+      claimed: [{ pr: 829, file: "20261111000001_note_text_chars.sql" }],
+      skipped: [],
+    });
+    assert.ok(
+      calls.includes(
+        "api --paginate repos/JakubAnderwald/drafto/pulls/829/files --jq .[].filename",
+      ),
+    );
+    assert.ok(!calls.some((c) => c.includes("pulls/802/")));
+    // gh pr diff fails with HTTP 406 on a huge diff; gh pr view --json files stops at 100.
+    assert.ok(!calls.some((c) => c.startsWith("pr diff") || c.includes("--json files")));
+  });
+
+  it("skips a PR whose files can't be listed, instead of failing the sweep", () => {
+    const warnings = [];
+    const gh = (args) => {
+      if (args[1] === "list") return JSON.stringify([{ number: 801 }, { number: 829 }]);
+      if (args[2].includes("/801/")) throw new Error("gh api failed: HTTP 502");
+      return "supabase/migrations/20261111000001_note_text_chars.sql\n";
+    };
+    assert.deepEqual(claimedVersions({ excludePr: 802, gh, warn: (m) => warnings.push(m) }), {
+      claimed: [{ pr: 829, file: "20261111000001_note_text_chars.sql" }],
+      skipped: [801],
+    });
+    assert.match(warnings.join("\n"), /couldn't list PR #801's files.*HTTP 502/);
+  });
+
+  it("still throws when the open PRs can't be listed at all", () => {
+    const gh = () => {
+      throw new Error("gh pr list failed");
+    };
+    assert.throws(() => claimedVersions({ excludePr: 802, gh }), /gh pr list failed/);
   });
 });
 
@@ -348,6 +388,11 @@ describe("comments", () => {
       /supabase migration repair --status reverted 20261111000001\nsupabase migration repair --status applied 20261113000001/,
     );
     assert.match(body, /also the version of main's `20261111000001_note_text_chars\.sql`/);
+    // Repairing dev leaves main's file at the old version unapplied there.
+    assert.match(
+      body,
+      /After the repair, main's `20261111000001_note_text_chars\.sql` at `20261111000001` shows as not applied on dev, because dev never ran it, and `supabase db push --include-all` \(dev only\) applies it\./,
+    );
     assert.match(body, /Prod needs nothing: it is pushed only from `main`, after the merge/);
     assert.doesNotMatch(body, /tbmjbxxseonkciqovnpl/);
   });
@@ -791,7 +836,7 @@ describe("migration-renumber end to end (#802/#829)", () => {
     // The node helper looks other open PRs up with the gh binary.
     write(bin, "gh", '#!/bin/sh\nif [ "$1 $2" = "pr list" ]; then echo "[]"; exit 0; fi\nexit 1\n');
     chmodSync(join(bin, "gh"), 0o755);
-    const fns = ["migration_renumber_gate", "update_pr_branch"]
+    const fns = ["migration_renumber_gate", "update_pr_branch", "pr_head_oid"]
       .map((fn) => `eval "$(awk '/^${fn}\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${AGENT}")"`)
       .join("\n");
     const snippet = `
@@ -809,6 +854,7 @@ issue_has_marker() { return 1; }
 gh() {
   case "$1 $2" in
     "pr diff") printf 'supabase/migrations/20261111000001_gate.sql\\n' ;;
+    "pr view") echo "VIEW $*" >>"$CALLS"; git --git-dir="${origin}" rev-parse refs/heads/factory/issue-970 ;;
     "issue comment") echo "COMMENT $3 $(printf '%s' "$*" | grep -o 'drafto-factory-migration-renumber:[0-9a-f]*')" >>"$CALLS" ;;
     "api --method") echo "UPDATE $*" >>"$CALLS" ;;
   esac
@@ -835,6 +881,8 @@ migration_renumber_gate 970 971 ${head} "Approved" || echo "RC=$? RESULT=$MIGRAT
       out,
       new RegExp(`COMMENT 970 drafto-factory-migration-renumber:${to.slice(0, 12)}`),
     );
+    // It read the PR head back as R before asking for the update.
+    assert.ok(out.indexOf("VIEW pr view 971") < out.indexOf("UPDATE "));
     const issue = JSON.parse(readFileSync(state, "utf8")).issues["970"];
     assert.equal(issue.renumberFrom, head);
     assert.equal(issue.renumberTo, to);
@@ -862,6 +910,7 @@ describe("migration_renumber_gate (stubbed)", () => {
     within = 0,
     preFails = 0,
     marker = 1,
+    headAfter = 1,
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "renumber-gate-"));
     const q = (o) => JSON.stringify(o).replaceAll("'", "'\\''");
@@ -875,6 +924,12 @@ log() { echo "LOG $*" >>"$CALLS"; }
 worktree_within_head() { return ${within}; }
 issue_has_marker() { echo "MARKER? $2" >>"$CALLS"; return ${marker}; }
 update_pr_branch() { echo "UPDATE $*" >>"$CALLS"; }
+sleep() { echo "SLEEP $*" >>"$CALLS"; }
+# GitHub shows R as the PR head from read number <headAfter> on.
+pr_head_oid() {
+  echo "HEADOID $1" >>"$CALLS"
+  if [[ $(grep -c '^HEADOID' "$CALLS") -ge ${headAfter} ]]; then echo "${R}"; else echo "${H}"; fi
+}
 node() {
   case "$2" in
     precheck) echo "PRECHECK $*" >>"$CALLS"; [[ ${preFails} -eq 0 ]] || return 1; echo '${q(precheck)}' ;;
@@ -934,6 +989,9 @@ cat "$CALLS"
       /apply --root \/factory --issue 794 --pr 802 --head f{40} --where Approved/,
     );
     assert.ok(r.calls.includes(`UPDATE 802 ${R}`));
+    assert.ok(r.calls.indexOf("HEADOID 802") < r.calls.indexOf(`UPDATE 802 ${R}`));
+    assert.ok(!r.calls.some((c) => c.startsWith("SLEEP")), "R showed at once");
+    assert.doesNotMatch(r.calls[applyAt], /--claimed-json/, "precheck gave no list");
     assert.ok(r.calls.includes(`MARKER? drafto-factory-migration-renumber:${R.slice(0, 12)}`));
     assert.ok(
       r.calls.some((c) =>
@@ -943,6 +1001,43 @@ cat "$CALLS"
       ),
     );
     assert.ok(!r.calls.some((c) => /bump-attempts|branchUpdates|ciRerun/.test(c)));
+  });
+
+  // One sweep of the other open PRs per renumber: apply plans with precheck's.
+  it("hands apply the versions precheck found other open PRs using", () => {
+    const claimed = [{ pr: 829, file: "20261111000001_note_text_chars.sql" }];
+    const r = gate({ precheck: { status: "fixable", map: MAP, claimed } });
+    assert.equal(r.out, "RC=1 RESULT=renumbered");
+    const apply = r.calls.find((c) => c.startsWith("APPLY"));
+    assert.ok(apply.endsWith(`--where Approved --claimed-json ${JSON.stringify(claimed)}`), apply);
+    const none = gate({ precheck: { status: "fixable", map: MAP, claimed: null } });
+    assert.doesNotMatch(
+      none.calls.find((c) => c.startsWith("APPLY")),
+      /--claimed-json/,
+    );
+  });
+
+  // update-branch expects R as the head, and GitHub shows it a moment after the push.
+  it("waits for GitHub to show R as the head before updating the branch", () => {
+    const late = gate({ headAfter: 3 });
+    assert.equal(late.out, "RC=1 RESULT=renumbered");
+    assert.deepEqual(
+      late.calls.filter((c) => /^(HEADOID|SLEEP|UPDATE)/.test(c)),
+      ["HEADOID 802", "SLEEP 2", "HEADOID 802", "SLEEP 2", "HEADOID 802", `UPDATE 802 ${R}`],
+    );
+    const never = gate({ headAfter: 99 });
+    assert.equal(never.out, "RC=1 RESULT=renumbered");
+    assert.equal(never.calls.filter((c) => c.startsWith("HEADOID")).length, 5);
+    assert.equal(never.calls.filter((c) => c.startsWith("SLEEP")).length, 4);
+    assert.ok(!never.calls.some((c) => c.startsWith("UPDATE")));
+    assert.ok(
+      never.calls.some((c) =>
+        /doesn't show it as the PR head yet, so a later tick updates/.test(c),
+      ),
+    );
+    // The renumber is still recorded and commented on: the head is R either way.
+    assert.ok(never.calls.includes(`SET renumberTo ${R}`));
+    assert.ok(never.calls.some((c) => c.startsWith("COMMENT")));
   });
 
   it("doesn't comment twice on the same R", () => {
@@ -992,7 +1087,7 @@ cat "$CALLS"
     assert.ok(
       r.calls.some((c) => c.startsWith("LOG DRY-RUN: would renumber PR #802's migrations")),
     );
-    assert.ok(!r.calls.some((c) => /^(APPLY|SET|UPDATE|COMMENT)/.test(c)));
+    assert.ok(!r.calls.some((c) => /^(APPLY|SET|UPDATE|COMMENT|HEADOID|SLEEP)/.test(c)));
   });
 
   it("reports an error when the precheck can't run", () => {

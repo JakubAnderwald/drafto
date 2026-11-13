@@ -767,7 +767,24 @@ function shapeMergeConflict(mc) {
       .filter((c) => c && typeof c.number === "string" && /^\d{4}$/.test(c.number))
       .map((c) => ({ number: c.number, files: names(c.files) })),
     nextFreeAdr: /^\d{4}$/.test(mc.nextFreeAdr ?? "") ? mc.nextFreeAdr : null,
+    // Migrations this PR adds that no longer sort after main's (ADR-0077):
+    // merge-main's {reason, file, version?, suggested?}, string fields only.
+    migrationErrors: (Array.isArray(mc.migrationErrors) ? mc.migrationErrors : [])
+      .filter((e) => e && typeof e === "object" && names([e.file]).length === 1)
+      .slice(0, MAX_CONFLICT_FILES)
+      .map((e) => {
+        const out = { reason: shortField(e.reason), file: e.file };
+        if (shortField(e.version)) out.version = e.version;
+        if (shortField(e.suggested)) out.suggested = e.suggested;
+        return out;
+      }),
   };
+}
+
+// A short string field (a reason or a version) from merge-main's result, or ""
+// when it is missing, not a string, or longer than any real one.
+function shortField(v) {
+  return typeof v === "string" && v.length <= 40 ? v : "";
 }
 
 // Cap a unified diff so a large PR can't blow the model's context. Trims by

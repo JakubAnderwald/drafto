@@ -370,6 +370,11 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["802"].migrationRenumbers, "1");
     setIssueField(s, 802, "migrationRenumbers", "");
     assert.equal(s.issues["802"].migrationRenumbers, null);
+    // --release's per-head count of holds on a gate error.
+    setIssueField(s, 802, "renumberErrors", `${"a".repeat(40)}:2`);
+    assert.equal(s.issues["802"].renumberErrors, `${"a".repeat(40)}:2`);
+    setIssueField(s, 802, "renumberErrors", "");
+    assert.equal(s.issues["802"].renumberErrors, null);
   });
 
   it("setIssueField clears the field on empty/null/'null' sentinels", () => {
