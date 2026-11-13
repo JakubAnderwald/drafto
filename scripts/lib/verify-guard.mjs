@@ -115,12 +115,20 @@ export const CURL_CFG = "curl.cfg";
 export const SIGNED_OUT_CURL_CFG = "curl-signed-out.cfg";
 export const COOKIE_JAR = "cookies.txt";
 export const SIGNIN_CFG = "signin.cfg";
+// The opt-in wrappers' configs (ADR-0073): the dev key file's and the account
+// files' paths, read by bin/dev-inspect and bin/live-tests.
+export const INSPECT_CFG = "dev-inspect.cfg";
+export const LIVE_TESTS_CFG = "lane-tests.cfg";
 export const PRIVATE_FILE_NAMES = Object.freeze([
   CURL_CFG,
   SIGNED_OUT_CURL_CFG,
   COOKIE_JAR,
   SIGNIN_CFG,
+  INSPECT_CFG,
+  LIVE_TESTS_CFG,
 ]);
+// The run's own bin/ wrappers, which the session may name by full path.
+export const LANE_BIN_NAMES = Object.freeze(["preview-curl", "dev-inspect", "live-tests"]);
 
 // Command words a lane session never runs, whatever their arguments.
 export const DENY_COMMANDS = Object.freeze([
@@ -801,6 +809,12 @@ export function protectedTextReason(text, config) {
   if (/delete-users(?!\.test\.mjs)/.test(lower) || lower.includes("users:delete")) {
     return "deleting user accounts (pnpm users:delete) is for interactive sessions only";
   }
+  // Reads the service-role key of the project --project names (prod or dev):
+  // operators only.
+  // Its unit tests (fakes only) stay runnable.
+  if (/user-stats(?!\.test\.mjs)/.test(lower) || lower.includes("users:stats")) {
+    return "the product metrics (pnpm users:stats) read a service-role key and are for interactive sessions only";
+  }
   if (/drafto\.eu\b/i.test(s))
     return "production (drafto.eu) is off limits; the preview is the only target";
   if (lower.includes(".config/gh")) return "the gh config is off limits";
@@ -1301,11 +1315,15 @@ const NODE_VALUE_OPTS = new Set([
   "--test-reporter-destination",
 ]);
 
-// Operator-only scripts: the dev live-test runner and account deletion. The
-// text rules catch their names; this catches a glob that could expand to one
-// (`cd scripts && node run-*`, or node --test's own globbing of
-// `'scripts/run-*.mjs'`).
-const OPERATOR_ONLY_FILES = Object.freeze(["run-dev-live-tests.mjs", "delete-users.mjs"]);
+// Operator-only scripts: the dev live-test runner, account deletion and the
+// product metrics. The text rules catch their names; this catches a glob that
+// could expand to one (`cd scripts && node run-*`, or node --test's own
+// globbing of `'scripts/run-*.mjs'`).
+const OPERATOR_ONLY_FILES = Object.freeze([
+  "run-dev-live-tests.mjs",
+  "delete-users.mjs",
+  "user-stats.mjs",
+]);
 
 function globCouldNameOperatorScript(word) {
   const seg = String(word).slice(String(word).lastIndexOf("/") + 1);
@@ -1324,7 +1342,7 @@ function checkNode(args, ctx) {
   if (url) return deny(`network access goes through preview-curl only (${url})`);
   if (args.some((a) => !a.startsWith("-") && globCouldNameOperatorScript(a))) {
     return deny(
-      "this pattern could name the dev live-test runner or the account-deletion script, which are for operators only",
+      "this pattern could name the dev live-test runner, the account-deletion script or the product-metrics script, which are for operators only",
     );
   }
   if (args.includes("--test")) return allow("node --test");
@@ -1487,9 +1505,10 @@ function checkSimple(words, ctx, targets = []) {
 // A whole Bash command string.
 function checkText(text, ctx) {
   if (ctx.depth > 8) return deny("command nesting is too deep to check");
-  // The run's own preview-curl may be named by its full path; nothing else
-  // under logs/ may.
-  const named = String(text).split(`${ctx.config.binDir}/preview-curl`).join("preview-curl");
+  // The run's own wrappers (preview-curl, dev-inspect, live-tests) may be
+  // named by their full path; nothing else under logs/ may.
+  let named = String(text);
+  for (const bin of LANE_BIN_NAMES) named = named.split(`${ctx.config.binDir}/${bin}`).join(bin);
   const normalised = named.replace(/\$\{HOME\}|\$HOME|(^|[\s'"=:])~(?=\/)/g, (m, pre) =>
     pre === undefined ? ctx.config.home : `${pre}${ctx.config.home}`,
   );

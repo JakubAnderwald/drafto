@@ -767,7 +767,24 @@ function shapeMergeConflict(mc) {
       .filter((c) => c && typeof c.number === "string" && /^\d{4}$/.test(c.number))
       .map((c) => ({ number: c.number, files: names(c.files) })),
     nextFreeAdr: /^\d{4}$/.test(mc.nextFreeAdr ?? "") ? mc.nextFreeAdr : null,
+    // Migrations this PR adds that no longer sort after main's (ADR-0077):
+    // merge-main's {reason, file, version?, suggested?}, string fields only.
+    migrationErrors: (Array.isArray(mc.migrationErrors) ? mc.migrationErrors : [])
+      .filter((e) => e && typeof e === "object" && names([e.file]).length === 1)
+      .slice(0, MAX_CONFLICT_FILES)
+      .map((e) => {
+        const out = { reason: shortField(e.reason), file: e.file };
+        if (shortField(e.version)) out.version = e.version;
+        if (shortField(e.suggested)) out.suggested = e.suggested;
+        return out;
+      }),
   };
+}
+
+// A short string field (a reason or a version) from merge-main's result, or ""
+// when it is missing, not a string, or longer than any real one.
+function shortField(v) {
+  return typeof v === "string" && v.length <= 40 ? v : "";
 }
 
 // Cap a unified diff so a large PR can't blow the model's context. Trims by
@@ -1166,6 +1183,14 @@ export function buildFactoryBrowserRunBundle({
   }
   const scenario = selectScenarioComment(comments, headSha);
   const webSteps = scenario ? extractWebSection(scenario.body) : null;
+  // ADR-0073: the `### Fixtures` section, which bash turns into files before
+  // the session (browser-fixtures.mjs, read by code, not by the model), and
+  // whether any Web step is marked `(admin)`, so bash mints the admin's link
+  // only when a step needs it.
+  const fixtureSection =
+    scenario && webSteps
+      ? extractScenarioSections(scenario.body).find((s) => /^fixtures$/i.test(s.heading.trim()))
+      : null;
   return {
     kind: "factory_browser_run",
     runKind,
@@ -1192,6 +1217,14 @@ export function buildFactoryBrowserRunBundle({
     // mints after this bundle is built (browser-signin.mjs) and sets here; it
     // never gets the password, which it couldn't type on a preview anyway.
     account: { email: readAccountFile(accountFile).email, signInUrl: null },
+    fixtureSpecs: fixtureSection ? fixtureSection.text : "",
+    hasAdminSteps: typeof webSteps === "string" && /\(admin\)/i.test(webSteps),
+    // Set by bash from its switches (ADR-0073) once it knows what this run
+    // got: {uploads, js, inspect, admin}, the generated fixtures, and the
+    // admin's one-time link.
+    capabilities: { uploads: false, js: false, inspect: false, admin: false },
+    fixtures: [],
+    adminAccount: null,
     browser: { deviceId },
     qaTag: `factory-${issue.number}-${String(headSha).slice(0, 7)}`,
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),

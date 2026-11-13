@@ -495,6 +495,7 @@ describe("settings under /bin/bash 3.2", () => {
       FACTORY_VERIFY_BYPASS_FILE: "/home/op/drafto-secrets/vercel-bypass.env",
       FACTORY_VERIFY_HOLD_MAX_MIN: "60",
       FACTORY_VERIFY_LANES: "shell,browser",
+      FACTORY_VERIFY_LIVE_TESTS: "0",
       FACTORY_VERIFY_MAX_ATTEMPTS: "2",
       FACTORY_VERIFY_ONLY_LABEL: "",
       FACTORY_VERIFY_PREVIEW_WAIT_MIN: "10",

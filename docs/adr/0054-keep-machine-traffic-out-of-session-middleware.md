@@ -6,6 +6,8 @@
 
 > **Update 2026-10-25**: The middleware moved from `apps/web/middleware.ts` to `apps/web/src/middleware.ts`, so point 1's path is now that file. The matcher didn't change. Next looks for the middleware next to the app directory, which is `src/app`. At the web root, `next build` still found it, so production was unaffected, but `next dev` compiled it and never ran it. `__tests__/unit/next-convention-files.test.ts` keeps it under `src/`.
 
+> **Update 2026-11-09**: The 404 the skipped MCP OAuth probe paths get is no longer static. Since [ADR-0069](./0069-web-nonce-csp-and-security-headers.md) the root layout reads the CSP nonce with `headers()`, so every page renders per request, the not-found page included. Each probe still skips the middleware, but it now costs a server render. If Vercel usage climbs, serve those paths a bare 404 that skips the layout.
+
 ## Context
 
 The Vercel team behind drafto.eu is on the Hobby plan. It includes 4 hours of Fluid Active CPU per 30 days, and when that runs out every project on the team is paused. On 2026-10-21 Vercel warned that 75% was used, the third such warning since September.

@@ -163,6 +163,9 @@ const DESKTOP_HEADING = /\b(macos|mac|desktop)\b/i;
 // The scenario's API-response checks, which the shell lane runs (ADR-0053).
 // Matched on the plain label, so `### **API**` or `### API checks` count too.
 const API_HEADING = /^api\b/i;
+// ADR-0073's scenario sections: the runner's files, and the shell lane's live tests.
+const FIXTURES_HEADING = /^fixtures\s*$/i;
+const LIVE_TESTS_HEADING = /^live tests\s*$/i;
 // Scenario sections that are notes, not steps.
 const NOT_STEPS_HEADING = /(\bnot|n't)\s+(manually\s+)?testable\b|\buntestable\b/i;
 
@@ -825,7 +828,22 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
   const shellRan = Boolean(shell.reported) && shell.runStatus !== "blocked";
   for (const s of sections) {
     if (s.heading === "Web" || NOT_STEPS_HEADING.test(s.heading)) continue;
+    // ADR-0073: `### Fixtures` lists files for the browser runner, not steps.
+    if (FIXTURES_HEADING.test(s.heading)) continue;
     const h = plainLabel(s.heading);
+    // `### Live tests` is the shell lane's too: it reports each one, or lists
+    // what it couldn't run among its own manual steps.
+    if (LIVE_TESTS_HEADING.test(h)) {
+      if (!shellRan) {
+        add(
+          `Run the **${h}** in the test scenario by hand: ` +
+            "`pnpm test:live:supabase -- --only <name>` for each, after pushing the PR's " +
+            "migration to dev.",
+          { reserved: true },
+        );
+      }
+      continue;
+    }
     if (API_HEADING.test(h)) {
       if (!shellRan) {
         const why = shell.reported ? "stopped early (blocked)" : "didn't report";

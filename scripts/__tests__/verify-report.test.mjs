@@ -1280,6 +1280,35 @@ describe("scenario sections and platforms", () => {
     assert.ok(lines.some((l) => l.startsWith("Run the **macOS** steps")));
   });
 
+  it("never lists ### Fixtures as a step, and asks for ### Live tests by hand only without the shell lane (ADR-0073)", () => {
+    const body = [
+      "## Test scenario",
+      "### Fixtures",
+      "- small.jpg 1.5MB",
+      "### Live tests",
+      "- storage-quota",
+      "### macOS",
+      "1. Click.",
+    ].join("\n");
+    const platforms = { web: false, mobile: false, desktop: true };
+    // The shell lane reported: it covers the live tests itself.
+    const ran = manualLines(compose({ platforms, scenario: body }).body);
+    assert.ok(!ran.some((l) => /Fixtures|Live tests/.test(l)), ran.join("\n"));
+    // It didn't: the person runs them.
+    const shell = { state: "timeout", dir: "", text: null };
+    const lines = manualLines(compose({ platforms, scenario: body, shell }).body);
+    assert.ok(!lines.some((l) => /Fixtures/.test(l)), lines.join("\n"));
+    assert.ok(!lines.some((l) => /Go through the \*\*Live tests\*\*/.test(l)));
+    assert.ok(
+      lines.some((l) =>
+        l.startsWith(
+          "Run the **Live tests** in the test scenario by hand: `pnpm test:live:supabase",
+        ),
+      ),
+      lines.join("\n"),
+    );
+  });
+
   it("leaves ### API to the shell lane once it reported, and asks for it by hand otherwise", () => {
     const body = [
       "## Test scenario",

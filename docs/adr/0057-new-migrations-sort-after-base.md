@@ -1,6 +1,6 @@
 # 0057 — New Migrations Must Sort After the Base Branch
 
-- **Status**: Accepted
+- **Status**: Accepted; alternative 4 superseded by [0077](./0077-factory-renumbers-migrations-mechanically.md)
 - **Date**: 2026-10-25
 - **Authors**: Jakub Anderwald, with Claude Code
 
@@ -58,7 +58,7 @@ Nothing caught this before a database refused it:
 1. **Require the whole folder to be in order.** Rejected: main already holds the #646 pair out of order, and renaming applied migrations is the costly step this ADR exists to avoid. Judging only added files gives the same protection for new work.
 2. **Compare against `github.event.pull_request.base.sha`.** Rejected as the source of truth: it is a snapshot in the event payload, while the checked-out tree is GitHub's merge onto the base it used at that moment. The merge commit's first parent is that base by construction. The payload value is still logged for diagnosis.
 3. **Rely on `supabase db push --include-all`.** Rejected: it hides the problem rather than fixing it. It applies the stale migration out of order on every database, so dev and prod can end up applying migrations in different orders, and each operator has to remember the flag.
-4. **Generate versions from a central counter, or rename at merge time with a bot.** Rejected: more moving parts than a check, and a rename at merge time still leaves dev holding the old version.
+4. **Generate versions from a central counter, or rename at merge time with a bot.** Rejected: more moving parts than a check, and a rename at merge time still leaves dev holding the old version. (Superseded for factory PRs by [ADR 0077](./0077-factory-renumbers-migrations-mechanically.md): the factory now renames a PR's migrations at merge time, proves the commit is only that rename, and posts the exact dev repair.)
 5. **Rely on docs and review only.** Rejected: the factory writes and updates migrations unattended, and the failure only shows up when a database refuses the push, after the PR has merged.
 
 ## Related

@@ -98,6 +98,11 @@ describe("decidePre: Bash deny/allow matrix", () => {
     "preview-curl /api/health -s -w '%{http_code}'",
     'preview-curl -X POST /api/api-keys --json \'{"name":"factory-shell-7-aaaaaaa"}\' > "$D/key.json"',
     `${config.binDir}/preview-curl /api/health`,
+    // The opt-in wrappers (ADR-0073), by name and by full path.
+    "dev-inspect rows attachments --note d5f8208d-cb04-4be0-8102-5f7a28df2ff7",
+    `${config.binDir}/dev-inspect usage`,
+    "live-tests storage-quota",
+    `${config.binDir}/live-tests profile-guard`,
     "bash apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh --preflight",
     "ISSUE= PR= bash apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh --preflight",
     "cat apps/web/.env.local.example",
@@ -118,6 +123,8 @@ describe("decidePre: Bash deny/allow matrix", () => {
     // The dev live-test runner's own unit tests use fixtures only.
     "cd scripts && node --test __tests__/run-dev-live-tests.test.mjs",
     "cd scripts && node --test __tests__/delete-users.test.mjs",
+    "cd scripts && node --test __tests__/user-stats.test.mjs",
+    "node --test scripts/__tests__/product-metrics.test.mjs",
     'rm -rf "$D"/*',
     "awk '{print $1}' f.txt",
     "grep -E '^[a-z]+$' x.ts",
@@ -208,6 +215,13 @@ describe("decidePre: Bash deny/allow matrix", () => {
     // Account deletion uses the service-role keys: operator-only.
     ["pnpm users:delete -- --project dev x@y.z", /deleting user accounts/],
     ["node scripts/delete-users.mjs --help", /deleting user accounts/],
+    // The product metrics read a service-role key: operator-only.
+    ["pnpm users:stats -- --project prod", /product metrics \(pnpm users:stats\)/],
+    ["pnpm run users:stats -- --project dev --json", /product metrics/],
+    ["node scripts/user-stats.mjs --help", /product metrics/],
+    ["cd scripts && node user-stats.mjs --project dev", /product metrics/],
+    ["node --test scripts/user-stats.mjs", /product metrics/],
+    ["node -e \"import('./scripts/user-stats.mjs')\"", /product metrics/],
     ["cd scripts && node --test ./run-dev-live-test''s.mjs", /dev live tests/],
     ["bash -c 'node scripts/run-dev-live-tests.mjs'", /dev live tests/],
     ["node <<'EOF'\nimport('./scripts/run-dev-live-tests.mjs')\nEOF", /dev live tests/],
@@ -217,6 +231,8 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["node --test scripts/*live*", /could name the dev live-test runner/],
     ["cd scripts && node delete-*.mjs", /account-deletion script/],
     ["node --test 'scripts/*-users.mjs'", /account-deletion script/],
+    ["cd scripts && node user-*.mjs", /product-metrics script/],
+    ["node 'scripts/*-stats.mjs'", /product-metrics script/],
     ["pnpm turbo run release", /release task/],
     ["npm install", /npm install/],
     ["node scripts/lib/state-cli.mjs factory:status", /node scripts/],
@@ -262,6 +278,12 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["find .. -name curl-signed-out.cfg -exec cat {} +", /curl config/],
     ["cat $(find ../.. -name curl-signed-out.cfg)", /curl config/],
     ["cat cookies.txt", /curl config/],
+    // The opt-in wrappers' configs name the dev key file (ADR-0073).
+    ["cat private/dev-inspect.cfg", /curl config|holds credentials/],
+    ["cat $(find ../.. -name lane-tests.cfg)", /curl config|holds credentials/],
+    ["cat ../*/dev-insp*", /holds credentials|private directory|logs and state/],
+    // The wrappers don't open a way to the runner itself.
+    ["live-tests storage-quota; pnpm test:live:supabase", /dev live tests/],
     [`cat ${config.privateDir}/curl.cfg`, /curl config|private directory/],
     [`ls ${config.repoRoot}/logs`, /logs and state/],
     ["cat ../../logs/factory-state.json", /logs and state/],

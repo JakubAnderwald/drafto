@@ -129,6 +129,8 @@
 //                                    crLastCoveredSha, crCliRuns,
 //                                    crCliFreePassSha, branchUpdates,
 //                                    branchUpdatedFrom, hostedConfigVouched,
+//                                    renumberFrom, renumberTo, renumberMap,
+//                                    migrationRenumbers, renumberErrors,
 //                                    ciRerun,
 //                                    browserRunSha, browserRunAttempts,
 //                                    verifySha, verifyStartedAt, verifyShell,

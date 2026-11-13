@@ -283,6 +283,21 @@ describe("In Test prompt — machine contract", () => {
     );
   });
 
+  it("describes the runner's opt-in abilities in the shapes the factory parses (ADR-0073)", async () => {
+    const { parseFixtureSpecs } = await import("../lib/browser-fixtures.mjs");
+    assert.match(flat, /a `### Fixtures` section inside `## Test scenario`/);
+    // The examples the prompt gives are ones browser-fixtures.mjs accepts.
+    const specs = parseFixtureSpecs(
+      ["- small.jpg 1.5MB", "- quota.enex notes=4 image=1MB", "- sample.enex"].join("\n"),
+    );
+    assert.deepEqual(
+      specs.map((x) => x.kind),
+      ["jpg", "enex", "sample"],
+    );
+    assert.match(flat, /start the step with `\(admin\)`/);
+    assert.match(flat, /Each of these comes back SKIP on a run that doesn't have it/);
+  });
+
   it("puts API-response checks in a ### API section the shell lane runs", () => {
     assert.match(
       flat,

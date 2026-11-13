@@ -4,6 +4,8 @@
 - **Date**: 2026-07-15
 - **Authors**: Jakub Anderwald
 
+> **Amended by [ADR-0076](./0076-factory-watch-effort-and-retry-budget.md)** (2026-11-13): `--watch` fix passes now run at `xhigh` through their own knob, `FACTORY_WATCH_EFFORT`. `FACTORY_EFFORT` (ultracode) covers `--implement` only.
+
 ## Context
 
 The dark factory ([ADR-0026](./0026-dark-factory-pipeline.md)) drives issues through plan → implement → watch → release by invoking Claude Code from four call sites in `scripts/factory-agent.sh`. Every call was byte-identical and carried **no effort/model flag**:

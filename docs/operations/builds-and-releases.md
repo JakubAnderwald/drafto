@@ -98,11 +98,17 @@ Xcode 27 (installed on the Mac mini on 2026-10-04) breaks every iOS build in two
 
 These files hold Expo public env vars (Supabase URL/anon key, Google iOS URL scheme) and are gitignored. They are **not** in `~/drafto-secrets/` — restore from a personal backup. Worktree copy steps for these files are in [`CLAUDE.md`](../../CLAUDE.md) → "Worktree Workflow".
 
-### macOS TestFlight upload: `CDUploaderStateInfoResumeFilePath` after "UPLOAD SUCCEEDED"
+### TestFlight upload (macOS and iOS): `CDUploaderStateInfoResumeFilePath` after "UPLOAD SUCCEEDED"
 
-altool sometimes uploads the `.pkg`, prints `UPLOAD SUCCEEDED with no errors`, and then logs `ERROR: … Failed to create URL for 'CDUploaderStateInfoResumeFilePath'. The file doesn't exist.` fastlane fails the upload on that line. Desktop 0.4.4 builds 74 and 76 hit it: the builds were in App Store Connect, but the lane stopped before the release notes, the released-issue comments and the `desktop@` tag.
+altool sometimes uploads the build (the macOS `.pkg` or the iOS `.ipa`), reports that the upload succeeded, and then logs `ERROR: … Failed to create URL for 'CDUploaderStateInfoResumeFilePath'. The file doesn't exist.` fastlane fails the upload on that line. The lane then stops before the release notes, the released-issue comments and the release tag, although the build is in App Store Connect. Desktop 0.4.4 builds 74 and 76 and iOS 1.4.7 build 66 hit it.
 
-`mac beta` now treats that one error as spurious if App Store Connect lists the build it just uploaded, under the same build number and version. It polls for up to 10 minutes, logs `altool's error was spurious — continuing`, and finishes the lane. Any other upload error still fails the lane. So does this one if the build never shows up, or if Apple has already marked it `INVALID`.
+`mac beta` and `ios beta` treat that one error as spurious only if App Store Connect lists the build they just uploaded, under the same build number, platform and version, in the `PROCESSING` or `VALID` state. They poll for up to 10 minutes, log `altool's error was spurious — continuing`, and finish the lane (`upload_to_testflight_checked` in each app's `fastlane/Fastfile`). Anything else still fails the lane:
+
+- any other upload error, including another altool diagnostic or a non-zero altool exit reported alongside this one
+- this error when the build never shows up. The failure message includes the last App Store Connect lookup error, if any.
+- this error when Apple has marked the build `INVALID` or `FAILED`
+
+The production rebuild lanes (`pnpm release:prod:ios`, `pnpm release:production`) are **not** covered, because they submit for review in the same call. If one stops on this error, check App Store Connect: if the build is there, submit it with the promote lane (`pnpm release:promote:ios` / `pnpm release:promote`) instead of rebuilding.
 
 ### macOS `with-environment.sh: No such file` (`REACT_NATIVE_PATH`)
 
@@ -292,6 +298,29 @@ adb logcat -c && adb logcat | grep -iE "GoogleSign|ApiException|DEVELOPER_ERROR|
 Look for `Status{statusCode=DEVELOPER_ERROR}`. The app also logs every native failure as
 `[oauth][google] sign-in failed` (visible via `adb logcat -s ReactNativeJS:V`), and the on-screen
 banner carries the status code, so a cable is not strictly required.
+
+### App Links (Android) and Universal Links (iOS)
+
+`https://drafto.eu/notebooks/*` and `/notes/*` open the app on both platforms, but only on the apex host ([ADR-0074](../adr/0074-app-links-verify-on-apex-only.md)). `www.drafto.eu` is a redirect domain, and the verifiers don't follow redirects. The association files live in `apps/web/public/.well-known/`:
+
+- `assetlinks.json` lists the SHA-256 of the **Play App Signing key** (Play Console → Test and release → Setup → App signing, which also shows a ready-made Digital Asset Links snippet) and of the **upload key** (`keytool -list -v` on the upload keystore). Update it if either key changes.
+- `apple-app-site-association` names `4J2USPSG2U.eu.drafto.mobile`.
+
+Check them after a deploy:
+
+```bash
+curl -s "https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://drafto.eu&relation=delegate_permission/common.handle_all_urls"
+# statements[] names eu.drafto.mobile and there is no errorCode
+curl -s https://app-site-association.cdn-apple.com/a/v1/drafto.eu   # Apple's CDN copy; may lag ~24h
+
+# On a device with a Play build installed:
+adb shell pm verify-app-links --re-verify eu.drafto.mobile
+adb shell pm get-app-links eu.drafto.mobile   # drafto.eu: verified
+```
+
+Only Play builds and APKs signed with the upload key verify. A debug build (`pnpm android`, Maestro) is signed with the Android debug keystore, so its links open in the browser, which is expected. To test link handling on one, approve the domain by hand: `adb shell pm set-app-links-user-selection --user cur --package eu.drafto.mobile true drafto.eu`.
+
+Play Console → Deep links reports on the build on the track it checks. A host removed from the intent filter stays listed until a build without it reaches that track.
 
 ## Google OAuth branding
 

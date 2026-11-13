@@ -136,6 +136,7 @@ node() {
   esac
 }
 pr_head_oid() { cat "$PR_HEAD_FILE"; }
+pr_head_branch() { echo "PRBRANCH" >>"$CALLS"; echo factory/issue-797; }
 `;
 
   // The agent commits but never pushes on a conflict pass: bash checks first
@@ -197,6 +198,164 @@ pr_head_oid() { cat "$PR_HEAD_FILE"; }
     );
     assert.match(out, /WHY=the resolution never reached the PR/);
   });
+
+  // GitHub's PR view lags a push by a few seconds. Reading it right after the
+  // push saw the old head, and all nine "never reached the PR" warnings up to
+  // 2026-11-10 were this race on merges that had landed (ADR-0076). The push's
+  // own success is the proof.
+  it("accepts a pushed resolution while GitHub's PR view still shows the old head", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       node() {
+         case "$2" in
+           merge-check) echo "$CHECK" ;;
+           push) echo "PUSH $*" >>"$CALLS"; echo '{"pushed":true,"branch":"factory/issue-797","head":"abc"}' ;;
+         esac
+       }
+       pr_head_oid() { echo "PRVIEW" >>"$CALLS"; echo old; }
+       LOCAL=abc; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' && echo VERIFIED`,
+    );
+    assert.match(out, /PUSH /);
+    assert.match(out, /VERIFIED/);
+    assert.match(out, /LOG Conflict pass for PR #755: push of abc to factory\/issue-797 accepted/);
+    // The PR's branch is read before the push (it doesn't lag), and the PR
+    // view never after it: a lagging or failing `gh pr view` can't override
+    // the push's own answer.
+    assert.ok(out.indexOf("PRBRANCH") < out.indexOf("PUSH "), "branch read before the push");
+    const afterPush = out.slice(out.indexOf("PUSH "));
+    assert.doesNotMatch(afterPush, /PRVIEW/);
+  });
+
+  // The push only proves the commit reached the PR when it went to the PR's
+  // own head branch in this repo. Anything else falls back to the PR view.
+  it("doesn't take a push to another branch as proof", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       node() {
+         case "$2" in
+           merge-check) echo "$CHECK" ;;
+           push) echo '{"pushed":true,"branch":"factory/issue-1","head":"abc"}' ;;
+         esac
+       }
+       pr_head_oid() { echo old; }
+       LOCAL=abc; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' || echo "WHY=$CONFLICT_PASS_WHY"`,
+    );
+    assert.match(out, /WHY=the resolution never reached the PR \(local abc, PR old\)/);
+    assert.doesNotMatch(out, /accepted/);
+  });
+
+  it("falls back to the PR view when the PR's branch is unknown (a fork, or gh failed)", () => {
+    const fallback = (prView) =>
+      run(
+        ["conflict_pass_verified"],
+        `${stubs}
+         node() {
+           case "$2" in
+             merge-check) echo "$CHECK" ;;
+             push) echo '{"pushed":true,"branch":"factory/issue-797","head":"abc"}' ;;
+           esac
+         }
+         pr_head_branch() { echo ""; }
+         # Called in a $(…) subshell, so count calls in a file, not a variable.
+         CNT=$(mktemp)
+         pr_head_oid() { echo x >>"$CNT"; [[ $(wc -l <"$CNT") -eq 1 ]] && echo old || echo ${prView}; }
+         LOCAL=abc; CHECK='${resolved("abc")}'
+         conflict_pass_verified /wt 755 '${merge}' && echo VERIFIED || echo "WHY=$CONFLICT_PASS_WHY"`,
+      );
+    // Still old after the push: unproven, so it fails as before.
+    const stale = fallback("old");
+    assert.match(stale, /WHY=the resolution never reached the PR/);
+    assert.doesNotMatch(stale, /accepted/);
+    // The PR view shows the commit: the old check passes it.
+    assert.match(fallback("abc"), /VERIFIED/);
+  });
+
+  it("still rejects a resolution whose push failed", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       node() {
+         case "$2" in
+           merge-check) echo "$CHECK" ;;
+           push) echo "PUSH $*" >>"$CALLS"; echo "rejected: non-fast-forward" >&2; return 1 ;;
+         esac
+       }
+       pr_head_oid() { echo old; }
+       LOCAL=abc; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' || echo "WHY=$CONFLICT_PASS_WHY"`,
+    );
+    assert.match(out, /PUSH /);
+    assert.match(out, /WHY=the resolution never reached the PR \(local abc, PR old\)/);
+    assert.doesNotMatch(out, /accepted/);
+  });
+
+  it("rejects a push that reports a different head than the verified one", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       node() {
+         case "$2" in
+           merge-check) echo "$CHECK" ;;
+           push) echo '{"pushed":true,"branch":"factory/issue-797","head":"zzz"}' ;;
+         esac
+       }
+       pr_head_oid() { echo old; }
+       LOCAL=abc; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' || echo "WHY=$CONFLICT_PASS_WHY"`,
+    );
+    assert.match(out, /WHY=the resolution never reached the PR/);
+  });
+});
+
+describe("pr_head_branch", () => {
+  // gh stands in for `gh pr view`: it applies the real --jq filter to $FIXTURE,
+  // so the cross-repository rule is tested, not just the call.
+  const ghStub = `
+gh() {
+  echo "GH $*" >>"$CALLS"
+  local q=""
+  while [[ $# -gt 0 ]]; do [[ "$1" == "--jq" ]] && q="$2"; shift; done
+  [[ -n "$FIXTURE" ]] || return 1
+  echo "$FIXTURE" | jq -r "$q"
+}`;
+
+  it("returns the PR's head branch when it lives in this repo", () => {
+    const out = run(
+      ["pr_head_branch"],
+      `${ghStub}
+       FIXTURE='{"headRefName":"factory/issue-797","isCrossRepository":false}'
+       echo "BRANCH=[$(pr_head_branch 819)]"`,
+    );
+    assert.match(out, /BRANCH=\[factory\/issue-797\]/);
+    assert.match(
+      out,
+      /GH pr view 819 --repo JakubAnderwald\/drafto --json headRefName,isCrossRepository/,
+    );
+  });
+
+  it("returns nothing for a PR from a fork, which the factory's push can't reach", () => {
+    const out = run(
+      ["pr_head_branch"],
+      `${ghStub}
+       FIXTURE='{"headRefName":"factory/issue-797","isCrossRepository":true}'
+       echo "BRANCH=[$(pr_head_branch 819)]"`,
+    );
+    assert.match(out, /BRANCH=\[\]/);
+  });
+
+  it("returns nothing when gh fails", () => {
+    const out = run(
+      ["pr_head_branch"],
+      `${ghStub}
+       FIXTURE=''
+       echo "BRANCH=[$(pr_head_branch 819)]"`,
+    );
+    assert.match(out, /BRANCH=\[\]/);
+  });
 });
 
 describe("rollback_conflict_pass", () => {
@@ -236,6 +395,9 @@ describe("build_watch_bundle carries the merge result", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [],
       nextFreeAdr: "0062",
+      migrationErrors: [
+        { reason: "stale", file: "20261101000001_q.sql", suggested: "20261113000001" },
+      ],
     });
     const out = run(
       ["build_watch_bundle"],
@@ -250,6 +412,9 @@ describe("build_watch_bundle carries the merge result", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [],
       nextFreeAdr: "0062",
+      migrationErrors: [
+        { reason: "stale", file: "20261101000001_q.sql", suggested: "20261113000001" },
+      ],
     });
   });
 });
@@ -313,6 +478,110 @@ describe("--watch conflict pass wiring", () => {
     assert.match(failure, /"Blocked"/);
     assert.match(failure, /factory:bump-attempts/);
     assert.match(outcome, /continue/);
+  });
+
+  // ADR-0077: a conflict or red CI after main moved can be a migration of this
+  // PR's that no longer sorts after main's. The renumber gate gets it first, so
+  // neither the merge nor a fix pass (and its attempt) is spent on a rename.
+  it("runs the migration renumber gate before merge-main and before any attempt is spent", () => {
+    const gateAt = watchBlock.indexOf(
+      'migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW"',
+    );
+    const budgetAt = watchBlock.indexOf("# Retry budget for the fix loop.");
+    const mergeAt = watchBlock.indexOf('worktree-cli.mjs" merge-main --path "$WT_PATH"');
+    const bumpAt = watchBlock.indexOf("factory:bump-attempts");
+    assert.ok(gateAt > 0 && gateAt < budgetAt && gateAt < mergeAt && gateAt < bumpAt);
+    const call = watchBlock.slice(gateAt - 200, gateAt + 300);
+    assert.match(call, /if \[\[ "\$CONFLICTING" -eq 1 \|\| "\$FAILING" -gt 0 \]\]; then/);
+    // Only a renumber skips the pass (the card waits for CI on the new head).
+    // A plan that needs a person, a spent budget or an error lets it run, so the
+    // watch prompt's "Migration order" recipe stays the fallback instead of the
+    // card sitting in In Review for good.
+    assert.match(
+      call,
+      /migration_renumber_gate [^\n]* "In Review" \|\| true\n\s*\[\[ "\$MIGRATION_RENUMBER_RESULT" == "renumbered" \]\] && continue/,
+    );
+    assert.doesNotMatch(call, /== "error" \]\] \|\| continue/);
+  });
+
+  // A clean merge that leaves a migration-order error reaches here only when the
+  // gate couldn't rename it mechanically. Rolling it back every tick, spending
+  // nothing, would loop forever; the agent gets it like an ADR clash, and
+  // merge-check refuses a resolution that still leaves one.
+  it("hands a clean merge that leaves a migration-order error to the agent, unpushed", () => {
+    const arm = watchBlock.slice(
+      watchBlock.indexOf("          up-to-date|clean)"),
+      watchBlock.indexOf("          conflicts) ;;"),
+    );
+    const pushGate = 'if [[ "$ADR_CLASHES" -eq 0 && "$MIG_ERRORS" -eq 0 ]]; then';
+    assert.ok(arm.includes(pushGate), "the push must wait for zero migration-order errors");
+    const check = arm.slice(0, arm.indexOf(pushGate));
+    assert.match(
+      check,
+      /MIG_ERRORS=\$\(echo "\$MERGE_JSON" \| jq '\(\.migrationErrors \/\/ \[\]\) \| length'/,
+    );
+    assert.match(check, /handing the merge to the agent/);
+    assert.doesNotMatch(
+      check,
+      /rollback_conflict_pass|continue|bump-attempts|worktree-cli\.mjs" push/,
+    );
+    // And it runs before the push.
+    assert.ok(arm.indexOf("MIG_ERRORS") < arm.indexOf('worktree-cli.mjs" push'));
+  });
+
+  // Only a merge git just made goes to the agent. up-to-date made none (the
+  // branch already holds main), so it waits for GitHub with no Claude run, as
+  // before, and the red CI reaches the fix loop on a later tick.
+  describe("the up-to-date|clean arm", () => {
+    const start = watchBlock.indexOf('        case "$MERGE_STATUS" in');
+    const end = watchBlock.indexOf("        esac", start);
+    assert.ok(start !== -1 && end !== -1, "conflict pass case not found");
+    const ERR = [{ reason: "duplicate-base", file: "20261111000001_q.sql" }];
+    function arm(status, { ahead = false, migrationErrors = [] } = {}) {
+      const json = JSON.stringify({ status, ahead, migrationErrors });
+      const out = run(
+        [],
+        `
+ISSUE_NUM=794; PR_NUM=802; WT_PATH=/wt; MERGE_BEFORE=b; ADR_CLASHES=0; STATE_FILE=/s
+MERGE_STATUS=${status}
+MERGE_JSON='${json}'
+node() { echo "NODE $*" >>"$CALLS"; }
+rollback_conflict_pass() { echo "ROLLBACK $*" >>"$CALLS"; }
+for _once in 1; do
+${watchBlock.slice(start, end)}        esac
+  echo AGENT
+done`,
+      );
+      const [stdout, calls] = out.split("---\n");
+      return { agent: stdout.includes("AGENT"), calls };
+    }
+
+    it("hands a clean merge with a migration-order error to the agent, unpushed", () => {
+      const r = arm("clean", { ahead: true, migrationErrors: ERR });
+      assert.ok(r.agent);
+      assert.match(r.calls, /leaves 1 migration-order error\(s\) \(20261111000001_q\.sql\)/);
+      assert.doesNotMatch(r.calls, /NODE .*push|ROLLBACK/);
+    });
+
+    it("waits for GitHub on up-to-date, as before, whatever the order check says", () => {
+      const r = arm("up-to-date", { migrationErrors: ERR });
+      assert.ok(!r.agent, "no Claude run when git made no merge");
+      assert.match(r.calls, /already contains main; waiting for GitHub to recompute mergeability/);
+      assert.doesNotMatch(r.calls, /handing the merge to the agent/);
+    });
+
+    it("pushes a clean merge that leaves no error, with no Claude run", () => {
+      const r = arm("clean", { ahead: true });
+      assert.ok(!r.agent);
+      assert.match(r.calls, /NODE \/factory\/scripts\/lib\/worktree-cli\.mjs push/);
+    });
+  });
+
+  it("counts a migration-order error left by the agent as unresolved", () => {
+    assert.match(
+      script,
+      /CONFLICT_PASS_WHY="unresolved: \$\(echo "\$check" \| jq -c '\{[^}]*adrCollisions, migrationErrors\}'\)"/,
+    );
   });
 
   it("retries an unreachable origin without spending budget", () => {

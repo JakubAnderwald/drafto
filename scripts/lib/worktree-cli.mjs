@@ -60,6 +60,11 @@ import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./is-main.mjs";
 import { ADR_DIR, newAdrCollisions, nextFreeAdrNumber } from "./adr-numbers.mjs";
+import {
+  checkMigrationOrder,
+  directMigrationNames,
+  migrationNamesAt,
+} from "./check-migration-order.mjs";
 
 // Canonicalise a path for comparison: git stores worktree paths fully
 // resolved (e.g. macOS /var → /private/var), so a raw path.resolve compare
@@ -617,6 +622,43 @@ function adrState(files, wtPath, mainSha) {
   };
 }
 
+// Migration-order errors (check-migration-order.mjs, ADR-0057) in a merge of
+// main: <names> are the supabase/migrations/*.sql basenames the merge holds,
+// judged against main's at <mainSha>. A clean merge can carry one (a PR whose
+// migration main moved past), and CI would go red on it, so the conflict pass
+// never pushes such a merge; the renumber gate fixes it (ADR-0077).
+const MIGRATIONS_DIR = "supabase/migrations";
+
+// The shared lister (check-migration-order.mjs), or [] when git can't read
+// <ref>, as before.
+function migrationNamesAtRef(wtPath, ref) {
+  if (!ref) return [];
+  try {
+    return migrationNamesAt(ref, { cwd: wtPath, dir: MIGRATIONS_DIR });
+  } catch {
+    return [];
+  }
+}
+
+function migrationNamesInIndex(wtPath) {
+  const res = git(["ls-files", "-z", "--", `${MIGRATIONS_DIR}/`], { cwd: wtPath, allowFail: true });
+  return res.status === 0
+    ? directMigrationNames(String(res.stdout).split("\0"), MIGRATIONS_DIR)
+    : [];
+}
+
+function migrationErrors(names, wtPath, mainSha) {
+  if (!mainSha) return [];
+  return checkMigrationOrder({ localFiles: names, baseFiles: migrationNamesAtRef(wtPath, mainSha) })
+    .filter((f) => f.kind === "error")
+    .map((f) => ({
+      reason: f.reason,
+      file: f.file,
+      ...(f.version ? { version: f.version } : {}),
+      ...(f.suggested ? { suggested: f.suggested } : {}),
+    }));
+}
+
 function firstLine(res) {
   return String(res.stderr || res.stdout || "")
     .trim()
@@ -633,7 +675,8 @@ function firstLine(res) {
 //                 transient, so the caller retries without spending budget.
 // `adrCollisions` lists numbers the merge left on two ADR files that main
 // doesn't itself duplicate — a clean merge can produce one, so it is reported
-// for every status. `ahead` says whether HEAD still has to be pushed.
+// for every status. `migrationErrors` lists the merge's migration-order errors
+// the same way. `ahead` says whether HEAD still has to be pushed.
 export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
   if (!wtPath) throw new Error("mergeMain requires a worktree path");
   if (mergeInProgress(wtPath)) {
@@ -672,6 +715,7 @@ export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
       ...base,
       conflictedFiles: [],
       ...adrState(adrFileNamesInIndex(wtPath), wtPath, mainSha),
+      migrationErrors: migrationErrors(migrationNamesInIndex(wtPath), wtPath, mainSha),
       ahead: hasUnpushedCommits(wtPath, branch),
     };
   }
@@ -682,6 +726,7 @@ export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
       ...base,
       conflictedFiles: conflicted,
       ...adrState(adrFileNamesInIndex(wtPath), wtPath, mainSha),
+      migrationErrors: migrationErrors(migrationNamesInIndex(wtPath), wtPath, mainSha),
       ahead: true,
     };
   }
@@ -694,6 +739,7 @@ export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
     detail: firstLine(res),
     conflictedFiles: [],
     adrCollisions: [],
+    migrationErrors: [],
     ahead: false,
   };
 }
@@ -740,8 +786,9 @@ function filesWithMarkers(wtPath, files) {
 // conflicted-file list merge-main returned. Everything is judged on HEAD — the
 // commit bash will push — never the working tree: the resolution is accepted
 // only when the merge is committed, nothing tracked is left uncommitted, main
-// is in HEAD, none of those files kept a conflict marker, and HEAD's ADRs share
-// no number main doesn't already duplicate.
+// is in HEAD, none of those files kept a conflict marker, HEAD's ADRs share
+// no number main doesn't already duplicate, and HEAD's migrations sort after
+// main's (no migration-order error).
 export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
   if (!wtPath) throw new Error("checkMerge requires a worktree path");
   const head = revParse(wtPath, "HEAD");
@@ -758,6 +805,7 @@ export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
   const mainIsAncestor = Boolean(mainSha && head && isAncestor(wtPath, mainSha, head));
   const markers = filesWithMarkers(wtPath, files);
   const { adrCollisions } = adrState(adrFileNamesAt(wtPath, "HEAD"), wtPath, mainSha);
+  const migErrors = migrationErrors(migrationNamesAtRef(wtPath, "HEAD"), wtPath, mainSha);
   return {
     head,
     inProgress,
@@ -766,12 +814,14 @@ export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
     mainIsAncestor,
     filesWithMarkers: markers,
     adrCollisions,
+    migrationErrors: migErrors,
     resolved:
       !inProgress &&
       uncommitted.length === 0 &&
       mainIsAncestor &&
       markers.length === 0 &&
-      adrCollisions.length === 0,
+      adrCollisions.length === 0 &&
+      migErrors.length === 0,
   };
 }
 

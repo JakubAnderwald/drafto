@@ -5,8 +5,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The dark factory must invoke `claude` at an explicit effort on every call:
-// ultracode on the code-writing stages (--implement/--watch) and xhigh on the
-// read-only planning stages (--plan/replan). See ADR-0029. Locking the flag —
+// ultracode on --implement, xhigh on --watch fix passes (ADR-0076) and xhigh on
+// the read-only planning stages (--plan/replan). See ADR-0029. Locking the flag —
 // and its validation guards — in against a refactor that drops it: a silent
 // regression would send the factory back to whatever ambient effort the host
 // happens to default to, which is exactly the drift this change removed.
@@ -17,27 +17,45 @@ const script = readFileSync(scriptPath, "utf8");
 describe("factory-agent Claude effort", () => {
   it("passes --effort at all six Claude call sites", () => {
     // Four read-only sites (plan + replan + In Test scenario + code review) use
-    // the plan effort; two coding sites (implement + watch) use the coding
-    // effort.
+    // the plan effort; the implement site uses the coding effort and the watch
+    // fix site its own (ADR-0076).
     const planFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_PLAN_EFFORT"/g) || [];
     const codeFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_EFFORT"/g) || [];
+    const watchFlags =
+      script.match(/--dangerously-skip-permissions --effort "\$FACTORY_WATCH_EFFORT"/g) || [];
     assert.equal(
       planFlags.length,
       4,
       'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + In Test + review sites',
     );
+    assert.equal(codeFlags.length, 1, 'expected --effort "$FACTORY_EFFORT" at the implement site');
     assert.equal(
-      codeFlags.length,
-      2,
-      'expected --effort "$FACTORY_EFFORT" at the implement + watch sites',
+      watchFlags.length,
+      1,
+      'expected --effort "$FACTORY_WATCH_EFFORT" at the watch fix site',
     );
     assert.equal(
-      planFlags.length + codeFlags.length,
+      planFlags.length + codeFlags.length + watchFlags.length,
       6,
       "every factory Claude call must carry an effort flag",
     );
+  });
+
+  it("runs --implement at the coding effort and --watch fix passes at the watch effort", () => {
+    // ADR-0076: at ultracode a watch fix pass finished its fix, then started a
+    // review workflow and waited on it until the 1800s cap killed it with
+    // nothing committed (#797). The log line and the flag must agree.
+    const implement = script.match(/Invoking claude for #\$ISSUE_NUM \(--implement[\s\S]{0,600}/);
+    assert.ok(implement, "implement claude invocation not found");
+    assert.match(implement[0], /effort=\$FACTORY_EFFORT\)/);
+    assert.match(implement[0], /--effort "\$FACTORY_EFFORT"/);
+    const watch = script.match(/Invoking claude for #\$ISSUE_NUM \(--watch fix[\s\S]{0,600}/);
+    assert.ok(watch, "watch fix claude invocation not found");
+    assert.match(watch[0], /effort=\$FACTORY_WATCH_EFFORT\)/);
+    assert.match(watch[0], /--effort "\$FACTORY_WATCH_EFFORT"/);
+    assert.doesNotMatch(watch[0], /--effort "\$FACTORY_EFFORT"/);
   });
 
   it("runs the browser runner (the seventh call) at the read-only (plan) effort", () => {
@@ -60,17 +78,31 @@ describe("factory-agent Claude effort", () => {
     assert.match(block[0], /--effort "\$FACTORY_PLAN_EFFORT"/);
   });
 
-  it("defaults FACTORY_EFFORT to ultracode and FACTORY_PLAN_EFFORT to xhigh", () => {
+  it("defaults FACTORY_EFFORT to ultracode, FACTORY_WATCH_EFFORT and FACTORY_PLAN_EFFORT to xhigh", () => {
     assert.match(script, /FACTORY_EFFORT="\$\{FACTORY_EFFORT:-ultracode\}"/);
+    assert.match(script, /FACTORY_WATCH_EFFORT="\$\{FACTORY_WATCH_EFFORT:-xhigh\}"/);
     assert.match(script, /FACTORY_PLAN_EFFORT="\$\{FACTORY_PLAN_EFFORT:-xhigh\}"/);
   });
 
-  it("validates both effort knobs against a known allowlist with a fallback", () => {
+  it("validates every effort knob against a known allowlist with a fallback", () => {
     // A case allowlist guards word-splitting / empty values (bash 3.2 safe) and
     // falls back to a safe default on an unknown level.
-    assert.match(script, /ultracode\|max\|xhigh\|high\|medium\|low\)/);
-    assert.match(script, /defaulting to ultracode/);
-    assert.match(script, /defaulting to xhigh/);
+    for (const knob of ["FACTORY_EFFORT", "FACTORY_WATCH_EFFORT", "FACTORY_PLAN_EFFORT"]) {
+      assert.match(
+        script,
+        new RegExp(`case "\\$${knob}" in\\n\\s*ultracode\\|max\\|xhigh\\|high\\|medium\\|low\\)`),
+        `${knob} must be checked against the allowlist`,
+      );
+    }
+    assert.match(script, /invalid FACTORY_EFFORT='\$FACTORY_EFFORT'; defaulting to ultracode/);
+    assert.match(
+      script,
+      /invalid FACTORY_WATCH_EFFORT='\$FACTORY_WATCH_EFFORT'; defaulting to xhigh/,
+    );
+    assert.match(
+      script,
+      /invalid FACTORY_PLAN_EFFORT='\$FACTORY_PLAN_EFFORT'; defaulting to xhigh/,
+    );
   });
 
   it("raises the plan/replan timeout to a knob (FACTORY_PLAN_TIMEOUT_SEC)", () => {

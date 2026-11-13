@@ -414,12 +414,22 @@ describe("browser-guard: decidePre rules, in order", () => {
 
   test("1. a non-Chrome tool is not this guard's business", () => {
     const d = decidePre({
-      tool: "Bash",
-      input: { command: "rm -rf /" },
+      tool: "Read",
+      input: { file_path: "/etc/hosts" },
       config: CONFIG,
       state: unselected,
     });
     assert.equal(d.allow, true);
+  });
+
+  test("1. Bash is denied unless the run has the inspect capability (ADR-0073)", () => {
+    const d = decidePre({
+      tool: "Bash",
+      input: { command: "dev-inspect whoami" },
+      config: CONFIG,
+      state: unselected,
+    });
+    assert.equal(d.allow, false);
   });
 
   test("1. a payload with no tool name is denied", () => {

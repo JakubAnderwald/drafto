@@ -77,8 +77,25 @@ describe("browser runner prompt — browser rules", () => {
     assert.match(flat, /never by path, and never paste one into the report/);
     assert.match(
       flat,
-      /must not contain the sign-in link, cookies, tokens, request or response headers/,
+      /must not contain the sign-in links, cookies, tokens, request or response headers/,
     );
+    assert.match(flat, /request bodies, or either account's email/);
+  });
+
+  it("grounds each opt-in capability in the guard's own lists (ADR-0073)", async () => {
+    const G = await import("../lib/browser-guard.mjs");
+    const all = G.runnerTools({ capabilities: ["uploads", "js", "inspect"] });
+    for (const tool of ["file_upload", "javascript_tool"]) {
+      assert.ok(all.includes(tool));
+      assert.ok(!G.RUNNER_TOOLS.includes(tool), `${tool} stays off by default`);
+      assert.match(flat, new RegExp(`\\b${tool}\\b`));
+    }
+    assert.ok(G.ALWAYS_DENY.includes("upload_image"));
+    assert.ok(
+      G.alwaysDeny({ capabilities: ["uploads", "js", "inspect"] }).includes("upload_image"),
+    );
+    assert.match(flat, /Run it with Bash, exactly as `dev-inspect <command> \[options\]`/);
+    assert.match(flat, /Each sign-in link works once, so there is no way back to the test account/);
     assert.match(flat, /report only method, path and status code/);
   });
 
