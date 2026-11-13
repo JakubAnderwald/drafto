@@ -16,7 +16,12 @@ jest.mock("@/lib/supabase", () => ({
   clientTag: "desktop-macos",
 }));
 
-import { syncDatabase, SyncNetworkError, resetSyncState } from "@/db/sync";
+import {
+  ACTIVITY_PING_MAX_WAIT_MS,
+  syncDatabase,
+  SyncNetworkError,
+  resetSyncState,
+} from "@/db/sync";
 
 describe("syncDatabase", () => {
   const mockDb = {
@@ -635,6 +640,39 @@ describe("activity ping after a successful sync (ADR-0080)", () => {
     jest.setSystemTime(new Date(`${TOMORROW}T00:05:00.000Z`));
     await syncDatabase(db);
     expect(pings()).toEqual([ping([TODAY]), ping([TOMORROW])]);
+  });
+
+  it("returns without waiting for a ping that never answers, and keeps its days", async () => {
+    // Fake setTimeout too, so the wait limit passes at once.
+    jest.useFakeTimers({
+      now: new Date(`${TODAY}T10:00:00.000Z`),
+      doNotFake: [
+        "hrtime",
+        "nextTick",
+        "performance",
+        "queueMicrotask",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "requestIdleCallback",
+        "cancelIdleCallback",
+        "setImmediate",
+        "clearImmediate",
+        "setInterval",
+        "clearInterval",
+      ],
+    });
+    const db = makeDb();
+    mockSupabaseRpc.mockImplementationOnce(() => new Promise(() => {}));
+
+    const first = syncDatabase(db);
+    await jest.advanceTimersByTimeAsync(ACTIVITY_PING_MAX_WAIT_MS);
+    await expect(first).resolves.toEqual({ remoteChangeCount: 0 });
+
+    // The latch is free, so the next sync runs its own synchronize(), and the
+    // unanswered day is still queued, so it goes again.
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    expect(mockSynchronize).toHaveBeenCalledTimes(2);
+    expect(pings()).toEqual([ping([TODAY]), ping([TODAY])]);
   });
 
   it("makes one synchronize() and one ping for coalesced concurrent callers", async () => {

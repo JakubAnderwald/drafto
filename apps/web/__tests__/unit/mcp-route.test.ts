@@ -219,6 +219,27 @@ describe("POST /api/mcp activity day (ADR 0080)", () => {
     );
   });
 
+  it("records the day the call arrived, even when the write runs after midnight UTC", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-13T23:59:59.900Z"));
+      const upsert = vi.fn().mockResolvedValue({ error: null });
+      const { supabase } = supabaseWithUpsert(upsert);
+      vi.mocked(authenticateMcpRequest).mockResolvedValue({ userId: "user-1", supabase });
+
+      await POST(authenticatedRequest());
+      vi.setSystemTime(new Date("2026-11-14T00:00:01.000Z"));
+      await runAfterCallbacks();
+
+      expect(upsert).toHaveBeenCalledWith(
+        { user_id: "user-1", day: "2026-11-13", client: "web-mcp" },
+        { onConflict: "user_id,day,client", ignoreDuplicates: true },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("records nothing when authentication fails", async () => {
     vi.mocked(authenticateMcpRequest).mockRejectedValue(new Error("Invalid API key"));
 

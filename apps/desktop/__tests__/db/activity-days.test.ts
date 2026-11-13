@@ -100,6 +100,14 @@ describe("markAppOpened", () => {
     expect(stored()).toEqual({ days: [day(0)], lastSent: null });
   });
 
+  it("forgets a lastSent after today, which a clock running ahead sent", async () => {
+    const { db, stored } = makeDb({ days: [day(0)], lastSent: day(2) });
+
+    await markAppOpened(db, at(0));
+
+    expect(stored()).toEqual({ days: [day(0)], lastSent: null });
+  });
+
   it("drops invalid entries from a stored queue and keeps the valid ones", async () => {
     const { db, stored } = makeDb({ days: ["not-a-day", 7, day(-1), "2026-02-30"], lastSent: 5 });
 
@@ -234,6 +242,24 @@ describe("flushActivityDays", () => {
     await flushing;
 
     expect(stored()).toEqual({ days: [day(1)], lastSent: day(0) });
+  });
+
+  it("records a day sent while the clock ran ahead once that day really comes", async () => {
+    const { db, stored } = makeDb();
+    const { client, rpc } = makeClient();
+    // The clock reads tomorrow. The server drops that day: it's after its own today.
+    await markAppOpened(db, at(1));
+    await flushActivityDays(db, client, TAG);
+
+    // Once the clock is put right, tomorrow is no longer held back.
+    await markAppOpened(db, at(0));
+    expect(stored()).toEqual({ days: [day(0)], lastSent: null });
+    await flushActivityDays(db, client, TAG);
+    await markAppOpened(db, at(1));
+    await flushActivityDays(db, client, TAG);
+
+    expect(rpc.mock.calls.map(([, args]) => args.p_days)).toEqual([[day(1)], [day(0)], [day(1)]]);
+    expect(stored()).toEqual({ days: [], lastSent: day(1) });
   });
 
   it("keeps the newest lastSent when an older day is sent", async () => {

@@ -92,8 +92,16 @@ export async function markAppOpened(
     await exclusive(async () => {
       const today = utcDay(now);
       const state = await readState(storage);
-      if (today === state.lastSent || state.days.includes(today)) return;
-      await storage.set(STORAGE_KEY, { ...state, days: addDay(state.days, today) });
+      // A lastSent after today was sent while this device's clock ran ahead.
+      // The server drops days after its own today, so it never recorded that
+      // day, which mustn't be held back when it really comes.
+      const lastSent = state.lastSent !== null && state.lastSent > today ? null : state.lastSent;
+      const known = today === lastSent || state.days.includes(today);
+      if (known && lastSent === state.lastSent) return;
+      await storage.set(STORAGE_KEY, {
+        days: known ? state.days : addDay(state.days, today),
+        lastSent,
+      });
     });
   } catch (error) {
     console.warn("[activity-days] Could not queue today's activity day:", error);

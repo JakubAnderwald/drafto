@@ -12,6 +12,11 @@ import { createClient } from "@/lib/supabase/client";
  */
 export const ACTIVITY_DAY_STORAGE_KEY = "drafto:activity-day";
 
+const DAY_MS = 86_400_000;
+// The rollover check runs this long after midnight UTC, so a timer that fires a little early
+// still lands on the new day.
+const ROLLOVER_DELAY_MS = 5_000;
+
 // The guards live at module level, not in the component: React StrictMode runs effects
 // twice in development, and a remount must not send the same day again while the first
 // call is still on its way.
@@ -79,13 +84,19 @@ function pingActivity(userId: string): void {
   void sendPing(marker, day);
 }
 
+/** Milliseconds from <now> until just after the next midnight UTC. */
+function untilNextUtcDay(now: number = Date.now()): number {
+  return DAY_MS - (now % DAY_MS) + ROLLOVER_DELAY_MS;
+}
+
 /**
  * Records that the signed-in user opened Drafto today (UTC), from the web, at most once per
  * browser session per UTC day (ADR 0080). Only the day is sent: never a note, page or action.
  *
- * The ping runs in an effect, after render, and is never awaited. A failure leaves the day
- * unmarked, so the next mount tries again, and is reported to Sentry as a warning at most
- * once per page session.
+ * The ping runs in an effect, after render, and is never awaited. It runs again when the user
+ * returns to the tab and at midnight UTC while the tab is in front, so a new day is recorded.
+ * A failure leaves the day unmarked, so the next mount tries again, and is reported to Sentry
+ * as a warning at most once per page session.
  */
 export function useActivityPing(userId: string): void {
   useEffect(() => {
@@ -93,13 +104,23 @@ export function useActivityPing(userId: string): void {
 
     // In-app navigation doesn't remount the app layout, so a tab left open across midnight
     // UTC would otherwise never record the new day. Check again whenever the user comes back
-    // to the tab; on a day already recorded this is a no-op.
+    // to the tab, and at each midnight UTC while the tab stays in front; on a day already
+    // recorded this is a no-op. A tab hidden at midnight records the day when it is shown.
     const onReturn = () => {
       if (document.visibilityState === "visible") pingActivity(userId);
     };
+    let rollover: ReturnType<typeof setTimeout>;
+    const scheduleRollover = () => {
+      rollover = setTimeout(() => {
+        onReturn();
+        scheduleRollover();
+      }, untilNextUtcDay());
+    };
+    scheduleRollover();
     document.addEventListener("visibilitychange", onReturn);
     window.addEventListener("focus", onReturn);
     return () => {
+      clearTimeout(rollover);
       document.removeEventListener("visibilitychange", onReturn);
       window.removeEventListener("focus", onReturn);
     };

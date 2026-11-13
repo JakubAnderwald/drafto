@@ -436,15 +436,35 @@ async function runSync(db: WMDatabase, opened: Promise<void>): Promise<SyncResul
   // The activity ping (ADR-0080, docs/features/offline-sync.md) goes only
   // after a sync got through, with every day queued since the last one. Both
   // calls never reject; the catch is a backstop so a ping can never change
-  // the sync's result. A failed ping keeps its days for the next sync.
-  try {
-    await opened;
-    await flushActivityDays(db, supabase, clientTag);
-  } catch (error) {
-    console.warn("[Sync] Activity ping failed:", error);
-  }
+  // the sync's result. A failed ping keeps its days for the next sync. The
+  // sync waits for it at most ACTIVITY_PING_MAX_WAIT_MS.
+  const ping = opened
+    .then(() => flushActivityDays(db, supabase, clientTag))
+    .catch((error: unknown) => console.warn("[Sync] Activity ping failed:", error));
+  await settleWithin(ping, ACTIVITY_PING_MAX_WAIT_MS);
 
   return { remoteChangeCount };
+}
+
+/**
+ * How long a sync waits for its activity ping before returning. A ping that
+ * hasn't answered by then carries on in the background, and its days stay
+ * queued until the server answers, so a stalled request can't hold the
+ * in-flight latch below and delay the next sync's push.
+ */
+export const ACTIVITY_PING_MAX_WAIT_MS = 10_000;
+
+/** Resolves once <task> settles or <ms> have passed, whichever comes first. */
+async function settleWithin(task: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([task, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Module-level in-flight coalesce. WatermelonDB forbids concurrent

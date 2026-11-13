@@ -159,6 +159,37 @@ describe("useActivityPing", () => {
     expect(mockRpc).toHaveBeenLastCalledWith(...rpcArgs(DAY_2));
   });
 
+  it("records the new UTC day at midnight while the tab stays in front", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    setNow(`${DAY_1}T23:59:00.000Z`);
+    renderHook(() => mod.useActivityPing("user-1"));
+    // waitFor polls with setTimeout, which this test fakes.
+    await flush();
+    expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_1}`);
+
+    // No focus, visibility change or remount: only the clock moves.
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(mockRpc).toHaveBeenCalledTimes(2);
+    expect(mockRpc).toHaveBeenLastCalledWith(...rpcArgs(DAY_2));
+  });
+
+  it("leaves a midnight rollover to the user's return when the tab is hidden", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    setNow(`${DAY_1}T23:59:00.000Z`);
+    renderHook(() => mod.useActivityPing("user-1"));
+    await flush();
+
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(mockRpc).toHaveBeenCalledTimes(2);
+    expect(mockRpc).toHaveBeenLastCalledWith(...rpcArgs(DAY_2));
+  });
+
   it("does not ping when the tab turns hidden", async () => {
     renderHook(() => mod.useActivityPing("user-1"));
     await flush();
@@ -173,14 +204,17 @@ describe("useActivityPing", () => {
   });
 
   it("stops listening once unmounted", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    setNow(`${DAY_1}T23:59:00.000Z`);
     const { unmount } = renderHook(() => mod.useActivityPing("user-1"));
     await flush();
     unmount();
 
-    setNow(`${DAY_2}T08:00:00.000Z`);
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
     window.dispatchEvent(new Event("focus"));
 
     expect(mockRpc).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("leaves a failed ping unmarked so the next mount retries it", async () => {

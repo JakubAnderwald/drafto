@@ -142,6 +142,9 @@ async function rpcRows(fn, params) {
   return res.body;
 }
 
+/** The order rowsOf returns rows in: by day, then by client. */
+const byDayAndClient = (x, y) => x.day.localeCompare(y.day) || x.client.localeCompare(y.client);
+
 /** <id>'s usage_daily rows as service_role sees them, oldest day first. */
 async function rowsOf(id) {
   const res = await call(
@@ -219,8 +222,13 @@ describe(
         // the run. Every user is tried before it does.
         const failed = [];
         for (const id of createdIds) {
-          const res = await deleteUser(id);
-          if (!res.ok) failed.push(`${id}: ${formatResponse(res)}`);
+          // A rejected request (a dropped connection) mustn't stop the others.
+          try {
+            const res = await deleteUser(id);
+            if (!res.ok) failed.push(`${id}: ${formatResponse(res)}`);
+          } catch (error) {
+            failed.push(`${id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
         if (failed.length) {
           assert.fail(`cleanup failed; delete these dev users by hand: ${failed.join("; ")}`);
@@ -241,6 +249,7 @@ describe(
       "rejects more than 31 days, and an unknown or missing tag, writing nothing",
       { timeout: 30_000 },
       async () => {
+        const before = await rowsOf(a.id);
         const tooMany = Array.from({ length: MAX_DAYS_PER_CALL + 1 }, (_, i) => day(-i));
         const many = await recordActivity(a.auth, tooMany, "mobile-android");
         assert.equal(many.status, 400, formatResponse(many));
@@ -259,11 +268,7 @@ describe(
         assert.equal(missing.status, 400, formatResponse(missing));
         assert.equal(missing.body?.code, "22023", formatResponse(missing));
 
-        assert.deepEqual(
-          (await rowsOf(a.id)).map((r) => [r.day, r.client]),
-          [[day(0), "web"]],
-          "a rejected call writes nothing",
-        );
+        assert.deepEqual(await rowsOf(a.id), before, "a rejected call writes nothing");
       },
     );
 
@@ -271,6 +276,7 @@ describe(
       "ignores future days, days more than 30 back, nulls and duplicates",
       { timeout: 30_000 },
       async () => {
+        const before = await rowsOf(a.id);
         const sent = [
           day(1),
           day(7),
@@ -282,11 +288,14 @@ describe(
           day(-1),
         ];
         assert.equal(await recordOk(a.auth, sent, "mobile-ios"), 2);
-        assert.deepEqual(await rowsOf(a.id), [
-          { day: day(-MAX_DAYS_BACK), client: "mobile-ios", content_changes: 0 },
-          { day: day(-1), client: "mobile-ios", content_changes: 0 },
-          { day: day(0), client: "web", content_changes: 0 },
-        ]);
+        assert.deepEqual(
+          await rowsOf(a.id),
+          [
+            ...before,
+            { day: day(-MAX_DAYS_BACK), client: "mobile-ios", content_changes: 0 },
+            { day: day(-1), client: "mobile-ios", content_changes: 0 },
+          ].sort(byDayAndClient),
+        );
       },
     );
 
@@ -308,9 +317,7 @@ describe(
       ]);
       assert.deepEqual(
         await rowsOf(a.id),
-        [...aRows, { day: day(-2), client: "web-mcp", content_changes: 0 }].sort(
-          (x, y) => x.day.localeCompare(y.day) || x.client.localeCompare(y.client),
-        ),
+        [...aRows, { day: day(-2), client: "web-mcp", content_changes: 0 }].sort(byDayAndClient),
       );
     });
 
@@ -400,6 +407,9 @@ describe(
       "lets service_role read both metrics, counting A once in this week's active users",
       { timeout: 60_000 },
       async () => {
+        // Today's rows for A and B, whichever tests ran before this one.
+        await recordOk(a.auth, [day(0)], "web");
+        await recordOk(b.auth, [day(0)], "desktop-macos");
         const weeks = 2;
         const [active, retention, activation] = await Promise.all([
           rpcRows("metrics_active_users", { p_weeks: weeks }),
@@ -480,7 +490,8 @@ describe(
     );
 
     it("deletes a user's rows with the user", { timeout: 30_000 }, async () => {
-      assert.equal((await rowsOf(b.id)).length, 1);
+      await recordOk(b.auth, [day(0)], "desktop-macos");
+      assert.ok((await rowsOf(b.id)).length > 0, "B has a row to delete");
       const res = await deleteUser(b.id);
       assert.ok(res.ok, `delete B: ${formatResponse(res)}`);
       // Deleted: nothing left for the `after` hook to clean up.

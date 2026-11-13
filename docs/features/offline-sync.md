@@ -43,12 +43,19 @@ holds the logic, identical on both apps.
   `drafto_activity_days`, as `{ days, lastSent }`. It keeps the 30 newest days
   at most (`ACTIVITY_QUEUE_MAX_DAYS` in `@drafto/shared`). Today isn't added
   again once it equals `lastSent`, so after today has been sent the queue stays
-  empty until the next UTC day: at most one ping per day per device.
+  empty until the next UTC day: at most one ping per day per device. A
+  `lastSent` after today was sent while the device clock ran ahead, and the
+  server dropped it as a future day, so marking a day forgets it.
+  Then the real day isn't held back when it comes.
 - **Sending.** After `synchronize()` resolves, `runSync` waits for the mark,
   then calls `flushActivityDays(db, supabase, clientTag)`. That sends the whole
   queue through `record_activity` (`recordActivity` in `@drafto/shared`). On
   success it reads the queue again, removes only the days it sent (a day marked
   in the meantime stays), and moves `lastSent` to the newest day sent.
+  `runSync` waits for the ping at most `ACTIVITY_PING_MAX_WAIT_MS` (10 s). A
+  ping that hasn't answered by then carries on in the background with its days
+  still queued, so a stalled request can't hold the in-flight latch and delay
+  the next sync.
 - **A failed ping never fails the sync.** The flush runs inside a try/catch and
   never rejects, so the sync's result doesn't change. It only logs a
   `console.warn`, because the native apps have no Sentry SDK. The queue is kept
