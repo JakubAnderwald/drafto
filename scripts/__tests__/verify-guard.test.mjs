@@ -123,6 +123,8 @@ describe("decidePre: Bash deny/allow matrix", () => {
     // The dev live-test runner's own unit tests use fixtures only.
     "cd scripts && node --test __tests__/run-dev-live-tests.test.mjs",
     "cd scripts && node --test __tests__/delete-users.test.mjs",
+    "cd scripts && node --test __tests__/user-stats.test.mjs",
+    "node --test scripts/__tests__/product-metrics.test.mjs",
     'rm -rf "$D"/*',
     "awk '{print $1}' f.txt",
     "grep -E '^[a-z]+$' x.ts",
@@ -213,6 +215,13 @@ describe("decidePre: Bash deny/allow matrix", () => {
     // Account deletion uses the service-role keys: operator-only.
     ["pnpm users:delete -- --project dev x@y.z", /deleting user accounts/],
     ["node scripts/delete-users.mjs --help", /deleting user accounts/],
+    // The product metrics read a service-role key: operator-only.
+    ["pnpm users:stats -- --project prod", /product metrics \(pnpm users:stats\)/],
+    ["pnpm run users:stats -- --project dev --json", /product metrics/],
+    ["node scripts/user-stats.mjs --help", /product metrics/],
+    ["cd scripts && node user-stats.mjs --project dev", /product metrics/],
+    ["node --test scripts/user-stats.mjs", /product metrics/],
+    ["node -e \"import('./scripts/user-stats.mjs')\"", /product metrics/],
     ["cd scripts && node --test ./run-dev-live-test''s.mjs", /dev live tests/],
     ["bash -c 'node scripts/run-dev-live-tests.mjs'", /dev live tests/],
     ["node <<'EOF'\nimport('./scripts/run-dev-live-tests.mjs')\nEOF", /dev live tests/],
@@ -222,6 +231,8 @@ describe("decidePre: Bash deny/allow matrix", () => {
     ["node --test scripts/*live*", /could name the dev live-test runner/],
     ["cd scripts && node delete-*.mjs", /account-deletion script/],
     ["node --test 'scripts/*-users.mjs'", /account-deletion script/],
+    ["cd scripts && node user-*.mjs", /product-metrics script/],
+    ["node 'scripts/*-stats.mjs'", /product-metrics script/],
     ["pnpm turbo run release", /release task/],
     ["npm install", /npm install/],
     ["node scripts/lib/state-cli.mjs factory:status", /node scripts/],

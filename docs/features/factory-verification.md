@@ -90,7 +90,7 @@ The Web lane is the browser runner's `verify` kind ([ADR-0051](../adr/0051-facto
 
 **Opt-in abilities** ([ADR-0073](../adr/0073-factory-verification-data-checks-live-tests-uploads-admin-js.md)), for the `intest` and `verify` kinds, each off by default and each checked by the runner's guard:
 
-- **Uploads** (`FACTORY_BROWSER_UPLOADS=1`) of files the scenario names in `### Fixtures`. `browser-fixtures.mjs` generates them into the run's `fixtures/` before the session.
+- **Uploads** (`FACTORY_BROWSER_UPLOADS=1`) of files the scenario names in `### Fixtures`. `browser-fixtures.mjs` generates them into the run's `fixtures/` before the session, and the run's settings share that folder with the session, because Claude Code uploads only files the session may read.
 - **Read-only page JavaScript** (`FACTORY_BROWSER_JS=1`).
 - **`(admin)` steps** (`FACTORY_BROWSER_ADMIN=1`), signed in as the factory's dev admin account by a one-time link minted under the admin's own lease.
 - **`dev-inspect` data checks** (`FACTORY_DEV_INSPECT=1`), through Bash allowed for that one command.
