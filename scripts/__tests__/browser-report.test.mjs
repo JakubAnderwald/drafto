@@ -787,6 +787,16 @@ describe("screenshots in the report (ADR-0072)", () => {
     assert.equal(imgCount(body), 0);
     assert.ok(!body.includes(EVIDENCE_COMMIT));
     assert.ok(lines(body).includes(localFooter()), "today's footer, with no reason");
+    const withheld = renderPlanSection({
+      ...base,
+      report: SHOTS_REPORT,
+      images: upload(),
+      withheld: ["jwt"],
+    });
+    assert.equal(imgCount(withheld), 0);
+    assert.match(withheld, /Report withheld: the output matched a secret pattern \(jwt\)/);
+    assert.ok(lines(withheld).includes(localFooter()), "a withheld plan report gives no reason");
+    assert.ok(!withheld.includes("weren't published"));
   });
 
   it("keeps the Mac-mini footer, with why, whenever nothing is embedded", () => {

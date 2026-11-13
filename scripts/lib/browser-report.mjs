@@ -408,9 +408,12 @@ export function renderPlanSection(run) {
 // The screenshots section and footer of one run's report (evidence-embed.mjs).
 // `images` is the upload record, or undefined when none was given. The
 // section is checked with <isSafe> (the caller's secret scan) before it is
-// used: a step label that trips it is dropped, the images kept.
+// used: a step label that trips it is dropped, the images kept. A kind that
+// never embeds (plan) keeps today's footer with no reason, withheld or not:
+// its screenshots are never published, so "withheld" would be misleading.
 function runEvidence(run, embed) {
-  const withheld = Array.isArray(run.withheld) ? run.withheld.length > 0 : Boolean(run.withheld);
+  const withheld =
+    embed && (Array.isArray(run.withheld) ? run.withheld.length > 0 : Boolean(run.withheld));
   const isSafe =
     typeof run.isSafe === "function"
       ? run.isSafe
