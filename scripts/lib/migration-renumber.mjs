@@ -432,7 +432,7 @@ export function addedLineNumbers(diff) {
 }
 
 // Text a blob holds, or null when it isn't UTF-8 text git would diff.
-function asText(buf) {
+export function asText(buf) {
   if (buf.includes(0)) return null;
   const text = buf.toString("utf8");
   return Buffer.from(text, "utf8").equals(buf) ? text : null;
@@ -491,7 +491,7 @@ function firstLine(res) {
     .split("\n")[0];
 }
 
-function revParse(git, ref) {
+export function revParse(git, ref) {
   const res = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { allowFail: true });
   return res.status === 0 ? res.stdout.trim() : null;
 }
@@ -503,7 +503,7 @@ function namesAt(cwd, ref) {
   return migrationNamesAt(ref, { cwd, dir: MIGRATIONS_DIR, env: baseEnv() });
 }
 
-function blobAt(git, ref, filePath) {
+export function blobAt(git, ref, filePath) {
   return git(["cat-file", "blob", `${ref}:${filePath}`], { buffer: true }).stdout;
 }
 

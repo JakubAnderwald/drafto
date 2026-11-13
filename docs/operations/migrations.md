@@ -130,7 +130,7 @@ PRs #802 and #829 were open at the same time and both added `20261111000001`. On
   - the `git mv` of each migration to rename (errors and moves alike);
   - the references to those files that the PR itself added. A full `<version>_<name>` is always rewritten. A bare `<version>` is rewritten only when the merge base never mentions it.
 
-  It never touches main's files or lines, and a check (`node scripts/lib/migration-renumber.mjs verify`) proves the commit is nothing more than that. Then GitHub's update-branch merges main in. The card keeps its code review, and in Approved it keeps the approval.
+  It never touches main's files or lines, and a check (`node scripts/lib/migration-renumber.mjs verify`) proves the commit is nothing more than that. Then GitHub's update-branch merges main in. The card keeps its code review, and in Approved it keeps the approval. The `migration-approved` label stays too: it covers the migration SQL with the PR's own versions left out, while any other change to that SQL removes it ([ADR 0078](../adr/0078-migration-approval-tied-to-sql.md)).
 
 - **The comment.** It posts one comment per renumber, with the old → new table and the dev repair, which is [the one above](#renaming-a-migration-dev-already-applied):
 
