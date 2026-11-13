@@ -4,6 +4,8 @@
 - **Date**: 2026-10-29
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Update 2026-11-13**: After pushing a verified resolution, bash no longer judges it by the PR view, which lags a push by a few seconds and made every "never reached the PR" warning up to then a false alarm. A push that reports the verified commit counts as landed ([ADR-0076](./0076-factory-watch-effort-and-retry-budget.md)). Conflict passes now run at `xhigh`, and the attempt budget below is 10.
+
 > **Update 2026-11-09**: Neither In Test nor Approved holds a worktree slot any more, so the slot stall described below can't recur ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). `--watch` now also updates a PR that is only behind `main`, with update-branch, before In Test.
 
 ## Context
