@@ -354,6 +354,41 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["9"].ciRerun, null);
   });
 
+  it("tracks the migration renumber gate's fields (ADR-0077)", () => {
+    // The gate won't renumber unless it can record the count, and carry-over
+    // reads the rest; a rejected write must not fail silently.
+    const s = emptyFactoryState();
+    const map = '{"20261111000001_q.sql":"20261113000001_q.sql"}';
+    setIssueField(s, 802, "renumberFrom", "a".repeat(40));
+    setIssueField(s, 802, "renumberTo", "b".repeat(40));
+    setIssueField(s, 802, "renumberMap", map);
+    setIssueField(s, 802, "migrationRenumbers", "1");
+    assert.equal(s.issues["802"].renumberMap, map);
+    assert.deepEqual(JSON.parse(s.issues["802"].renumberMap), {
+      "20261111000001_q.sql": "20261113000001_q.sql",
+    });
+    assert.equal(s.issues["802"].migrationRenumbers, "1");
+    setIssueField(s, 802, "migrationRenumbers", "");
+    assert.equal(s.issues["802"].migrationRenumbers, null);
+    // --release's per-head count of holds on a gate error.
+    setIssueField(s, 802, "renumberErrors", `${"a".repeat(40)}:2`);
+    assert.equal(s.issues["802"].renumberErrors, `${"a".repeat(40)}:2`);
+    setIssueField(s, 802, "renumberErrors", "");
+    assert.equal(s.issues["802"].renumberErrors, null);
+  });
+
+  it("tracks migrationApprovedVouched (ADR-0078) and clears it", () => {
+    // A rejected write would fail silently in bash (`|| true`), and the label
+    // would never be tied to the SQL it was first seen with.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 802).migrationApprovedVouched, null);
+    const rec = `802:${"a".repeat(40)}:0123456789abcdef`;
+    setIssueField(s, 802, "migrationApprovedVouched", rec);
+    assert.equal(s.issues["802"].migrationApprovedVouched, rec);
+    setIssueField(s, 802, "migrationApprovedVouched", "");
+    assert.equal(s.issues["802"].migrationApprovedVouched, null);
+  });
+
   it("setIssueField clears the field on empty/null/'null' sentinels", () => {
     const s = emptyFactoryState();
     setIssueField(s, 1, "lastError", "boom");

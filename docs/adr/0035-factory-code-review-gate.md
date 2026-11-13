@@ -4,6 +4,8 @@
 - **Date**: 2026-09-12
 - **Authors**: Jakub Anderwald
 
+> **Amended by [ADR-0076](./0076-factory-watch-effort-and-retry-budget.md)** (2026-11-13): `FACTORY_MAX_ATTEMPTS` is now 10, so the review conversation below is capped at ten rounds, not five.
+
 > **Update 2026-11-09**: Once a reviewed PR is ready for In Test, a PR that is behind `main` is updated with GitHub's update-branch ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). That merge commit is the one new head that isn't reviewed again: it inherits the review of the commit it merged `main` into, because the PR's own change hasn't moved. Any other new head is reviewed as below.
 
 ## Context

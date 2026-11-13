@@ -1025,7 +1025,59 @@ describe("buildFactoryWatchBundle", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [{ number: "0059", files: ["0059-desktop-pkce.md", "0059-keep-login.md"] }],
       nextFreeAdr: "0061",
+      migrationErrors: [],
     });
+  });
+
+  // ADR-0077: a clean merge can leave a migration that no longer sorts after
+  // main's; the conflict pass hands it to the agent with these.
+  it("carries the merge's migration-order errors, string fields only, capped", () => {
+    const bundle = buildFactoryWatchBundle({
+      issue: { number: 794, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      mergeConflict: {
+        status: "clean",
+        mainSha: "a".repeat(40),
+        conflictedFiles: [],
+        adrCollisions: [],
+        migrationErrors: [
+          {
+            reason: "duplicate-base",
+            file: "20261111000001_storage_quota.sql",
+            version: "20261111000001",
+            suggested: "20261113000001",
+            others: ["20261111000001_note_text_chars.sql"],
+          },
+          { reason: "shape", file: "1_bad.sql", version: 1, suggested: "x".repeat(41) },
+          { reason: "stale", file: 42 },
+          { reason: "stale", file: "y".repeat(301) },
+          null,
+          "20261111000001_x.sql",
+        ],
+      },
+    });
+    assert.deepEqual(bundle.mergeConflict.migrationErrors, [
+      {
+        reason: "duplicate-base",
+        file: "20261111000001_storage_quota.sql",
+        version: "20261111000001",
+        suggested: "20261113000001",
+      },
+      { reason: "shape", file: "1_bad.sql" },
+    ]);
+    const many = buildFactoryWatchBundle({
+      issue: { number: 794, title: "x", body: SAMPLE_BODY, labels: [] },
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      mergeConflict: {
+        migrationErrors: Array.from({ length: 250 }, (_, i) => ({
+          reason: "stale",
+          file: `2026111100${String(i).padStart(4, "0")}_m.sql`,
+        })),
+      },
+    });
+    assert.equal(many.mergeConflict.migrationErrors.length, 200);
   });
 
   it("surfaces host-validated screenshots from the body and every comment slice", () => {

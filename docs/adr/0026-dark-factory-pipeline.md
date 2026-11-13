@@ -4,7 +4,7 @@
 - **Date**: 2026-05-06
 - **Authors**: Jakub Anderwald
 
-> **Amended by [ADR-0029](./0029-factory-ultracode-effort.md)** (2026-07-15): the factory's Claude calls now run at explicit effort levels — ultracode on the code-writing stages (`--implement`/`--watch`), xhigh on planning (`--plan`/replan).
+> **Amended by [ADR-0029](./0029-factory-ultracode-effort.md)** (2026-07-15): the factory's Claude calls now run at explicit effort levels — ultracode on the code-writing stages (`--implement`/`--watch`), xhigh on planning (`--plan`/replan). Since [ADR-0076](./0076-factory-watch-effort-and-retry-budget.md) (2026-11-13), `--watch` runs at xhigh and the retry budget is 10.
 
 > **Update 2026-10-21**: The pipeline gains a factory-owned **Testing** column between In Review and In Test ([ADR-0053](./0053-pre-in-test-verification-stage.md)): plan → implement → preview → verify → ship. With `FACTORY_VERIFY=1`, `--watch` verifies a converged card there and promotes it to In Test with a report. The verification is evidence, not a gate. The two human gates are unchanged. Testing is not one: the factory moves cards in and out of it on its own.
 

@@ -61,10 +61,10 @@
 # issue (mirrors the `nightly-failure` pattern in support-agent.sh /
 # nightly-support.sh).
 #
-# Claude effort: the code-writing stages (--implement/--watch) run at ultracode
-# (FACTORY_EFFORT — xhigh reasoning + dynamic multi-agent workflows); the read-
-# only planning stages (--plan/replan) run at xhigh (FACTORY_PLAN_EFFORT). See
-# the effort block below.
+# Claude effort: --implement runs at ultracode (FACTORY_EFFORT — xhigh reasoning
+# + dynamic multi-agent workflows); --watch fix passes run at xhigh
+# (FACTORY_WATCH_EFFORT, ADR-0076); the read-only planning stages (--plan/
+# replan) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below.
 
 set -euo pipefail
 
@@ -94,9 +94,10 @@ if ! [[ "$CLAUDE_CALL_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # --implement and --watch run Claude through edits + the verification matrix
-# (lint/typecheck/test) at ultracode effort (multi-agent workflows, materially
-# longer than a plain run), so they carry generous caps and override the plan
-# cap per-call via an inline env prefix on the node invocation (below).
+# (lint/typecheck/test) — --implement at ultracode effort (multi-agent workflows,
+# materially longer than a plain run), --watch at xhigh — so they carry generous
+# caps and override the plan cap per-call via an inline env prefix on the node
+# invocation (below).
 IMPLEMENT_TIMEOUT_SEC="${FACTORY_IMPLEMENT_TIMEOUT_SEC:-2700}"
 WATCH_TIMEOUT_SEC="${FACTORY_WATCH_TIMEOUT_SEC:-1800}"
 # Validate like the plan cap: a non-numeric override would flow to
@@ -129,7 +130,16 @@ fi
 
 # Retry budget shared by --plan / --implement / --watch. After this many failed
 # Claude invocations on one issue, the card is parked in Blocked for a human.
-FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-5}"
+# Raised from 5 to 10 (ADR-0076): review-thread fix passes spend from the same
+# budget, and #797 was parked over a one-line docs nit after two of its five
+# attempts went to factory-side failures.
+FACTORY_MAX_ATTEMPTS="${FACTORY_MAX_ATTEMPTS:-10}"
+# No leading zeros: bash arithmetic reads "08" as invalid octal, and a failed
+# -ge comparison would mean an unlimited budget.
+if ! [[ "$FACTORY_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_MAX_ATTEMPTS='$FACTORY_MAX_ATTEMPTS'; defaulting to 10" >&2
+  FACTORY_MAX_ATTEMPTS=10
+fi
 
 # Automatic re-runs per PR head SHA for required checks GitHub cancelled before
 # they could judge the code (no runner acquired). Spent → one comment and a hold.
@@ -152,6 +162,27 @@ if ! [[ "$FACTORY_MAX_BRANCH_UPDATES" =~ ^(0|[1-9][0-9]*)$ ]]; then
   FACTORY_MAX_BRANCH_UPDATES=3
 fi
 
+# Times the migration renumber gate (ADR-0077) may rename one card's migrations
+# after main moved past them. Stored per issue as migrationRenumbers and never
+# reset by the factory: past the cap the gate renames nothing and posts a
+# comment, and the card goes on to the fix loop's recipe as before.
+FACTORY_MAX_MIGRATION_RENUMBERS="${FACTORY_MAX_MIGRATION_RENUMBERS:-3}"
+if ! [[ "$FACTORY_MAX_MIGRATION_RENUMBERS" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "WARNING: invalid FACTORY_MAX_MIGRATION_RENUMBERS='$FACTORY_MAX_MIGRATION_RENUMBERS'; defaulting to 3" >&2
+  FACTORY_MAX_MIGRATION_RENUMBERS=3
+fi
+
+# Ticks --release may hold an Approved card on one head because the migration
+# renumber gate errored (a failed lookup, precheck or push). Stored per issue as
+# renumberErrors ("<head sha>:<count>"); a new head starts at zero. Once the
+# count reaches this, the card goes on to the CI gate as before ADR-0077, so a
+# gate that fails every tick can't park it in Approved for good.
+FACTORY_MAX_MIGRATION_RENUMBER_ERRORS="${FACTORY_MAX_MIGRATION_RENUMBER_ERRORS:-3}"
+if ! [[ "$FACTORY_MAX_MIGRATION_RENUMBER_ERRORS" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "WARNING: invalid FACTORY_MAX_MIGRATION_RENUMBER_ERRORS='$FACTORY_MAX_MIGRATION_RENUMBER_ERRORS'; defaulting to 3" >&2
+  FACTORY_MAX_MIGRATION_RENUMBER_ERRORS=3
+fi
+
 # Fallback backoff (minutes) when a claude call dies on a session/usage limit
 # but the reset time can't be parsed from the transcript. The factory pauses
 # itself for this long, then re-checks. When the reset time IS parseable we
@@ -163,21 +194,31 @@ if ! [[ "$FACTORY_LIMIT_FALLBACK_MIN" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # ── Claude effort levels ────────────────────────────────────────────────────
-# Code-writing stages (--implement / --watch) run at "ultracode": xhigh
-# reasoning + dynamic multi-agent workflow orchestration. Read-only planning
-# (--plan / replan) runs at plain "xhigh": deeper reasoning, no workflow fan-out
-# (cheaper on the shared subscription). Both are env knobs; run-claude.mjs
-# forwards --effort verbatim to `claude`. If the Workflows feature is disabled
-# on the account, ultracode degrades safely to xhigh (no error). Plain strings,
+# --implement runs at "ultracode": xhigh reasoning + dynamic multi-agent
+# workflow orchestration. --watch fix passes (CI fixes, review threads, conflict
+# passes) run at plain "xhigh" (ADR-0076): they are small, and at ultracode the
+# agent would finish the fix, then start a review workflow and wait on it until
+# the wall cap killed it with nothing committed (#797, 2026-11-10). Read-only
+# planning (--plan / replan) runs at plain "xhigh": deeper reasoning, no
+# workflow fan-out (cheaper on the shared subscription). All three are env
+# knobs; run-claude.mjs forwards --effort verbatim to `claude`. If the Workflows
+# feature is disabled on the account, ultracode degrades safely to xhigh (no
+# error). Plain strings,
 # never arrays — expanding an empty array under `set -u` throws "unbound
 # variable" on the Mac mini's bash 3.2 (see the parity_violation note below).
 # The `case` allowlist doubles as the no-word-split / no-empty guard so
 # `--effort "$VAR"` is always a single safe token.
-FACTORY_EFFORT="${FACTORY_EFFORT:-ultracode}"          # --implement / --watch
+FACTORY_EFFORT="${FACTORY_EFFORT:-ultracode}"          # --implement
 case "$FACTORY_EFFORT" in
   ultracode|max|xhigh|high|medium|low) : ;;
   *) echo "WARNING: invalid FACTORY_EFFORT='$FACTORY_EFFORT'; defaulting to ultracode" >&2
      FACTORY_EFFORT="ultracode" ;;
+esac
+FACTORY_WATCH_EFFORT="${FACTORY_WATCH_EFFORT:-xhigh}"  # --watch fix passes
+case "$FACTORY_WATCH_EFFORT" in
+  ultracode|max|xhigh|high|medium|low) : ;;
+  *) echo "WARNING: invalid FACTORY_WATCH_EFFORT='$FACTORY_WATCH_EFFORT'; defaulting to xhigh" >&2
+     FACTORY_WATCH_EFFORT="xhigh" ;;
 esac
 FACTORY_PLAN_EFFORT="${FACTORY_PLAN_EFFORT:-xhigh}"    # --plan / replan
 case "$FACTORY_PLAN_EFFORT" in
@@ -2150,6 +2191,15 @@ pr_head_oid() {
   gh pr view "$1" --repo JakubAnderwald/drafto --json headRefOid --jq '.headRefOid' 2>>"$LOG_FILE" || echo ""
 }
 
+# Head branch of PR <n> when that branch lives in this repo (the one the
+# factory pushes to as `origin`), or "" for a PR from a fork or on any failure.
+# Unlike the head OID it doesn't change after a push, so reading it before one
+# has no lag. Callers treat "" as "unknown" and fail closed.
+pr_head_branch() {
+  gh pr view "$1" --repo JakubAnderwald/drafto --json headRefName,isCrossRepository \
+    --jq 'if .isCrossRepository then "" else .headRefName end' 2>>"$LOG_FILE" || echo ""
+}
+
 # implement_queue_order <items-json> — the In Progress items in the order
 # --implement should take them: cards already holding a slot first (they never
 # need a free one, and only they can free one mid-sweep), then cards with an
@@ -2210,35 +2260,70 @@ update_pr_branch() {
   gh api "${args[@]}" >>"$LOG_FILE" 2>&1
 }
 
+# is_update_branch_merge <sha> <first-parent> — 0 when <sha> is the merge
+# commit GitHub's update-branch writes onto <first-parent>: two parents, the
+# first one <first-parent>, committed by GitHub itself (web-flow) as "Merge
+# branch 'main' into …". The conflict pass and a local merge commit as the
+# factory's own user, so they never match. 1 otherwise, or when GitHub can't
+# be read.
+is_update_branch_merge() {
+  local sha="$1" first="$2" commit parents committer subject
+  [[ -n "$sha" && -n "$first" ]] || return 1
+  commit=$(gh api "repos/JakubAnderwald/drafto/commits/$sha" \
+    --jq '{parents: ([.parents[].sha] | join(" ")), committer: (.committer.login // ""), subject: (.commit.message | split("\n")[0])}' \
+    2>>"$LOG_FILE") || return 1
+  parents=$(echo "$commit" | jq -r '.parents // ""' 2>/dev/null || echo "")
+  committer=$(echo "$commit" | jq -r '.committer // ""' 2>/dev/null || echo "")
+  subject=$(echo "$commit" | jq -r '.subject // ""' 2>/dev/null || echo "")
+  [[ "$parents" =~ ^[0-9a-f]+\ [0-9a-f]+$ && "$parents" == "$first "* ]] || return 1
+  [[ "$committer" == "web-flow" && "$subject" == "Merge branch 'main' into "* ]]
+}
+
 # carry_across_branch_update <issue> <head-sha> — when <head-sha> is the merge
 # commit of an update-branch the behind-main gate asked for (ADR-0070), move the
 # head-keyed code review and CodeRabbit coverage from the commit it updated
 # (branchUpdatedFrom) onto it. update-branch only ever makes a clean merge of
 # main, so the PR's own change is the one already reviewed. Reviewing it again
 # would only let main's activity spend fix attempts on fresh nits.
-# Matched strictly: the updated commit must be the last one reviewed and the
-# first parent of <head-sha>, and <head-sha> must be a two-parent merge that
-# GitHub itself committed (web-flow) as "Merge branch 'main' into …", which is
-# what update-branch writes. The conflict pass and a local merge commit as the
-# factory's own user, so a conflict resolution is reviewed as usual, as is any
-# other new head. Returns 0 when it carried something over.
+# Matched strictly: the updated commit must be the last one reviewed, and
+# <head-sha> must be update-branch's own merge onto it (is_update_branch_merge),
+# so a conflict resolution is reviewed as usual, as is any other new head.
+# A migration renumber (ADR-0077) carries over the same way: <head-sha> is the
+# renumber commit R (renumberTo) or GitHub's merge of main onto it, the commit R
+# renamed (renumberFrom), or R itself, was the last one reviewed, and
+# migration-renumber.mjs verify proves R changes nothing but the migration
+# names. Returns 0 when it carried something over.
 carry_across_branch_update() {
-  local issue_num="$1" head_sha="$2" state from last_review cr_sha commit parents committer subject
-  local what="code review"
+  local issue_num="$1" head_sha="$2" state from last_review cr_sha
+  local what="code review" r_from r_to r_map how=""
   [[ -n "$head_sha" ]] || return 1
   state=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE") || return 1
   from=$(echo "$state" | jq -r '.branchUpdatedFrom // ""' 2>/dev/null || echo "")
   last_review=$(echo "$state" | jq -r '.lastReviewSha // ""' 2>/dev/null || echo "")
-  [[ -n "$from" && "$from" != "$head_sha" && "$last_review" == "$from" ]] || return 1
-  commit=$(gh api "repos/JakubAnderwald/drafto/commits/$head_sha" \
-    --jq '{parents: ([.parents[].sha] | join(" ")), committer: (.committer.login // ""), subject: (.commit.message | split("\n")[0])}' \
-    2>>"$LOG_FILE") || return 1
-  parents=$(echo "$commit" | jq -r '.parents // ""' 2>/dev/null || echo "")
-  committer=$(echo "$commit" | jq -r '.committer // ""' 2>/dev/null || echo "")
-  subject=$(echo "$commit" | jq -r '.subject // ""' 2>/dev/null || echo "")
-  [[ "$parents" =~ ^[0-9a-f]+\ [0-9a-f]+$ && "$parents" == "$from "* ]] || return 1
-  [[ "$committer" == "web-flow" && "$subject" == "Merge branch 'main' into "* ]] || return 1
+  r_from=$(echo "$state" | jq -r '.renumberFrom // ""' 2>/dev/null || echo "")
+  r_to=$(echo "$state" | jq -r '.renumberTo // ""' 2>/dev/null || echo "")
+  r_map=$(echo "$state" | jq -r '.renumberMap // ""' 2>/dev/null || echo "")
+  if [[ -n "$r_from" && -n "$r_to" && -n "$r_map" && "$head_sha" != "$last_review" ]] \
+      && [[ "$last_review" == "$r_from" || "$last_review" == "$r_to" ]]; then
+    if [[ "$head_sha" == "$r_to" ]]; then
+      how="only renumbers the migrations of"
+    elif is_update_branch_merge "$head_sha" "$r_to"; then
+      how="only merges main into the migration renumber of"
+    fi
+    if [[ -n "$how" ]] && ! node "$SCRIPT_DIR/lib/migration-renumber.mjs" verify --root "$REPO_ROOT" \
+        --issue "$issue_num" --from "$r_from" --to "$r_to" --map "$r_map" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: Issue #$issue_num: migration renumber ${r_to:0:12} failed its check; reviewing ${head_sha:0:12} again"
+      return 1
+    fi
+  fi
+  if [[ -n "$how" ]]; then
+    from="$last_review"
+  else
+    [[ -n "$from" && "$from" != "$head_sha" && "$last_review" == "$from" ]] || return 1
+    is_update_branch_merge "$head_sha" "$from" || return 1
+    how="only merges main into"
+  fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastReviewSha \
     "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || return 1
   cr_sha=$(echo "$state" | jq -r '.crCoverageSha // ""' 2>/dev/null || echo "")
@@ -2247,7 +2332,7 @@ carry_across_branch_update() {
         "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
     what="code review and CodeRabbit coverage"
   fi
-  log "Issue #$issue_num: ${head_sha:0:12} only merges main into the reviewed ${from:0:12}; carried its $what over"
+  log "Issue #$issue_num: ${head_sha:0:12} $how the reviewed ${from:0:12}; carried its $what over"
   return 0
 }
 
@@ -2356,6 +2441,404 @@ migration_violation() {
     fi
   fi
   echo ""
+}
+
+# ── Migration approval tied to the SQL (ADR-0078) ───────────────────────────
+# The migration-approved label vouches for one version of the PR's migration
+# SQL: the one it was first seen with. scripts/lib/migration-approval.mjs hashes
+# every file the PR touches under supabase/migrations with the PR's own version
+# numbers left out (their order kept), so the factory's mechanical renumber
+# (ADR-0077) keeps the label and any other edit voids it. migrationApprovedVouched
+# holds `<PR>:<head sha>:<hash>`; a value for another PR, or one that isn't that
+# shape, counts as nothing recorded.
+#   - label present, the recorded head is this head: nothing to do (no fetch);
+#   - label present, nothing recorded: record this head and its hash;
+#   - label present, the same hash at a new head: record the new head;
+#   - label present, another hash: make sure the void comment is on the issue
+#     (drafto-factory-migration-approval-void:<hash>), then remove the label,
+#     then forget the record. Each step waits for the one before it to work, so
+#     a failure keeps the label (and the record) for the next tick to retry;
+#   - label absent, something recorded: forget it.
+# Called in every column the factory processes with the PR (In Review, Testing,
+# In Test, Approved, and In Progress before a revision run), so the label covers
+# at most one tick of pushes nobody reviewed. It never voids on an error: when
+# the state, the diff or the hash can't be read, nothing changes this tick.
+# Respects DRY_RUN (logs only).
+# Args: $1 issue  $2 PR  $3 head SHA  $4 PR labels CSV
+#       $5 the PR's changed files (gh pr diff --name-only), when the caller has
+#          them. Without $5 they are fetched here, and only when needed: the
+#          label is on and the head isn't the one recorded.
+# Sets MIGRATION_APPROVAL_LABELS to the labels the caller goes on with: $4, less
+# migration-approved when this call voided it (whether or not the removal has
+# worked yet, and under DRY_RUN too). Returns 0.
+migration_approval_vouch() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" pr_labels="$4"
+  local have_files=0 diff_files="" state raw v_hash="" v_head="" out sql_hash files marker rc
+  if [[ $# -ge 5 ]]; then have_files=1; diff_files="$5"; fi
+  MIGRATION_APPROVAL_LABELS="$pr_labels"
+  # A here-string, not a pipe: under pipefail, grep -q closing the pipe early
+  # would fail the printf and skip the check.
+  if [[ "$have_files" -eq 1 ]] && ! grep -qE '^supabase/migrations/' <<<"$diff_files"; then
+    return 0
+  fi
+  if ! state=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE") \
+      || ! raw=$(jq -r '.migrationApprovedVouched // ""' <<<"$state" 2>>"$LOG_FILE"); then
+    log "WARNING: migration approval: couldn't read #$issue_num's state; leaving PR #$pr_num's labels as they are this tick"
+    return 0
+  fi
+  if [[ ",$pr_labels," != *",migration-approved,"* ]]; then
+    [[ -n "$raw" ]] || return 0
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "DRY-RUN: would forget the migration SQL hash #$issue_num's migration-approved vouched for"
+      return 0
+    fi
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationApprovedVouched "" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    return 0
+  fi
+  if [[ "$raw" =~ ^([0-9]+):([0-9a-f]{7,40}):([0-9a-f]{16})$ ]]; then
+    if [[ "${BASH_REMATCH[1]}" == "$pr_num" ]]; then
+      v_head="${BASH_REMATCH[2]}"
+      v_hash="${BASH_REMATCH[3]}"
+    else
+      log "Issue #$issue_num: the recorded migration approval is for PR #${BASH_REMATCH[1]}, not PR #$pr_num; vouching afresh"
+    fi
+  elif [[ -n "$raw" ]]; then
+    log "WARNING: migration approval: #$issue_num's migrationApprovedVouched isn't <PR>:<head sha>:<hash>; treating it as nothing recorded"
+  fi
+  if [[ -z "$head_sha" ]]; then
+    log "WARNING: migration approval: no head SHA for PR #$pr_num; leaving migration-approved as it is this tick"
+    return 0
+  fi
+  # The head the record was made at: the SQL can't have changed since.
+  [[ -n "$v_hash" && "$v_head" == "$head_sha" ]] && return 0
+  if [[ "$have_files" -eq 0 ]]; then
+    if ! diff_files=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+      log "WARNING: migration approval: gh pr diff #$pr_num failed (transient?); leaving migration-approved as it is this tick"
+      return 0
+    fi
+    grep -qE '^supabase/migrations/' <<<"$diff_files" || return 0
+  fi
+  if ! out=$(node "$SCRIPT_DIR/lib/migration-approval.mjs" hash --root "$REPO_ROOT" \
+      --pr "$pr_num" --head "$head_sha" 2>>"$LOG_FILE") \
+      || ! sql_hash=$(jq -r '.hash // ""' <<<"$out" 2>>"$LOG_FILE") \
+      || ! [[ "$sql_hash" =~ ^[0-9a-f]{16}$ ]]; then
+    log "WARNING: migration approval: couldn't hash PR #$pr_num's migrations at ${head_sha:0:12} (see the log); leaving migration-approved as it is this tick"
+    return 0
+  fi
+  if [[ -z "$v_hash" || "$v_hash" == "$sql_hash" ]]; then
+    if [[ -z "$v_hash" ]]; then
+      log "Issue #$issue_num: migration-approved on PR #$pr_num covers its migration SQL as of ${head_sha:0:12} ($sql_hash)"
+    fi
+    if [[ "$DRY_RUN" -eq 0 ]] && ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+        migrationApprovedVouched "$pr_num:$head_sha:$sql_hash" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: couldn't record #$issue_num's migration SQL hash; retrying next tick"
+    fi
+    return 0
+  fi
+
+  MIGRATION_APPROVAL_LABELS=$(tr ',' '\n' <<<"$pr_labels" | grep -vxF migration-approved | paste -sd, - || true)
+  log "Issue #$issue_num: PR #$pr_num's migration SQL changed since migration-approved was added ($v_hash -> $sql_hash at ${head_sha:0:12}); removing the label"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would comment on #$issue_num and remove migration-approved from PR #$pr_num"
+    return 0
+  fi
+  # The comment first, so the label never comes off without the operator being
+  # told why. A comment check that couldn't read the comments is not "absent".
+  marker="drafto-factory-migration-approval-void:$sql_hash"
+  rc=0
+  issue_marker_check "$issue_num" "$marker" || rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    log "WARNING: couldn't read #$issue_num's comments; keeping migration-approved on PR #$pr_num until the void comment can be checked (next tick)"
+    return 0
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    files=$(jq -r '(.files // []) | map("`" + . + "`") | join(", ")' <<<"$out" 2>/dev/null || echo "")
+    if ! gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **Migration approval withdrawn — the SQL changed.**
+
+PR #$pr_num's migration SQL changed after \`migration-approved\` was added, so the factory \
+is removing the label. The PR's migration files at \`${head_sha:0:12}\`: ${files:-none}. Review \
+them and add \`migration-approved\` again. The factory won't merge the PR until the label is back.
+
+A renumber by the factory (ADR-0077) doesn't remove the label: it covers the SQL with the \
+PR's own version numbers left out (ADR-0078).
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: couldn't comment on #$issue_num about the voided migration approval; keeping migration-approved on PR #$pr_num until it is posted (next tick)"
+      return 0
+    fi
+  fi
+  # Forget the record only once the label is really gone: keeping it makes the
+  # next tick see the mismatch again and retry the removal.
+  if ! gh pr edit "$pr_num" --repo JakubAnderwald/drafto --remove-label migration-approved >>"$LOG_FILE" 2>&1; then
+    log "WARNING: couldn't remove migration-approved from PR #$pr_num; retrying next tick"
+    return 0
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationApprovedVouched "" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  return 0
+}
+
+# migration_approval_vouch_view <issue> <PR> <view JSON> — migration_approval_vouch
+# for a caller that holds a `gh pr view --json state,headRefOid,labels` snapshot
+# but not the PR's changed files (fetched by the vouch only when it needs them).
+# A PR that isn't open is skipped, and so is a view without labels (a failed or
+# partial read), rather than reading as a removed label. Returns 0: the caller's
+# flow never depends on it.
+migration_approval_vouch_view() {
+  local view="$3" labels
+  [[ "$(jq -r '.state // ""' <<<"$view" 2>/dev/null || true)" == "OPEN" ]] || return 0
+  labels=$(jq -er '.labels | map(.name) | join(",")' <<<"$view" 2>/dev/null) || return 0
+  migration_approval_vouch "$1" "$2" "$(jq -r '.headRefOid // ""' <<<"$view" 2>/dev/null || true)" \
+    "$labels" || true
+  return 0
+}
+
+# ── Migration renumber gate (ADR-0077) ──────────────────────────────────────
+# Two factory PRs written the same day share a migration version (#802 and #829
+# both added 20261111000001), and a PR open while main gains a newer migration
+# goes stale. Once main moves, CI goes red on the PR. Instead of an LLM fix pass,
+# a re-review and a second Approved drag, this gate renames the PR's migrations
+# itself: scripts/lib/migration-renumber.mjs builds commit R on the PR head
+# (only the file names and the references the PR added to them change, which
+# its verify proves), pushes it without force, and once GitHub shows R as the
+# PR head, update_pr_branch adds GitHub's own merge of main (M). CI's
+# cancel-in-progress drops R's run, so this costs one CI run. The card keeps
+# its review (carry_across_branch_update) and, in Approved, its approval. A
+# plan that needs a person (a version that isn't 14 digits, a renamed main
+# migration, SQL that touches an object main's newer migrations also touch, a
+# bare version that could mean another migration) renames nothing and gets a
+# comment, once per head. Renumbers count toward
+# FACTORY_MAX_MIGRATION_RENUMBERS (migrationRenumbers); past it, the same. In
+# both, the callers go on as before, so the watch prompt's "Migration order"
+# recipe renumbers the card and a person checks it: holding it instead would
+# park it for good. Never spends attempts, branchUpdates or ciRerun.
+# Args: $1 issue  $2 PR  $3 head SHA  $4 where (the column, for the comment)
+#       $5 the PR's changed files, when the caller has them (gh pr diff
+#          --name-only, which has no file cap; never gh pr view --json files)
+# Returns 0 when there is nothing to renumber, 1 otherwise, and
+# MIGRATION_RENUMBER_RESULT says which: clean | renumbered | manual | capped |
+# error. Callers hold the card only on renumbered (CI runs on the new head), and
+# --release also on error (a lookup or the helper failed; retried next tick),
+# a few ticks per head at most (migration_renumber_error_hold). manual and
+# capped go on as before, to the fix loop's recipe.
+migration_renumber_gate() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" where="$4" diff_files="${5:-}"
+  local out status reason map_json map_text to count comment marker seen try
+  local claimed_args=()
+  MIGRATION_RENUMBER_RESULT="error"
+  if [[ -z "$diff_files" ]] \
+      && ! diff_files=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+    log "WARNING: migration renumber gate: gh pr diff #$pr_num failed (transient?)"
+    return 1
+  fi
+  # A here-string, not a pipe: under pipefail, grep -q closing the pipe early
+  # would fail the printf and skip the gate.
+  if ! grep -qE '^supabase/migrations/[^/]+\.sql$' <<<"$diff_files"; then
+    MIGRATION_RENUMBER_RESULT="clean"
+    return 0
+  fi
+  if [[ -z "$head_sha" ]]; then
+    log "WARNING: migration renumber gate: no head SHA for PR #$pr_num (transient?)"
+    return 1
+  fi
+  if ! out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" precheck --root "$REPO_ROOT" \
+      --pr "$pr_num" --head "$head_sha" --where "$where" 2>>"$LOG_FILE"); then
+    log "WARNING: migration renumber precheck failed for PR #$pr_num at ${head_sha:0:12} (see the log)"
+    return 1
+  fi
+  status=$(jq -r '.status // ""' <<<"$out" 2>/dev/null || echo "")
+  reason=$(jq -r '.reason // ""' <<<"$out" 2>/dev/null || echo "")
+  case "$status" in
+    clean)
+      MIGRATION_RENUMBER_RESULT="clean"
+      return 0
+      ;;
+    fixable) ;;
+    manual)
+      MIGRATION_RENUMBER_RESULT="manual"
+      log "Issue #$issue_num: PR #$pr_num's migrations need a person to renumber them: $reason"
+      marker="drafto-factory-migration-renumber-manual:${head_sha:0:12}"
+      comment=$(jq -r '.comment // ""' <<<"$out" 2>/dev/null || echo "")
+      if [[ "$DRY_RUN" -eq 0 && -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+        gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$comment
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+      fi
+      return 1
+      ;;
+    *)
+      log "WARNING: migration renumber precheck for PR #$pr_num said '${status:-nothing}' (${reason:-no detail})"
+      return 1
+      ;;
+  esac
+  map_text=$(jq -r '.map | to_entries | map(.key + " -> " + .value) | join(", ")' <<<"$out" 2>/dev/null || echo "")
+  # apply plans again. Handing it the versions precheck found other open PRs
+  # using saves a second sweep of them (one gh call per open PR).
+  if jq -e '.claimed | type == "array"' <<<"$out" >/dev/null 2>&1; then
+    claimed_args=(--claimed-json "$(jq -c '.claimed // []' <<<"$out")")
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would renumber PR #$pr_num's migrations ($map_text) and update the branch"
+    MIGRATION_RENUMBER_RESULT="renumbered"
+    return 1
+  fi
+  # The budget fails closed: unreadable counts as spent.
+  count=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.migrationRenumbers // "0"' 2>/dev/null || echo "")
+  if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+    log "WARNING: couldn't read #$issue_num's migration renumber count; counting it as spent"
+    count="$FACTORY_MAX_MIGRATION_RENUMBERS"
+  fi
+  if [[ "$count" -ge "$FACTORY_MAX_MIGRATION_RENUMBERS" ]]; then
+    MIGRATION_RENUMBER_RESULT="capped"
+    log "Issue #$issue_num: PR #$pr_num needs another migration renumber ($map_text), but $count of $FACTORY_MAX_MIGRATION_RENUMBERS are spent; leaving it to the fix loop"
+    marker="drafto-factory-migration-renumber-cap:${head_sha:0:12}"
+    if ! issue_has_marker "$issue_num" "$marker"; then
+      gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **PR #$pr_num's migrations fell behind \`main\` again.**
+
+The factory has renumbered them $count time(s), its limit (\`FACTORY_MAX_MIGRATION_RENUMBERS\`), \
+and would now rename: $map_text. It doesn't, so the fix loop renumbers them instead, as before \
+ADR-0077: once CI is red for migration order, its pass in **In Review** renames them, and from \
+**Approved** the card goes back to In Review and needs your approval again. To let the factory \
+renumber mechanically once more, reset the count with \
+\`node scripts/lib/state-cli.mjs factory:set-issue-field $issue_num migrationRenumbers \"\"\`.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+    fi
+    return 1
+  fi
+  # A worktree or kept branch with commits the PR lacks would diverge from R.
+  if ! worktree_within_head "$issue_num" "$head_sha"; then
+    log "WARNING: issue #$issue_num's worktree has commits PR #$pr_num lacks; not renumbering its migrations"
+    return 1
+  fi
+  if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationRenumbers \
+      "$((count + 1))" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    log "WARNING: couldn't record a migration renumber for #$issue_num; not renumbering"
+    return 1
+  fi
+  status=""
+  if out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" apply --root "$REPO_ROOT" \
+      --issue "$issue_num" --pr "$pr_num" --head "$head_sha" --where "$where" \
+      ${claimed_args[@]+"${claimed_args[@]}"} 2>>"$LOG_FILE"); then
+    status=$(jq -r '.status // ""' <<<"$out" 2>/dev/null || echo "")
+    reason=$(jq -r '.reason // ""' <<<"$out" 2>/dev/null || echo "")
+  fi
+  if [[ "$status" != "pushed" ]]; then
+    # Nothing reached the PR: give the renumber back.
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationRenumbers \
+      "$count" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    case "$status" in
+      clean)
+        MIGRATION_RENUMBER_RESULT="clean"
+        return 0
+        ;;
+      manual)
+        MIGRATION_RENUMBER_RESULT="manual"
+        log "Issue #$issue_num: PR #$pr_num's migrations need a person to renumber them: $reason"
+        marker="drafto-factory-migration-renumber-manual:${head_sha:0:12}"
+        comment=$(jq -r '.comment // ""' <<<"$out" 2>/dev/null || echo "")
+        if [[ -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+          gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$comment
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+        fi
+        ;;
+      *)
+        log "WARNING: migration renumber of PR #$pr_num didn't land (${status:-failed}: ${reason:-see the log}); retrying next tick"
+        ;;
+    esac
+    return 1
+  fi
+  to=$(jq -r '.to // ""' <<<"$out" 2>/dev/null || echo "")
+  map_json=$(jq -c '.map // {}' <<<"$out" 2>/dev/null || echo "{}")
+  MIGRATION_RENUMBER_RESULT="renumbered"
+  # Recorded before the update, so carry_across_branch_update can match R, or
+  # the merge onto it, whichever --watch sees first.
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" renumberFrom \
+    "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" renumberTo \
+    "$to" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" renumberMap \
+    "$map_json" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  # GitHub moves the PR's head to R a moment after the push, and until then it
+  # refuses an update-branch that expects R. Wait for it: up to 5 reads, 2s
+  # apart.
+  seen=""
+  for try in 1 2 3 4 5; do
+    seen=$(pr_head_oid "$pr_num")
+    if [[ "$seen" == "$to" ]]; then break; fi
+    if [[ "$try" -lt 5 ]]; then sleep 2; fi
+  done
+  if [[ "$seen" != "$to" ]]; then
+    # The head is R either way; a later tick updates the branch.
+    log "Issue #$issue_num: renumbered PR #$pr_num's migrations ($map_text) in ${to:0:12}; GitHub doesn't show it as the PR head yet, so a later tick updates the branch"
+  elif update_pr_branch "$pr_num" "$to"; then
+    log "Issue #$issue_num: renumbered PR #$pr_num's migrations ($map_text) in ${to:0:12} and updated the branch; CI runs on the merged head"
+  else
+    # Not behind (only the PR's own versions clashed), or a conflict: the head
+    # is R either way, and a later tick takes it from there.
+    log "Issue #$issue_num: renumbered PR #$pr_num's migrations ($map_text) in ${to:0:12}; update-branch didn't apply"
+  fi
+  marker="drafto-factory-migration-renumber:${to:0:12}"
+  comment=$(jq -r '.comment // ""' <<<"$out" 2>/dev/null || echo "")
+  if [[ -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$comment
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+  fi
+  return 1
+}
+
+# migration_renumber_error_hold <issue> <pr> <head-sha> — whether --release
+# holds an Approved card this tick after migration_renumber_gate errored. An
+# error holds it, so a lookup blip can't cost a second Approved drag, but a gate
+# that errors every tick (a broken helper, a PR it can't read) must not park the
+# card for good. renumberErrors counts the holds per head ("<head sha>:<count>";
+# another head starts fresh). Under FACTORY_MAX_MIGRATION_RENUMBER_ERRORS it
+# holds (returns 0). Once the count reaches it, it comments once per head and
+# returns 1, and the card goes on to the CI gate as before ADR-0077. A count it
+# can't read or record goes on too.
+migration_renumber_error_hold() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" raw count=0 marker
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: migration renumber gate errored for PR #$pr_num; would count it (at most $FACTORY_MAX_MIGRATION_RENUMBER_ERRORS holds per head) and hold this tick"
+    return 0
+  fi
+  if ! raw=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: couldn't read #$issue_num's migration renumber errors; not holding PR #$pr_num for one"
+    return 1
+  fi
+  raw=$(jq -r '.renumberErrors // ""' <<<"$raw" 2>/dev/null || echo "")
+  if [[ -n "$head_sha" && "$raw" == "$head_sha:"* && "${raw#"$head_sha:"}" =~ ^[0-9]+$ ]]; then
+    count="${raw#"$head_sha:"}"
+  fi
+  count=$((count + 1))
+  if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" renumberErrors \
+      "$head_sha:$count" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    log "WARNING: couldn't record a migration renumber error for #$issue_num; not holding PR #$pr_num for it"
+    return 1
+  fi
+  if [[ "$count" -lt "$FACTORY_MAX_MIGRATION_RENUMBER_ERRORS" ]]; then
+    log "Issue #$issue_num: migration renumber gate errored on PR #$pr_num ($count of $FACTORY_MAX_MIGRATION_RENUMBER_ERRORS for ${head_sha:0:12}); holding in Approved, retrying next tick"
+    return 0
+  fi
+  log "WARNING: Issue #$issue_num: migration renumber gate errored $count time(s) on PR #$pr_num at ${head_sha:0:12}; going on to the CI gate"
+  marker="drafto-factory-migration-renumber-error:${head_sha:0:12}"
+  if ! issue_has_marker "$issue_num" "$marker"; then
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **Couldn't check PR #$pr_num's migration order.**
+
+The factory tried $count time(s) to check whether this PR's migrations still sort after \
+\`main\`'s, on \`${head_sha:0:12}\`, and couldn't. So the card goes on as before ADR-0077: if CI \
+goes red for migration order, the card goes back to **In Review** for the fix loop and needs your \
+approval again. The factory log says what failed.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+  fi
+  return 1
 }
 
 # Hosted-config gate (ADR-0065). A PR that changes supabase/config.toml may need
@@ -2670,6 +3153,19 @@ issue_has_marker() {
   echo "$comments" | jq -e --arg m "$marker" 'any(.[]; .body | test($m))' >/dev/null 2>&1
 }
 
+# issue_marker_check <issue> <marker> — like issue_has_marker, for a caller that
+# must not act until it knows the answer: 0 when a comment from the factory's
+# identity (OWNER) carries <marker>, 1 when none does, 2 when the comments
+# couldn't be fetched. issue_has_marker stays fail-closed for its callers.
+issue_marker_check() {
+  local comments
+  if ! comments=$(fetch_issue_comments "$1" 2>/dev/null) || [[ -z "$comments" ]]; then
+    return 2
+  fi
+  comments_have_marker "$comments" "$2" && return 0
+  return 1
+}
+
 # ── Merge conflicts with main (ADR-0061) ────────────────────────────────────
 # A PR that conflicts with main can't merge, and GitHub runs no pull_request CI
 # on it either, so nothing downstream of In Review can move it on. Wherever a
@@ -2727,14 +3223,22 @@ rollback_conflict_pass() {
 
 # conflict_pass_verified <worktree> <pr> <merge-json>
 # Don't take the agent's "fixed" on trust: the merge must be committed with main
-# in it, no conflict marker or new ADR-number clash left. Only then is it pushed
+# in it, no conflict marker, new ADR-number clash or migration-order error left. Only then is it pushed
 # (the agent commits but never pushes on a conflict pass), so a resolution that
 # fails the check never reaches the PR and the rollback can undo all of it.
-# Succeeds once the PR's head is the verified commit. Sets CONFLICT_PASS_WHY on
-# failure.
+# Succeeds once the verified commit is on the PR's branch: either the PR already
+# shows it, or our push of it was accepted. GitHub's PR view lags a push by a
+# few seconds, so reading it right after pushing used to see the old head and
+# spend an attempt on a merge that had landed. Every one of the nine "never
+# reached the PR" warnings up to 2026-11-10 was that race (ADR-0076). worktree-
+# cli's push is a plain, non-force `git push` to origin: it prints
+# {"pushed":true,branch,head} only after GitHub accepted the ref, so that output
+# is the proof, provided its branch is the PR's own head branch in this repo
+# (pr_head_branch, read before the push). Anything else falls back to the PR
+# view, as before. Sets CONFLICT_PASS_WHY on failure.
 conflict_pass_verified() {
   local wt_path="$1" pr_num="$2" merge_json="$3"
-  local main_sha files check head pr_head
+  local main_sha files check head pr_head pr_branch push_out pushed_head=""
   CONFLICT_PASS_WHY=""
   main_sha=$(echo "$merge_json" | jq -r '.mainSha // ""')
   files=$(echo "$merge_json" | jq -c '.conflictedFiles // []')
@@ -2743,14 +3247,25 @@ conflict_pass_verified() {
     CONFLICT_PASS_WHY="merge-check failed to run"; return 1
   fi
   if [[ "$(echo "$check" | jq -r '.resolved')" != "true" ]]; then
-    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions}')"
+    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions, migrationErrors}')"
     return 1
   fi
   head=$(echo "$check" | jq -r '.head // ""')
   pr_head=$(pr_head_oid "$pr_num")
   if [[ -n "$head" && "$pr_head" != "$head" ]]; then
+    pr_branch=$(pr_head_branch "$pr_num")
     log "Conflict pass for PR #$pr_num verified; pushing ${head:0:12}"
-    node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" >>"$LOG_FILE" 2>&1 || true
+    push_out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" 2>>"$LOG_FILE") || push_out=""
+    [[ -n "$push_out" ]] && echo "$push_out" >>"$LOG_FILE"
+    pushed_head=$(echo "$push_out" | jq -r --arg b "$pr_branch" \
+      'select(.pushed == true and $b != "" and .branch == $b) | .head // ""' 2>/dev/null) || pushed_head=""
+    if [[ -n "$pushed_head" && "$pushed_head" == "$head" ]]; then
+      log "Conflict pass for PR #$pr_num: push of ${head:0:12} to $pr_branch accepted (the PR view can take a few seconds to show it)"
+      return 0
+    fi
+    # No proof from the push (it failed, its output didn't parse, or it went to
+    # a branch that isn't this PR's): fall back to what the PR shows, in case it
+    # landed anyway.
     pr_head=$(pr_head_oid "$pr_num")
   fi
   if [[ -z "$head" || "$pr_head" != "$head" ]]; then
@@ -5092,7 +5607,8 @@ review_stage() {
 # One exemption (ADR-0036): a pass whose open threads are ALL CodeRabbit CLI
 # findings from the latest CLI run is free. Without it the gap-fill lane would
 # eat the review budget — bot fix, Claude fix, CLI fix, re-review fix, CLI #2 fix
-# is five passes and a Blocked card for doing exactly what the lane exists for.
+# is five passes, which was the whole budget until ADR-0076 raised it to 10, and
+# still half of it, spent on doing exactly what the lane exists for.
 # The exemption is itself bounded, so the termination guarantee above still
 # holds: coderabbit-cli.mjs grants at most ONE free pass per CLI run (keyed on
 # crLastCoveredSha, recorded as crCliFreePassSha), a card gets at most
@@ -6227,7 +6743,7 @@ verify_sweep_card() {
   fi
   pr_num=$(echo "$pr_obj" | jq -r '.number')
   if ! pr_view=$(gh pr view "$pr_num" --repo JakubAnderwald/drafto \
-      --json state,statusCheckRollup,comments,headRefOid 2>>"$LOG_FILE") || [[ -z "$pr_view" ]]; then
+      --json state,statusCheckRollup,comments,headRefOid,labels 2>>"$LOG_FILE") || [[ -z "$pr_view" ]]; then
     log "WARNING: gh pr view #$pr_num failed (transient?); Testing card #$issue_num waits for the next tick"
     return 0
   fi
@@ -6237,6 +6753,10 @@ verify_sweep_card() {
     log "WARNING: PR #$pr_num has no head SHA in the snapshot (transient?); Testing card #$issue_num waits for the next tick"
     return 0
   fi
+  # Migration approval (ADR-0078), every tick the card is in Testing, as in
+  # In Review: a label the SQL changed under comes off here. Reads the head and
+  # labels from pr_view (an open PR only); never changes the decision below.
+  migration_approval_vouch_view "$issue_num" "$pr_num" "$pr_view" || true
   # A failed read is not an empty record: read as one, it would hand the card
   # back as "not reviewed", with a public comment saying so.
   if ! state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
@@ -6477,7 +6997,7 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
       fi
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: orphaned in Planning, no plan comment, retry budget exhausted ($ATTEMPTS) → Blocked"
         # Idempotent: post the exhaustion notice at most once. If a prior tick
         # already posted it but the → Blocked transition then failed (leaving
@@ -6666,7 +7186,7 @@ See \`docs/features/dark-factory.md\` for the spec contract.
       # to invoke claude.
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: retry budget exhausted ($ATTEMPTS attempts); advancing to Blocked"
         gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
           --body "🏭 **Planning retry budget exhausted ($ATTEMPTS attempts).**
@@ -6899,7 +7419,7 @@ and drag the card back to **Ready** to retry.
       rm -f "$CLAUDE_OUTPUT_FILE"
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: replan retry budget exhausted ($ATTEMPTS attempts); advancing to Blocked"
         gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
           --body "🏭 **Replan retry budget exhausted ($ATTEMPTS attempts).**
@@ -7145,6 +7665,18 @@ Drag it back to **Ready** so the factory can plan it first.
     fi
 
     PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
+
+    # Migration approval (ADR-0078), before Claude runs on a card that came back
+    # with an open PR (a revision from In Test, a retry): the label covers the
+    # migration SQL it was first seen with, so a push since the column that last
+    # checked it can't ride on it. One view for the head and labels; the vouch
+    # fetches the changed files only when the label is on and the head moved.
+    # It never changes this run.
+    if [[ "$(echo "$PRIOR_PR" | jq -r '.state // ""' 2>/dev/null || true)" == "OPEN" ]]; then
+      PRIOR_PR_NUM=$(echo "$PRIOR_PR" | jq -r '.number')
+      migration_approval_vouch_view "$ISSUE_NUM" "$PRIOR_PR_NUM" \
+        "$(gh pr view "$PRIOR_PR_NUM" --repo JakubAnderwald/drafto --json state,headRefOid,labels 2>>"$LOG_FILE" || true)" || true
+    fi
 
     # Revision feedback: when a PR already exists, new OWNER comments since the
     # last consumed feedback are change requests from the In Test preview to
@@ -7619,6 +8151,14 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       log "WARNING: gh pr view #$PR_NUM failed (transient?); skipping this tick"; continue
     fi
 
+    # Migration approval (ADR-0078), every tick the card is in In Review: the
+    # label covers the migration SQL it was first seen with, so a fix pass or a
+    # conflict pass that changes that SQL voids it here, a tick after the push.
+    # Reads the head and labels from PR_VIEW; the changed files are fetched only
+    # when the label is on and the head isn't the one recorded. It never holds
+    # the card or changes what happens to it below.
+    migration_approval_vouch_view "$ISSUE_NUM" "$PR_NUM" "$PR_VIEW" || true
+
     # Gate only on branch-protection *required* contexts: an advisory bot's red
     # or pending check (e.g. CodeRabbit, including its "Review rate limited"
     # status) must not trigger the fix loop or block the In Test advance. The
@@ -7696,6 +8236,19 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM has $FAILING failing check(s), $THREAD_COUNT open thread(s) → fix loop"
       else
         log "Issue #$ISSUE_NUM: PR #$PR_NUM is green but has $THREAD_COUNT open review thread(s) → fix loop"
+      fi
+
+      # Migration renumber (ADR-0077), before the conflict pass's merge-main and
+      # before a fix pass spends an attempt: red CI or a conflict after main
+      # moved can be a migration this PR adds that no longer sorts after main's.
+      # The gate renames it mechanically and updates the branch, with no Claude
+      # run and no attempt spent; the card then waits for CI on the new head.
+      # A plan that needs a person, or a spent renumber budget, posts its
+      # comment and the pass goes ahead as before, so the watch prompt's
+      # "Migration order" recipe stays the fallback; so does an error.
+      if [[ "$CONFLICTING" -eq 1 || "$FAILING" -gt 0 ]]; then
+        migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "In Review" || true
+        [[ "$MIGRATION_RENUMBER_RESULT" == "renumbered" ]] && continue
       fi
 
       # Retry budget for the fix loop.
@@ -7830,7 +8383,25 @@ A human should take a look. Reset with \
             continue
             ;;
           up-to-date|clean)
-            if [[ "$ADR_CLASHES" -eq 0 ]]; then
+            # A merge git made on its own can still leave a migration that no
+            # longer sorts after main's (ADR-0077), when the renumber gate above
+            # couldn't rename it mechanically (a plan that needs a person, a
+            # spent budget, an error). CI would go red on it, so it isn't pushed
+            # as it stands: like an ADR clash, the agent gets the merge and
+            # renumbers on top of it (the watch prompt's conflict pass), and
+            # merge-check refuses a resolution that still leaves one. Only a
+            # merge git just made goes to the agent: up-to-date made none (the
+            # branch already holds main), so it waits for GitHub as before, and
+            # the red CI reaches the fix loop on a later tick.
+            MIG_ERRORS=0
+            if [[ "$MERGE_STATUS" == "clean" ]]; then
+              MIG_ERRORS=$(echo "$MERGE_JSON" | jq '(.migrationErrors // []) | length' 2>/dev/null || echo "0")
+              [[ "$MIG_ERRORS" =~ ^[0-9]+$ ]] || MIG_ERRORS=0
+            fi
+            if [[ "$MIG_ERRORS" -gt 0 ]]; then
+              log "Issue #$ISSUE_NUM: merging main into PR #$PR_NUM leaves $MIG_ERRORS migration-order error(s) ($(echo "$MERGE_JSON" | jq -r '[(.migrationErrors // [])[] | .file] | join(", ")')); handing the merge to the agent"
+            fi
+            if [[ "$ADR_CLASHES" -eq 0 && "$MIG_ERRORS" -eq 0 ]]; then
               if [[ "$(echo "$MERGE_JSON" | jq -r '.ahead')" == "true" ]]; then
                 if ! node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$WT_PATH" >>"$LOG_FILE" 2>&1; then
                   log "WARNING: pushing the merge to PR #$PR_NUM failed; rolling it back, spending one attempt"
@@ -7875,12 +8446,12 @@ A human should take a look. Reset with \
 
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
-      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
+      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_WATCH_EFFORT)"
       CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
       CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       EXIT_CODE=0
       ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
-          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config ) \
+          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_WATCH_EFFORT" --no-chrome --strict-mcp-config ) \
           >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
       if [[ $EXIT_CODE -ne 0 ]]; then
@@ -8056,6 +8627,14 @@ A human should take a look. Reset with \
     # updates it at merge time. "" (the compare failed) also goes on.
     BEHIND_BY=$(pr_behind_main "$HEAD_SHA")
     if [[ -n "$BEHIND_BY" && "$BEHIND_BY" -gt 0 ]]; then
+      # Main may have moved past a migration this PR adds (ADR-0077). Renumber
+      # it first, so CI on the updated head doesn't go red for migration order;
+      # the gate updates the branch itself and spends no branch update. When it
+      # can't (a plan that needs a person, a spent budget, an error), the
+      # update below goes ahead as before and the fix loop's recipe takes the
+      # red CI.
+      migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "In Review" "$INTEST_DIFF_FILES" || true
+      [[ "$MIGRATION_RENUMBER_RESULT" == "renumbered" ]] && continue
       # The budget fails closed: if it can't be read, it counts as spent, so a
       # broken state file can't turn into an update (and a CI run) every tick.
       BRANCH_UPDATES=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
@@ -8221,7 +8800,7 @@ A human should take a look. Reset with \
     if [[ -n "$INTEST_PR_OBJ" && "$INTEST_PR_OBJ" != "null" ]]; then
       INTEST_PR_NUM=$(echo "$INTEST_PR_OBJ" | jq -r '.number')
       INTEST_PR_VIEW=$(gh pr view "$INTEST_PR_NUM" --repo JakubAnderwald/drafto \
-        --json statusCheckRollup,comments,headRefOid,mergeable 2>>"$LOG_FILE" || echo "")
+        --json statusCheckRollup,comments,headRefOid,mergeable,labels 2>>"$LOG_FILE" || echo "")
       INTEST_HEAD_SHA=$(echo "${INTEST_PR_VIEW:-}" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
       if [[ -n "$INTEST_HEAD_SHA" ]]; then
         INTEST_FILES=$(gh pr diff "$INTEST_PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE" || echo "")
@@ -8248,6 +8827,18 @@ A human should take a look. Reset with \
             && [[ "$(echo "${INTEST_PR_VIEW:-}" | jq -r '.mergeable // ""' 2>/dev/null)" == "CONFLICTING" ]]; then
           conflict_handback "$ITEM_ID" "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_HEAD_SHA" "In Test" || true
           continue
+        fi
+
+        # Migration approval (ADR-0078): the label covers the migration SQL it
+        # was first seen with. Checked here as well as in --release, so a label
+        # added while the card is in In Test is tied to the SQL you tested, and
+        # one that SQL edited since voided comes off before you drag the card
+        # to Approved. Reuses the PR view and the diff fetched above (a failed
+        # diff reads as no migrations, so it changes nothing); a view without
+        # labels skips it, rather than reading as a removed label.
+        if INTEST_PR_LABELS=$(jq -er '.labels | map(.name) | join(",")' <<<"${INTEST_PR_VIEW:-}" 2>/dev/null); then
+          migration_approval_vouch "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_HEAD_SHA" \
+            "$INTEST_PR_LABELS" "$INTEST_FILES"
         fi
 
         # Learn how previously-dispatched lanes ended BEFORE deciding what to
@@ -8596,6 +9187,15 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
     fi
     PR_LABELS=$(echo "$PR_VIEW" | jq -r '(.labels // []) | map(.name) | join(",")')
 
+    # Migration approval (ADR-0078), right before the migration gate: the label
+    # covers the migration SQL it was first seen with. One that SQL edited since
+    # voided is removed here and dropped from PR_LABELS, so the gate below holds
+    # the card as if it had never been added. The hash is of the head the merge
+    # is pinned to (MERGE_SHA reads the same PR_VIEW).
+    migration_approval_vouch "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" \
+      "$PR_LABELS" "$DIFF_FILES"
+    PR_LABELS="$MIGRATION_APPROVAL_LABELS"
+
     # Migration gate — hard stop. Leave the card in Approved (a human adds the
     # label); comment once so the operator knows why it's parked.
     MIG_VIOLATION=$(migration_violation "$DIFF_FILES" "$PR_LABELS")
@@ -8642,6 +9242,40 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
     if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
       conflict_handback "$ITEM_ID" "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "Approved" || true
       continue
+    fi
+
+    # How far main is ahead of the head (the compare API), read once: the
+    # renumber gate below runs only when it can matter, and the BEHIND step
+    # reuses it. "" means the compare failed.
+    RELEASE_HEAD=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+    RELEASE_BEHIND=$(pr_behind_main "$RELEASE_HEAD")
+
+    # Migration renumber gate (ADR-0077), ahead of the CI gate: a PR whose
+    # migrations main has moved past is red for migration order, and the CI gate
+    # would send it back to In Review for an LLM fix pass and a second Approved
+    # drag. The gate renames them mechanically and updates the branch instead,
+    # and the card stays in Approved: a later tick merges it once CI is green on
+    # the new head. It runs only when main is ahead of the head, or a required
+    # check is failing, or the compare failed (better to check than to miss
+    # one): a head that already contains main and isn't red has nothing to
+    # renumber, and the gate would only fetch and plan to find that out. An
+    # error holds the card for the tick (the gate retries next tick), so a
+    # lookup blip can't cost a second Approved drag, but only
+    # FACTORY_MAX_MIGRATION_RENUMBER_ERRORS times per head
+    # (migration_renumber_error_hold). A plan that needs a person, or a spent
+    # renumber budget, posts its comment and goes on to the gates below as
+    # before: red CI hands the card back to In Review, where the fix loop's
+    # recipe renumbers it and you approve it again.
+    RELEASE_FAILING=$(pr_failing_required "$PR_VIEW")
+    [[ "$RELEASE_FAILING" =~ ^[0-9]+$ ]] || RELEASE_FAILING=0
+    if [[ -z "$RELEASE_BEHIND" || "$RELEASE_BEHIND" -gt 0 || "$RELEASE_FAILING" -gt 0 ]] \
+        && ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$RELEASE_HEAD" "Approved" "$DIFF_FILES"; then
+      case "$MIGRATION_RENUMBER_RESULT" in
+        renumbered) continue ;;
+        error)
+          if migration_renumber_error_hold "$ISSUE_NUM" "$PR_NUM" "$RELEASE_HEAD"; then continue; fi
+          ;;
+      esac
     fi
 
     # CI gate. A failing *required* check never parks the card silently (#654 sat
@@ -8711,11 +9345,15 @@ comes back to In Test for your approval once CI is green again.
     # Branch-protection merge state. With strict mode on, a PR whose checks ran
     # against an out-of-date base reports BEHIND: update it and let CI re-run, then
     # merge on a later tick once it's current — never squash a stale base into main.
+    # mergeStateStatus alone isn't enough: GitHub computes it in the background
+    # and reads UNKNOWN right after main moves (this mode has just merged
+    # something), and an owner-token merge of that stale head bypasses strict
+    # protection. So the compare API's count decides too, and UNKNOWN waits.
+    # RELEASE_HEAD and RELEASE_BEHIND were read before the renumber gate.
     MERGE_STATE=$(echo "$PR_VIEW" | jq -r '.mergeStateStatus // ""')
-    if [[ "$MERGE_STATE" == "BEHIND" ]]; then
-      log "Issue #$ISSUE_NUM: PR #$PR_NUM is behind main; updating branch (merges once CI re-runs green)"
+    if [[ "$MERGE_STATE" == "BEHIND" || ( -n "$RELEASE_BEHIND" && "$RELEASE_BEHIND" -gt 0 ) ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM is behind main (mergeStateStatus=${MERGE_STATE:-unknown}, behind by ${RELEASE_BEHIND:-?}); updating branch (merges once CI re-runs green)"
       if [[ "$DRY_RUN" -eq 0 ]]; then
-        RELEASE_HEAD=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
         if update_pr_branch "$PR_NUM" "$RELEASE_HEAD"; then
           # A hand-back to In Review (an open thread, red CI) can bring this
           # merge commit to --watch: it inherits the review like --watch's own
@@ -8737,6 +9375,10 @@ base. I'll squash-merge automatically once it's green again.
           log "WARNING: update-branch failed for PR #$PR_NUM (head moved, or a conflict GitHub hasn't flagged yet?); retrying next tick"
         fi
       fi
+      continue
+    fi
+    if [[ -z "$MERGE_STATE" || "$MERGE_STATE" == "UNKNOWN" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM mergeStateStatus=${MERGE_STATE:-missing} (GitHub still computing?); waiting"
       continue
     fi
 

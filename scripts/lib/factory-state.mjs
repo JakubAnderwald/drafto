@@ -196,6 +196,10 @@ function emptyIssue() {
     // Hosted-config gate (ADR-0065): hash of the supabase/config.toml that the
     // hosted-config-applied label vouched for, "" or null while there is none.
     hostedConfigVouched: null,
+    // Migration approval (ADR-0078): `<PR>:<head sha>:<hash>`, the PR, head
+    // and hash of the migration SQL (the PR's own versions left out) that the
+    // migration-approved label vouched for.
+    migrationApprovedVouched: null,
     // Re-runs spent on required checks GitHub cancelled (no runner acquired),
     // as "<head sha>:<count>". Head-SHA keyed like the rest: a new push re-arms
     // the FACTORY_CI_RERUN_MAX budget. See rerun_infra_failures.
@@ -643,6 +647,23 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // hosted-config-applied label vouched for. A rejected write would make the
   // label vouch for every later version, the hole this field closes.
   "hostedConfigVouched",
+  // Migration approval (ADR-0078): `<PR>:<head sha>:<hash>` of the migration
+  // SQL the migration-approved label vouched for. A rejected write leaves it unset, so
+  // the label is vouched for afresh each tick and an SQL edit never voids it.
+  "migrationApprovedVouched",
+  // Migration renumber gate (ADR-0077). renumberFrom / renumberTo are the PR
+  // head the factory renamed and its renumber commit, renumberMap the old →
+  // new file map (a JSON string) its verify checks: a rejected write only costs
+  // a fresh code review of the merged head. migrationRenumbers is the count
+  // FACTORY_MAX_MIGRATION_RENUMBERS caps; the gate won't renumber unless it can
+  // record it. renumberErrors ("<head sha>:<count>") counts --release's holds on
+  // a gate error for one head, capped by FACTORY_MAX_MIGRATION_RENUMBER_ERRORS;
+  // a rejected write stops the holds, so the card goes on as before.
+  "renumberFrom",
+  "renumberTo",
+  "renumberMap",
+  "migrationRenumbers",
+  "renumberErrors",
   // Cancelled-check re-run budget. A rejected write leaves the count at zero,
   // so the factory would re-run CI on every tick and never tell the operator.
   "ciRerun",
