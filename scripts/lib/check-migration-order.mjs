@@ -95,7 +95,15 @@ function byVersionThenName(a, b) {
 //   order         move   a fresh file renumbered to stay after a renamed one
 // Every suggestion is free: it skips the versions of every local and base file and
 // every earlier suggestion, so no `git mv` target collides with an existing file.
-export function checkMigrationOrder({ localFiles, baseFiles, today = new Date() }) {
+// `extraTaken` (versions or file names) only makes suggestions skip more versions:
+// the factory passes the ones other open PRs use (ADR-0076). It never changes what
+// is reported, so CI and the CLI, which don't pass it, behave as before.
+export function checkMigrationOrder({
+  localFiles,
+  baseFiles,
+  today = new Date(),
+  extraTaken = [],
+}) {
   const baseSet = new Set(baseFiles);
   const localSet = new Set(localFiles);
   const baseByVersion = new Map();
@@ -142,6 +150,10 @@ export function checkMigrationOrder({ localFiles, baseFiles, today = new Date() 
   const taken = new Set();
   for (const name of [...localFiles, ...baseFiles]) {
     if (isValidMigrationName(name)) taken.add(versionOf(name));
+  }
+  for (const entry of extraTaken) {
+    const version = versionOf(entry) ?? entry;
+    if (/^\d{14}$/.test(version)) taken.add(version);
   }
   const floor = suggestVersion(baseMax, today);
   const seen = new Map();

@@ -722,6 +722,38 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
     assert.equal(out.nextFreeAdr, "0010");
   });
 
+  // ADR-0076: #802 and #829 both added 20261111000001. Merging main into the
+  // second is clean for git and red for CI, so the conflict pass must see it.
+  it("reports a migration-order error that git merged without a conflict", () => {
+    const wt = prWorktree(209, {
+      "supabase/migrations/20261111000001_storage_quota.sql": "select 1;\n",
+    });
+    const mainSha = advanceMain({
+      "supabase/migrations/20261111000001_note_text_chars.sql": "select 2;\n",
+    });
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean");
+    assert.equal(out.migrationErrors.length, 1);
+    assert.equal(out.migrationErrors[0].reason, "duplicate-base");
+    assert.equal(out.migrationErrors[0].file, "20261111000001_storage_quota.sql");
+    assert.match(out.migrationErrors[0].suggested, /^\d{14}$/);
+    const check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha]));
+    assert.equal(check.migrationErrors.length, 1);
+    assert.equal(check.resolved, false, "a merge CI would fail is never resolved");
+    // The pass rolls it back unpushed.
+    json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+  });
+
+  it("reports no migration errors for a merge whose migrations sort after main's", () => {
+    const wt = prWorktree(210, {
+      "supabase/migrations/20991231000001_later.sql": "select 1;\n",
+    });
+    advanceMain({ "supabase/migrations/20261112000001_main.sql": "select 2;\n" });
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean");
+    assert.deepEqual(out.migrationErrors, []);
+  });
+
   it("ignores an ADR number clash that main already has", () => {
     const wt = prWorktree(204, { "pr-204.txt": "pr\n" });
     advanceMain({ "docs/adr/0020-one.md": "# a\n", "docs/adr/0020-two.md": "# b\n" });

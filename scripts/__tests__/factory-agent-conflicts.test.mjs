@@ -474,6 +474,44 @@ describe("--watch conflict pass wiring", () => {
     assert.match(outcome, /continue/);
   });
 
+  // ADR-0076: a conflict or red CI after main moved can be a migration of this
+  // PR's that no longer sorts after main's. The renumber gate gets it first, so
+  // neither the merge nor a fix pass (and its attempt) is spent on a rename.
+  it("runs the migration renumber gate before merge-main and before any attempt is spent", () => {
+    const gateAt = watchBlock.indexOf('if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM"');
+    const budgetAt = watchBlock.indexOf("# Retry budget for the fix loop.");
+    const mergeAt = watchBlock.indexOf('worktree-cli.mjs" merge-main --path "$WT_PATH"');
+    const bumpAt = watchBlock.indexOf("factory:bump-attempts");
+    assert.ok(gateAt > 0 && gateAt < budgetAt && gateAt < mergeAt && gateAt < bumpAt);
+    const call = watchBlock.slice(gateAt - 200, gateAt + 300);
+    assert.match(call, /if \[\[ "\$CONFLICTING" -eq 1 \|\| "\$FAILING" -gt 0 \]\]; then/);
+    // Held (renumbered, manual, capped) skips the pass; an error lets it run.
+    assert.match(call, /\[\[ "\$MIGRATION_RENUMBER_RESULT" == "error" \]\] \|\| continue/);
+  });
+
+  it("rolls back a clean merge that leaves a migration-order error, unpushed and without an attempt", () => {
+    const arm = watchBlock.slice(
+      watchBlock.indexOf("          up-to-date|clean)"),
+      watchBlock.indexOf("          conflicts) ;;"),
+    );
+    const check = arm.slice(0, arm.indexOf('if [[ "$ADR_CLASHES" -eq 0 ]]; then'));
+    assert.match(
+      check,
+      /MIG_ERRORS=\$\(echo "\$MERGE_JSON" \| jq '\(\.migrationErrors \/\/ \[\]\) \| length'/,
+    );
+    assert.match(check, /rollback_conflict_pass "\$WT_PATH" "\$MERGE_BEFORE"\n\s*continue/);
+    assert.doesNotMatch(check, /bump-attempts|worktree-cli\.mjs" push/);
+    // And it runs before the push.
+    assert.ok(arm.indexOf("MIG_ERRORS") < arm.indexOf('worktree-cli.mjs" push'));
+  });
+
+  it("counts a migration-order error left by the agent as unresolved", () => {
+    assert.match(
+      script,
+      /CONFLICT_PASS_WHY="unresolved: \$\(echo "\$check" \| jq -c '\{[^}]*adrCollisions, migrationErrors\}'\)"/,
+    );
+  });
+
   it("retries an unreachable origin without spending budget", () => {
     const arm = watchBlock.slice(
       watchBlock.indexOf("          unreachable)"),

@@ -99,7 +99,7 @@ PR #646, the fix for issue #457, added `20260922000001_guard_profile_privilege_c
   - It judges only added files, never the order of the whole folder. Main's own out-of-order pair passes, and so does an edit to an existing migration.
 - The check's limits:
   - It only knows the base you have. A stale local `origin/main` can miss a newer migration on GitHub, or flag a file you merged from a newer main. `git fetch origin main` fixes both.
-  - It can't see other open PRs. Two PRs can each pass with versions that collide or interleave, and whichever merges second fails CI once branch protection makes it update from main.
+  - It can't see other open PRs. Two PRs can each pass with versions that collide or interleave, and whichever merges second fails CI once branch protection makes it update from main. For a factory PR, the factory renames the second one's migrations itself ([below](#when-the-factory-renumbers-a-prs-migrations)).
   - Checking explicit paths (`bash scripts/check-migration-safety.sh <file>`) skips the rule.
 - **Dev can be ahead of main.** Dev is a shared sandbox, and another open PR may already have pushed a newer migration to it. Then `supabase db push` to dev refuses your migration although `pnpm migration:check` passes. Either:
   - push it anyway with `supabase db push --include-all` after `pnpm supabase:link:dev`. That is fine on dev. If the other PR merges first, your PR will need renumbering and a [repair](#renaming-a-migration-dev-already-applied) on dev. Or
@@ -120,6 +120,37 @@ supabase migration repair --status applied <new version>
 `repair` only edits the migration history table (`supabase_migrations.schema_migrations`). The first command removes the old version's row, and the second adds the new one. No SQL runs again, which is right: the file's SQL is unchanged and dev already ran it. Afterwards `supabase migration list` should show local and remote in step.
 
 Never run this against prod unless prod applied the old version too. Then it is a production database operation, and the [confirmation rules](#production-operation-confirmation-rules) apply: state the project ref, both commands and both versions, and wait for an explicit "yes".
+
+### When the factory renumbers a PR's migrations
+
+PRs #802 and #829 were open at the same time and both added `20261111000001`. Once #829 merged, #802 failed the order check. The factory now renames such a PR's migrations itself ([ADR 0076](../adr/0076-factory-renumbers-migrations-mechanically.md)):
+
+- **When.** `--release` checks every Approved card whose PR adds a file under `supabase/migrations/`, before the CI gate. `--watch` checks an In Review card when its PR is behind main, when CI is red, and before it merges main into a conflicting PR.
+- **What it changes.** It plans with the same order check, run on the files the merge with main would hold. It commits on the PR's head, as `Drafto factory`:
+  - the `git mv` of each migration to rename (errors and moves alike);
+  - the references to those files that the PR itself added. A full `<version>_<name>` is always rewritten. A bare `<version>` is rewritten only when the merge base never mentions it.
+
+  It never touches main's files or lines, and a check (`node scripts/lib/migration-renumber.mjs verify`) proves the commit is nothing more than that. Then GitHub's update-branch merges main in. The card keeps its code review, and in Approved it keeps the approval.
+
+- **The comment.** It posts one comment per renumber, with the old → new table and the dev repair, which is [the one above](#renaming-a-migration-dev-already-applied):
+
+  ```bash
+  pnpm supabase:link:dev
+  supabase migration repair --status reverted <old version>
+  supabase migration repair --status applied <new version>
+  ```
+
+  Run it only if dev already applied the old version (`supabase migration list` shows it). When the old version is also one of main's migrations (#802's case), dev holds one row for both files. Check which file's SQL dev actually ran. If it was the PR's, repair as above: the main file under the old version then counts as not applied, and `supabase db push --include-all` (dev only) applies it. If it was main's, the PR's migration never ran on dev, and a plain `supabase db push` applies it under the new version with no repair.
+
+- **Prod needs nothing.** Prod is pushed only from main, after the merge, so it only ever sees the new versions.
+- **When it holds instead.** It holds the card with a comment, once per head, and leaves the rename to a person when:
+  - a version isn't 14 digits, or the PR renames a migration main already has;
+  - the PR's migrations create, alter or drop an object (function, table, view, policy, trigger, type, index or sequence) that one of main's newer migrations also touches, because renumbering changes which definition runs last;
+  - a line the PR added names a version the merge base already mentions, so it may mean another migration.
+
+  Rename by hand as in [the section above](#renaming-a-migration-dev-already-applied) and push. The next commit goes through the check again.
+
+- **The cap.** One card is renumbered at most `FACTORY_MAX_MIGRATION_RENUMBERS` times (default 3). After that the factory holds the card with a comment. Reset the count with `node scripts/lib/state-cli.mjs factory:set-issue-field <issue> migrationRenumbers ""`.
 
 ## Production operation confirmation rules
 

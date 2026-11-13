@@ -162,6 +162,15 @@ if ! [[ "$FACTORY_MAX_BRANCH_UPDATES" =~ ^(0|[1-9][0-9]*)$ ]]; then
   FACTORY_MAX_BRANCH_UPDATES=3
 fi
 
+# Times the migration renumber gate (ADR-0076) may rename one card's migrations
+# after main moved past them. Stored per issue as migrationRenumbers and never
+# reset by the factory: past the cap the card is held with a comment.
+FACTORY_MAX_MIGRATION_RENUMBERS="${FACTORY_MAX_MIGRATION_RENUMBERS:-3}"
+if ! [[ "$FACTORY_MAX_MIGRATION_RENUMBERS" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "WARNING: invalid FACTORY_MAX_MIGRATION_RENUMBERS='$FACTORY_MAX_MIGRATION_RENUMBERS'; defaulting to 3" >&2
+  FACTORY_MAX_MIGRATION_RENUMBERS=3
+fi
+
 # Fallback backoff (minutes) when a claude call dies on a session/usage limit
 # but the reset time can't be parsed from the transcript. The factory pauses
 # itself for this long, then re-checks. When the reset time IS parseable we
@@ -2250,24 +2259,58 @@ update_pr_branch() {
 # GitHub itself committed (web-flow) as "Merge branch 'main' into …", which is
 # what update-branch writes. The conflict pass and a local merge commit as the
 # factory's own user, so a conflict resolution is reviewed as usual, as is any
-# other new head. Returns 0 when it carried something over.
+# other new head.
+# A migration renumber (ADR-0076) carries over the same way: <head-sha> is the
+# renumber commit R (renumberTo) or GitHub's merge of main onto it, the commit R
+# renamed (renumberFrom), or R itself, was the last one reviewed, and
+# migration-renumber.mjs verify proves R changes nothing but the migration
+# names. Returns 0 when it carried something over.
 carry_across_branch_update() {
   local issue_num="$1" head_sha="$2" state from last_review cr_sha commit parents committer subject
-  local what="code review"
+  local what="code review" r_from r_to r_map how=""
   [[ -n "$head_sha" ]] || return 1
   state=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE") || return 1
   from=$(echo "$state" | jq -r '.branchUpdatedFrom // ""' 2>/dev/null || echo "")
   last_review=$(echo "$state" | jq -r '.lastReviewSha // ""' 2>/dev/null || echo "")
-  [[ -n "$from" && "$from" != "$head_sha" && "$last_review" == "$from" ]] || return 1
-  commit=$(gh api "repos/JakubAnderwald/drafto/commits/$head_sha" \
-    --jq '{parents: ([.parents[].sha] | join(" ")), committer: (.committer.login // ""), subject: (.commit.message | split("\n")[0])}' \
-    2>>"$LOG_FILE") || return 1
-  parents=$(echo "$commit" | jq -r '.parents // ""' 2>/dev/null || echo "")
-  committer=$(echo "$commit" | jq -r '.committer // ""' 2>/dev/null || echo "")
-  subject=$(echo "$commit" | jq -r '.subject // ""' 2>/dev/null || echo "")
-  [[ "$parents" =~ ^[0-9a-f]+\ [0-9a-f]+$ && "$parents" == "$from "* ]] || return 1
-  [[ "$committer" == "web-flow" && "$subject" == "Merge branch 'main' into "* ]] || return 1
+  r_from=$(echo "$state" | jq -r '.renumberFrom // ""' 2>/dev/null || echo "")
+  r_to=$(echo "$state" | jq -r '.renumberTo // ""' 2>/dev/null || echo "")
+  r_map=$(echo "$state" | jq -r '.renumberMap // ""' 2>/dev/null || echo "")
+  if [[ -n "$r_from" && -n "$r_to" && -n "$r_map" && "$head_sha" != "$last_review" ]] \
+      && [[ "$last_review" == "$r_from" || "$last_review" == "$r_to" ]]; then
+    if [[ "$head_sha" == "$r_to" ]]; then
+      how="only renumbers the migrations of"
+    elif commit=$(gh api "repos/JakubAnderwald/drafto/commits/$head_sha" \
+        --jq '{parents: ([.parents[].sha] | join(" ")), committer: (.committer.login // ""), subject: (.commit.message | split("\n")[0])}' \
+        2>>"$LOG_FILE"); then
+      parents=$(echo "$commit" | jq -r '.parents // ""' 2>/dev/null || echo "")
+      committer=$(echo "$commit" | jq -r '.committer // ""' 2>/dev/null || echo "")
+      subject=$(echo "$commit" | jq -r '.subject // ""' 2>/dev/null || echo "")
+      if [[ "$parents" =~ ^[0-9a-f]+\ [0-9a-f]+$ && "$parents" == "$r_to "* \
+          && "$committer" == "web-flow" && "$subject" == "Merge branch 'main' into "* ]]; then
+        how="only merges main into the migration renumber of"
+      fi
+    fi
+    if [[ -n "$how" ]] && ! node "$SCRIPT_DIR/lib/migration-renumber.mjs" verify --root "$REPO_ROOT" \
+        --issue "$issue_num" --from "$r_from" --to "$r_to" --map "$r_map" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: Issue #$issue_num: migration renumber ${r_to:0:12} failed its check; reviewing ${head_sha:0:12} again"
+      return 1
+    fi
+  fi
+  if [[ -n "$how" ]]; then
+    from="$last_review"
+  else
+    [[ -n "$from" && "$from" != "$head_sha" && "$last_review" == "$from" ]] || return 1
+    commit=$(gh api "repos/JakubAnderwald/drafto/commits/$head_sha" \
+      --jq '{parents: ([.parents[].sha] | join(" ")), committer: (.committer.login // ""), subject: (.commit.message | split("\n")[0])}' \
+      2>>"$LOG_FILE") || return 1
+    parents=$(echo "$commit" | jq -r '.parents // ""' 2>/dev/null || echo "")
+    committer=$(echo "$commit" | jq -r '.committer // ""' 2>/dev/null || echo "")
+    subject=$(echo "$commit" | jq -r '.subject // ""' 2>/dev/null || echo "")
+    [[ "$parents" =~ ^[0-9a-f]+\ [0-9a-f]+$ && "$parents" == "$from "* ]] || return 1
+    [[ "$committer" == "web-flow" && "$subject" == "Merge branch 'main' into "* ]] || return 1
+    how="only merges main into"
+  fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastReviewSha \
     "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || return 1
   cr_sha=$(echo "$state" | jq -r '.crCoverageSha // ""' 2>/dev/null || echo "")
@@ -2276,7 +2319,7 @@ carry_across_branch_update() {
         "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
     what="code review and CodeRabbit coverage"
   fi
-  log "Issue #$issue_num: ${head_sha:0:12} only merges main into the reviewed ${from:0:12}; carried its $what over"
+  log "Issue #$issue_num: ${head_sha:0:12} $how the reviewed ${from:0:12}; carried its $what over"
   return 0
 }
 
@@ -2385,6 +2428,178 @@ migration_violation() {
     fi
   fi
   echo ""
+}
+
+# ── Migration renumber gate (ADR-0076) ──────────────────────────────────────
+# Two factory PRs written the same day share a migration version (#802 and #829
+# both added 20261111000001), and a PR open while main gains a newer migration
+# goes stale. Once main moves, CI goes red on the PR. Instead of an LLM fix pass,
+# a re-review and a second Approved drag, this gate renames the PR's migrations
+# itself: scripts/lib/migration-renumber.mjs builds commit R on the PR head
+# (only the file names and the references the PR added to them change, which
+# its verify proves), pushes it without force, and then update_pr_branch adds
+# GitHub's own merge of main (M). CI's cancel-in-progress drops R's run, so this
+# costs one CI run. The card keeps its review (carry_across_branch_update) and,
+# in Approved, its approval. A plan that needs a person (a version that isn't
+# 14 digits, a renamed main migration, SQL that touches an object main's newer
+# migrations also touch, a bare version that could mean another migration) is
+# held with a comment, once per head. Renumbers count toward
+# FACTORY_MAX_MIGRATION_RENUMBERS (migrationRenumbers); past it the card is held
+# with a comment. Never spends attempts, branchUpdates or ciRerun.
+# Args: $1 issue  $2 PR  $3 head SHA  $4 where (the column, for the comment)
+#       $5 the PR's changed files, when the caller has them (gh pr diff
+#          --name-only, which has no file cap; never gh pr view --json files)
+# Returns 0 when there is nothing to renumber (the caller goes on), 1 to hold
+# this tick. MIGRATION_RENUMBER_RESULT says why: clean | renumbered | manual |
+# capped | error. On error (a lookup or the helper failed), --watch callers go
+# on as before and --release holds.
+migration_renumber_gate() {
+  local issue_num="$1" pr_num="$2" head_sha="$3" where="$4" diff_files="${5:-}"
+  local out status reason map_json map_text to count comment marker
+  MIGRATION_RENUMBER_RESULT="error"
+  if [[ -z "$diff_files" ]] \
+      && ! diff_files=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
+    log "WARNING: migration renumber gate: gh pr diff #$pr_num failed (transient?)"
+    return 1
+  fi
+  # A here-string, not a pipe: under pipefail, grep -q closing the pipe early
+  # would fail the printf and skip the gate.
+  if ! grep -qE '^supabase/migrations/[^/]+\.sql$' <<<"$diff_files"; then
+    MIGRATION_RENUMBER_RESULT="clean"
+    return 0
+  fi
+  if [[ -z "$head_sha" ]]; then
+    log "WARNING: migration renumber gate: no head SHA for PR #$pr_num (transient?)"
+    return 1
+  fi
+  if ! out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" precheck --root "$REPO_ROOT" \
+      --pr "$pr_num" --head "$head_sha" --where "$where" 2>>"$LOG_FILE"); then
+    log "WARNING: migration renumber precheck failed for PR #$pr_num at ${head_sha:0:12} (see the log)"
+    return 1
+  fi
+  status=$(jq -r '.status // ""' <<<"$out" 2>/dev/null || echo "")
+  reason=$(jq -r '.reason // ""' <<<"$out" 2>/dev/null || echo "")
+  case "$status" in
+    clean)
+      MIGRATION_RENUMBER_RESULT="clean"
+      return 0
+      ;;
+    fixable) ;;
+    manual)
+      MIGRATION_RENUMBER_RESULT="manual"
+      log "Issue #$issue_num: PR #$pr_num's migrations need a person to renumber them: $reason"
+      marker="drafto-factory-migration-renumber-manual:${head_sha:0:12}"
+      comment=$(jq -r '.comment // ""' <<<"$out" 2>/dev/null || echo "")
+      if [[ "$DRY_RUN" -eq 0 && -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+        gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$comment
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+      fi
+      return 1
+      ;;
+    *)
+      log "WARNING: migration renumber precheck for PR #$pr_num said '${status:-nothing}' (${reason:-no detail})"
+      return 1
+      ;;
+  esac
+  map_text=$(jq -r '.map | to_entries | map(.key + " -> " + .value) | join(", ")' <<<"$out" 2>/dev/null || echo "")
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "DRY-RUN: would renumber PR #$pr_num's migrations ($map_text) and update the branch"
+    MIGRATION_RENUMBER_RESULT="renumbered"
+    return 1
+  fi
+  # The budget fails closed: unreadable counts as spent.
+  count=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.migrationRenumbers // "0"' 2>/dev/null || echo "")
+  if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+    log "WARNING: couldn't read #$issue_num's migration renumber count; counting it as spent"
+    count="$FACTORY_MAX_MIGRATION_RENUMBERS"
+  fi
+  if [[ "$count" -ge "$FACTORY_MAX_MIGRATION_RENUMBERS" ]]; then
+    MIGRATION_RENUMBER_RESULT="capped"
+    log "Issue #$issue_num: PR #$pr_num needs another migration renumber ($map_text), but $count of $FACTORY_MAX_MIGRATION_RENUMBERS are spent; holding"
+    marker="drafto-factory-migration-renumber-cap:${head_sha:0:12}"
+    if ! issue_has_marker "$issue_num" "$marker"; then
+      gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **Hold — PR #$pr_num's migrations fell behind \`main\` again.**
+
+The factory has renumbered them $count time(s), its limit (\`FACTORY_MAX_MIGRATION_RENUMBERS\`). \
+It would now rename: $map_text. Rename them by hand with the \`git mv\` lines \
+\`pnpm migration:check\` prints, or reset the count with \
+\`node scripts/lib/state-cli.mjs factory:set-issue-field $issue_num migrationRenumbers \"\"\`. \
+The card stays in **$where**.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+    fi
+    return 1
+  fi
+  # A worktree or kept branch with commits the PR lacks would diverge from R.
+  if ! worktree_within_head "$issue_num" "$head_sha"; then
+    log "WARNING: issue #$issue_num's worktree has commits PR #$pr_num lacks; not renumbering its migrations"
+    return 1
+  fi
+  if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationRenumbers \
+      "$((count + 1))" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    log "WARNING: couldn't record a migration renumber for #$issue_num; not renumbering"
+    return 1
+  fi
+  status=""
+  if out=$(node "$SCRIPT_DIR/lib/migration-renumber.mjs" apply --root "$REPO_ROOT" \
+      --issue "$issue_num" --pr "$pr_num" --head "$head_sha" --where "$where" 2>>"$LOG_FILE"); then
+    status=$(jq -r '.status // ""' <<<"$out" 2>/dev/null || echo "")
+    reason=$(jq -r '.reason // ""' <<<"$out" 2>/dev/null || echo "")
+  fi
+  if [[ "$status" != "pushed" ]]; then
+    # Nothing reached the PR: give the renumber back.
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" migrationRenumbers \
+      "$count" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    case "$status" in
+      clean)
+        MIGRATION_RENUMBER_RESULT="clean"
+        return 0
+        ;;
+      manual)
+        MIGRATION_RENUMBER_RESULT="manual"
+        log "Issue #$issue_num: PR #$pr_num's migrations need a person to renumber them: $reason"
+        marker="drafto-factory-migration-renumber-manual:${head_sha:0:12}"
+        comment=$(jq -r '.comment // ""' <<<"$out" 2>/dev/null || echo "")
+        if [[ -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+          gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$comment
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+        fi
+        ;;
+      *)
+        log "WARNING: migration renumber of PR #$pr_num didn't land (${status:-failed}: ${reason:-see the log}); retrying next tick"
+        ;;
+    esac
+    return 1
+  fi
+  to=$(jq -r '.to // ""' <<<"$out" 2>/dev/null || echo "")
+  map_json=$(jq -c '.map // {}' <<<"$out" 2>/dev/null || echo "{}")
+  MIGRATION_RENUMBER_RESULT="renumbered"
+  # Recorded before the update, so carry_across_branch_update can match R, or
+  # the merge onto it, whichever --watch sees first.
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" renumberFrom \
+    "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" renumberTo \
+    "$to" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" renumberMap \
+    "$map_json" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  if update_pr_branch "$pr_num" "$to"; then
+    log "Issue #$issue_num: renumbered PR #$pr_num's migrations ($map_text) in ${to:0:12} and updated the branch; CI runs on the merged head"
+  else
+    # Not behind (only the PR's own versions clashed), or a conflict: the head
+    # is R either way, and a later tick takes it from there.
+    log "Issue #$issue_num: renumbered PR #$pr_num's migrations ($map_text) in ${to:0:12}; update-branch didn't apply"
+  fi
+  marker="drafto-factory-migration-renumber:${to:0:12}"
+  comment=$(jq -r '.comment // ""' <<<"$out" 2>/dev/null || echo "")
+  if [[ -n "$comment" ]] && ! issue_has_marker "$issue_num" "$marker"; then
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "$comment
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
+  fi
+  return 1
 }
 
 # Hosted-config gate (ADR-0065). A PR that changes supabase/config.toml may need
@@ -2756,7 +2971,7 @@ rollback_conflict_pass() {
 
 # conflict_pass_verified <worktree> <pr> <merge-json>
 # Don't take the agent's "fixed" on trust: the merge must be committed with main
-# in it, no conflict marker or new ADR-number clash left. Only then is it pushed
+# in it, no conflict marker, new ADR-number clash or migration-order error left. Only then is it pushed
 # (the agent commits but never pushes on a conflict pass), so a resolution that
 # fails the check never reaches the PR and the rollback can undo all of it.
 # Succeeds once the verified commit is on the PR's branch: either the PR already
@@ -2780,7 +2995,7 @@ conflict_pass_verified() {
     CONFLICT_PASS_WHY="merge-check failed to run"; return 1
   fi
   if [[ "$(echo "$check" | jq -r '.resolved')" != "true" ]]; then
-    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions}')"
+    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions, migrationErrors}')"
     return 1
   fi
   head=$(echo "$check" | jq -r '.head // ""')
@@ -7747,6 +7962,18 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM is green but has $THREAD_COUNT open review thread(s) → fix loop"
       fi
 
+      # Migration renumber (ADR-0076), before the conflict pass's merge-main and
+      # before a fix pass spends an attempt: red CI or a conflict after main
+      # moved can be a migration this PR adds that no longer sorts after main's.
+      # The gate renames it mechanically and updates the branch, with no Claude
+      # run and no attempt spent; a plan that needs a person holds the card with
+      # a comment. On an error the pass goes ahead as before.
+      if [[ "$CONFLICTING" -eq 1 || "$FAILING" -gt 0 ]]; then
+        if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "In Review"; then
+          [[ "$MIGRATION_RENUMBER_RESULT" == "error" ]] || continue
+        fi
+      fi
+
       # Retry budget for the fix loop.
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "0")
@@ -7879,6 +8106,17 @@ A human should take a look. Reset with \
             continue
             ;;
           up-to-date|clean)
+            # A merge git made on its own can still leave a migration that no
+            # longer sorts after main's (ADR-0076): CI would go red on it. Roll
+            # it back unpushed, spending nothing; the renumber gate above takes
+            # it from a fresh read next tick.
+            MIG_ERRORS=$(echo "$MERGE_JSON" | jq '(.migrationErrors // []) | length' 2>/dev/null || echo "0")
+            [[ "$MIG_ERRORS" =~ ^[0-9]+$ ]] || MIG_ERRORS=0
+            if [[ "$MIG_ERRORS" -gt 0 ]]; then
+              log "Issue #$ISSUE_NUM: merging main into PR #$PR_NUM leaves $MIG_ERRORS migration-order error(s) ($(echo "$MERGE_JSON" | jq -r '[(.migrationErrors // [])[] | .file] | join(", ")')); rolling it back unpushed, no attempt spent"
+              rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
+              continue
+            fi
             if [[ "$ADR_CLASHES" -eq 0 ]]; then
               if [[ "$(echo "$MERGE_JSON" | jq -r '.ahead')" == "true" ]]; then
                 if ! node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$WT_PATH" >>"$LOG_FILE" 2>&1; then
@@ -8105,6 +8343,13 @@ A human should take a look. Reset with \
     # updates it at merge time. "" (the compare failed) also goes on.
     BEHIND_BY=$(pr_behind_main "$HEAD_SHA")
     if [[ -n "$BEHIND_BY" && "$BEHIND_BY" -gt 0 ]]; then
+      # Main may have moved past a migration this PR adds (ADR-0076). Renumber
+      # it first, so CI on the updated head doesn't go red for migration order;
+      # the gate updates the branch itself and spends no branch update. On an
+      # error the update below goes ahead as before.
+      if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "In Review" "$INTEST_DIFF_FILES"; then
+        [[ "$MIGRATION_RENUMBER_RESULT" == "error" ]] || continue
+      fi
       # The budget fails closed: if it can't be read, it counts as spent, so a
       # broken state file can't turn into an update (and a CI run) every tick.
       BRANCH_UPDATES=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
@@ -8693,6 +8938,17 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
       continue
     fi
 
+    # Migration renumber gate (ADR-0076), ahead of the CI gate: a PR whose
+    # migrations main has moved past is red for migration order, and the CI gate
+    # would send it back to In Review for an LLM fix pass and a second Approved
+    # drag. The gate renames them mechanically and updates the branch instead,
+    # and the card stays in Approved: a later tick merges it once CI is green on
+    # the new head. A plan that needs a person holds it here with a comment, and
+    # so does an error (the gate retries next tick).
+    if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "Approved" "$DIFF_FILES"; then
+      continue
+    fi
+
     # CI gate. A failing *required* check never parks the card silently (#654 sat
     # in Approved for days on checks GitHub had cancelled — ADR-0041):
     #  - never judged the code (no runner, or timed out while setting up): re-run
@@ -8760,11 +9016,16 @@ comes back to In Test for your approval once CI is green again.
     # Branch-protection merge state. With strict mode on, a PR whose checks ran
     # against an out-of-date base reports BEHIND: update it and let CI re-run, then
     # merge on a later tick once it's current — never squash a stale base into main.
+    # mergeStateStatus alone isn't enough: GitHub computes it in the background
+    # and reads UNKNOWN right after main moves (this mode has just merged
+    # something), and an owner-token merge of that stale head bypasses strict
+    # protection. So the compare API's count decides too, and UNKNOWN waits.
     MERGE_STATE=$(echo "$PR_VIEW" | jq -r '.mergeStateStatus // ""')
-    if [[ "$MERGE_STATE" == "BEHIND" ]]; then
-      log "Issue #$ISSUE_NUM: PR #$PR_NUM is behind main; updating branch (merges once CI re-runs green)"
+    RELEASE_HEAD=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
+    RELEASE_BEHIND=$(pr_behind_main "$RELEASE_HEAD")
+    if [[ "$MERGE_STATE" == "BEHIND" || ( -n "$RELEASE_BEHIND" && "$RELEASE_BEHIND" -gt 0 ) ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM is behind main (mergeStateStatus=${MERGE_STATE:-unknown}, behind by ${RELEASE_BEHIND:-?}); updating branch (merges once CI re-runs green)"
       if [[ "$DRY_RUN" -eq 0 ]]; then
-        RELEASE_HEAD=$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')
         if update_pr_branch "$PR_NUM" "$RELEASE_HEAD"; then
           # A hand-back to In Review (an open thread, red CI) can bring this
           # merge commit to --watch: it inherits the review like --watch's own
@@ -8786,6 +9047,10 @@ base. I'll squash-merge automatically once it's green again.
           log "WARNING: update-branch failed for PR #$PR_NUM (head moved, or a conflict GitHub hasn't flagged yet?); retrying next tick"
         fi
       fi
+      continue
+    fi
+    if [[ -z "$MERGE_STATE" || "$MERGE_STATE" == "UNKNOWN" ]]; then
+      log "Issue #$ISSUE_NUM: PR #$PR_NUM mergeStateStatus=${MERGE_STATE:-missing} (GitHub still computing?); waiting"
       continue
     fi
 

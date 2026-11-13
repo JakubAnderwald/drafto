@@ -1025,8 +1025,8 @@ Now a conflict is handed back to the fix loop like red CI ([ADR-0061](../adr/006
 
 - **Approved and In Test.** `--release`, and the In Test sweep when no feedback is pending, post one comment per head SHA (`<!-- drafto-factory-conflict:<sha12> -->`) and move the card back to **In Review**. `--release` checks this before the CI gate, because GitHub runs no `pull_request` CI on a conflicting head.
 - **In Review.** `--watch` runs a conflict pass before any CI wait. Bash merges `origin/main` into the branch (`worktree-cli.mjs merge-main`). A failed fetch of main skips the tick at no cost.
-  - **Clean merge.** Bash pushes it, with no Claude run and no attempt spent.
-  - **Conflicts, or two ADRs sharing a number.** The watch agent resolves them, renumbering the PR's own ADR, and commits the merge without pushing. A conflicted `pnpm-lock.yaml` is regenerated with `pnpm install`, never hand-edited. Bash then checks the commit with `merge-check`: merge committed with nothing left uncommitted, main in `HEAD`, no conflict markers, and no ADR clash in `HEAD`. Only then does bash push it, so a failed resolution never reaches the PR. A verified resolution spends no attempt.
+  - **Clean merge.** Bash pushes it, with no Claude run and no attempt spent. A clean merge that leaves a migration-order error (`migrationErrors` in the `merge-main` result) is rolled back unpushed instead, with no attempt spent: the migration renumber gate takes it on the next tick (see "A PR whose migrations main moved past").
+  - **Conflicts, or two ADRs sharing a number.** The watch agent resolves them, renumbering the PR's own ADR, and commits the merge without pushing. A conflicted `pnpm-lock.yaml` is regenerated with `pnpm install`, never hand-edited. Bash then checks the commit with `merge-check`: merge committed with nothing left uncommitted, main in `HEAD`, no conflict markers, no ADR clash and no migration-order error in `HEAD`. Only then does bash push it, so a failed resolution never reaches the PR. A verified resolution spends no attempt.
   - **Any other ending.** Bash rolls the worktree back (`merge-abort --to <pre-merge head>`, which also removes untracked leftovers) and spends one attempt. A conflict where main rewrote the code the plan changes, or a lockfile `pnpm install` can't produce, ends in **Blocked** with a PR comment.
 - The card then goes through CI, review and In Test again, and needs a fresh **Approved** drag.
 
@@ -1046,6 +1046,36 @@ Now `--watch` brings an In Review PR up to date before it hands the card to you 
 - **Not covered.** A card already in In Test, or in Testing, isn't updated when `main` moves, because that would change the commit you're testing. A revision that changes code passes back through In Review and gets updated there. A no-op or declined revision returns to In Test on the head you already saw. `--release` updates the branch before the merge.
 
 Log lines: `PR #<n> was <k> commit(s) behind main; updated the branch`, `… carried its code review … over`, `… branch update(s) are spent; going on as it stands`, `update-branch for PR #<n> didn't apply (…); rechecking next tick`. To grant a fresh budget, run `node scripts/lib/state-cli.mjs factory:set-issue-field <n> branchUpdates "" --state-file logs/factory-state.json` in `drafto-factory`.
+
+### A PR whose migrations main moved past (self-healing)
+
+PRs #802 and #829 were open at the same time, and both added migration `20261111000001`. Once #829 merged, #802 would have gone red on the order check. `--release` would have handed it back to In Review, and it would have taken an LLM fix pass, a fresh review and a second Approved drag, all for a rename. `--release` also merged a PR whose `mergeStateStatus` read `UNKNOWN`, which it does right after `main` moves.
+
+Now the factory renames such a PR's migrations itself ([ADR-0076](../adr/0076-factory-renumbers-migrations-mechanically.md)):
+
+- **When.** Only for a PR whose `gh pr diff --name-only` lists a `supabase/migrations/*.sql` file.
+  - `--release` checks it on every tick, after the `migration-approved` and conflict gates and before the CI gate.
+  - `--watch` checks it when an In Review PR is behind `main` (before the update-branch), and at the fix loop's entry when CI is red or the PR conflicts. That is before the conflict pass merges `main` and before any attempt is spent.
+- **What it does.** `node scripts/lib/migration-renumber.mjs precheck` plans the rename with the order check on the files the merge would hold, skipping versions other open PRs use. When the plan is fixable, `apply`:
+  - builds commit R on the PR head, as `Drafto factory`, in `$REPO_ROOT` with no worktree. R renames the migrations and rewrites the references the PR itself added to them;
+  - checks R with `verify` and pushes it to `factory/issue-<n>` without force.
+
+  Then the gate calls update-branch on R, so GitHub merges `main` in, and records `renumberFrom`, `renumberTo`, `renumberMap` and `migrationRenumbers`. It never spends `attempts`, `branchUpdates` or `ciRerun`.
+
+- **The comment.** One per R (`<!-- drafto-factory-migration-renumber:<sha12> -->`): the old → new table and the dev repair (`supabase migration repair --status reverted <old>`, then `--status applied <new>`), needed only if dev applied the old version. See [`migrations.md`](./migrations.md#when-the-factory-renumbers-a-prs-migrations) for the case where the old version is also one of `main`'s. Prod needs nothing: it is pushed only from `main`, after the merge.
+- **Approval carry-over.** In Approved the card **stays in Approved** and merges once CI is green on the merged head. In `--watch`, R and GitHub's merge onto R inherit the code review and CodeRabbit coverage of the head R renamed: `<sha12> only merges main into the migration renumber of the reviewed <sha12>; carried its code review … over`. They inherit it only when `verify` passes again. If it fails (`migration renumber <sha12> failed its check`), the head is reviewed as usual.
+- **Manual hold.** It holds the card in its column with one comment per head (`<!-- drafto-factory-migration-renumber-manual:<sha12> -->`) when:
+  - a version isn't 14 digits, or the PR renames a migration `main` already has;
+  - the PR's migrations touch an object that one of `main`'s newer migrations also touches. Renumbering changes which definition runs last;
+  - a line the PR added names a bare version that may mean another migration.
+
+  Rename by hand with the `git mv` lines `pnpm migration:check` prints, and push. The new head goes through the gate again. Or drag the card to Blocked.
+
+- **Cap.** At most `FACTORY_MAX_MIGRATION_RENUMBERS` (default `3`) renumbers per card, stored as `migrationRenumbers` and never reset by the factory. Past it, or when the count can't be read, the card is held with one comment per head (`<!-- drafto-factory-migration-renumber-cap:<sha12> -->`). To grant more, run `node scripts/lib/state-cli.mjs factory:set-issue-field <n> migrationRenumbers "" --state-file logs/factory-state.json` in `drafto-factory`.
+- **Errors.** A failed lookup, precheck or push (`migration renumber of PR #<n> didn't land (rejected: …)`) holds an Approved card for the tick. In `--watch` the old path runs instead: the plain update-branch, or the fix or conflict pass. A push the remote rejected because the branch moved gives the count back.
+- **The BEHIND step.** For every PR, `--release` updates the branch when the compare API says `main` is ahead of the head, as well as on `BEHIND`. It waits while `mergeStateStatus` reads `UNKNOWN` (`GitHub still computing?); waiting`).
+
+Log lines: `renumbered PR #<n>'s migrations (<old> -> <new>) in <sha12> and updated the branch`, `PR #<n>'s migrations need a person to renumber them: <reason>`, `needs another migration renumber …, but <k> of <max> are spent; holding`.
 
 ### Who holds a worktree slot
 

@@ -219,6 +219,113 @@ describe("--release engine wiring", () => {
     assert.doesNotMatch(script, /comment a change request/);
   });
 
+  // ADR-0076. #802 and #829 shared a migration version; once #829 merged,
+  // #802 went red and the CI gate sent it back for an LLM pass and a second
+  // Approved drag. The renumber gate now runs first and keeps the card here.
+  it("runs the migration renumber gate after the label and conflict gates, before the CI gate", () => {
+    const at = (s) => {
+      const i = releaseBlock.indexOf(s);
+      assert.ok(i !== -1, `missing: ${s}`);
+      return i;
+    };
+    const gateAt = at('if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM"');
+    assert.ok(at('MIG_VIOLATION=$(migration_violation "$DIFF_FILES" "$PR_LABELS")') < gateAt);
+    assert.ok(at('if [[ "$MERGEABLE" == "CONFLICTING" ]]; then') < gateAt);
+    assert.ok(gateAt < at('FAILING=$(pr_failing_required "$PR_VIEW")'));
+    assert.match(
+      releaseBlock,
+      /if ! migration_renumber_gate "\$ISSUE_NUM" "\$PR_NUM" "\$\(echo "\$PR_VIEW" \| jq -r '\.headRefOid \/\/ ""'\)" "Approved" "\$DIFF_FILES"; then\n\s*continue\n\s*fi/,
+    );
+  });
+
+  it("keeps a renumbered card in Approved, so it merges once CI is green on the new head", () => {
+    const start = releaseBlock.indexOf("    # Migration renumber gate (ADR-0076)");
+    const end = releaseBlock.indexOf("    # CI gate.", start);
+    assert.ok(start !== -1 && end !== -1);
+    for (const result of ["renumbered", "manual", "capped", "error"]) {
+      const snippet = `
+set -euo pipefail
+PR_VIEW='{"headRefOid":"abc123"}'; ISSUE_NUM=794; PR_NUM=802; DIFF_FILES=x
+transition_status() { echo "MOVE $*"; }
+migration_renumber_gate() { echo "GATE $*"; MIGRATION_RENUMBER_RESULT=${result}; return 1; }
+for _once in 1; do
+${releaseBlock.slice(start, end)}
+  echo "CI GATE"
+done`;
+      const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), "GATE 794 802 abc123 Approved x", result);
+    }
+  });
+
+  describe("the BEHIND step (ADR-0076)", () => {
+    const start = releaseBlock.indexOf("    # Branch-protection merge state.");
+    const end = releaseBlock.indexOf(
+      '    log "Issue #$ISSUE_NUM: PR #$PR_NUM green + mergeable',
+      start,
+    );
+    assert.ok(start !== -1 && end !== -1, "BEHIND step not found");
+    function step(mergeState, behind) {
+      const snippet = `
+set -euo pipefail
+exec 3>&1
+PR_VIEW='{"mergeStateStatus":"${mergeState}","headRefOid":"abc123"}'
+ISSUE_NUM=794; PR_NUM=802; DRY_RUN=0; SCRIPT_DIR=/factory/scripts; STATE_FILE=/s; LOG_FILE=/dev/null
+log() { echo "LOG $*"; }
+issue_has_marker() { return 0; }
+node() { echo "SET $4 $5" >&3; }
+gh() {
+  if [[ "$1 $2" == "api --method" ]]; then echo "UPDATE $*" >&3; return 0; fi
+  if [[ "$1" == "api" ]]; then echo "${behind}"; return 0; fi
+}
+eval "$(awk '/^pr_behind_main\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+eval "$(awk '/^update_pr_branch\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+for _once in 1; do
+${releaseBlock.slice(start, end)}
+  echo MERGE
+done`;
+      const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout;
+    }
+
+    it("updates a branch the compare API says is behind, even when GitHub reads CLEAN", () => {
+      const out = step("CLEAN", "2");
+      assert.match(
+        out,
+        /UPDATE api --method PUT .*pulls\/802\/update-branch -f expected_head_sha=abc123/,
+      );
+      assert.match(out, /SET branchUpdatedFrom abc123/);
+      assert.doesNotMatch(out, /MERGE/);
+    });
+
+    it("still updates on BEHIND when the compare fails", () => {
+      const out = step("BEHIND", "");
+      assert.match(out, /UPDATE api --method PUT/);
+      assert.doesNotMatch(out, /MERGE/);
+    });
+
+    it("waits on UNKNOWN instead of merging a head GitHub hasn't judged", () => {
+      for (const state of ["UNKNOWN", ""]) {
+        const out = step(state, "0");
+        assert.doesNotMatch(out, /UPDATE|MERGE/, state);
+        assert.match(out, /GitHub still computing\?\); waiting/, state);
+      }
+    });
+
+    it("merges a current branch", () => {
+      for (const [state, behind] of [
+        ["CLEAN", "0"],
+        ["UNSTABLE", ""],
+        ["BLOCKED", "0"],
+      ]) {
+        const out = step(state, behind);
+        assert.match(out, /MERGE/, state);
+        assert.doesNotMatch(out, /UPDATE/, state);
+      }
+    });
+  });
+
   it("squash-merges via the GitHub API PUT form, not gh pr merge", () => {
     assert.match(releaseBlock, /MERGE_ARGS=\(-f merge_method=squash\)/);
     assert.match(
