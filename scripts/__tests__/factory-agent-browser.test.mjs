@@ -200,8 +200,9 @@ describe("factory-agent.sh browser runner: static wiring", () => {
   });
 
   it("publishes screenshots from the factory's own node only, never inside a claude call", () => {
-    // ADR-0072: the runner keeps no Bash and no gh; the upload is evidence-
-    // upload.mjs, run by bash after the session, from one function.
+    // ADR-0072: the runner keeps no gh and no Bash beyond ADR-0073's
+    // dev-inspect; the upload is evidence-upload.mjs, run by bash after the
+    // session, from one function.
     const calls = script.match(/node "\$SCRIPT_DIR\/lib\/evidence-upload\.mjs"/g) || [];
     assert.equal(calls.length, 1, "one invocation in the whole script");
     assert.match(
@@ -213,7 +214,14 @@ describe("factory-agent.sh browser runner: static wiring", () => {
       assert.doesNotMatch(c, /evidence-upload|evidence_upload|publish_screenshots/);
     }
     const [runner] = claudeCalls(script).filter((c) => /\s--chrome\b/.test(c));
-    assert.match(runner, /--tools ""/, "still no built-in tools: no Bash, no gh");
+    // Its built-in tools still come from the guard alone: "" (Chrome only), or
+    // "Bash" for a dev-inspect run, whose hook allows only that one command.
+    assert.match(runner, /--tools "\$tools"/, "the runner's tools still come from the guard");
+    assert.match(
+      extract("run_browser_task"),
+      /tools=\$\(node "\$guard" session-tools --config "\$cfg"/,
+      "and only from its session-tools: no gh, no publishing",
+    );
     assert.doesNotMatch(
       extract("run_browser_task"),
       /evidence-upload|evidence_upload|publish_screenshots|evidence_ocr_bin/,

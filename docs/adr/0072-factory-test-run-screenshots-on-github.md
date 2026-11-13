@@ -15,7 +15,7 @@ Forces at play:
 - **GitHub has no attachment API.** The drag-and-drop upload in the web UI (`user-attachments`) needs a signed-in browser session. No REST or GraphQL endpoint takes an image for a comment.
 - **The repo is public.** Whatever is published can be read by anyone, and can't be fully taken back.
 - **Pixels bypass the text scan.** Every report is scanned for secrets before it's posted. A screenshot is an image, which that scan never reads.
-- **The runner keeps its limits.** It has no Bash, no files and no `gh`, and only bash posts (ADR-0051). Publishing has to happen in the factory's own code, after the run.
+- **The runner keeps its limits.** It has no files and no `gh`, and no Bash except for [ADR-0073](./0073-factory-verification-data-checks-live-tests-uploads-admin-js.md)'s `dev-inspect`, and only bash posts (ADR-0051). Publishing has to happen in the factory's own code, after the run.
 - **Cost discipline.** No new service and no new monthly cost.
 
 The guard already gives the browser runner's screenshots provenance. When the runner's `computer` tool saves a screenshot, the guard copies it into the run's evidence directory and logs the copy in its decision log, `logs/factory/browser-guard/<session>.jsonl`.

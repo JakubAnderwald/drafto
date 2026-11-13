@@ -18,10 +18,10 @@
 //
 // This runs in the factory's own node, after the runner has exited and after
 // the report's secret scan has passed — never inside a claude session (the
-// browser runner still has no Bash and no gh). The commit is built with git
-// plumbing on a temp index (no checkout, no hooks, no filters, a fixed
-// message) and pushed with a create-only lease, like plan-probe.mjs's probe
-// branch. Each image has been through evidence-images.mjs first (provenance,
+// browser runner still has no gh, and no Bash but ADR-0073's dev-inspect).
+// The commit is built with git plumbing on a temp index (no checkout, no
+// hooks, no filters, a fixed message) and pushed with a create-only lease,
+// like plan-probe.mjs's probe branch. Each image has been through evidence-images.mjs first (provenance,
 // file checks, an OCR secret scan, the per-comment cap).
 //
 // Nothing is published until `selftest` has shown, on the real repo, that

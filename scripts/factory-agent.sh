@@ -4552,10 +4552,10 @@ browser_lane_finish() {
 }
 
 # ── Test-run screenshots (scripts/lib/evidence-upload.mjs, ADR-0072) ───────
-# After a run, never inside it: the runner still has no Bash and no gh. Only
-# the factory's own node publishes, and only a run whose report's secret scan
-# passed. Evidence, never a gate: none of these can fail a caller, spend an
-# attempt or move a card.
+# After a run, never inside it: the runner still has no gh, and no Bash but
+# ADR-0073's dev-inspect. Only the factory's own node publishes, and only a
+# run whose report's secret scan passed. Evidence, never a gate: none of these
+# can fail a caller, spend an attempt or move a card.
 
 # evidence_ocr_bin [--no-compile] — print the OCR helper evidence-images.mjs
 # scans each screenshot's text with ($LOG_DIR/bin/ocr). It is compiled with
