@@ -374,12 +374,27 @@ function shellQuotePath(label, p) {
 }
 
 /**
+ * The directories the runner's session may read: the run's fixtures with the
+ * uploads capability, none otherwise. Claude Code's file_upload takes only
+ * files the session may read, and the runner's cwd is an empty directory
+ * elsewhere, so without this every upload is refused before the guard's own
+ * check matters. It adds no other reach: the session has no file tools, and
+ * uploadVerdict still decides which files go.
+ */
+export function uploadDirectories(config = null) {
+  const dir = config?.fixturesDir;
+  return capabilitiesOf(config).includes("uploads") && typeof dir === "string" && dir ? [dir] : [];
+}
+
+/**
  * The --settings object for the runner. One function, so the shape the
  * Wave 0 spike validated is the only shape that ships: absolute node, guard
  * and perl paths (launchd's PATH is not the shell's), a timeout on every hook,
  * the pre guard under its own shorter alarm, hooks explicitly enabled, and
  * the always-denied tools removed from the session through permissions.deny
- * on top of being left out of --allowedTools.
+ * on top of being left out of --allowedTools. With the uploads capability,
+ * permissions.additionalDirectories shares the run's fixtures directory
+ * (uploadDirectories).
  */
 export function buildGuardSettings({
   nodePath,
@@ -394,9 +409,13 @@ export function buildGuardSettings({
   const perl = shellQuotePath("perlPath", perlPath);
   const command = (mode) => `${node} ${guard} hook ${mode} --config ${cfg}`;
   const alarmed = `${perl} -e '${PERL_ALARM_SCRIPT}' ${PRE_ALARM_SEC} ${command("pre")}`;
+  const shared = uploadDirectories(config);
   return {
     disableAllHooks: false,
-    permissions: { deny: alwaysDeny(config).map(fullToolName) },
+    permissions: {
+      deny: alwaysDeny(config).map(fullToolName),
+      ...(shared.length ? { additionalDirectories: shared } : {}),
+    },
     hooks: {
       SessionStart: [
         {

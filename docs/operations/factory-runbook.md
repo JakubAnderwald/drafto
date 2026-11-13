@@ -592,6 +592,8 @@ How `verify` and `intest` run:
 | `FACTORY_BROWSER_ADMIN_ACCOUNT_FILE` | `~/drafto-secrets/browser-admin-account.env` | `FACTORY_BROWSER_ADMIN_EMAIL=` of the CI E2E admin on dev, mode `600`. The email only: the admin signs in by link, never with a password. A missing or unusable file means no admin steps (they're SKIP), never a failed run.                                                                                                                                       |
 | `FACTORY_BROWSER_SIGNIN_KEY_FILE`    | `~/drafto-secrets/dev-supabase-admin.env`    | `DEV_SUPABASE_URL=` / `DEV_SUPABASE_SERVICE_ROLE_KEY=` of the **dev** project. Mode `600`. The factory uses it only to mint the runner's one-time preview sign-in link (`browser-signin.mjs`); minting refuses any other project. Never reaches the runner. Operators also read it via `pnpm test:live:supabase`, in interactive sessions only.                     |
 
+With `FACTORY_BROWSER_UPLOADS=1`, the run's settings also share its `fixtures/` with the session (`permissions.additionalDirectories`). Claude Code's `file_upload` takes only files the session may read, and the runner's working directory is an empty one elsewhere, so without it every upload is refused ("only files this session is allowed to read can be uploaded"). The session has no file tools, so this lets it upload those files and nothing more.
+
 ### One-time setup
 
 1. **Chrome and the extension.** Chrome runs on the Mac mini with the Claude in Chrome extension signed in. From an interactive session, `list_connected_browsers` lists `9796912b-…` with `isLocal: true`.

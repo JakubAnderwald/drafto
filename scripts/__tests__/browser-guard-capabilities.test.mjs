@@ -17,6 +17,7 @@ import {
   jsVerdict,
   runnerTools,
   sessionToolsArg,
+  uploadDirectories,
   uploadVerdict,
   validateConfig,
 } from "../lib/browser-guard.mjs";
@@ -95,6 +96,34 @@ describe("capabilities in the config", () => {
       ["mcp__claude-in-chrome__.*", "Bash"],
     );
     assert.match(all.hooks.PreToolUse[1].hooks[0].command, /hook pre .*\|\| exit 2$/);
+  });
+
+  // Claude Code's file_upload refuses a file the session may not read, and
+  // the runner's cwd is an empty directory elsewhere (#794's run, 2026-11-12:
+  // "only files this session is allowed to read can be uploaded").
+  test("the settings share the fixtures directory with the session only for uploads", () => {
+    const paths = { nodePath: "/n/node", guardPath: "/g/guard.mjs", configPath: "/c/cfg.json" };
+    const withUploads = validateConfig({
+      ...base,
+      capabilities: ["uploads", "inspect"],
+      fixturesDir: "/r/fixtures",
+    });
+    assert.deepEqual(
+      buildGuardSettings({ ...paths, config: withUploads }).permissions.additionalDirectories,
+      ["/r/fixtures"],
+    );
+    assert.deepEqual(uploadDirectories(withUploads), ["/r/fixtures"]);
+    for (const config of [
+      null,
+      validateConfig(base),
+      validateConfig({ ...base, capabilities: ["js", "inspect"] }),
+      // A fixtures dir alone shares nothing: only the capability does.
+      { ...base, capabilities: ["js"], fixturesDir: "/r/fixtures" },
+    ]) {
+      const settings = buildGuardSettings({ ...paths, config });
+      assert.equal(settings.permissions.additionalDirectories, undefined);
+      assert.deepEqual(uploadDirectories(config), []);
+    }
   });
 });
 
