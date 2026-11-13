@@ -1344,11 +1344,19 @@ function plan(flags, { gh } = {}) {
 // The prompt says what to do past them.
 const VERSIONS_PER_CARD = 5;
 
+// next-version's gh budget. It runs in the implement path, inside the
+// factory's loop lock, so a slow GitHub must cost about a minute in all, not
+// every open PR times the per-call cap. Past it, next-version gives up and the
+// bundle's field is left null (the implementer falls back to the date rule).
+const NEXT_VERSION_GH_TIMEOUT_MS = 20_000;
+const NEXT_VERSION_GH_BUDGET_MS = 60_000;
+
 // next-version (ADR-0079): the versions a card's new migrations take, for the
 // implement bundle. Throws when main can't be fetched, the open PRs can't be
-// listed, or --own-pr's files can't be (its newest is part of the floor); the
-// bash side then leaves the bundle's field null.
-function nextVersionCommand(flags, { gh } = {}) {
+// listed, --own-pr's files can't be (its newest is part of the floor), or the
+// sweep doesn't finish within NEXT_VERSION_GH_BUDGET_MS; the bash side then
+// leaves the bundle's field null.
+function nextVersionCommand(flags, { gh, now = Date.now } = {}) {
   const cwd = flags.root ?? DEFAULT_ROOT;
   const today = parseToday(flags.today);
   const ownPr =
@@ -1358,7 +1366,21 @@ function nextVersionCommand(flags, { gh } = {}) {
     throw new Error(`couldn't fetch main: ${fetched.detail ?? "no origin/main"}`);
   }
   const mainNames = namesAt(cwd, fetched.main);
-  const { claimed, skipped } = claimedVersions({ gh });
+  const deadline = now() + NEXT_VERSION_GH_BUDGET_MS;
+  const call =
+    gh ??
+    ((args) => {
+      const left = deadline - now();
+      if (left <= 0) throw new Error("gh ran out of time");
+      return runGh(args, { timeoutMs: Math.min(NEXT_VERSION_GH_TIMEOUT_MS, left), cwd });
+    });
+  const { claimed, skipped, checked, total, gaveUp } = claimedVersions({ gh: call, deadline, now });
+  if (gaveUp) {
+    throw new Error(
+      `gave up listing the open PRs' files after ${NEXT_VERSION_GH_BUDGET_MS / 1000}s ` +
+        `(checked ${checked} of ${total})`,
+    );
+  }
   if (ownPr !== null && skipped.includes(ownPr)) {
     throw new Error(`couldn't list PR #${ownPr}'s files, so its newest migration is unknown`);
   }
@@ -1494,7 +1516,7 @@ export function claimedCheck(flags, { gh, now = Date.now } = {}) {
   return lines;
 }
 
-export function main(argv, { gh } = {}) {
+export function main(argv, { gh, now } = {}) {
   const [sub, ...rest] = argv;
   const { flags } = parseFlags(rest);
   const where = flags.where ?? "its column";
@@ -1587,7 +1609,7 @@ export function main(argv, { gh } = {}) {
       return { out: result, code: result.ok ? 0 : 1 };
     }
     case "next-version":
-      return { out: nextVersionCommand(flags, { gh }), code: 0 };
+      return { out: nextVersionCommand(flags, { gh, now }), code: 0 };
     case "claimed-check":
       return { text: claimedCheck(flags, { gh }), code: 0 };
     default:

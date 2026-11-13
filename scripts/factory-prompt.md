@@ -80,7 +80,8 @@ last fenced ` ```json ` block). It has shape:
     "mainNewest": "20261112000002" | null,
     "ownNewest": "20261113000001" | null,
     "versions": [ "20261113000002", "20261113000004", "20261113000005", "20261113000006", "20261113000007" ],
-    "claimed": [ { "pr": 829, "file": "20261113000003_<name>.sql", "version": "20261113000003" } ]
+    "claimed": [ { "pr": 829, "file": "20261113000003_<name>.sql", "version": "20261113000003" } ],
+    "claimedComplete": true   // for the factory, not you: ignore it
   } | null,
   "config": { "phase": "A"|"B"|"C"|"D", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },

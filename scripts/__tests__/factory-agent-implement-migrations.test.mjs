@@ -117,6 +117,7 @@ build_implement_bundle "$ISSUE" null "$PRIOR_PR" 0 "[]" "[]" "[]" ""
       ownNewest: null,
       versions: VERSIONS,
       claimed: [{ pr: 829, file: "20261113000001_note_text_chars.sql", version: "20261113000001" }],
+      claimedComplete: true,
     });
     // A first implementation has no PR of its own.
     assert.ok(
@@ -280,27 +281,32 @@ describe("factory-agent.sh --implement — migration post-check wiring (ADR-0079
     );
     assert.match(
       block,
-      /CLAIM_JSON=\$\(jq -c '\.migrations\.claimed \/\/ empty \| map\(\{pr, file\}\)' <<<"\$BUNDLE"/,
+      /CLAIM_JSON=\$\(jq -c 'if \.migrations\.claimedComplete == true then \(\.migrations\.claimed \| map\(\{pr, file\}\)\) else empty end' <<<"\$BUNDLE"/,
     );
     // POST_HEAD_OID is read earlier in this arm, only on a revision.
     assert.ok(arm.indexOf('POST_HEAD_OID=$(pr_head_oid "$PR_NUM")') < arm.indexOf(CALL));
   });
 
-  it("turns the bundle's claims into --claimed-json, and nothing when the bundle had none", () => {
+  // The bundle shapes its claims for the model and can drop one (an odd
+  // name, a non-14-digit version, the cap). The post-check reuses them only
+  // when none was dropped; otherwise it gets no --claimed-json and sweeps.
+  it("turns complete bundle claims into --claimed-json, and nothing otherwise", () => {
+    const expr = arm
+      .slice(arm.indexOf("CLAIM_JSON=$(jq -c '"))
+      .match(/CLAIM_JSON=\$\(jq -c '([^']+)'/)[1];
     const jq = (bundle) =>
-      spawnSync("jq", ["-c", ".migrations.claimed // empty | map({pr, file})"], {
+      spawnSync("jq", ["-c", expr], {
         input: JSON.stringify(bundle),
         encoding: "utf8",
       }).stdout.trim();
+    const claimed = [{ pr: 829, file: "20261113000001_x.sql", version: "20261113000001" }];
     assert.equal(
-      jq({
-        migrations: {
-          claimed: [{ pr: 829, file: "20261113000001_x.sql", version: "20261113000001" }],
-        },
-      }),
+      jq({ migrations: { claimed, claimedComplete: true } }),
       '[{"pr":829,"file":"20261113000001_x.sql"}]',
     );
-    assert.equal(jq({ migrations: { claimed: [] } }), "[]");
+    assert.equal(jq({ migrations: { claimed: [], claimedComplete: true } }), "[]");
+    assert.equal(jq({ migrations: { claimed, claimedComplete: false } }), "");
+    assert.equal(jq({ migrations: { claimed } }), "");
     assert.equal(jq({ migrations: null }), "");
   });
 

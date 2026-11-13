@@ -12,6 +12,7 @@ import {
   claimedCheck,
   claimedVersions,
   liveClaims,
+  main as renumberMain,
   makeRewriter,
   manualComment,
   mergedMigrationNames,
@@ -1014,6 +1015,31 @@ describe("migration-renumber end to end (#802/#829)", () => {
 
   // ADR-0079: the implement bundle's versions, clear of main and every open PR.
   describe("next-version", () => {
+    // It runs in the implement path under the factory's loop lock: a slow
+    // GitHub must stop the sweep at the budget, not cost every open PR times
+    // the per-call cap. Giving up throws, so bash leaves the bundle field null.
+    it("gives up once the total gh budget is spent, instead of reading every PR", () => {
+      let clock = 0;
+      const reads = [];
+      const gh = (args) => {
+        if (args[0] === "pr" && args[1] === "list") {
+          return JSON.stringify([1, 2, 3, 4].map((number) => ({ number })));
+        }
+        reads.push(args[2]);
+        clock += 25_000; // each PR's files take 25s
+        return "added\tsupabase/migrations/20261113000009_x.sql";
+      };
+      assert.throws(
+        () =>
+          renumberMain(["next-version", "--root", factory, "--today", "2026-11-13"], {
+            gh,
+            now: () => clock,
+          }),
+        /gave up listing the open PRs' files after 60s \(checked 3 of 4\)/,
+      );
+      assert.equal(reads.length, 3, "no PR is read past the budget");
+    });
+
     it("prints main's newest and the versions no open PR uses, in order", () => {
       const env = ghBin("next", {
         802: ["supabase/migrations/20261113000001_x.sql", "apps/web/a.ts"],

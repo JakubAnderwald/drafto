@@ -8010,15 +8010,17 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         # PR already adds, and the ones this run added off any open PR's. A
         # revision reuses the head read above and names the head before the
         # run; a fresh PR has neither, so every migration it adds is this
-        # run's. The bundle's claims spare a second sweep of the open PRs.
-        # Never blocks; the card goes on either way.
+        # run's. The bundle's claims spare a second sweep of the open PRs, but
+        # only when they are all of them (claimedComplete): the bundle shapes
+        # the list for the model and may drop a claim, and then the post-check
+        # sweeps itself. Never blocks; the card goes on either way.
         CLAIM_HEAD=""
         CLAIM_SINCE="all"
         if [[ -n "$PRE_HEAD_OID" ]]; then
           CLAIM_HEAD="$POST_HEAD_OID"
           CLAIM_SINCE="$PRE_HEAD_OID"
         fi
-        CLAIM_JSON=$(jq -c '.migrations.claimed // empty | map({pr, file})' <<<"$BUNDLE" 2>/dev/null || echo "")
+        CLAIM_JSON=$(jq -c 'if .migrations.claimedComplete == true then (.migrations.claimed | map({pr, file})) else empty end' <<<"$BUNDLE" 2>/dev/null || echo "")
         implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM" "$CLAIM_HEAD" "$CLAIM_SINCE" "$CLAIM_JSON"
         # Happy path: advance to In Review. KEEP slot + worktree for --watch.
         # Advancing lastFeedbackAt to FEEDBACK_MARK marks the comments this run

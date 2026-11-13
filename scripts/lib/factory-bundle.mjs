@@ -630,22 +630,33 @@ export function shapeMigrations(m) {
   if (!versions) return null;
   const version14 = (v) => (typeof v === "string" && VERSION_14.test(v) ? v : null);
   const mainNewest = version14(m.mainNewest);
+  const all = Array.isArray(m.claimed) ? m.claimed : [];
+  const shaped = all.filter(
+    (c) =>
+      c &&
+      Number.isInteger(c.pr) &&
+      c.pr > 0 &&
+      typeof c.file === "string" &&
+      CLAIMED_FILE.test(c.file),
+  );
+  const live = shaped.filter(
+    (c) => mainNewest === null || CLAIMED_FILE.exec(c.file)[1] > mainNewest,
+  );
   return {
     mainNewest,
     ownNewest: version14(m.ownNewest),
     versions,
-    claimed: (Array.isArray(m.claimed) ? m.claimed : [])
-      .filter(
-        (c) =>
-          c &&
-          Number.isInteger(c.pr) &&
-          c.pr > 0 &&
-          typeof c.file === "string" &&
-          CLAIMED_FILE.test(c.file) &&
-          (mainNewest === null || CLAIMED_FILE.exec(c.file)[1] > mainNewest),
-      )
+    claimed: live
       .slice(0, MAX_CLAIMED_MIGRATIONS)
       .map((c) => ({ pr: c.pr, file: c.file, version: CLAIMED_FILE.exec(c.file)[1] })),
+    // For bash, not the implementer: whether `claimed` holds every live claim
+    // bash sent. The shaping above is for the model; the implement post-check
+    // reuses `claimed` only when nothing was dropped (an odd name, a version
+    // that isn't 14 digits, the cap) and sweeps the open PRs itself otherwise.
+    claimedComplete:
+      Array.isArray(m.claimed) &&
+      shaped.length === all.length &&
+      live.length <= MAX_CLAIMED_MIGRATIONS,
   };
 }
 

@@ -781,6 +781,7 @@ describe("buildFactoryImplementBundle", () => {
         claimed: [
           { pr: 829, file: "20261113000001_note_text_chars.sql", version: "20261113000001" },
         ],
+        claimedComplete: true,
       });
       assert.equal(
         build(SCHEMA_BODY, { ...migrations, ownNewest: "20261113000001" }).migrations.ownNewest,
@@ -841,7 +842,19 @@ describe("buildFactoryImplementBundle", () => {
       assert.deepEqual(m.claimed, [
         { pr: 829, file: "20261113000001_ok.sql", version: "20261113000001" },
       ]);
-      assert.deepEqual(build(SCHEMA_BODY, { ...migrations, claimed: "x" }).migrations.claimed, []);
+      // Something was dropped, so bash's post-check sweeps instead of reusing it.
+      assert.equal(m.claimedComplete, false);
+      const notAList = build(SCHEMA_BODY, { ...migrations, claimed: "x" }).migrations;
+      assert.deepEqual(notAList.claimed, []);
+      assert.equal(notAList.claimedComplete, false);
+      // A claim main already passed isn't dropped as malformed: still complete.
+      assert.equal(
+        build(SCHEMA_BODY, {
+          ...migrations,
+          claimed: [{ pr: 829, file: "20261101000001_old.sql" }],
+        }).migrations.claimedComplete,
+        true,
+      );
     });
 
     // Claims main already passed can't collide, and mustn't crowd out the
@@ -869,10 +882,11 @@ describe("buildFactoryImplementBundle", () => {
         pr: 900 + i,
         file: `20261113${String(i + 1).padStart(6, "0")}_x.sql`,
       }));
-      assert.equal(
-        build(SCHEMA_BODY, { ...migrations, claimed: [...old, ...many] }).migrations.claimed.length,
-        200,
-      );
+      const capped = build(SCHEMA_BODY, { ...migrations, claimed: [...old, ...many] }).migrations;
+      assert.equal(capped.claimed.length, 200);
+      // The cap cut live claims, so the post-check must sweep for itself.
+      assert.equal(capped.claimedComplete, false);
+      assert.equal(m.claimedComplete, true);
     });
   });
 });
@@ -1434,6 +1448,7 @@ describe("factory-bundle CLI", () => {
       ownNewest: null,
       versions: ["20261113000001", "20261113000002"],
       claimed: [],
+      claimedComplete: true,
     });
   });
 
