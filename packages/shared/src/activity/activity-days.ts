@@ -2,7 +2,7 @@ import { ACTIVITY_QUEUE_MAX_DAYS, DRAFTO_CLIENT_TAGS } from "../constants";
 import type { DraftoClientTag } from "../constants";
 
 /**
- * Activity days (ADR 0078): the UTC dates, as `YYYY-MM-DD`, on which a user
+ * Activity days (ADR 0080): the UTC dates, as `YYYY-MM-DD`, on which a user
  * opened Drafto. Nothing else is recorded: no note, screen or action.
  */
 

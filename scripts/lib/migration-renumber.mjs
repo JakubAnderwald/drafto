@@ -40,6 +40,20 @@
 //   verify --from <sha> --to <sha> --map <json> [--mb <sha>] [--root <repo>]
 //          [--issue <i>]
 //       {ok, reasons}; exit 0 when ok, 1 when not.
+//   next-version [--root <repo>] [--today YYYY-MM-DD] [--own-pr <n>]
+//       ADR-0079. Fetches main, lists the open PRs' migrations and prints
+//       {mainNewest, ownNewest, versions, claimed, skipped}: the versions a
+//       card's new migrations take, in order (allocateMigrationVersions),
+//       clear of main and of every other open PR's. --own-pr is the card's
+//       own PR on a revision: its migrations aren't claims, and its newest
+//       (ownNewest) is part of the floor. `claimed` leaves out claims at or
+//       below main's newest. The implement bundle carries it.
+//   claimed-check --base <ref> [--root <repo>] [--dir supabase/migrations]
+//       ADR-0079, for `pnpm migration:check` on a developer's machine. Prints
+//       one `warn\t<dir>/<file>\t<message>` line per migration the checkout
+//       adds (relative to <ref>) whose version another open PR also adds, and
+//       `note\t<message>` when gh failed or ran out of time. Nothing when gh
+//       isn't logged in. Exit 0 either way: it only ever warns.
 //
 // --claimed-json is a JSON array of versions or migration file names other
 // open PRs use. Without it, a fixable plan looks them up with gh
@@ -47,6 +61,19 @@
 // the same version. Both print the list they planned with as `claimed` (null
 // when they never got that far), so the gate passes precheck's to apply and
 // the open PRs are swept once per renumber.
+//
+// --move-off-claimed 1 (precheck and apply; only the implement post-check
+// passes it, ADR-0079) also moves a migration this PR adds whose version an
+// open PR with a lower number already adds: the newer PR moves, never the
+// older one. It sweeps the open PRs before planning, since the plan is clean
+// without them.
+//
+// --new-since <sha|all> (with --move-off-claimed 1; again only the implement
+// post-check) also moves a migration the implement run added off ANY open PR's
+// version. <sha> is the PR head before the run, and a migration the head adds
+// that <sha> lacks (git diff --diff-filter=A) is one the run added; `all` is a
+// brand-new PR's, where every migration it adds is. A migration the PR already
+// had moves only under the lower-number rule above.
 
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -55,9 +82,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  allocateMigrationVersions,
   checkMigrationOrder,
   isValidMigrationName,
+  localFileNames,
   migrationNamesAt,
+  newestVersion,
+  openPrs,
   versionOf,
 } from "./check-migration-order.mjs";
 import { ghTimeoutMs } from "./gh-timeout.mjs";
@@ -328,12 +359,18 @@ export function objectOverlap(prSql, mainSql) {
 
 // What renumbering the PR needs. Returns {status, map, findings, reason,
 // overlap}: `clean` (nothing to move), `fixable` (map old file → new file), or
-// `manual` with the reason a person must do it.
+// `manual` with the reason a person must do it. `moveOff` ({pr, file} entries
+// of older open PRs, ADR-0079) also moves an added migration with one of their
+// versions, as a `claimed` finding; `moveNewOff` (every other open PR's) does
+// the same for the files in `newFiles`, the ones the implement run added.
 export function planRenumber({
   mbNames,
   headNames,
   mainNames,
   extraTaken = [],
+  moveOff = [],
+  moveNewOff = [],
+  newFiles = [],
   today = new Date(),
   prSql = {},
   mainSql = {},
@@ -344,6 +381,9 @@ export function planRenumber({
     baseFiles: mainNames,
     today,
     extraTaken,
+    moveOff,
+    moveNewOff,
+    newFiles,
   });
   const result = (status, extra = {}) => ({
     status,
@@ -432,7 +472,7 @@ export function addedLineNumbers(diff) {
 }
 
 // Text a blob holds, or null when it isn't UTF-8 text git would diff.
-function asText(buf) {
+export function asText(buf) {
   if (buf.includes(0)) return null;
   const text = buf.toString("utf8");
   return Buffer.from(text, "utf8").equals(buf) ? text : null;
@@ -491,7 +531,7 @@ function firstLine(res) {
     .split("\n")[0];
 }
 
-function revParse(git, ref) {
+export function revParse(git, ref) {
   const res = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { allowFail: true });
   return res.status === 0 ? res.stdout.trim() : null;
 }
@@ -503,7 +543,7 @@ function namesAt(cwd, ref) {
   return migrationNamesAt(ref, { cwd, dir: MIGRATIONS_DIR, env: baseEnv() });
 }
 
-function blobAt(git, ref, filePath) {
+export function blobAt(git, ref, filePath) {
   return git(["cat-file", "blob", `${ref}:${filePath}`], { buffer: true }).stdout;
 }
 
@@ -563,16 +603,68 @@ function bareSafety(git, map, headNames, mb) {
 
 // ── the renumber ────────────────────────────────────────────────────────────
 
+// The migrations <head> adds that the implement run itself added (ADR-0079):
+// with <since> the PR head before the run, the ones `git diff --diff-filter=A
+// <since> <head>` adds; with `all` (a brand-new PR), every one the PR adds.
+// Either way only files the PR adds over its merge base count, so a merge of
+// main into the branch adds none. A <since> the local repo lacks gives none,
+// with a warning: only the lower-number rule applies then.
+function filesAddedSince({ git, since, head, headNames, mbSet, warn }) {
+  const prAdds = headNames.filter((n) => !mbSet.has(n));
+  if (since === "all") return prAdds;
+  const sinceSha = revParse(git, since);
+  if (!sinceSha) {
+    warn(
+      `migration-renumber: ${since} isn't in the local repo; no migration counts as added in this run`,
+    );
+    return [];
+  }
+  const added = new Set(
+    git([
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "--diff-filter=A",
+      "-z",
+      sinceSha,
+      head,
+      "--",
+      `${MIGRATIONS_DIR}/`,
+    ])
+      .stdout.split("\0")
+      .filter((p) => p.endsWith(".sql") && path.posix.dirname(p) === MIGRATIONS_DIR)
+      .map((p) => path.posix.basename(p)),
+  );
+  return prAdds.filter((n) => added.has(n));
+}
+
 // Plans the renumber of <head> against <main> and, when it's fixable, works
 // out every file change in memory. Nothing is written. Returns the plan plus
-// {mb, changes: [{path, removes?, mode, content}]}.
-export function computeRenumber({ cwd, head, main, extraTaken = [], today = new Date() }) {
+// {mb, newFiles, changes: [{path, removes?, mode, content}]}. `moveOffClaimed`
+// is planRenumber's `moveOff`: the implement post-check's claims of older open
+// PRs. `moveNewOffClaimed` is its `moveNewOff`, for the files filesAddedSince
+// finds with `newSince` (unset: none).
+export function computeRenumber({
+  cwd,
+  head,
+  main,
+  extraTaken = [],
+  moveOffClaimed = [],
+  moveNewOffClaimed = [],
+  newSince,
+  today = new Date(),
+  warn = (msg) => process.stderr.write(`${msg}\n`),
+}) {
   const git = makeGit(cwd);
   const mb = git(["merge-base", head, main]).stdout.trim();
   const mbNames = namesAt(cwd, mb);
   const headNames = namesAt(cwd, head);
   const mainNames = namesAt(cwd, main);
   const mbSet = new Set(mbNames);
+  const newFiles =
+    newSince === undefined
+      ? []
+      : filesAddedSince({ git, since: newSince, head, headNames, mbSet, warn });
   const read = (ref, names) =>
     Object.fromEntries(
       names
@@ -581,7 +673,7 @@ export function computeRenumber({ cwd, head, main, extraTaken = [], today = new 
     );
   const prSql = read(head, headNames);
   const mainSql = read(main, mainNames);
-  const base = { head, main, mb };
+  const base = { head, main, mb, newFiles };
 
   let taken = [...extraTaken];
   let plan;
@@ -591,6 +683,9 @@ export function computeRenumber({ cwd, head, main, extraTaken = [], today = new 
       headNames,
       mainNames,
       extraTaken: taken,
+      moveOff: moveOffClaimed,
+      moveNewOff: moveNewOffClaimed,
+      newFiles,
       today,
       prSql,
       mainSql,
@@ -679,10 +774,23 @@ export function computeRenumber({ cwd, head, main, extraTaken = [], today = new 
   return { ...base, ...plan, changes };
 }
 
-function commitMessage(map) {
+// The commit's subject: after main moved, or off other open PRs' versions
+// (ADR-0079): an older PR's, or any PR's for a migration the implement run
+// added.
+function commitSubject(findings = []) {
+  const claimed = findings.filter((f) => f.reason === "claimed");
+  if (claimed.length === 0) {
+    return "chore(migrations): renumber this PR's migrations after main moved";
+  }
+  return claimed.some((f) => f.addedInRun)
+    ? "chore(migrations): renumber this PR's migrations off other open PRs' versions"
+    : "chore(migrations): renumber this PR's migrations off an older open PR's versions";
+}
+
+function commitMessage(map, findings = []) {
   const rows = Object.entries(map).map(([a, b]) => `${a} -> ${b}`);
   return [
-    "chore(migrations): renumber this PR's migrations after main moved",
+    commitSubject(findings),
     "",
     ...rows,
     "",
@@ -694,7 +802,7 @@ function commitMessage(map) {
 
 // Writes commit R (parent <head>) from `changes` with a temporary index, so
 // no checkout or worktree is touched. Returns R's SHA.
-export function writeRenumberCommit({ cwd, head, changes, map }) {
+export function writeRenumberCommit({ cwd, head, changes, map, findings = [] }) {
   const git = makeGit(cwd);
   const dir = mkdtempSync(path.join(tmpdir(), "migration-renumber-"));
   try {
@@ -714,7 +822,7 @@ export function writeRenumberCommit({ cwd, head, changes, map }) {
     });
     const tree = git(["write-tree"], { env }).stdout.trim();
     return git(["commit-tree", "--no-gpg-sign", tree, "-p", head, "-F", "-"], {
-      input: commitMessage(map),
+      input: commitMessage(map, findings),
       env: {
         GIT_AUTHOR_NAME: IDENTITY.name,
         GIT_AUTHOR_EMAIL: IDENTITY.email,
@@ -872,23 +980,22 @@ export function verifyRenumber({ cwd, from, to, map, mb, mainRef = "refs/remotes
 
 // ── remote ──────────────────────────────────────────────────────────────────
 
-// Fetch main and the PR head into <cwd>, the way the verify lane fetches.
-// Returns {ok, main, detail}.
+// Fetch main and the PR head into <cwd>, the way the verify lane fetches. With
+// no <pr>, main only (fetchMain). Returns {ok, main, detail}.
 export function fetchPr({ cwd, pr, remote = "origin" }) {
   const git = makeGit(cwd);
-  const res = git(
-    [
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      remote,
-      `+refs/heads/main:refs/remotes/${remote}/main`,
-      `refs/pull/${pr}/head`,
-    ],
-    { allowFail: true, timeoutMs: NETWORK_TIMEOUT_MS },
-  );
+  const refs = [`+refs/heads/main:refs/remotes/${remote}/main`];
+  if (pr !== undefined && pr !== null) refs.push(`refs/pull/${pr}/head`);
+  const res = git(["fetch", "--quiet", "--no-tags", remote, ...refs], {
+    allowFail: true,
+    timeoutMs: NETWORK_TIMEOUT_MS,
+  });
   if (res.status !== 0) return { ok: false, detail: firstLine(res) };
   return { ok: true, main: revParse(git, `refs/remotes/${remote}/main`) };
+}
+
+export function fetchMain({ cwd, remote = "origin" }) {
+  return fetchPr({ cwd, pr: null, remote });
 }
 
 // Push <sha> to <branch> without force: a branch that moved since the plan
@@ -913,10 +1020,11 @@ export function pushRenumber({ cwd, sha, branch, remote = "origin" }) {
   return { pushed: false, remoteSha, detail: firstLine(res) };
 }
 
-function runGh(args) {
+function runGh(args, { timeoutMs = ghTimeoutMs(), cwd } = {}) {
   const res = spawnSync("gh", args, {
+    cwd,
     encoding: "utf8",
-    timeout: ghTimeoutMs(),
+    timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,
   });
   if (res.error || res.status !== 0) {
@@ -927,26 +1035,49 @@ function runGh(args) {
   return res.stdout;
 }
 
-// Migration files other open PRs add or change: {claimed: [{pr, file}],
-// skipped: [pr]}. Each PR's files come from the REST files endpoint, paginated:
-// it lists up to 3000 files and never refuses a large diff, where `gh pr diff`
-// fails with HTTP 406 on a diff GitHub finds too large and `gh pr view --json
-// files` stops at 100. A PR whose files can't be listed is skipped, named in
+// A claim's path: a `<version>_<name>.sql` file directly under the migrations
+// directory.
+const CLAIM_PATH_RE = /^supabase\/migrations\/\d+_[^/]+\.sql$/;
+// The files API statuses that put a version in use: a new file, or a rename's
+// new name. A PR that edits or deletes one of main's migrations claims nothing.
+const CLAIM_STATUSES = new Set(["added", "renamed"]);
+
+// Migration files other open PRs add: {claimed: [{pr, file}], skipped: [pr],
+// checked, total, gaveUp}. Each PR's files come from the REST files endpoint,
+// paginated: it lists up to 3000 files and never refuses a large diff, where
+// `gh pr diff` fails with HTTP 406 on a diff GitHub finds too large and `gh pr
+// view --json files` stops at 100. Only `added` and `renamed` files count (a
+// rename by its new name), as direct `<version>_<name>.sql` children of
+// supabase/migrations. A PR whose files can't be listed is skipped, named in
 // `skipped` and on stderr (the gate's log), so one bad PR can't fail the whole
-// sweep; the plan just doesn't avoid that PR's versions. Only a failing `gh pr
-// list` throws.
+// sweep; the plan just doesn't avoid that PR's versions. `prs` is the open PRs
+// when the caller already listed them ([{number}]); without it a failing `gh
+// pr list` throws. Once `deadline` (a `now()` time) passes, no more PRs are
+// read: `gaveUp` is true and `checked` of `total` PRs were read.
 export function claimedVersions({
   excludePr,
   gh = runGh,
   warn = (msg) => process.stderr.write(`${msg}\n`),
+  prs,
+  deadline,
+  now = Date.now,
 } = {}) {
-  const list = JSON.parse(
-    gh(["pr", "list", "--repo", REPO, "--state", "open", "--json", "number", "--limit", "200"]),
-  );
+  const list =
+    prs ??
+    JSON.parse(
+      gh(["pr", "list", "--repo", REPO, "--state", "open", "--json", "number", "--limit", "200"]),
+    );
+  const todo = list.filter((p) => p && String(p.number) !== String(excludePr));
+  const late = () => deadline !== undefined && now() >= deadline;
   const claimed = [];
   const skipped = [];
-  for (const { number } of list) {
-    if (String(number) === String(excludePr)) continue;
+  let checked = 0;
+  let gaveUp = false;
+  for (const { number } of todo) {
+    if (late()) {
+      gaveUp = true;
+      break;
+    }
     let files;
     try {
       files = gh([
@@ -954,9 +1085,14 @@ export function claimedVersions({
         "--paginate",
         `repos/${REPO}/pulls/${number}/files`,
         "--jq",
-        ".[].filename",
+        ".[] | [.status, .filename] | @tsv",
       ]);
     } catch (err) {
+      // A call cut short by the budget isn't this PR's fault.
+      if (late()) {
+        gaveUp = true;
+        break;
+      }
       skipped.push(number);
       warn(
         `migration-renumber: couldn't list PR #${number}'s files, so its migration versions ` +
@@ -964,13 +1100,27 @@ export function claimedVersions({
       );
       continue;
     }
-    for (const p of String(files).split("\n")) {
-      if (/^supabase\/migrations\/[^/]+\.sql$/.test(p.trim())) {
-        claimed.push({ pr: number, file: path.posix.basename(p.trim()) });
+    checked += 1;
+    for (const line of String(files).split("\n")) {
+      const [status, file] = line.trim().split("\t");
+      if (CLAIM_STATUSES.has(status) && CLAIM_PATH_RE.test(file ?? "")) {
+        claimed.push({ pr: number, file: path.posix.basename(file) });
       }
     }
   }
-  return { claimed, skipped };
+  return { claimed, skipped, checked, total: todo.length, gaveUp };
+}
+
+// The claims that can still collide with a new migration: valid names newer
+// than main's newest (ADR-0079). An older one is a migration main already
+// passed, which no new version can take.
+export function liveClaims(claimed, mainNewest) {
+  return (claimed ?? []).filter(
+    (c) =>
+      typeof c?.file === "string" &&
+      isValidMigrationName(c.file) &&
+      (mainNewest === null || mainNewest === undefined || versionOf(c.file) > mainNewest),
+  );
 }
 
 function claimedToVersions(claimed) {
@@ -984,7 +1134,50 @@ function claimedToVersions(claimed) {
 
 const DOC = "docs/operations/migrations.md";
 
-// The issue comment for a pushed renumber: the map and the dev repair.
+// Why the migrations moved, for the top of the comment: main moved past them
+// (ADR-0077), or an older open PR already uses their version (the implement
+// post-check, ADR-0079).
+function renumberIntro({ pr, to, map, findings }) {
+  const claimed = findings.filter((f) => f.reason === "claimed" && map[f.file]);
+  const proof =
+    "The commit changes only these file names and the references this PR added to them, and a " +
+    "check proves it, so the card keeps its review and approval.";
+  if (claimed.length === 0) {
+    return [
+      `🏭 **Renumbered PR #${pr}'s migrations after \`main\` moved.**`,
+      "",
+      `\`main\` gained migrations that this PR's versions no longer sort after, so the factory ` +
+        `renamed them on the branch (\`${to.slice(0, 12)}\`), and GitHub's update-branch merges \`main\` in on top. ` +
+        proof,
+    ];
+  }
+  const alsoMain = findings.some(
+    (f) => (f.reason === "stale" || f.reason === "duplicate-base") && map[f.file],
+  );
+  const inRun = claimed.some((f) => f.addedInRun);
+  return [
+    `🏭 **Renumbered PR #${pr}'s migrations: ${inRun ? "another" : "an older"} open PR already uses their version.**`,
+    "",
+    ...claimed.map((f) => {
+      const others = (f.others ?? []).length > 0 ? ` (\`${f.others.join("`, `")}\`)` : "";
+      const run = f.addedInRun ? ", and this implement run added it" : "";
+      return `- \`${f.version}\` was already used by ${openPrs(f.prs)}${others}${run}.`;
+    }),
+    "",
+    "Two open PRs that add the same version collide once one of them merges, so " +
+      (inRun
+        ? "a migration an implement run adds moves off any open PR's version, and one the PR " +
+          "already had moves only off an older open PR's. "
+        : "the newer PR moves. ") +
+      `The factory renamed this PR's migrations on the branch (\`${to.slice(0, 12)}\`) to ` +
+      "versions no open PR uses" +
+      (alsoMain ? ", and past the ones `main` gained since this PR branched" : "") +
+      ". " +
+      proof,
+  ];
+}
+
+// The issue comment for a pushed renumber: why, the map and the dev repair.
 export function renumberComment({ pr, to, map, findings = [] }) {
   const rows = Object.entries(map).map(([a, b]) => `| \`${a}\` | \`${b}\` |`);
   const repair = [];
@@ -1007,12 +1200,7 @@ export function renumberComment({ pr, to, map, findings = [] }) {
       );
     });
   return [
-    `🏭 **Renumbered PR #${pr}'s migrations after \`main\` moved.**`,
-    "",
-    `\`main\` gained migrations that this PR's versions no longer sort after, so the factory ` +
-      `renamed them on the branch (\`${to.slice(0, 12)}\`), and GitHub's update-branch merges \`main\` in on top. The ` +
-      "commit changes only these file names and the references this PR added to them, and a " +
-      "check proves it, so the card keeps its review and approval.",
+    ...renumberIntro({ pr, to, map, findings }),
     "",
     "| Old | New |",
     "| --- | --- |",
@@ -1070,6 +1258,22 @@ function requireFlag(flags, name, re = /^\S+$/) {
   return String(v);
 }
 
+// An on/off flag that takes a value (parseFlags has no bare flags): 1 or 0.
+function boolFlag(flags, name) {
+  const v = flags[name];
+  if (v === undefined || v === "0") return false;
+  if (v === "1") return true;
+  throw new Error(`--${name} takes 1 or 0, got ${v}`);
+}
+
+// The claims of open PRs numbered below <pr>: what the implement post-check
+// moves this PR off (ADR-0079). A claim without a PR number never counts.
+export function olderClaims(claimed, pr) {
+  return (Array.isArray(claimed) ? claimed : []).filter(
+    (c) => Number.isInteger(c?.pr) && c.pr < Number(pr),
+  );
+}
+
 function summarize(r) {
   return {
     status: r.status,
@@ -1085,11 +1289,24 @@ function summarize(r) {
 }
 
 // precheck and the first half of apply.
-function plan(flags, { gh } = {}) {
+function plan(flags, { gh, now = Date.now } = {}) {
   const cwd = flags.root ?? DEFAULT_ROOT;
   const pr = requireFlag(flags, "pr", /^\d+$/);
   const head = requireFlag(flags, "head", /^[0-9a-f]{7,40}$/);
   const today = parseToday(flags.today);
+  const given = flags["claimed-json"] !== undefined;
+  let claimed = given ? JSON.parse(flags["claimed-json"]) : [];
+  if (!Array.isArray(claimed)) throw new Error("--claimed-json must be a JSON array");
+  // This PR's own files are never a claim against it.
+  claimed = claimed.filter((c) => !(Number.isInteger(c?.pr) && String(c.pr) === pr));
+  const moveOff = boolFlag(flags, "move-off-claimed");
+  const newSince =
+    flags["new-since"] === undefined
+      ? undefined
+      : requireFlag(flags, "new-since", /^(?:all|[0-9a-f]{7,40})$/);
+  if (newSince !== undefined && !moveOff) {
+    throw new Error("--new-since needs --move-off-claimed 1");
+  }
   const fetched = fetchPr({ cwd, pr, remote: flags.remote ?? "origin" });
   if (!fetched.ok || !fetched.main) {
     return { status: "unreachable", head, reason: fetched.detail ?? "no origin/main" };
@@ -1097,32 +1314,237 @@ function plan(flags, { gh } = {}) {
   const git = makeGit(cwd);
   const headSha = revParse(git, head);
   if (!headSha) return { status: "unreachable", head, reason: `${head} isn't in the fetched PR` };
-  const given = flags["claimed-json"] !== undefined;
-  let claimed = given ? JSON.parse(flags["claimed-json"]) : [];
-  if (!Array.isArray(claimed)) throw new Error("--claimed-json must be a JSON array");
+  // Moving off other PRs' versions needs their claims before the first plan:
+  // without them the plan is clean.
+  // Its sweeps run under the factory's budget; giving up is `unreachable`,
+  // which the gate treats as an error (bounded in --release, a fall-through in
+  // --watch, a log line at implement time).
+  const sweep = () => {
+    const res = sweepClaims({ excludePr: pr, gh, now, cwd });
+    return res.gaveUp ? { gaveUp: gaveUpReason(res) } : { claimed: res.claimed };
+  };
+  let swept = given;
+  if (moveOff && !swept) {
+    const res = sweep();
+    if (res.gaveUp) return { status: "unreachable", head, reason: res.gaveUp };
+    ({ claimed } = res);
+    swept = true;
+  }
   const run = () =>
     computeRenumber({
       cwd,
       head: headSha,
       main: fetched.main,
       extraTaken: claimedToVersions(claimed),
+      moveOffClaimed: moveOff ? olderClaims(claimed, pr) : [],
+      moveNewOffClaimed: newSince === undefined ? [] : claimed,
+      newSince,
       today,
     });
   let r = run();
-  if (r.status === "fixable" && !given) {
-    ({ claimed } = claimedVersions({ excludePr: pr, gh }));
+  if (r.status === "fixable" && !swept) {
+    const res = sweep();
+    if (res.gaveUp) return { status: "unreachable", head, reason: res.gaveUp };
+    ({ claimed } = res);
     r = run();
   }
   return { ...r, cwd, claimed };
 }
 
-export function main(argv, { gh } = {}) {
+// How many versions next-version hands out: more than any card has needed.
+// The prompt says what to do past them.
+const VERSIONS_PER_CARD = 5;
+
+// The gh budget of a factory-side open-PR sweep (next-version, and the
+// planner when it isn't handed the claims). Both run inside the factory's loop
+// lock, so a slow GitHub must cost about a minute in all, not every open PR
+// times the per-call cap.
+const SWEEP_GH_TIMEOUT_MS = 20_000;
+const SWEEP_GH_BUDGET_MS = 60_000;
+
+// claimedVersions() under SWEEP_GH_BUDGET_MS: each call gets at most
+// SWEEP_GH_TIMEOUT_MS and what's left of the budget; past it no more PRs are
+// read and the result has gaveUp. An injected `gh` (tests) skips the per-call
+// cap but not the deadline.
+export function sweepClaims({ excludePr, gh, now = Date.now, cwd } = {}) {
+  const deadline = now() + SWEEP_GH_BUDGET_MS;
+  const call =
+    gh ??
+    ((args) => {
+      const left = deadline - now();
+      if (left <= 0) throw new Error("gh ran out of time");
+      return runGh(args, { timeoutMs: Math.min(SWEEP_GH_TIMEOUT_MS, left), cwd });
+    });
+  return claimedVersions({ excludePr, gh: call, deadline, now });
+}
+
+function gaveUpReason({ checked, total }) {
+  return (
+    `gave up listing the open PRs' files after ${SWEEP_GH_BUDGET_MS / 1000}s ` +
+    `(checked ${checked} of ${total})`
+  );
+}
+
+// next-version (ADR-0079): the versions a card's new migrations take, for the
+// implement bundle. Throws when main can't be fetched, the open PRs can't be
+// listed, --own-pr's files can't be (its newest is part of the floor), or the
+// sweep doesn't finish within SWEEP_GH_BUDGET_MS; the bash side then
+// leaves the bundle's field null.
+function nextVersionCommand(flags, { gh, now = Date.now } = {}) {
+  const cwd = flags.root ?? DEFAULT_ROOT;
+  const today = parseToday(flags.today);
+  const ownPr =
+    flags["own-pr"] === undefined ? null : Number(requireFlag(flags, "own-pr", /^\d+$/));
+  const fetched = fetchMain({ cwd, remote: flags.remote ?? "origin" });
+  if (!fetched.ok || !fetched.main) {
+    throw new Error(`couldn't fetch main: ${fetched.detail ?? "no origin/main"}`);
+  }
+  const mainNames = namesAt(cwd, fetched.main);
+  const sweep = sweepClaims({ gh, now, cwd });
+  if (sweep.gaveUp) throw new Error(gaveUpReason(sweep));
+  const { claimed, skipped } = sweep;
+  if (ownPr !== null && skipped.includes(ownPr)) {
+    throw new Error(`couldn't list PR #${ownPr}'s files, so its newest migration is unknown`);
+  }
+  const ownNames = claimed.filter((c) => c.pr === ownPr).map((c) => c.file);
+  const others = claimed.filter((c) => c.pr !== ownPr);
+  const mainNewest = newestVersion(mainNames);
+  return {
+    mainNewest,
+    ownNewest: newestVersion(ownNames),
+    versions: allocateMigrationVersions({
+      mainNames,
+      ownNames,
+      claimed: others,
+      today,
+      count: VERSIONS_PER_CARD,
+    }),
+    claimed: liveClaims(others, mainNewest),
+    skipped: skipped.filter((n) => n !== ownPr),
+  };
+}
+
+// claimed-check's gh budget: `pnpm migration:check` runs on a developer's
+// machine, so a slow or offline GitHub must cost seconds, not minutes.
+const LOCAL_GH_TIMEOUT_MS = 10_000;
+const LOCAL_GH_BUDGET_MS = 30_000;
+
+// The open PRs that are this checkout's own: the one whose head branch is the
+// checked-out branch, or whose head commit is HEAD (so a detached HEAD still
+// finds it). `list` is `gh pr list --json number,headRefName,headRefOid`.
+export function ownPrNumbers(list, { branch, sha }) {
+  return new Set(
+    (list ?? [])
+      .filter(
+        (p) =>
+          (branch && branch !== "HEAD" && p?.headRefName === branch) ||
+          (sha && p?.headRefOid === sha),
+      )
+      .map((p) => p.number),
+  );
+}
+
+function checkoutHead(cwd) {
+  const git = makeGit(cwd);
+  const read = (args) => {
+    const res = git(args, { allowFail: true });
+    return res.status === 0 ? res.stdout.trim() : "";
+  };
+  return { branch: read(["rev-parse", "--abbrev-ref", "HEAD"]), sha: read(["rev-parse", "HEAD"]) };
+}
+
+// claimed-check (ADR-0079): the migrations this checkout adds relative to
+// <base> whose version another open PR also adds. Returns TSV lines for
+// check-migration-safety.sh: `warn\t<dir>/<file>\t<message>` and
+// `note\t<message>`. Fails open: gh not logged in prints nothing, any other
+// gh failure a note. The open PRs are listed once, and this checkout's own
+// (ownPrNumbers) left out. Each gh call gets LOCAL_GH_TIMEOUT_MS, and once
+// LOCAL_GH_BUDGET_MS is spent no more PRs are read and one note says how far
+// it got.
+export function claimedCheck(flags, { gh, now = Date.now } = {}) {
+  const cwd = flags.root ?? process.cwd();
+  const dir = (flags.dir ?? MIGRATIONS_DIR).replace(/\/+$/, "");
+  const base = requireFlag(flags, "base");
+  const baseNames = new Set(migrationNamesAt(base, { cwd, dir, env: baseEnv() }));
+  const added = localFileNames(path.join(cwd, dir)).filter(
+    (n) => !baseNames.has(n) && isValidMigrationName(n),
+  );
+  if (added.length === 0) return [];
+  const deadline = now() + LOCAL_GH_BUDGET_MS;
+  const call =
+    gh ??
+    ((args) => {
+      const left = deadline - now();
+      if (left <= 0) throw new Error("gh ran out of time");
+      return runGh(args, { timeoutMs: Math.min(LOCAL_GH_TIMEOUT_MS, left), cwd });
+    });
+  const note = (why) => [`note\tOpen-PR migration version check skipped (${why}).`];
+  try {
+    call(["auth", "status"]);
+  } catch {
+    return [];
+  }
+  let list;
+  try {
+    list = JSON.parse(
+      call([
+        "pr",
+        "list",
+        "--repo",
+        REPO,
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName,headRefOid",
+        "--limit",
+        "200",
+      ]),
+    );
+    if (!Array.isArray(list)) throw new Error("not a list");
+  } catch {
+    return note("couldn't list the open PRs");
+  }
+  const own = ownPrNumbers(list, checkoutHead(cwd));
+  const { claimed, skipped, checked, total, gaveUp } = claimedVersions({
+    prs: list.filter((p) => !own.has(p?.number)),
+    gh: call,
+    warn: () => {},
+    deadline,
+    now,
+  });
+  const lines = [];
+  for (const file of added.sort()) {
+    const version = versionOf(file);
+    const users = claimed.filter((c) => versionOf(c.file) === version);
+    if (users.length === 0) continue;
+    const prs = [...new Set(users.map((c) => c.pr))];
+    const files = [...new Set(users.map((c) => c.file))].join(", ");
+    lines.push(
+      `warn\t${dir}/${file}\tversion ${version} is also added by ${openPrs(prs)} (${files}); ` +
+        "the PR that merges second must renumber",
+    );
+  }
+  if (skipped.length > 0) {
+    lines.push(
+      `note\tCouldn't list the files of ${openPrs(skipped)}, so their migration versions weren't compared.`,
+    );
+  }
+  if (gaveUp) {
+    lines.push(
+      `note\tOpen-PR migration version check gave up after ${LOCAL_GH_BUDGET_MS / 1000}s; ` +
+        `checked ${checked} of ${total} open PRs.`,
+    );
+  }
+  return lines;
+}
+
+export function main(argv, { gh, now } = {}) {
   const [sub, ...rest] = argv;
   const { flags } = parseFlags(rest);
   const where = flags.where ?? "its column";
   switch (sub) {
     case "precheck": {
-      const r = plan(flags, { gh });
+      const r = plan(flags, { gh, now });
       const out = summarize(r);
       if (r.status === "manual")
         out.comment = manualComment({ pr: flags.pr, reason: r.reason, where });
@@ -1132,13 +1554,19 @@ export function main(argv, { gh } = {}) {
       const issue = requireFlag(flags, "issue", /^\d+$/);
       const branch = `factory/issue-${issue}`;
       if (!FACTORY_BRANCH_RE.test(branch)) throw new Error(`refusing branch ${branch}`);
-      const r = plan(flags, { gh });
+      const r = plan(flags, { gh, now });
       const out = { ...summarize(r), from: r.head ?? flags.head };
       if (r.status === "manual") {
         out.comment = manualComment({ pr: flags.pr, reason: r.reason, where });
       }
       if (r.status !== "fixable") return { out, code: 0 };
-      const to = writeRenumberCommit({ cwd: r.cwd, head: r.head, changes: r.changes, map: r.map });
+      const to = writeRenumberCommit({
+        cwd: r.cwd,
+        head: r.head,
+        changes: r.changes,
+        map: r.map,
+        findings: r.findings,
+      });
       const check = verifyRenumber({ cwd: r.cwd, from: r.head, to, map: r.map, mb: r.mb });
       if (!check.ok) {
         const reason = `the renumber commit failed its own check (${check.reasons.join("; ")})`;
@@ -1202,19 +1630,29 @@ export function main(argv, { gh } = {}) {
       const result = verifyRenumber({ cwd, from, to, map, mb: flags.mb });
       return { out: result, code: result.ok ? 0 : 1 };
     }
+    case "next-version":
+      return { out: nextVersionCommand(flags, { gh, now }), code: 0 };
+    case "claimed-check":
+      return { text: claimedCheck(flags, { gh }), code: 0 };
     default:
       throw new Error(
         "Usage: migration-renumber.mjs <precheck --pr <n> --head <sha>|" +
-          "apply --issue <i> --pr <n> --head <sha>|verify --from <sha> --to <sha> --map <json>> " +
-          "[--root <repo>] [--claimed-json <json>] [--today YYYY-MM-DD] [--where <column>]",
+          "apply --issue <i> --pr <n> --head <sha>|verify --from <sha> --to <sha> --map <json>|" +
+          "next-version [--own-pr <n>]|claimed-check --base <ref> [--dir <dir>]> " +
+          "[--root <repo>] [--claimed-json <json>] [--move-off-claimed 1] " +
+          "[--new-since <sha|all>] [--today YYYY-MM-DD] [--where <column>]",
       );
   }
 }
 
 if (isMainModule(import.meta.url)) {
   try {
-    const { out, code } = main(process.argv.slice(2));
-    process.stdout.write(`${JSON.stringify(out)}\n`);
+    const { out, text, code } = main(process.argv.slice(2));
+    if (text) {
+      for (const line of text) process.stdout.write(`${line}\n`);
+    } else {
+      process.stdout.write(`${JSON.stringify(out)}\n`);
+    }
     process.exitCode = code;
   } catch (err) {
     process.stderr.write(`${JSON.stringify({ error: err.message })}\n`);

@@ -5,7 +5,7 @@
 // saves, so it covers the week buckets, the 14-day window, the retention nulls
 // and the 24-hour emptying rule.
 //
-// The activity-days migration (20261113000003_usage_daily.sql, ADR 0078) runs
+// The activity-days migration (20261113000003_usage_daily.sql, ADR 0080) runs
 // after them, because it re-creates metrics_activation over the per-user
 // metrics_cohort_activation: every activation case below runs against that
 // definition. Its own functions are tested in usage-daily.test.mjs.

@@ -334,7 +334,7 @@ describe("in-flight sync coalescing + resetSyncState", () => {
 
 // Mirror of apps/desktop/__tests__/db/sync.test.ts's activity ping suite,
 // plus the tags only mobile has.
-describe("activity ping after a successful sync (ADR-0078)", () => {
+describe("activity ping after a successful sync (ADR-0080)", () => {
   const TODAY = "2026-11-13";
   const TOMORROW = "2026-11-14";
 

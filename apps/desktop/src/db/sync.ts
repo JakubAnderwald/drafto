@@ -433,7 +433,7 @@ async function runSync(db: WMDatabase, opened: Promise<void>): Promise<SyncResul
     throw error;
   }
 
-  // The activity ping (ADR-0078, docs/features/offline-sync.md) goes only
+  // The activity ping (ADR-0080, docs/features/offline-sync.md) goes only
   // after a sync got through, with every day queued since the last one. Both
   // calls never reject; the catch is a backstop so a ping can never change
   // the sync's result. A failed ping keeps its days for the next sync.
@@ -477,7 +477,7 @@ export function resetSyncState(): void {
 
 export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
   // Every sync attempt, offline ones included, counts as opening the app
-  // today (ADR-0078). Started before the latch check and not awaited here, so
+  // today (ADR-0080). Started before the latch check and not awaited here, so
   // coalescing and resetSyncState work as before; runSync awaits it.
   const opened = markAppOpened(db);
   if (inFlightSync) {

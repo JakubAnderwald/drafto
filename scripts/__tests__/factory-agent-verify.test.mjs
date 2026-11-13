@@ -76,6 +76,10 @@ const REAL_HELPERS = [
   "ci_required_green",
   "browser_kind_enabled",
   "scenario_platforms",
+  "comments_have_marker",
+  "issue_marker_check",
+  "migration_approval_vouch",
+  "migration_approval_vouch_view",
 ];
 
 const STUBS = `
@@ -132,6 +136,11 @@ node() {
     # reads the stubbed diff on stdin.
     # Never the real worktree CLI: it would remove a git worktree.
     */worktree-cli.mjs) call "worktree \${*:2}" ;;
+    # Never the real hash CLI: it would fetch into REPO_ROOT (ADR-0078).
+    */migration-approval.mjs)
+      call "hash \${*:2}"
+      [[ -n "\${HASH_STUB:-}" ]] || return 1
+      echo "$HASH_STUB" ;;
     */verify-report.mjs) [[ -z "\${REPORT_FAIL:-}" ]] || return 1; command node "$@" ;;
     */verify-lane.mjs)
       call "lane \${*:2}"
@@ -1257,6 +1266,78 @@ describe("verify_sweep_card (real helpers, real verify-decide)", () => {
     withBash(card, { env: base({ PR_VIEW_STUB: "" }), state: reviewed() }, (r) => {
       assert.match(r.log, /waits for the next tick/);
       assert.doesNotMatch(r.calls, /^transition/m);
+    });
+  });
+
+  // ADR-0078: the label is checked in every column that has the PR, Testing
+  // included, and the check never changes what happens to the card.
+  describe("migration approval", () => {
+    const HASH = "0123456789abcdef";
+    const labelled = prView({
+      labels: [{ name: "status:testing" }, { name: "migration-approved" }],
+    });
+    const env = (over = {}) =>
+      base({
+        PR_VIEW_STUB: labelled,
+        DIFF_STUB: "supabase/migrations/20261113000001_q.sql",
+        HASH_STUB: JSON.stringify({ hash: HASH, files: [] }),
+        ...over,
+      });
+
+    it("asks for the view's labels in the one view it fetches", () => {
+      const fn = extract("verify_sweep_card");
+      assert.match(fn, /--json state,statusCheckRollup,comments,headRefOid,labels/);
+      assert.equal(fn.split('gh pr view "').length - 1, 1);
+      const vouch = fn.indexOf('migration_approval_vouch_view "$issue_num" "$pr_num" "$pr_view"');
+      assert.ok(vouch !== -1);
+      assert.ok(fn.indexOf("no head SHA in the snapshot") < vouch);
+      assert.ok(vouch < fn.indexOf("verify-decide.mjs"));
+    });
+
+    it("records the label's SQL for this PR and head, and promotes as it would without it", () => {
+      withBash(card, { env: env(), state: reviewed() }, (r) => {
+        assert.match(r.calls, new RegExp(`^hash hash --root .* --pr 70 --head ${HEAD}$`, "m"));
+        assert.equal(r.issue.migrationApprovedVouched, `70:${HEAD}:${HASH}`);
+        assert.match(r.log, /Testing → promote \(lanes-done\)/);
+        assert.match(r.calls, /^transition In Test$/m);
+      });
+    });
+
+    it("skips the hash while the head is the one recorded", () => {
+      const state = reviewed({ migrationApprovedVouched: `70:${HEAD}:${HASH}` });
+      withBash(card, { env: env(), state }, (r) => {
+        assert.doesNotMatch(r.calls, /^hash /m);
+        // The one diff is the promotion's report, after the decision.
+        assert.equal(r.calls.split("gh pr diff ").length - 1, 1);
+        assert.ok(r.calls.indexOf("gh pr diff ") > r.calls.indexOf("threads 70"));
+        assert.match(r.calls, /^transition In Test$/m);
+      });
+    });
+
+    it("voids a label the SQL changed under, comment first, and still promotes", () => {
+      const state = reviewed({ migrationApprovedVouched: `70:${OLD}:fedcba9876543210` });
+      withBash(card, { env: env(), state }, (r) => {
+        const comment = r.calls.indexOf("gh issue comment 7 ");
+        const edit = r.calls.indexOf(
+          "gh pr edit 70 --repo JakubAnderwald/drafto --remove-label migration-approved",
+        );
+        assert.ok(comment !== -1 && edit !== -1 && comment < edit, r.calls);
+        assert.match(
+          r.comments[0].body,
+          new RegExp(`drafto-factory-migration-approval-void:${HASH}`),
+        );
+        assert.equal(r.issue.migrationApprovedVouched ?? null, null);
+        assert.match(r.log, /Testing → promote \(lanes-done\)/);
+        assert.match(r.calls, /^transition In Test$/m);
+      });
+    });
+
+    it("never holds the card when the hash fails", () => {
+      withBash(card, { env: env({ HASH_STUB: "" }), state: reviewed() }, (r) => {
+        assert.match(r.log, /couldn't hash PR #70's migrations/);
+        assert.equal(r.issue.migrationApprovedVouched ?? null, null);
+        assert.match(r.calls, /^transition In Test$/m);
+      });
     });
   });
 });

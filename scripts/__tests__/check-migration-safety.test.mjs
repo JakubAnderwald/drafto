@@ -1,7 +1,15 @@
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -323,5 +331,168 @@ describe("check-migration-safety: the repo's migrations", () => {
     ]) {
       assert.match(res.stdout, new RegExp(`public\\.${name} has no GRANT`));
     }
+  });
+});
+
+// ADR 0079: two open PRs can each pass the order rule with the same version, and the
+// one that merges second then fails it. On a developer's machine the check warns about
+// a version another open PR already adds. CI never runs this part, so its output stays
+// exactly as it was. gh is stubbed on PATH; nothing reaches GitHub.
+describe("check-migration-safety: versions other open PRs add (local warning)", () => {
+  let dir;
+  let repo;
+  let bin;
+  let ghLog;
+  const MINE = "20261113000001_mine.sql";
+
+  function git(...args) {
+    const r = spawnSync("git", args, { cwd: repo, encoding: "utf8", env: cleanEnv() });
+    assert.equal(r.status, 0, `git ${args.join(" ")} failed: ${r.stderr}`);
+  }
+
+  // No CI or unattended flag, base ref or git plumbing variables from the caller,
+  // unless given (the factory runs these tests with DRAFTO_UNATTENDED=1).
+  function cleanEnv(extra = {}) {
+    const env = { ...process.env, ...extra };
+    for (const key of [
+      "CI",
+      "DRAFTO_UNATTENDED",
+      "GIT_DIR",
+      "GIT_WORK_TREE",
+      "GIT_INDEX_FILE",
+      "MIGRATION_BASE_REF",
+    ]) {
+      if (!(key in extra)) delete env[key];
+    }
+    return env;
+  }
+
+  // gh as this repo would answer it: logged in, this branch (feature) is PR
+  // #835, and open PR #829 adds the same version. GH_STUB=nologin / =down
+  // change that. Files come as the files API's `<status>\t<path>`.
+  function writeGh() {
+    const list = JSON.stringify([
+      { number: 829, headRefName: "other", headRefOid: "1".repeat(40) },
+      { number: 835, headRefName: "feature", headRefOid: "2".repeat(40) },
+    ]);
+    writeFileSync(
+      join(bin, "gh"),
+      `#!/bin/sh
+echo "$*" >>"${ghLog}"
+case "$GH_STUB:$1 $2" in
+  nologin:auth\\ status) exit 1 ;;
+  *:auth\\ status) exit 0 ;;
+  down:pr\\ list) echo "HTTP 502" >&2; exit 1 ;;
+  *:pr\\ list) echo '${list}' ;;
+  *)
+    case "$*" in
+      *pulls/829/files*) printf 'added\\tsupabase/migrations/20261113000001_theirs.sql\\n' ;;
+      *pulls/835/files*) printf 'added\\tsupabase/migrations/${MINE}\\n' ;;
+      *) exit 1 ;;
+    esac ;;
+esac
+`,
+    );
+    chmodSync(join(bin, "gh"), 0o755);
+  }
+
+  function check(extra = {}) {
+    writeFileSync(ghLog, "");
+    const res = spawnSync("bash", [scriptPath], {
+      cwd: repo,
+      encoding: "utf8",
+      env: cleanEnv({ PATH: `${bin}:${process.env.PATH}`, ...extra }),
+    });
+    return { ...res, gh: readFileSync(ghLog, "utf8").split("\n").filter(Boolean) };
+  }
+
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), "migration-claimed-"));
+    repo = join(dir, "repo");
+    bin = join(dir, "bin");
+    ghLog = join(dir, "gh.log");
+    mkdirSync(join(repo, "supabase", "migrations"), { recursive: true });
+    mkdirSync(bin);
+    writeGh();
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "T");
+    git("config", "commit.gpgsign", "false");
+    writeFileSync(join(repo, "supabase", "migrations", "20260101000001_a.sql"), "select 1;\n");
+    git("add", "-A");
+    git("commit", "-q", "--no-verify", "-m", "base");
+    // Only a drafto checkout asks GitHub. Nothing here fetches it.
+    git("remote", "add", "origin", "https://github.com/JakubAnderwald/drafto.git");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    git("checkout", "-q", "-b", "feature");
+    writeFileSync(join(repo, "supabase", "migrations", MINE), "select 2;\n");
+  });
+
+  after(() => dir && rmSync(dir, { recursive: true, force: true }));
+
+  const WARN =
+    `WARN   supabase/migrations/${MINE} — version 20261113000001 is also added by open PR #829 ` +
+    "(20261113000001_theirs.sql); the PR that merges second must renumber\n" +
+    "        a version no open PR uses: node scripts/lib/migration-renumber.mjs next-version\n";
+
+  it("warns, without failing, about a version another open PR adds", () => {
+    const res = check();
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.ok(res.stdout.includes(WARN), res.stdout);
+    assert.match(res.stdout, /Results: 0 error\(s\), 1 warning\(s\)/);
+    // This branch's own PR (#835) adds the same file, and isn't a clash. The
+    // list says which PR is this branch's: no `gh pr view`.
+    assert.ok(!res.gh.some((c) => c.includes("pulls/835/")), res.gh.join("\n"));
+    assert.ok(!res.gh.some((c) => c.startsWith("pr view")), res.gh.join("\n"));
+    assert.doesNotMatch(res.stdout, /#835/);
+  });
+
+  // ADR 0079: the factory exports DRAFTO_UNATTENDED, and moves its own PRs'
+  // clashing migrations itself, so the sweep would only repeat that.
+  it("stays out of unattended sessions: no gh call, the same output as CI's", () => {
+    const res = check({ DRAFTO_UNATTENDED: "1" });
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.deepEqual(res.gh, []);
+    assert.equal(res.stdout, check({ CI: "true" }).stdout);
+  });
+
+  it("stays out of CI: no gh call, and the output is the same but for the warning", () => {
+    const local = check();
+    const ci = check({ CI: "true" });
+    assert.equal(ci.status, 0, ci.stdout + ci.stderr);
+    assert.deepEqual(ci.gh, []);
+    assert.equal(ci.stdout, local.stdout.replace(WARN, "").replace("1 warning(s)", "0 warning(s)"));
+    assert.doesNotMatch(ci.stdout, /WARN|open PR|Open-PR/);
+  });
+
+  it("says nothing when gh isn't logged in: the output is CI's, byte for byte", () => {
+    const res = check({ GH_STUB: "nologin" });
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.deepEqual(res.gh, ["auth status"]);
+    assert.equal(res.stdout, check({ CI: "1" }).stdout);
+  });
+
+  it("fails open with a note when GitHub can't be read", () => {
+    const res = check({ GH_STUB: "down" });
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(
+      res.stdout,
+      /Open-PR migration version check skipped \(couldn't list the open PRs\)\.\n/,
+    );
+    assert.doesNotMatch(res.stdout, /WARN/);
+  });
+
+  it("asks GitHub only from a drafto checkout", () => {
+    git("remote", "set-url", "origin", "https://github.com/someone/fork-of-something.git");
+    try {
+      const res = check();
+      assert.equal(res.status, 0, res.stdout + res.stderr);
+      assert.deepEqual(res.gh, []);
+      assert.doesNotMatch(res.stdout, /WARN/);
+    } finally {
+      git("remote", "set-url", "origin", "git@github.com:JakubAnderwald/drafto.git");
+    }
+    // The SSH form counts as a drafto checkout too.
+    assert.ok(check().stdout.includes(WARN));
   });
 });

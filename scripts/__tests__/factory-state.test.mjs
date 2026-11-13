@@ -377,6 +377,18 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["802"].renumberErrors, null);
   });
 
+  it("tracks migrationApprovedVouched (ADR-0078) and clears it", () => {
+    // A rejected write would fail silently in bash (`|| true`), and the label
+    // would never be tied to the SQL it was first seen with.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 802).migrationApprovedVouched, null);
+    const rec = `802:${"a".repeat(40)}:0123456789abcdef`;
+    setIssueField(s, 802, "migrationApprovedVouched", rec);
+    assert.equal(s.issues["802"].migrationApprovedVouched, rec);
+    setIssueField(s, 802, "migrationApprovedVouched", "");
+    assert.equal(s.issues["802"].migrationApprovedVouched, null);
+  });
+
   it("setIssueField clears the field on empty/null/'null' sentinels", () => {
     const s = emptyFactoryState();
     setIssueField(s, 1, "lastError", "boom");

@@ -7,7 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 
 /**
  * sessionStorage key holding `<userId>:<UTC day>`: the last day this browser tab recorded
- * for that user (ADR 0078). Written only after the server accepted the day, so a failed
+ * for that user (ADR 0080). Written only after the server accepted the day, so a failed
  * ping is retried on the next mount.
  */
 export const ACTIVITY_DAY_STORAGE_KEY = "drafto:activity-day";
@@ -81,7 +81,7 @@ function pingActivity(userId: string): void {
 
 /**
  * Records that the signed-in user opened Drafto today (UTC), from the web, at most once per
- * browser session per UTC day (ADR 0078). Only the day is sent: never a note, page or action.
+ * browser session per UTC day (ADR 0080). Only the day is sent: never a note, page or action.
  *
  * The ping runs in an effect, after render, and is never awaited. A failure leaves the day
  * unmarked, so the next mount tries again, and is reported to Sentry as a warning at most

@@ -40,7 +40,7 @@ The route is stateless: every POST is independent, and the transport is Streamab
 ## Related ADRs
 
 - [0017 — MCP Server for Claude Cowork Integration](../adr/0017-mcp-server-for-claude-cowork.md)
-- [0078 — Activity Days Instead of Event Analytics](../adr/0078-activity-days-instead-of-event-analytics.md) (the `web-mcp` activity day)
+- [0080 — Activity Days Instead of Event Analytics](../adr/0080-activity-days-instead-of-event-analytics.md) (the `web-mcp` activity day)
 
 ## The eleven tools
 
@@ -75,7 +75,7 @@ Notes on the implementation:
 - **Transport:** Clients send `Authorization: Bearer <raw key>`. `authenticateMcpRequest` re-hashes the bearer, looks up the row by `key_hash`, rejects on `revoked_at IS NOT NULL`, and then requires `profiles.is_approved = true` for the owning user.
 - **RLS:** The `api_keys` table has RLS enabled with per-user select/insert/update/delete policies that also require `public.is_approved()`. The MCP route itself uses the service-role client (bypassing RLS) and enforces ownership by explicit `user_id` filtering in every handler.
 - **Side effect:** Each successful auth fires `UPDATE api_keys SET last_used_at = now()` (fire-and-forget) — surfaced as the "Last used" timestamp in `/settings`.
-- **Activity day:** Each authenticated call also records that the user used Drafto that UTC day through an AI assistant, so weekly active users count MCP-only users ([product metrics](./product-metrics.md#activity-days-usage_daily), [ADR-0078](../adr/0078-activity-days-instead-of-event-analytics.md)). After `authenticateMcpRequest` succeeds, the route schedules `recordMcpActivity(supabase, userId)` with Next's `after()`, so it runs once the response has been sent. It upserts `(user_id, today UTC, 'web-mcp')` into `usage_daily` with `onConflict: "user_id,day,client"` and `ignoreDuplicates`, so only the day's first call adds a row. The route can't use the `record_activity` RPC that the apps call: it queries as the service role, where `auth.uid()` is null. The write is best-effort: an error goes to Sentry and never changes the response. A 401 records nothing. Only the day and the client are stored, never the tool, the note or the arguments.
+- **Activity day:** Each authenticated call also records that the user used Drafto that UTC day through an AI assistant, so weekly active users count MCP-only users ([product metrics](./product-metrics.md#activity-days-usage_daily), [ADR-0080](../adr/0080-activity-days-instead-of-event-analytics.md)). After `authenticateMcpRequest` succeeds, the route schedules `recordMcpActivity(supabase, userId)` with Next's `after()`, so it runs once the response has been sent. It upserts `(user_id, today UTC, 'web-mcp')` into `usage_daily` with `onConflict: "user_id,day,client"` and `ignoreDuplicates`, so only the day's first call adds a row. The route can't use the `record_activity` RPC that the apps call: it queries as the service role, where `auth.uid()` is null. The write is best-effort: an error goes to Sentry and never changes the response. A 401 records nothing. Only the day and the client are stored, never the tool, the note or the arguments.
 - **Failure response:** Auth errors are returned as JSON-RPC 2.0 errors (`code: -32000`) with HTTP status 401.
 
 ## MCP Registry

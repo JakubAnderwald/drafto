@@ -1,4 +1,4 @@
-// Runs the activity-days migration (20261113000003_usage_daily.sql, ADR 0078)
+// Runs the activity-days migration (20261113000003_usage_daily.sql, ADR 0080)
 // verbatim in PGlite (Postgres compiled to WASM, in process), after the two
 // #820 product-metrics migrations it builds on, over stand-ins for the Supabase
 // tables it reads. Unlike the dev live test (usage-daily.live.test.mjs), this

@@ -11,7 +11,7 @@ The functions work from metadata only: timestamps, character counts, client tags
 ## Current state
 
 - Step 1 ([#820](https://github.com/JakubAnderwald/drafto/issues/820)), two migrations: `note_text_chars(jsonb)`, then the exclusion table, three helpers and the six metric functions.
-- Step 2 ([#821](https://github.com/JakubAnderwald/drafto/issues/821)), two more migrations. The first adds [activity days](#activity-days-usage_daily) (`usage_daily`, written through `record_activity` and filled in by the [nightly rollup](#nightly-rollup-rollup_usage_daily)), `metrics_active_users`, `metrics_retention` and the per-user helper `metrics_cohort_activation`, and re-creates `metrics_activation` over that helper. The second schedules the rollup with pg_cron. Every client records activity days: web, iOS, Android, macOS and MCP ([ADR-0078](../adr/0078-activity-days-instead-of-event-analytics.md)).
+- Step 2 ([#821](https://github.com/JakubAnderwald/drafto/issues/821)), two more migrations. The first adds [activity days](#activity-days-usage_daily) (`usage_daily`, written through `record_activity` and filled in by the [nightly rollup](#nightly-rollup-rollup_usage_daily)), `metrics_active_users`, `metrics_retention` and the per-user helper `metrics_cohort_activation`, and re-creates `metrics_activation` over that helper. The second schedules the rollup with pg_cron. Every client records activity days: web, iOS, Android, macOS and MCP ([ADR-0080](../adr/0080-activity-days-instead-of-event-analytics.md)).
 - `scripts/user-stats.mjs` (`pnpm users:stats`) calls the eight metric functions read-only and prints one table per metric, or JSON.
 - The `/admin/stats` page ([#822](https://github.com/JakubAnderwald/drafto/issues/822)) hasn't merged yet. It wires in `metrics_active_users` and `metrics_retention` when it does.
 
@@ -33,7 +33,7 @@ The rule lives in one place, `metrics_excluded_user_ids()`, and every per-user m
 
 ## Activity days (`usage_daily`)
 
-A row says that the user opened Drafto on that UTC day on that client. Nothing else is recorded: no note, title, screen, action or duration ([ADR-0078](../adr/0078-activity-days-instead-of-event-analytics.md)).
+A row says that the user opened Drafto on that UTC day on that client. Nothing else is recorded: no note, title, screen, action or duration ([ADR-0080](../adr/0080-activity-days-instead-of-event-analytics.md)).
 
 | Column            | Meaning                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -234,7 +234,7 @@ Don't grant `select` on the whole table: the functions read nothing else, and th
 ## Related ADRs
 
 - [0075 — Product Metrics as Service-Role SQL Functions](../adr/0075-product-metrics-as-service-role-sql-functions.md)
-- [0078 — Activity Days Instead of Event Analytics](../adr/0078-activity-days-instead-of-event-analytics.md)
+- [0080 — Activity Days Instead of Event Analytics](../adr/0080-activity-days-instead-of-event-analytics.md)
 - [0022 — Note Content History](../adr/0022-note-content-history.md) (the source of writes, and its 30-day retention)
 - [0023 — Per-Request Client Tagging](../adr/0023-per-request-client-tagging.md) (the `archived_by` client tags)
 - [0052 — Explicit Data API Grants](../adr/0052-explicit-data-api-grants.md)
@@ -258,7 +258,7 @@ Activity days come from every platform: web from the app shell, iOS, Android and
 - Files that must change together:
   - A new editor content shape → `note_text_chars` (a new migration) and its PGlite test, alongside `extract_text_from_jsonb` and `packages/shared/src/editor/extract-text.ts`.
   - A new client tag (ADR-0023) → `ACTIVE_CLIENT_COLUMNS` in `scripts/user-stats.mjs`, which the writers table's `CLIENT_COLUMNS` extends with `untagged` (unknown tags still print, after the known ones). If it should count as an activity day too: `DRAFTO_CLIENT_TAGS`, then a new migration for the `usage_daily_client_check` constraint, `record_activity`'s tag check and the rollup's tag order, and the privacy policy's list of device kinds.
-  - What `usage_daily` records, or its 13-month retention → `apps/web/src/app/privacy/page.tsx` and `apps/web/__tests__/integration/legal-pages.test.tsx` ([privacy policy](./privacy-policy.md)), and ADR-0078.
+  - What `usage_daily` records, or its 13-month retention → `apps/web/src/app/privacy/page.tsx` and `apps/web/__tests__/integration/legal-pages.test.tsx` ([privacy policy](./privacy-policy.md)), and ADR-0080.
   - A changed definition → the function (in a new migration), this doc's table, the PGlite test and the live test.
 - A new or changed function reaches dev only once the migration is pushed there, so run the live test after `pnpm supabase:push`.
 

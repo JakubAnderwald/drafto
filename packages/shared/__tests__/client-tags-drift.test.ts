@@ -3,7 +3,7 @@
  * (`packages/shared/src/constants.ts`) must match every copy of the list in
  * the activity-days migration: `usage_daily`'s check constraint,
  * `record_activity`'s tag check and `rollup_usage_daily`'s tag list, whose
- * order also decides which row takes a user's untagged work (ADR 0078).
+ * order also decides which row takes a user's untagged work (ADR 0080).
  *
  * A copy is any comma-separated run of quoted SQL strings that includes
  * 'web-mcp'. If this fails, a tag was added, removed or reordered on one

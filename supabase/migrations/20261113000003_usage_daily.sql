@@ -1,12 +1,12 @@
 -- Activity days: usage_daily, its write path, its nightly rollup, and the
--- active-user and retention metrics (ADR 0078).
+-- active-user and retention metrics (ADR 0080).
 --
 -- Weekly active users (users who opened Drafto on at least one day that week,
 -- to read or to write) can't be read from the content tables: reading leaves
 -- no trace there. So every client records the UTC days it was opened, one row
 -- per user, day and client, and nothing else. Definitions, caveats and how to
 -- run the metrics: docs/features/product-metrics.md. Why days instead of event
--- analytics: docs/adr/0078-activity-days-instead-of-event-analytics.md.
+-- analytics: docs/adr/0080-activity-days-instead-of-event-analytics.md.
 --
 -- Ground rules:
 --   - Days only. A row says that a user opened Drafto on a UTC day from one
@@ -54,7 +54,7 @@ create index idx_usage_daily_day on public.usage_daily (day);
 
 comment on table public.usage_daily is
   'Activity days: one row per user, UTC day and client tag the user opened Drafto on, with '
-  'that day''s content changes (ADR 0078). Written by record_activity and the MCP route, '
+  'that day''s content changes (ADR 0080). Written by record_activity and the MCP route, '
   'kept 13 months. service_role only.';
 comment on column public.usage_daily.day is 'UTC date the client was opened on.';
 comment on column public.usage_daily.client is
@@ -125,7 +125,7 @@ $$;
 
 comment on function public.record_activity(date[], text) is
   'Records the UTC days (at most 31, none in the future or more than 30 days back) the '
-  'signed-in user opened Drafto from client p_client; returns the rows added (ADR 0078).';
+  'signed-in user opened Drafto from client p_client; returns the rows added (ADR 0080).';
 
 revoke execute on function public.record_activity(date[], text) from public, anon, service_role;
 grant execute on function public.record_activity(date[], text) to authenticated;
@@ -244,7 +244,7 @@ $$;
 comment on function public.rollup_usage_daily(date) is
   'Sets usage_daily.content_changes for UTC day p_day (default yesterday) from '
   'note_content_history and new notes, then deletes rows older than 13 months; idempotent. '
-  'Run nightly by pg_cron (ADR 0078).';
+  'Run nightly by pg_cron (ADR 0080).';
 
 revoke execute on function public.rollup_usage_daily(date) from public, anon, authenticated;
 grant execute on function public.rollup_usage_daily(date) to service_role;
@@ -323,7 +323,7 @@ $$;
 
 comment on function public.metrics_cohort_activation(int) is
   'Per user signed up in the last p_weeks ISO weeks: sign-up week and time, first value and '
-  'activated (50+ character versions on 2+ UTC days within 14 days of sign-up) (ADR 0078).';
+  'activated (50+ character versions on 2+ UTC days within 14 days of sign-up) (ADR 0080).';
 
 revoke execute on function public.metrics_cohort_activation(int) from public, anon, authenticated;
 grant execute on function public.metrics_cohort_activation(int) to service_role;
@@ -445,7 +445,7 @@ $$;
 
 comment on function public.metrics_active_users(int) is
   'Weekly active users per ISO week (UTC) from usage_daily: active users, writers among them '
-  'and active users per client (ADR 0078).';
+  'and active users per client (ADR 0080).';
 
 revoke execute on function public.metrics_active_users(int) from public, anon, authenticated;
 grant execute on function public.metrics_active_users(int) to service_role;
@@ -547,7 +547,7 @@ $$;
 
 comment on function public.metrics_retention(int) is
   'Per sign-up-week cohort: activated users and the share active again in week 1 (days 7-13) '
-  'and week 4 (days 28-34) after sign-up, from usage_daily (ADR 0078).';
+  'and week 4 (days 28-34) after sign-up, from usage_daily (ADR 0080).';
 
 revoke execute on function public.metrics_retention(int) from public, anon, authenticated;
 grant execute on function public.metrics_retention(int) to service_role;

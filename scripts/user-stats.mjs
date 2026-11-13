@@ -4,7 +4,7 @@
 // Every number comes from the service-role SQL functions in
 // supabase/migrations/20261112000002_product_metrics.sql (ADR 0075) and
 // 20261113000003_usage_daily.sql (active users and retention, read from the
-// activity days of ADR 0078); this script only calls them and lays the rows
+// activity days of ADR 0080); this script only calls them and lays the rows
 // out. Definitions: docs/features/product-metrics.md.
 //
 // Read-only. Each function is called with GET /rest/v1/rpc/<name>, which

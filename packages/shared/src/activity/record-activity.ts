@@ -21,7 +21,7 @@ export type RecordActivityOutcome = { ok: true; sent: string[] } | { ok: false; 
 
 /**
  * Records that the signed-in user opened Drafto on <days> (UTC `YYYY-MM-DD`)
- * from <client>, through `public.record_activity` (ADR 0078). The server
+ * from <client>, through `public.record_activity` (ADR 0080). The server
  * writes rows only for the caller, ignores days in the future or more than 30
  * days back, and treats a day it already has as done.
  *

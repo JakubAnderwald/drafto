@@ -7,7 +7,7 @@ interface ActivityPingProps {
 }
 
 /**
- * Records today's activity day for the signed-in user (ADR 0078). Renders nothing: it is a
+ * Records today's activity day for the signed-in user (ADR 0080). Renders nothing: it is a
  * component only so the server-rendered app layout can run the client-side ping without
  * turning `AppShell` into its owner.
  */

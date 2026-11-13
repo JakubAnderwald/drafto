@@ -10,7 +10,7 @@ import {
 import type { ActivityRpcClient } from "@drafto/shared";
 
 /**
- * Activity days (ADR-0078, docs/features/offline-sync.md): the UTC days on
+ * Activity days (ADR-0080, docs/features/offline-sync.md): the UTC days on
  * which this device opened Drafto. Each sync marks today, and a sync that gets
  * through sends every queued day to `record_activity`, so days opened offline
  * still count. Nothing else is recorded: no note, screen or action.
