@@ -1030,7 +1030,7 @@ Now a conflict is handed back to the fix loop like red CI ([ADR-0061](../adr/006
   - **Any other ending.** Bash rolls the worktree back (`merge-abort --to <pre-merge head>`, which also removes untracked leftovers) and spends one attempt. A conflict where main rewrote the code the plan changes, or a lockfile `pnpm install` can't produce, ends in **Blocked** with a PR comment.
 - The card then goes through CI, review and In Test again, and needs a fresh **Approved** drag.
 
-The `--watch` log says what happened: `merged origin/main into PR #<n>'s branch: <status> (conflicted: …; ADR clashes: N)`, followed by `pushed the merge`, `conflict pass merged main`, or the reason it rolled back. To resolve a conflict by hand instead, merge `main` into `factory/issue-<n>` and push. The next tick sees a mergeable PR and carries on.
+The `--watch` log says what happened: `merged origin/main into PR #<n>'s branch: <status> (conflicted: …; ADR clashes: N)`, followed by `pushed the merge`, `conflict pass merged main`, or the reason it rolled back. A resolution the agent made is pushed by bash and logged as `push of <sha12> accepted`. The PR page can take a few seconds to show it, which is expected ([ADR-0076](../adr/0076-factory-watch-effort-and-retry-budget.md)). `the resolution never reached the PR` now means the push itself failed: look for the git error just above it. To resolve a conflict by hand instead, merge `main` into `factory/issue-<n>` and push. The next tick sees a mergeable PR and carries on.
 
 ### A PR that is behind main (self-healing)
 
@@ -1158,7 +1158,7 @@ The factory runs `--implement` at **ultracode** effort (xhigh reasoning + dynami
 | Var                             | Default     | Purpose                                                                                                                                                            |
 | ------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `FACTORY_EFFORT`                | `ultracode` | `--effort` for `--implement`. Set `xhigh`/`high`/… to cut cost.                                                                                                    |
-| `FACTORY_WATCH_EFFORT`          | `xhigh`     | `--effort` for `--watch` fix passes: CI fixes, review-thread fixes and conflict passes.                                                                            |
+| `FACTORY_WATCH_EFFORT`          | `xhigh`     | `--effort` for `--watch` fix passes: CI fixes, review-thread fixes and conflict passes. Independent of `FACTORY_EFFORT`: to cut cost, lower both.                  |
 | `FACTORY_PLAN_EFFORT`           | `xhigh`     | `--effort` for `--plan` / replan (read-only planning).                                                                                                             |
 | `FACTORY_MAX_ATTEMPTS`          | `10`        | Retry budget per card, shared by `--plan`, `--implement` and `--watch`. Spent → the card goes to Blocked. Was 5 until ADR-0076; an invalid value falls back to 10. |
 | `FACTORY_PLAN_TIMEOUT_SEC`      | `360`       | Wall-clock cap per `--plan`/replan Claude call (was 180; xhigh planning thinks longer).                                                                            |

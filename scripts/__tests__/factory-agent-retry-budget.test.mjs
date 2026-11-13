@@ -15,6 +15,18 @@ import { fileURLToPath } from "node:url";
 const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "factory-agent.sh");
 const script = readFileSync(scriptPath, "utf8");
 
+describe("every retry-budget check reads FACTORY_MAX_ATTEMPTS", () => {
+  // The plan, replan and orphan-rescue paths used to compare against a
+  // hard-coded 5, so planning ignored the knob (and a plist override) while
+  // --implement and --watch honoured it.
+  it("compares $ATTEMPTS only against the knob, never a literal", () => {
+    assert.doesNotMatch(script, /"\$ATTEMPTS" -(?:ge|gt|eq) \d/);
+    const checks = script.match(/"\$ATTEMPTS" -ge "\$FACTORY_MAX_ATTEMPTS"/g) || [];
+    // orphan rescue, plan, replan, implement, watch
+    assert.equal(checks.length, 5);
+  });
+});
+
 const block = (() => {
   const m = script.match(
     /^FACTORY_MAX_ATTEMPTS="\$\{FACTORY_MAX_ATTEMPTS:-\d+\}"\n(?:#[^\n]*\n)*if [^\n]*\n[\s\S]*?\nfi\n/m,

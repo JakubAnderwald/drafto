@@ -212,16 +212,17 @@ pr_head_oid() { cat "$PR_HEAD_FILE"; }
            push) echo "PUSH $*" >>"$CALLS"; echo '{"pushed":true,"branch":"factory/issue-797","head":"abc"}' ;;
          esac
        }
-       pr_head_oid() { echo old; }
+       pr_head_oid() { echo "PRVIEW" >>"$CALLS"; echo old; }
        LOCAL=abc; CHECK='${resolved("abc")}'
        conflict_pass_verified /wt 755 '${merge}' && echo VERIFIED`,
     );
     assert.match(out, /PUSH /);
     assert.match(out, /VERIFIED/);
-    assert.match(
-      out,
-      /LOG Conflict pass for PR #755: push of abc accepted; GitHub's PR view still shows old/,
-    );
+    assert.match(out, /LOG Conflict pass for PR #755: push of abc accepted/);
+    // The PR view is read once, before the push, and never after it: a lagging
+    // or failing `gh pr view` can't override the push's own answer.
+    const afterPush = out.slice(out.indexOf("PUSH "));
+    assert.doesNotMatch(afterPush, /PRVIEW/);
   });
 
   it("still rejects a resolution whose push failed", () => {

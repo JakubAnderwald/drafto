@@ -2779,11 +2779,13 @@ conflict_pass_verified() {
     push_out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" 2>>"$LOG_FILE") || push_out=""
     [[ -n "$push_out" ]] && echo "$push_out" >>"$LOG_FILE"
     pushed_head=$(echo "$push_out" | jq -r 'select(.pushed == true) | .head // ""' 2>/dev/null) || pushed_head=""
-    pr_head=$(pr_head_oid "$pr_num")
-    if [[ "$pr_head" != "$head" && "$pushed_head" == "$head" ]]; then
-      log "Conflict pass for PR #$pr_num: push of ${head:0:12} accepted; GitHub's PR view still shows ${pr_head:0:12} (it catches up within seconds)"
-      pr_head="$head"
+    if [[ "$pushed_head" == "$head" ]]; then
+      log "Conflict pass for PR #$pr_num: push of ${head:0:12} accepted (the PR view can take a few seconds to show it)"
+      return 0
     fi
+    # No proof from the push (it failed, or its output didn't parse): fall
+    # back to what the PR shows, in case it landed anyway.
+    pr_head=$(pr_head_oid "$pr_num")
   fi
   if [[ -z "$head" || "$pr_head" != "$head" ]]; then
     CONFLICT_PASS_WHY="the resolution never reached the PR (local ${head:0:12}, PR ${pr_head:0:12})"
@@ -5124,7 +5126,8 @@ review_stage() {
 # One exemption (ADR-0036): a pass whose open threads are ALL CodeRabbit CLI
 # findings from the latest CLI run is free. Without it the gap-fill lane would
 # eat the review budget — bot fix, Claude fix, CLI fix, re-review fix, CLI #2 fix
-# is five passes and a Blocked card for doing exactly what the lane exists for.
+# is five passes, which was the whole budget until ADR-0076 raised it to 10, and
+# still half of it, spent on doing exactly what the lane exists for.
 # The exemption is itself bounded, so the termination guarantee above still
 # holds: coderabbit-cli.mjs grants at most ONE free pass per CLI run (keyed on
 # crLastCoveredSha, recorded as crCliFreePassSha), a card gets at most
@@ -6509,7 +6512,7 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
       fi
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: orphaned in Planning, no plan comment, retry budget exhausted ($ATTEMPTS) → Blocked"
         # Idempotent: post the exhaustion notice at most once. If a prior tick
         # already posted it but the → Blocked transition then failed (leaving
@@ -6698,7 +6701,7 @@ See \`docs/features/dark-factory.md\` for the spec contract.
       # to invoke claude.
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: retry budget exhausted ($ATTEMPTS attempts); advancing to Blocked"
         gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
           --body "🏭 **Planning retry budget exhausted ($ATTEMPTS attempts).**
@@ -6931,7 +6934,7 @@ and drag the card back to **Ready** to retry.
       rm -f "$CLAUDE_OUTPUT_FILE"
       ATTEMPTS=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.attempts // 0' || echo "0")
-      if [[ "$ATTEMPTS" -ge 5 ]]; then
+      if [[ "$ATTEMPTS" -ge "$FACTORY_MAX_ATTEMPTS" ]]; then
         log "Issue #$ISSUE_NUM: replan retry budget exhausted ($ATTEMPTS attempts); advancing to Blocked"
         gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
           --body "🏭 **Replan retry budget exhausted ($ATTEMPTS attempts).**
