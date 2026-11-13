@@ -169,7 +169,10 @@ Bash has fetched `origin/main` and run `git merge origin/main` in your worktree.
 Either the merge stopped on the files in `mergeConflict.conflictedFiles` (they
 hold conflict markers, and `git status` lists them as unmerged), or git merged
 everything itself and committed, but two ADRs now share a number
-(`mergeConflict.adrCollisions`). This pass resolves the merge **only**:
+(`mergeConflict.adrCollisions`), or a migration this PR adds no longer sorts
+after main's (`mergeConflict.migrationErrors`: bash renumbers those itself when
+it can, so you get one only when it couldn't). This pass resolves the merge
+**only**:
 `ciSummaryEnveloped`, `unresolvedComments` and `reviewThreads` are empty on
 purpose, because CI hasn't run on the merged head yet and the merge commit
 carries nothing but the merge. A later pass handles them. Skip the decision

@@ -234,27 +234,38 @@ describe("--release engine wiring", () => {
     assert.ok(gateAt < at('FAILING=$(pr_failing_required "$PR_VIEW")'));
     assert.match(
       releaseBlock,
-      /if ! migration_renumber_gate "\$ISSUE_NUM" "\$PR_NUM" "\$\(echo "\$PR_VIEW" \| jq -r '\.headRefOid \/\/ ""'\)" "Approved" "\$DIFF_FILES"; then\n\s*continue\n\s*fi/,
+      /if ! migration_renumber_gate "\$ISSUE_NUM" "\$PR_NUM" "\$\(echo "\$PR_VIEW" \| jq -r '\.headRefOid \/\/ ""'\)" "Approved" "\$DIFF_FILES"; then\n\s*case "\$MIGRATION_RENUMBER_RESULT" in\n\s*renumbered\|error\) continue ;;\n\s*esac\n\s*fi/,
     );
   });
 
-  it("keeps a renumbered card in Approved, so it merges once CI is green on the new head", () => {
+  // A renumber waits for CI on the new head; an error retries next tick, so a
+  // lookup blip can't cost a second Approved drag. A plan that needs a person
+  // or a spent budget goes on to the CI gate as before, which hands red CI
+  // back to In Review for the fix loop's recipe, instead of parking the card
+  // in Approved for good.
+  it("keeps a renumbered or erroring card in Approved, and lets manual and capped go on", () => {
     const start = releaseBlock.indexOf("    # Migration renumber gate (ADR-0076)");
     const end = releaseBlock.indexOf("    # CI gate.", start);
     assert.ok(start !== -1 && end !== -1);
-    for (const result of ["renumbered", "manual", "capped", "error"]) {
+    for (const [result, expected] of [
+      ["renumbered", "GATE 794 802 abc123 Approved x"],
+      ["error", "GATE 794 802 abc123 Approved x"],
+      ["manual", "GATE 794 802 abc123 Approved x\nCI GATE"],
+      ["capped", "GATE 794 802 abc123 Approved x\nCI GATE"],
+      ["clean", "GATE 794 802 abc123 Approved x\nCI GATE"],
+    ]) {
       const snippet = `
 set -euo pipefail
 PR_VIEW='{"headRefOid":"abc123"}'; ISSUE_NUM=794; PR_NUM=802; DIFF_FILES=x
 transition_status() { echo "MOVE $*"; }
-migration_renumber_gate() { echo "GATE $*"; MIGRATION_RENUMBER_RESULT=${result}; return 1; }
+migration_renumber_gate() { echo "GATE $*"; MIGRATION_RENUMBER_RESULT=${result}; [[ ${result} == clean ]]; }
 for _once in 1; do
 ${releaseBlock.slice(start, end)}
   echo "CI GATE"
 done`;
       const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
       assert.equal(r.status, 0, r.stderr);
-      assert.equal(r.stdout.trim(), "GATE 794 802 abc123 Approved x", result);
+      assert.equal(r.stdout.trim(), expected, result);
     }
   });
 

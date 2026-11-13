@@ -352,10 +352,21 @@ describe("comments", () => {
     assert.doesNotMatch(body, /tbmjbxxseonkciqovnpl/);
   });
 
-  it("names the reason and the column on a manual hold", () => {
-    const body = manualComment({ pr: 802, reason: "it overlaps", where: "Approved" });
-    assert.match(body, /can't renumber them mechanically: it overlaps\./);
-    assert.match(body, /The card stays in \*\*Approved\*\*/);
+  // Not a hold: the card goes on to the fix loop's recipe, and from Approved
+  // that costs a second approval, which the comment says so the person checks
+  // the rename (above all an object overlap) before giving it.
+  it("names the reason and the fix-loop fallback, and the re-approval from Approved", () => {
+    const approved = manualComment({ pr: 802, reason: "it overlaps", where: "Approved" });
+    assert.match(approved, /Reason: it overlaps\./);
+    assert.match(approved, /The fix loop renumbers them instead/);
+    assert.match(
+      approved,
+      /From \*\*Approved\*\* that means the card goes back to In Review and needs your approval again/,
+    );
+    assert.match(approved, /Check that rename before you approve it/);
+    assert.doesNotMatch(approved, /Hold —|stays in/);
+    const inReview = manualComment({ pr: 802, reason: "it overlaps", where: "In Review" });
+    assert.doesNotMatch(inReview, /From \*\*Approved\*\*/);
   });
 });
 
@@ -724,7 +735,10 @@ describe("migration-renumber end to end (#802/#829)", () => {
     const r = cli(factory, ["precheck", "--root", factory, "--pr", "951", "--head", head, ...opts]);
     assert.equal(r.out.status, "manual", JSON.stringify(r.out));
     assert.match(r.out.reason, /notes\.md:1 \(20261111000001\)/);
-    assert.match(r.out.comment, /need a person to renumber them/);
+    assert.match(r.out.comment, /the factory can't do it mechanically/);
+    // Not a hold: the comment points at the fix loop's recipe, the fallback.
+    assert.match(r.out.comment, /The fix loop renumbers them instead/);
+    assert.doesNotMatch(r.out.comment, /Hold —|stays in/);
   });
 
   it("holds SQL that redefines what main's newer migration defines", () => {

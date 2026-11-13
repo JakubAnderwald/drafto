@@ -987,17 +987,25 @@ export function renumberComment({ pr, to, map, findings = [] }) {
   ].join("\n");
 }
 
-// The issue comment when the factory can't renumber the PR itself.
+// The issue comment when the factory can't renumber the PR itself. The card
+// isn't held: it takes the path it took before ADR-0076, so the fix loop's
+// "Migration order" recipe renumbers it and a person checks that rename.
 export function manualComment({ pr, reason, where = "its column" }) {
+  const approved = where === "Approved";
   return [
-    `🏭 **Hold — PR #${pr}'s migrations need a person to renumber them.**`,
+    `🏭 **PR #${pr}'s migrations need renumbering, and the factory can't do it mechanically.**`,
     "",
-    `The factory can't renumber them mechanically: ${reason}.`,
+    `Reason: ${reason}.`,
     "",
-    "Rename them by hand on the PR branch with the `git mv` lines `pnpm migration:check` " +
-      "prints (after `git fetch origin main`), update every reference to an old version, and " +
-      `push. The card stays in **${where}** until the new commit passes. See \`${DOC}\`, ` +
-      '"Migration versions must sort last" (ADR-0076).',
+    "The fix loop renumbers them instead, as it did before ADR-0076: with CI red for " +
+      "migration order, its pass in **In Review** renames them with the `git mv` lines " +
+      "`pnpm migration:check` prints, and the card comes back to In Test." +
+      (approved
+        ? " From **Approved** that means the card goes back to In Review and needs your approval again."
+        : "") +
+      " Check that rename before you approve it, above all when the reason is SQL that " +
+      "touches an object one of main's newer migrations also touches: the new version " +
+      `decides which definition runs last. See \`${DOC}\`, "Migration versions must sort last" (ADR-0076).`,
   ].join("\n");
 }
 

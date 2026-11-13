@@ -164,7 +164,8 @@ fi
 
 # Times the migration renumber gate (ADR-0076) may rename one card's migrations
 # after main moved past them. Stored per issue as migrationRenumbers and never
-# reset by the factory: past the cap the card is held with a comment.
+# reset by the factory: past the cap the gate renames nothing and posts a
+# comment, and the card goes on to the fix loop's recipe as before.
 FACTORY_MAX_MIGRATION_RENUMBERS="${FACTORY_MAX_MIGRATION_RENUMBERS:-3}"
 if ! [[ "$FACTORY_MAX_MIGRATION_RENUMBERS" =~ ^(0|[1-9][0-9]*)$ ]]; then
   echo "WARNING: invalid FACTORY_MAX_MIGRATION_RENUMBERS='$FACTORY_MAX_MIGRATION_RENUMBERS'; defaulting to 3" >&2
@@ -2442,17 +2443,20 @@ migration_violation() {
 # costs one CI run. The card keeps its review (carry_across_branch_update) and,
 # in Approved, its approval. A plan that needs a person (a version that isn't
 # 14 digits, a renamed main migration, SQL that touches an object main's newer
-# migrations also touch, a bare version that could mean another migration) is
-# held with a comment, once per head. Renumbers count toward
-# FACTORY_MAX_MIGRATION_RENUMBERS (migrationRenumbers); past it the card is held
-# with a comment. Never spends attempts, branchUpdates or ciRerun.
+# migrations also touch, a bare version that could mean another migration)
+# renames nothing and gets a comment, once per head. Renumbers count toward
+# FACTORY_MAX_MIGRATION_RENUMBERS (migrationRenumbers); past it, the same. In
+# both, the callers go on as before, so the watch prompt's "Migration order"
+# recipe renumbers the card and a person checks it: holding it instead would
+# park it for good. Never spends attempts, branchUpdates or ciRerun.
 # Args: $1 issue  $2 PR  $3 head SHA  $4 where (the column, for the comment)
 #       $5 the PR's changed files, when the caller has them (gh pr diff
 #          --name-only, which has no file cap; never gh pr view --json files)
-# Returns 0 when there is nothing to renumber (the caller goes on), 1 to hold
-# this tick. MIGRATION_RENUMBER_RESULT says why: clean | renumbered | manual |
-# capped | error. On error (a lookup or the helper failed), --watch callers go
-# on as before and --release holds.
+# Returns 0 when there is nothing to renumber, 1 otherwise, and
+# MIGRATION_RENUMBER_RESULT says which: clean | renumbered | manual | capped |
+# error. Callers hold the card only on renumbered (CI runs on the new head), and
+# --release also on error (a lookup or the helper failed; retried next tick).
+# manual and capped go on as before, to the fix loop's recipe.
 migration_renumber_gate() {
   local issue_num="$1" pr_num="$2" head_sha="$3" where="$4" diff_files="${5:-}"
   local out status reason map_json map_text to count comment marker
@@ -2517,16 +2521,17 @@ migration_renumber_gate() {
   fi
   if [[ "$count" -ge "$FACTORY_MAX_MIGRATION_RENUMBERS" ]]; then
     MIGRATION_RENUMBER_RESULT="capped"
-    log "Issue #$issue_num: PR #$pr_num needs another migration renumber ($map_text), but $count of $FACTORY_MAX_MIGRATION_RENUMBERS are spent; holding"
+    log "Issue #$issue_num: PR #$pr_num needs another migration renumber ($map_text), but $count of $FACTORY_MAX_MIGRATION_RENUMBERS are spent; leaving it to the fix loop"
     marker="drafto-factory-migration-renumber-cap:${head_sha:0:12}"
     if ! issue_has_marker "$issue_num" "$marker"; then
-      gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **Hold — PR #$pr_num's migrations fell behind \`main\` again.**
+      gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **PR #$pr_num's migrations fell behind \`main\` again.**
 
-The factory has renumbered them $count time(s), its limit (\`FACTORY_MAX_MIGRATION_RENUMBERS\`). \
-It would now rename: $map_text. Rename them by hand with the \`git mv\` lines \
-\`pnpm migration:check\` prints, or reset the count with \
-\`node scripts/lib/state-cli.mjs factory:set-issue-field $issue_num migrationRenumbers \"\"\`. \
-The card stays in **$where**.
+The factory has renumbered them $count time(s), its limit (\`FACTORY_MAX_MIGRATION_RENUMBERS\`), \
+and would now rename: $map_text. It doesn't, so the fix loop renumbers them instead, as before \
+ADR-0076: once CI is red for migration order, its pass in **In Review** renames them, and from \
+**Approved** the card goes back to In Review and needs your approval again. To let the factory \
+renumber mechanically once more, reset the count with \
+\`node scripts/lib/state-cli.mjs factory:set-issue-field $issue_num migrationRenumbers \"\"\`.
 
 <!-- $marker -->" >>"$LOG_FILE" 2>&1 || true
     fi
@@ -7966,12 +7971,13 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       # before a fix pass spends an attempt: red CI or a conflict after main
       # moved can be a migration this PR adds that no longer sorts after main's.
       # The gate renames it mechanically and updates the branch, with no Claude
-      # run and no attempt spent; a plan that needs a person holds the card with
-      # a comment. On an error the pass goes ahead as before.
+      # run and no attempt spent; the card then waits for CI on the new head.
+      # A plan that needs a person, or a spent renumber budget, posts its
+      # comment and the pass goes ahead as before, so the watch prompt's
+      # "Migration order" recipe stays the fallback; so does an error.
       if [[ "$CONFLICTING" -eq 1 || "$FAILING" -gt 0 ]]; then
-        if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "In Review"; then
-          [[ "$MIGRATION_RENUMBER_RESULT" == "error" ]] || continue
-        fi
+        migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "In Review" || true
+        [[ "$MIGRATION_RENUMBER_RESULT" == "renumbered" ]] && continue
       fi
 
       # Retry budget for the fix loop.
@@ -8107,17 +8113,18 @@ A human should take a look. Reset with \
             ;;
           up-to-date|clean)
             # A merge git made on its own can still leave a migration that no
-            # longer sorts after main's (ADR-0076): CI would go red on it. Roll
-            # it back unpushed, spending nothing; the renumber gate above takes
-            # it from a fresh read next tick.
+            # longer sorts after main's (ADR-0076), when the renumber gate above
+            # couldn't rename it mechanically (a plan that needs a person, a
+            # spent budget, an error). CI would go red on it, so it isn't pushed
+            # as it stands: like an ADR clash, the agent gets the merge and
+            # renumbers on top of it (the watch prompt's conflict pass), and
+            # merge-check refuses a resolution that still leaves one.
             MIG_ERRORS=$(echo "$MERGE_JSON" | jq '(.migrationErrors // []) | length' 2>/dev/null || echo "0")
             [[ "$MIG_ERRORS" =~ ^[0-9]+$ ]] || MIG_ERRORS=0
             if [[ "$MIG_ERRORS" -gt 0 ]]; then
-              log "Issue #$ISSUE_NUM: merging main into PR #$PR_NUM leaves $MIG_ERRORS migration-order error(s) ($(echo "$MERGE_JSON" | jq -r '[(.migrationErrors // [])[] | .file] | join(", ")')); rolling it back unpushed, no attempt spent"
-              rollback_conflict_pass "$WT_PATH" "$MERGE_BEFORE"
-              continue
+              log "Issue #$ISSUE_NUM: merging main into PR #$PR_NUM leaves $MIG_ERRORS migration-order error(s) ($(echo "$MERGE_JSON" | jq -r '[(.migrationErrors // [])[] | .file] | join(", ")')); handing the merge to the agent"
             fi
-            if [[ "$ADR_CLASHES" -eq 0 ]]; then
+            if [[ "$ADR_CLASHES" -eq 0 && "$MIG_ERRORS" -eq 0 ]]; then
               if [[ "$(echo "$MERGE_JSON" | jq -r '.ahead')" == "true" ]]; then
                 if ! node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$WT_PATH" >>"$LOG_FILE" 2>&1; then
                   log "WARNING: pushing the merge to PR #$PR_NUM failed; rolling it back, spending one attempt"
@@ -8345,11 +8352,12 @@ A human should take a look. Reset with \
     if [[ -n "$BEHIND_BY" && "$BEHIND_BY" -gt 0 ]]; then
       # Main may have moved past a migration this PR adds (ADR-0076). Renumber
       # it first, so CI on the updated head doesn't go red for migration order;
-      # the gate updates the branch itself and spends no branch update. On an
-      # error the update below goes ahead as before.
-      if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "In Review" "$INTEST_DIFF_FILES"; then
-        [[ "$MIGRATION_RENUMBER_RESULT" == "error" ]] || continue
-      fi
+      # the gate updates the branch itself and spends no branch update. When it
+      # can't (a plan that needs a person, a spent budget, an error), the
+      # update below goes ahead as before and the fix loop's recipe takes the
+      # red CI.
+      migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$HEAD_SHA" "In Review" "$INTEST_DIFF_FILES" || true
+      [[ "$MIGRATION_RENUMBER_RESULT" == "renumbered" ]] && continue
       # The budget fails closed: if it can't be read, it counts as spent, so a
       # broken state file can't turn into an update (and a CI run) every tick.
       BRANCH_UPDATES=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
@@ -8943,10 +8951,15 @@ PR #$PR_NUM $PARITY_VIOLATION, which this phase doesn't allow. The card stays in
     # would send it back to In Review for an LLM fix pass and a second Approved
     # drag. The gate renames them mechanically and updates the branch instead,
     # and the card stays in Approved: a later tick merges it once CI is green on
-    # the new head. A plan that needs a person holds it here with a comment, and
-    # so does an error (the gate retries next tick).
+    # the new head. An error holds it for this tick (the gate retries next
+    # tick), so a lookup blip can't cost a second Approved drag. A plan that
+    # needs a person, or a spent renumber budget, posts its comment and goes on
+    # to the gates below as before: red CI hands the card back to In Review,
+    # where the fix loop's recipe renumbers it and you approve it again.
     if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW" | jq -r '.headRefOid // ""')" "Approved" "$DIFF_FILES"; then
-      continue
+      case "$MIGRATION_RENUMBER_RESULT" in
+        renumbered|error) continue ;;
+      esac
     fi
 
     # CI gate. A failing *required* check never parks the card silently (#654 sat

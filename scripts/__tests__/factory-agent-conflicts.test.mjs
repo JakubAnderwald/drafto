@@ -478,29 +478,47 @@ describe("--watch conflict pass wiring", () => {
   // PR's that no longer sorts after main's. The renumber gate gets it first, so
   // neither the merge nor a fix pass (and its attempt) is spent on a rename.
   it("runs the migration renumber gate before merge-main and before any attempt is spent", () => {
-    const gateAt = watchBlock.indexOf('if ! migration_renumber_gate "$ISSUE_NUM" "$PR_NUM"');
+    const gateAt = watchBlock.indexOf(
+      'migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW"',
+    );
     const budgetAt = watchBlock.indexOf("# Retry budget for the fix loop.");
     const mergeAt = watchBlock.indexOf('worktree-cli.mjs" merge-main --path "$WT_PATH"');
     const bumpAt = watchBlock.indexOf("factory:bump-attempts");
     assert.ok(gateAt > 0 && gateAt < budgetAt && gateAt < mergeAt && gateAt < bumpAt);
     const call = watchBlock.slice(gateAt - 200, gateAt + 300);
     assert.match(call, /if \[\[ "\$CONFLICTING" -eq 1 \|\| "\$FAILING" -gt 0 \]\]; then/);
-    // Held (renumbered, manual, capped) skips the pass; an error lets it run.
-    assert.match(call, /\[\[ "\$MIGRATION_RENUMBER_RESULT" == "error" \]\] \|\| continue/);
+    // Only a renumber skips the pass (the card waits for CI on the new head).
+    // A plan that needs a person, a spent budget or an error lets it run, so the
+    // watch prompt's "Migration order" recipe stays the fallback instead of the
+    // card sitting in In Review for good.
+    assert.match(
+      call,
+      /migration_renumber_gate [^\n]* "In Review" \|\| true\n\s*\[\[ "\$MIGRATION_RENUMBER_RESULT" == "renumbered" \]\] && continue/,
+    );
+    assert.doesNotMatch(call, /== "error" \]\] \|\| continue/);
   });
 
-  it("rolls back a clean merge that leaves a migration-order error, unpushed and without an attempt", () => {
+  // A clean merge that leaves a migration-order error reaches here only when the
+  // gate couldn't rename it mechanically. Rolling it back every tick, spending
+  // nothing, would loop forever; the agent gets it like an ADR clash, and
+  // merge-check refuses a resolution that still leaves one.
+  it("hands a clean merge that leaves a migration-order error to the agent, unpushed", () => {
     const arm = watchBlock.slice(
       watchBlock.indexOf("          up-to-date|clean)"),
       watchBlock.indexOf("          conflicts) ;;"),
     );
-    const check = arm.slice(0, arm.indexOf('if [[ "$ADR_CLASHES" -eq 0 ]]; then'));
+    const pushGate = 'if [[ "$ADR_CLASHES" -eq 0 && "$MIG_ERRORS" -eq 0 ]]; then';
+    assert.ok(arm.includes(pushGate), "the push must wait for zero migration-order errors");
+    const check = arm.slice(0, arm.indexOf(pushGate));
     assert.match(
       check,
       /MIG_ERRORS=\$\(echo "\$MERGE_JSON" \| jq '\(\.migrationErrors \/\/ \[\]\) \| length'/,
     );
-    assert.match(check, /rollback_conflict_pass "\$WT_PATH" "\$MERGE_BEFORE"\n\s*continue/);
-    assert.doesNotMatch(check, /bump-attempts|worktree-cli\.mjs" push/);
+    assert.match(check, /handing the merge to the agent/);
+    assert.doesNotMatch(
+      check,
+      /rollback_conflict_pass|continue|bump-attempts|worktree-cli\.mjs" push/,
+    );
     // And it runs before the push.
     assert.ok(arm.indexOf("MIG_ERRORS") < arm.indexOf('worktree-cli.mjs" push'));
   });

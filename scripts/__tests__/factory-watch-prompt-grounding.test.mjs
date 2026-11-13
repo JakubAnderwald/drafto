@@ -226,6 +226,16 @@ describe("watcher prompt — migration order (ADR 0057)", () => {
     assert.doesNotMatch(flat, /"Migration order", applies as written/);
   });
 
+  // ADR-0077: a clean merge that leaves a migration-order error is no longer
+  // rolled back by bash; it reaches the agent like an ADR clash, so the
+  // conflict pass must say why it can be invoked with nothing conflicted.
+  it("names a leftover migration-order error as a reason for a conflict pass", () => {
+    assert.match(
+      flat,
+      /or a migration this PR adds no longer sorts after main's \(`mergeConflict\.migrationErrors`/,
+    );
+  });
+
   it("blocks on an order error the check can't give a git mv for", () => {
     assert.match(
       flat,

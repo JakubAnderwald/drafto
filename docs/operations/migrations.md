@@ -143,14 +143,14 @@ PRs #802 and #829 were open at the same time and both added `20261111000001`. On
   Run it only if dev already applied the old version (`supabase migration list` shows it). When the old version is also one of main's migrations (#802's case), dev holds one row for both files. Check which file's SQL dev actually ran. If it was the PR's, repair as above: the main file under the old version then counts as not applied, and `supabase db push --include-all` (dev only) applies it. If it was main's, the PR's migration never ran on dev, and a plain `supabase db push` applies it under the new version with no repair.
 
 - **Prod needs nothing.** Prod is pushed only from main, after the merge, so it only ever sees the new versions.
-- **When it holds instead.** It holds the card with a comment, once per head, and leaves the rename to a person when:
+- **When it leaves the rename to the fix loop.** It renames nothing and posts a comment, once per head, when:
   - a version isn't 14 digits, or the PR renames a migration main already has;
   - the PR's migrations create, alter or drop an object (function, table, view, policy, trigger, type, index or sequence) that one of main's newer migrations also touches, because renumbering changes which definition runs last;
   - a line the PR added names a version the merge base already mentions, so it may mean another migration.
 
-  Rename by hand as in [the section above](#renaming-a-migration-dev-already-applied) and push. The next commit goes through the check again.
+  The card isn't held: it goes on as it did before the factory renumbered anything. With CI red for migration order, the fix loop's "Migration order" recipe renames the PR's migrations in In Review. From Approved, the card goes back to In Review first and needs your approval again. Check that rename before you approve it, above all for the object overlap. To rename by hand instead, do it as in [the section above](#renaming-a-migration-dev-already-applied) and push. The next commit goes through the check again.
 
-- **The cap.** One card is renumbered at most `FACTORY_MAX_MIGRATION_RENUMBERS` times (default 3). After that the factory holds the card with a comment. Reset the count with `node scripts/lib/state-cli.mjs factory:set-issue-field <issue> migrationRenumbers ""`.
+- **The cap.** One card is renumbered at most `FACTORY_MAX_MIGRATION_RENUMBERS` times (default 3). After that it renames nothing and posts a comment, and the fix loop takes the rename as above. Reset the count with `node scripts/lib/state-cli.mjs factory:set-issue-field <issue> migrationRenumbers ""`.
 
 ## Production operation confirmation rules
 

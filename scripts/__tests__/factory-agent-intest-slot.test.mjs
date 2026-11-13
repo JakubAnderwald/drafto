@@ -696,19 +696,19 @@ done`;
     ]);
   });
 
-  it("holds the card when the renumber needs a person or its cap is spent", () => {
-    for (const renumber of ["manual", "capped"]) {
+  // Holding here would park the card in In Review for good. The plain update
+  // goes ahead instead, and the red CI it brings takes the fix loop's
+  // "Migration order" recipe, the fallback for what the gate can't rename.
+  it("goes on with the plain update when the renumber needs a person, is capped or errors", () => {
+    for (const renumber of ["manual", "capped", "error"]) {
       const r = gate({ behind: "2", renumber });
       assert.equal(r.out, "", renumber);
-      assert.ok(!r.calls.some((c) => c.startsWith("GH update-branch") || c.startsWith("SET")));
+      assert.ok(
+        r.calls.some((c) => c.startsWith("GH update-branch")),
+        `${renumber}: update-branch`,
+      );
+      assert.ok(r.calls.includes("SET 794 branchUpdates 1"), `${renumber}: budget`);
     }
-  });
-
-  it("goes on with the plain update when the renumber gate errors", () => {
-    const r = gate({ behind: "2", renumber: "error" });
-    assert.equal(r.out, "");
-    assert.ok(r.calls.some((c) => c.startsWith("GH update-branch")));
-    assert.ok(r.calls.includes("SET 794 branchUpdates 1"));
   });
 
   it("doesn't call the renumber gate when the branch is up to date", () => {

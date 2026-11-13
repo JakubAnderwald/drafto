@@ -31,23 +31,23 @@ ADR 0057 rejected "rename at merge time with a bot" (its alternative 4) because 
 2. **The bash gate `migration_renumber_gate`** runs only for a PR that changes `supabase/migrations/*.sql`:
    - On a fixable plan it pushes R, records `renumberFrom`, `renumberTo` and `renumberMap`, and calls `update_pr_branch <pr> R`, so GitHub adds its own merge of main (M). CI's cancel-in-progress drops R's run.
    - It comments once per R with the old → new map and the dev repair (point 5).
-   - It never spends `attempts`, `branchUpdates` or `ciRerun`. It counts renumbers in `migrationRenumbers`, capped by `FACTORY_MAX_MIGRATION_RENUMBERS` (default 3). Past the cap, or when the count can't be read, it holds the card with a comment.
+   - It never spends `attempts`, `branchUpdates` or `ciRerun`. It counts renumbers in `migrationRenumbers`, capped by `FACTORY_MAX_MIGRATION_RENUMBERS` (default 3). Past the cap, or when the count can't be read, it renumbers nothing and posts a comment (point 7 says what happens then).
    - It respects `--dry-run`, and it won't renumber past commits a worktree or kept branch has that the PR lacks.
 3. **Where it runs.**
    - `--release`, after the migration-label and conflict gates and before the CI gate. A renumbered card **stays in Approved** and merges once CI is green on M.
    - `--watch`: in the behind-main gate before `update_pr_branch`, and at the fix loop's entry when CI is red or the PR conflicts, before the conflict pass's `merge-main` and before any attempt is spent.
-   - `--watch` callers go on as before when the gate errors. `--release` holds the card for the tick.
+   - Only a renumber holds the card, waiting for CI on the new head. An error holds an Approved card for the tick, so a lookup blip can't cost a second Approved drag; in `--watch` it goes on as before.
 4. **The review and the approval carry over.** `carry_across_branch_update` also accepts R itself, or a web-flow `Merge branch 'main' into …` commit whose first parent is R. It requires that the commit R renamed (or R) was the last one reviewed, and that `verify` passes. The Approved drag stays valid: the decision with the user was that a verified mechanical renumber keeps it, as an update-branch merge already does ([ADR 0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)).
 5. **Dev gets an exact repair in the comment.** It is `supabase migration repair --status reverted <old>`, then `--status applied <new>`, needed only if dev applied the old version. When the old version is also one of main's migrations, the comment says to check which file dev actually ran first. This answers ADR 0057's alternative 4: the rename still leaves dev holding the old version, but the factory now says exactly what to run, and only edits to dev's migration history are needed.
 6. **Prod is pushed only from main, after the merge.** A merge-time renumber therefore never touches prod: prod only ever sees the new versions. This invariant is what makes a renumber before the merge safe.
-7. **Some cases are held for a person, once per head:**
+7. **Some cases the factory leaves to the fix loop, with one comment per head.** The card isn't held: it goes on as before ADR 0076, so with CI red for migration order the watch prompt's "Migration order" recipe renumbers it in In Review (from Approved, the CI gate hands it back there first, and the card needs approval again). Holding it instead would park it for good. The comment names the reason, so the person approving checks the rename. The cases:
    - a version that isn't 14 digits, or a renamed main migration;
    - a flagged file that isn't one the PR adds;
    - an object overlap: the PR's added migrations create, alter or drop a function, table, view, policy, trigger, type, index or sequence (schema-qualified, case-insensitive) that one of main's migrations added since the merge base also touches. Renumbering changes which definition runs last;
    - a bare version in a PR line that could mean another migration.
 8. **Two adjacent fixes.**
    - `--release` updates a PR when `pr_behind_main` is above 0 or `mergeStateStatus` is `BEHIND`, and waits on `UNKNOWN` instead of merging. This applies to every PR.
-   - `worktree-cli.mjs merge-main` and `merge-check` report `migrationErrors`. A clean merge that has them is rolled back unpushed, with no attempt spent, and the gate takes it next tick. An agent's conflict resolution that leaves one doesn't count as resolved.
+   - `worktree-cli.mjs merge-main` and `merge-check` report `migrationErrors`. A clean merge that has them reaches the conflict pass only when the gate couldn't rename them (point 7), so it isn't pushed as it stands: the agent gets it, like an ADR clash, and renumbers on top of the merge. Rolling it back every tick would loop with nothing spent. An agent's conflict resolution that leaves one doesn't count as resolved.
 
 ## Consequences
 
@@ -59,11 +59,11 @@ ADR 0057 rejected "rename at merge time with a bot" (its alternative 4) because 
 - **Negative**:
   - Dev may still need a manual `supabase migration repair` per renamed version. The comment gives the commands, but nothing runs them.
   - Every `--release` tick fetches main and the PR head for each Approved migration card, and a fixable plan lists the open PRs' files with one `gh pr diff` per PR.
-  - The object-overlap rule is conservative. Two migrations that alter different columns of the same table are held for a person although renumbering them would be harmless.
+  - The object-overlap rule is conservative. Two migrations that alter different columns of the same table go to the fix loop, and a second Approved drag, although a mechanical renumber would be harmless.
   - `--release` waits a tick or more when GitHub reads `UNKNOWN`, and serializes merges behind update-branch, as `strict` protection already asks.
 - **Neutral**:
   - A PR written by hand still collides on dev the way ADR 0057 describes. The factory renumbers only factory branches (`factory/issue-<n>`).
-  - The watch prompt's "Migration order" recipe stays as the fallback for the cases held for a person.
+  - The watch prompt's "Migration order" recipe stays as the fallback for the cases point 7 lists and for a spent cap.
   - Comments from CodeRabbit on R or M go through the existing thread hand-back.
 
 ## Alternatives Considered
