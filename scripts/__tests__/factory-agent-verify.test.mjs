@@ -2632,6 +2632,25 @@ describe("the Web lane's screenshots in the verification report (ADR-0072, real 
     });
   });
 
+  it("passes the composer's bypass and sign-in key files to the upload, so the images are scanned for them", () => {
+    withBash(
+      [
+        `printf 'VERCEL_AUTOMATION_BYPASS_SECRET=%s\\n' not-a-real-bypass > "$LOG_DIR/no-bypass.env"`,
+        `printf 'DEV_SUPABASE_SERVICE_ROLE_KEY=%s\\n' not-a-real-key > "$LOG_DIR/signin.env"`,
+        seed({ lane: "reported:pass" }),
+        promote("reported:pass"),
+      ].join("\n"),
+      { env: { HEAD, TRACE_REPORT: "1", UPLOAD_STUB: PUBLISHED }, comments },
+      (r) => {
+        const uploads = uploadsOf(r);
+        assert.equal(uploads.length, 1, r.calls);
+        assert.equal(uploads[0]["--bypass-file"], join(r.dir, "no-bypass.env"));
+        assert.equal(uploads[0]["--signin-key-file"], join(r.dir, "signin.env"));
+        assert.equal(reports(r).length, 1, "posted once");
+      },
+    );
+  });
+
   it("keeps a withheld lane's screenshots on the Mac mini: never uploaded", () => {
     // The lane's own output trips the scan; and a clean lane in a body that
     // trips the final check (here the CodeRabbit note) is withheld as well.

@@ -881,6 +881,7 @@ function runBrowser({
   upload = "ok",
   rerender = "ok",
   sessionId = SESSION_ID,
+  signinKeyFile = "/nonexistent/dev-supabase-admin.env",
 } = {}) {
   {
     const dir = mkdtempSync(join(tmpdir(), "browser-intest-"));
@@ -908,7 +909,7 @@ STATE_FILE=${JSON.stringify(stateFile)}
 SCRIPT_DIR=${JSON.stringify(scriptsDir)}
 DRY_RUN=${dryRun}
 FACTORY_BROWSER_ACCOUNT_FILE=/nonexistent/account.env
-FACTORY_BROWSER_SIGNIN_KEY_FILE=/nonexistent/dev-supabase-admin.env
+FACTORY_BROWSER_SIGNIN_KEY_FILE=${JSON.stringify(signinKeyFile)}
 FACTORY_BROWSER_DEVICE_ID=9796912b-8977-4d74-9c08-d9bb283b9496
 FACTORY_BROWSER_MAX_ATTEMPTS=2
 FACTORY_SIGNIN_LEASE_SEC=300
@@ -1462,6 +1463,10 @@ describe("intest_browser_run: the run's screenshots (ADR-0072)", () => {
     assert.equal(f["--guard-log"], `${dir}/browser-guard/${SESSION_ID}.jsonl`);
     assert.equal(f["--render-json"], `${runDir}/render.json`, "the first render's own JSON");
     assert.equal(f["--account-file"], "/nonexistent/account.env");
+    // The runner never held the bypass secret, and this sign-in key file
+    // doesn't exist, so neither is a literal to scan for.
+    assert.equal(f["--bypass-file"], "");
+    assert.equal(f["--signin-key-file"], "");
     assert.equal(f["--ocr"], `${dir}/bin/ocr`, "the helper compiled into $LOG_DIR/bin");
     assert.equal(f["--log-dir"], dir);
     assert.equal(f["--repo-root"], repoRoot);
@@ -1488,6 +1493,21 @@ describe("intest_browser_run: the run's screenshots (ADR-0072)", () => {
     assert.equal(finalState.browserRunSha, SHA);
     assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
     assert.doesNotMatch(callLog, /^transition /m, "it never moves the card");
+  });
+
+  it("scans the screenshots for the sign-in key that minted the run's link, when its file exists", () => {
+    const keyDir = mkdtempSync(join(tmpdir(), "browser-signin-key-"));
+    try {
+      const keyFile = join(keyDir, "dev-supabase-admin.env");
+      writeFileSync(keyFile, "DEV_SUPABASE_SERVICE_ROLE_KEY=not-a-real-key\n", { mode: 0o600 });
+      const { r, uploads } = run({ state: ready, signinKeyFile: keyFile });
+      assert.match(r.stdout, /rc=0/);
+      assert.equal(uploads.length, 1);
+      assert.equal(uploads[0]["--signin-key-file"], keyFile);
+      assert.equal(uploads[0]["--bypass-file"], "", "the runner never held the bypass secret");
+    } finally {
+      rmSync(keyDir, { recursive: true, force: true });
+    }
   });
 
   it("keeps a withheld report's screenshots on the Mac mini: no upload, the first render posted", () => {
@@ -1841,7 +1861,10 @@ describe("evidence_upload", () => {
 
   // The real CLI: a usage error (a flag bash doesn't pass, or "" where a value
   // is required) would exit 2 and leave no record, turning every refusal into
-  // a "failed" upload. These end at a gate before any git call.
+  // a "failed" upload. These end at a gate before any git call, except the
+  // last: past the gates, the run's ref is asked first (a retry reuses what is
+  // published), so it gets a temp origin with no evidence ref and ends at the
+  // missing guard log, before anything is pushed.
   describe("against the real evidence-upload.mjs", () => {
     const real = (setup) => `${setup}\n${call("")}\ncat "$LOG_DIR/run/upload.json"`;
     const clean = `mkdir -p "$LOG_DIR/run"; printf '%s\\n' '{"withheld":false,"secretHits":[]}' >"$LOG_DIR/run/render.json"`;
@@ -1865,7 +1888,13 @@ describe("evidence_upload", () => {
       ],
       [
         "the guard log isn't there",
-        `${clean}; printf '%s\\n' '{"ok":true}' >"$LOG_DIR/evidence-selftest.json"`,
+        [
+          clean,
+          `printf '%s\\n' '{"ok":true}' >"$LOG_DIR/evidence-selftest.json"`,
+          'git init -q --bare "$LOG_DIR/origin.git"',
+          'git -C "$REPO_ROOT" init -q',
+          'git -C "$REPO_ROOT" remote add origin "$LOG_DIR/origin.git"',
+        ].join("; "),
         {},
         "no-session",
       ],

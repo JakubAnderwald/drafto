@@ -478,7 +478,44 @@ export function priorUpload({ issue, sha, runId, out, repoRoot, git = defaultGit
 }
 
 /**
- * The whole upload: gates, the run's own upload.json, selection, publish.
+ * A run with nothing published yet: pick, check and OCR-scan its screenshots,
+ * then publish them (publishRun). The literals each image's text is scanned
+ * for are read like the report's own scan (verify-report.mjs): a file that is
+ * given but can't be read fails closed, a file not given was never held.
+ */
+function selectAndPublish({
+  issue,
+  sha,
+  runId,
+  source,
+  evidenceDir,
+  guardLog,
+  accountFile,
+  bypassFile,
+  signinKeyFile,
+  ocrBin,
+  git,
+  deps,
+}) {
+  const literal = (file, key) => (file ? readSecretValue(file, key) : "");
+  const password = literal(accountFile, "FACTORY_BROWSER_PASSWORD");
+  const bypass = literal(bypassFile, "VERCEL_AUTOMATION_BYPASS_SECRET");
+  const signinKey = literal(signinKeyFile, "DEV_SUPABASE_SERVICE_ROLE_KEY");
+  if (password === null) return { ok: false, reason: "account-file" };
+  if (bypass === null || signinKey === null) return { ok: false, reason: "secret-file" };
+  const secrets = {};
+  if (password) secrets.password = password;
+  if (bypass) secrets.bypass = bypass;
+  if (signinKey) secrets.signinKey = signinKey;
+  const selection = prepareRun({ source, evidenceDir, guardLog, ocrBin, secrets, deps });
+  return selection.ok
+    ? publishRun({ issue, sha, runId, selection, git })
+    : { ok: false, reason: selection.reason };
+}
+
+/**
+ * The whole upload: gates, then what the run already published (its
+ * upload.json, else its ref), else selection and publish.
  * Never throws for an expected failure; writes and returns the record.
  */
 export function uploadRun({
@@ -511,27 +548,27 @@ export function uploadRun({
       // Already published by an earlier attempt: nothing is pushed again.
       return { ...prior, reused: true };
     } else {
-      // The literals each image's text is scanned for, like the report's own
-      // scan (verify-report.mjs): a file that is given but can't be read
-      // fails closed, a file not given was never held.
-      const literal = (file, key) => (file ? readSecretValue(file, key) : "");
-      const password = literal(accountFile, "FACTORY_BROWSER_PASSWORD");
-      const bypass = literal(bypassFile, "VERCEL_AUTOMATION_BYPASS_SECRET");
-      const signinKey = literal(signinKeyFile, "DEV_SUPABASE_SERVICE_ROLE_KEY");
-      if (password === null) {
-        result = { ok: false, reason: "account-file" };
-      } else if (bypass === null || signinKey === null) {
-        result = { ok: false, reason: "secret-file" };
-      } else {
-        const secrets = {};
-        if (password) secrets.password = password;
-        if (bypass) secrets.bypass = bypass;
-        if (signinKey) secrets.signinKey = signinKey;
-        const selection = prepareRun({ source, evidenceDir, guardLog, ocrBin, secrets, deps });
-        result = selection.ok
-          ? publishRun({ issue, sha, runId, selection, git })
-          : { ok: false, reason: selection.reason };
-      }
+      // Not in upload.json, but maybe on the run's ref (an attempt that pushed
+      // and then lost its record). What is published is what a retry posts,
+      // and it needs nothing local: the screenshots, the guard log, the OCR
+      // helper or a secret file may be gone since. GitHub not answering fails
+      // closed (reason "remote"), as publishRun does.
+      result =
+        priorUpload({ issue, sha, runId, out, repoRoot, git }) ??
+        selectAndPublish({
+          issue,
+          sha,
+          runId,
+          source,
+          evidenceDir,
+          guardLog,
+          accountFile,
+          bypassFile,
+          signinKeyFile,
+          ocrBin,
+          git,
+          deps,
+        });
     }
   } catch {
     result = { ok: false, reason: "error" };

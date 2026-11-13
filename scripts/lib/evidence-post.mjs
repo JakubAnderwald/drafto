@@ -25,7 +25,8 @@
 // CLI:
 //   node scripts/lib/evidence-post.mjs macos --run-dir <dir> --issue <n>
 //        [--sha <40-hex>] [--yes] [--log-dir <dir>] [--repo-root <dir>] [--ocr <bin>]
-//     --sha: the commit the run tested; default, the newest scenario-sha
+//     --sha: the commit the run tested; default, the commit an earlier --yes
+//     of this run recorded in its upload.json, else the newest scenario-sha
 //     marker on the issue's own (OWNER) comments. --log-dir: where the
 //     factory keeps evidence-selftest.json (default <repo-root>/logs/factory).
 //     --ocr: default <log-dir>/bin/ocr, else the harness's
@@ -45,6 +46,7 @@ import {
   REPO,
   RUN_ID_RE,
   UPLOAD_FILE,
+  evidenceRef,
   prepareRun,
   priorUpload,
   uploadGate,
@@ -104,6 +106,19 @@ export function scenarioShaFrom(comments) {
     for (const m of String(c.body ?? "").matchAll(SCENARIO_SHA_RE)) sha = m[1];
   }
   return sha;
+}
+
+/**
+ * The commit an earlier --yes of this run resolved, from the run's own upload
+ * record (upload.json): its issue, run id and ref must all match, or null.
+ * A retry keeps it, so a scenario-sha marker posted since (a newer head)
+ * can't change which commit the run says it tested.
+ */
+export function recordedSha(record, { issue, runId }) {
+  if (record === null || typeof record !== "object") return null;
+  if (record.issue !== issue || record.runId !== runId) return null;
+  const sha = typeof record.sha === "string" ? record.sha : "";
+  return SHA_RE.test(sha) && record.ref === evidenceRef(issue, sha, runId) ? sha : null;
 }
 
 // The comment's line that names its run (composeComment's head).
@@ -298,12 +313,14 @@ export function postMacosRun({
   const comments = readIssueComments(gh, issue);
   if (comments === null)
     throw new Refusal(`reading #${issue}'s comments failed (gh api): run again`);
-  const commit = sha || scenarioShaFrom(comments);
+  const out = path.join(runDir, UPLOAD_FILE);
+  // The commit an earlier --yes of this run resolved comes before the issue's
+  // newest marker, so priorUpload and the comment keep naming the commit the
+  // run tested even after a newer head's scenario was posted.
+  const commit = sha || recordedSha(readUpload(out), { issue, runId }) || scenarioShaFrom(comments);
   if (!commit) {
     throw new Refusal(`no scenario-sha marker on #${issue}'s comments: pass --sha <40-hex>`);
   }
-
-  const out = path.join(runDir, UPLOAD_FILE);
 
   // Already on the issue: --yes only records it, never posts a second one.
   // Before the upload gate: recording publishes nothing, so a gate closed

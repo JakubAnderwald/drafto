@@ -1121,14 +1121,41 @@ describe("upload is idempotent per issue + head + run", () => {
     assert.equal(fx.ocr.seen.length, scanned);
     assert.deepEqual(readJsonFile(fx.out), firstRecord);
 
-    // upload.json lost: the commit already on the run's ref is reused.
+    // upload.json lost: the commit already on the run's ref is reused, before
+    // anything local is read or scanned again.
     rmSync(fx.out);
     const third = await upload(fx);
     assert.equal(third.ok, true);
     assert.equal(third.commit, first.commit);
+    assert.equal(third.reused, true);
     assert.equal(fx.pushes(), 1);
-    assert.deepEqual(readJsonFile(fx.out).images, firstRecord.images);
+    assert.equal(fx.ocr.seen.length, scanned);
+    const urls = (images) => images.map(({ n, url }) => ({ n, url }));
+    assert.deepEqual(urls(readJsonFile(fx.out).images), urls(firstRecord.images));
     assert.equal(evidenceRefs(fx.origin).length, 1);
+
+    // Lost again, and this time the run's guard log, screenshots and OCR
+    // helper are gone too: the published images are still what it posts.
+    rmSync(fx.out);
+    rmSync(fx.guardLog);
+    rmSync(fx.evidenceDir, { recursive: true, force: true });
+    const fourth = await upload(fx, { "account-file": join(fx.root, "gone.env") }, { ocr: null });
+    assert.equal(fourth.ok, true);
+    assert.equal(fourth.commit, first.commit);
+    assert.equal(fourth.images, firstRecord.images.length);
+    assert.equal(fourth.reused, true);
+    assert.equal(fx.pushes(), 1);
+  });
+
+  it("fails closed, without reading anything local, when GitHub can't say whether the run is published", async () => {
+    const fx = uploadFixture();
+    const offline = (args, opts) =>
+      args.includes("ls-remote") ? { code: 128, stdout: "", stderr: "" } : fx.git(args, opts);
+    const summary = await upload(fx, {}, { git: offline });
+    assert.equal(summary.ok, false);
+    assert.equal(summary.reason, "remote");
+    assert.equal(fx.ocr.seen.length, 0);
+    assertNothingPushed(fx);
   });
 
   it("priorUpload says what a retry posts: upload.json, else the ref, else nothing, never a guess", async () => {
@@ -1195,7 +1222,11 @@ describe("upload is idempotent per issue + head + run", () => {
     assert.equal(summary.commit, first.commit);
     assert.equal(other.pushes(), 0);
     assert.ok(other.calls.some((a) => a[0] === "fetch"));
-    assert.deepEqual(readJsonFile(out).images, readJsonFile(fx.out).images);
+    // Read back from the ref: the same URLs; the local paths are the other
+    // checkout's to know, not this record's.
+    const urls = (images) => images.map(({ n, url }) => ({ n, url }));
+    assert.deepEqual(urls(readJsonFile(out).images), urls(readJsonFile(fx.out).images));
+    assert.ok(readJsonFile(out).images.every((i) => i.local === null));
   });
 
   it("publishes a different run of the same head on its own ref", async () => {

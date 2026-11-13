@@ -44,6 +44,7 @@ import {
   postMacosRun,
   postedCommentFor,
   readResults,
+  recordedSha,
   scenarioShaFrom,
 } from "../lib/evidence-post.mjs";
 import {
@@ -1196,6 +1197,55 @@ describe("a retry after an earlier --yes", () => {
     assert.deepEqual(originRefs(t), [evidenceRef(ISSUE, SHA, RUN_ID)]);
     // Now posted.json answers.
     assertRefuses(() => t.post({ yes: true }), /already posted/);
+  });
+
+  it("keeps the commit an earlier --yes recorded, even once a newer head's scenario is on the issue", () => {
+    // The first --yes publishes for SHA, then its comment post fails.
+    const t = setup({ gh: { commentCode: 1 } });
+    let pushes = 0;
+    const counting = (args, opts) => {
+      if (args.includes("push")) pushes++;
+      return t.runGit(args, opts);
+    };
+    assertRefuses(
+      () => t.post({ yes: true, git: counting }),
+      /posting the comment failed \(gh issue comment\)/,
+    );
+    assert.equal(readJson(join(t.runDir, UPLOAD_FILE)).sha, SHA);
+
+    // By the retry, the card moved on: the issue's newest marker is OTHER_SHA.
+    const gh2 = fakeGh({ comments: [ownerComment(SHA), ownerComment(OTHER_SHA)] });
+    t.printed.length = 0;
+    assert.equal(t.post({ yes: true, git: counting, gh: gh2.gh }).posted, true);
+    assert.equal(pushes, 1, "the retry published again, for the newer head");
+    const commit = assertEvidenceCommit(t, SHA);
+    assertComment(gh2.posts[0].body, commit, { sha: SHA });
+    assert.equal(readJson(join(t.runDir, POSTED_FILE)).sha, SHA);
+  });
+
+  it("recordedSha reads only this run's own record", () => {
+    const record = {
+      ok: true,
+      issue: ISSUE,
+      sha: SHA,
+      runId: RUN_ID,
+      ref: evidenceRef(ISSUE, SHA, RUN_ID),
+    };
+    const at = { issue: ISSUE, runId: RUN_ID };
+    assert.equal(recordedSha(record, at), SHA);
+    // A failed push still recorded the commit the attempt resolved.
+    assert.equal(recordedSha({ ...record, ok: false, reason: "push" }, at), SHA);
+    for (const other of [
+      null,
+      "x",
+      { ok: false, reason: "off" },
+      { ...record, issue: "798" },
+      { ...record, runId: "macos-20261109-101010" },
+      { ...record, sha: "abc" },
+      { ...record, ref: evidenceRef(ISSUE, OTHER_SHA, RUN_ID) },
+    ]) {
+      assert.equal(recordedSha(other, at), null, JSON.stringify(other));
+    }
   });
 
   it("checks the issue before publishing anything, so a landed comment needs no git", () => {

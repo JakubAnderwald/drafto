@@ -37,7 +37,7 @@ Publish a test run's screenshots as git objects in this repo, and embed them in 
    - **The `intest` kind's report.** Each image goes under the result-table row that mentions it: image k is the runner's "screenshot k". A step with one image shows it inline; a step with several gets a collapsed `<details>`. Images no row mentions go under "Other screenshots".
    - **The verification report's Web lane.** The browser lane's screenshots go inside that lane's `<details>`, under their steps, and are never cut when the lane's text is truncated. Only a lane that reported shows any. The renderer is keyed by lane, so a device lane can add its own later; ADR-0053 decision 8 still defers those lanes. The `verify` kind publishes nothing at run time. Its screenshots are published when the verification report is composed.
    - **macOS harness runs, only by the operator.** `node scripts/lib/evidence-post.mjs macos --run-dir <dir> --issue <n>` lists what it would publish. Only `--yes` publishes and posts one comment (`<!-- drafto-factory-macos-run-report -->`). The factory never runs it.
-   - **Never the shell lane's output.** That lane is a claude session with Bash. It can write any bytes into its run directory, so nothing there has provenance.
+   - **Never the shell lane's image files.** That lane is a claude session with Bash. It can write any bytes into its run directory, so nothing there has provenance. Its text still goes into the verification report, after the same secret scan as every lane's.
    - **Never the `plan` kind's.** The probe report keeps its screenshots on the Mac mini, as ADR-0071 says.
 
 3. **The checks, for every image** (`evidence-images.mjs`):

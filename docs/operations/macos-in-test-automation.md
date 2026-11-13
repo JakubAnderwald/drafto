@@ -96,7 +96,7 @@ Only files in `shots/` named `NN-<label>.png` are considered, so `preflight-wind
 
 Flags:
 
-- `--sha <40-hex>`: the commit the run tested. The default is the newest `drafto-factory-scenario-sha` marker on the issue's own (OWNER) comments.
+- `--sha <40-hex>`: the commit the run tested. The default is the commit an earlier `--yes` of the same run recorded in its `upload.json`, so a retry keeps naming the commit the run tested even after a newer head's scenario was posted. Without one, it's the newest `drafto-factory-scenario-sha` marker on the issue's own (OWNER) comments.
 - `--log-dir <dir>`: where the factory keeps `evidence-selftest.json`. The default is `<repo-root>/logs/factory`, where `<repo-root>` is the checkout the script is in (`--repo-root` overrides it). So run it from the factory checkout, or pass `--log-dir /Volumes/DraftoFactory/drafto-factory/logs/factory`.
 - `--ocr <bin>`: the OCR helper. The default is `<log-dir>/bin/ocr`, else the harness's own `apps/desktop/e2e/in-test/bin/ocr`.
 

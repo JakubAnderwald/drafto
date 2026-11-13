@@ -1014,10 +1014,10 @@ Fixed in the code: at most 20 images and 20 MB per comment, 5 MB per image, `.pn
 
 **If it found a Vercel deployment** (`reason: "vercel-deployment"`), every published run would start a Vercel build. Uploads are already refused while `ok` is `false`. To be sure, also set `FACTORY_EVIDENCE_UPLOAD=0` in the plist and reload. Then decide what to do. Vercel's settings, such as the Git integration and its Ignored Build Step, are hosted config that the factory never changes, so that's your call. After any change, run the selftest itself again: `--status 1` keeps a deployment it has once seen.
 
-**If GitHub rejected the ref** (`reason: "push"`), push the recorded commit by hand to see GitHub's message. The selftest itself never prints git's error output, because it can echo the remote's URL:
+**If GitHub rejected the ref** (`reason: "push"`), push the recorded commit by hand to see GitHub's message. The selftest itself never prints git's error output, because it can echo the remote's URL. Take `<commit>` and `<epoch>` from the record's `commit` and `ref`:
 
 ```bash
-git push origin <commit>:refs/factory-evidence/selftest/<epoch>   # both from the record
+git push origin <commit>:refs/factory-evidence/selftest/<epoch>
 ```
 
 If GitHub refuses the namespace itself, the fallback is a tag prefix, `refs/tags/factory-evidence/`. That's one constant, `EVIDENCE_REF_PREFIX` in `scripts/lib/evidence-upload.mjs`, changed in a PR, not a setting. ADR-0072 gives the cost: every evidence tag is listed on the repo's Tags page, and `git fetch --tags` downloads them all. Once it's merged, run the selftest again.
@@ -1028,8 +1028,10 @@ If GitHub refuses the namespace itself, the fallback is a tag prefix, `refs/tags
 cd /Volumes/DraftoFactory/drafto-factory
 mkdir -p logs/factory/bin
 swiftc -O -o logs/factory/bin/ocr apps/desktop/e2e/in-test/lib/ocr.swift
-logs/factory/bin/ocr <any.png>   # {"width":…,"height":…,"items":[{"text":…,…}]}
+logs/factory/bin/ocr <any.png>
 ```
+
+The last command prints one JSON line, `{"width":…,"height":…,"items":[{"text":…,…}]}`.
 
 ### What a run does
 
@@ -1076,11 +1078,11 @@ The report's footer gives the reason as a sentence. The tokens below are the `RE
 If a published image shows something it shouldn't:
 
 1. **Rotate the credential first.** Revoke the API key, change the test account's password (and update `~/drafto-secrets/browser-account.env`), or regenerate whatever it was. Deleting doesn't unpublish: raw.githubusercontent.com keeps serving a commit whose SHA is known until GitHub garbage-collects it, and GitHub's image proxy (camo) caches the image. Only GitHub Support can purge it sooner.
-2. **Delete the run's ref.** It's the `ref` in the run's `upload.json`:
+2. **Delete the run's ref.** It's the `ref` in the run's `upload.json`. The first command lists every evidence ref on GitHub, and the second deletes one:
 
    ```bash
-   git ls-remote origin 'refs/factory-evidence/*'                       # every evidence ref
-   git push origin :refs/factory-evidence/<issue>/<sha12>/<run-id>      # delete one
+   git ls-remote origin 'refs/factory-evidence/*'
+   git push origin :refs/factory-evidence/<issue>/<sha12>/<run-id>
    ```
 
 3. **Edit the comment** on the issue and remove its `<img>` tags.
