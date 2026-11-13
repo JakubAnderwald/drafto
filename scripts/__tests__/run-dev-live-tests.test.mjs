@@ -35,6 +35,7 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER = path.resolve(HERE, "..", "run-dev-live-tests.mjs");
 const LIVE_GUARD_TEST = path.resolve(HERE, "profile-privilege-guard.live.test.mjs");
+const LIVE_METRICS_TEST = path.resolve(HERE, "product-metrics.live.test.mjs");
 
 const DEV_REF = "huhzactreblzcogqkbsd";
 const PROD_REF = "tbmjbxxseonkciqovnpl";
@@ -149,7 +150,7 @@ function assertNoValues(text) {
 }
 
 describe("run-dev-live-tests CLI --dry-run", () => {
-  it("prints both commands and the env var names, and no value", () => {
+  it("prints every command and the env var names, and no value", () => {
     withFixture((fx) => {
       const r = runCli(fx, ["--dry-run"]);
       assert.equal(r.status, 0, r.stderr);
@@ -161,6 +162,10 @@ describe("run-dev-live-tests CLI --dry-run", () => {
       assert.match(
         r.stdout,
         /\[account-deletion\] pnpm --filter @drafto\/web exec vitest run __tests__\/integration\/account-deletion\.live\.test\.ts\n {6}sets NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, DRAFTO_LIVE_REQUIRED\n/,
+      );
+      assert.match(
+        r.stdout,
+        /\[metrics\] node --test scripts\/__tests__\/product-metrics\.live\.test\.mjs\n {6}sets NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, DRAFTO_LIVE_REQUIRED\n/,
       );
       for (const name of [
         "NEXT_PUBLIC_SUPABASE_URL",
@@ -382,6 +387,20 @@ describe("run-dev-live-tests CLI --dry-run", () => {
       },
       { envLocal: null },
     );
+  });
+
+  it("--only metrics plans the product-metrics live test with both keys", () => {
+    withFixture((fx) => {
+      const r = runCli(fx, ["--only", "metrics", "--dry-run"]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(
+        r.stdout,
+        /\[metrics\] node --test scripts\/__tests__\/product-metrics\.live\.test\.mjs/,
+      );
+      assert.doesNotMatch(r.stdout, /\[profile-guard\]|\[account-deletion\]/);
+      assert.match(r.stdout, /^ {2}NEXT_PUBLIC_SUPABASE_ANON_KEY {2}\(/m);
+      assertNoValues(r.all);
+    });
   });
 
   it("accepts the `--` pnpm may pass through, prints --help, and exits 2 on bad arguments", () => {
@@ -722,6 +741,14 @@ describe("live tests with DRAFTO_LIVE_REQUIRED", () => {
     return { ...r, all: `${r.stdout}\n${r.stderr}` };
   }
 
+  function runMetrics(extra) {
+    const r = spawnSync(process.execPath, ["--test", LIVE_METRICS_TEST], {
+      encoding: "utf8",
+      env: cleanEnv(extra),
+    });
+    return { ...r, all: `${r.stdout}\n${r.stderr}` };
+  }
+
   function runAccountDeletion(extra) {
     const r = spawnSync("pnpm", LIVE_TESTS["account-deletion"].args, {
       cwd: REPO_ROOT,
@@ -750,6 +777,34 @@ describe("live tests with DRAFTO_LIVE_REQUIRED", () => {
   it("profile guard: fails on a non-dev or plain-http URL without printing the keys", () => {
     for (const url of [`https://${PROD_REF}.supabase.co`, `http://${DEV_REF}.supabase.co`]) {
       const r = runGuard({
+        DRAFTO_LIVE_REQUIRED: "1",
+        NEXT_PUBLIC_SUPABASE_URL: url,
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_KEY,
+        SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+      });
+      assert.notEqual(r.status, 0, r.all);
+      assert.match(
+        r.all,
+        /Missing or wrong: NEXT_PUBLIC_SUPABASE_URL \(not https:\/\/huhzactreblzcogqkbsd\.supabase\.co\)(?!, )/,
+      );
+      assertNoValues(r.all);
+    }
+  });
+
+  it("metrics: skips without the flag, fails naming the variables with it", () => {
+    const skipped = runMetrics({});
+    assert.equal(skipped.status, 0, skipped.all);
+    assert.match(skipped.all, /SKIP|skipped/i);
+
+    const failed = runMetrics({ DRAFTO_LIVE_REQUIRED: "1" });
+    assert.notEqual(failed.status, 0, failed.all);
+    assert.match(
+      failed.all,
+      /DRAFTO_LIVE_REQUIRED=1, but the live test can't run\. Missing or wrong: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY/,
+    );
+
+    for (const url of [`https://${PROD_REF}.supabase.co`, `http://${DEV_REF}.supabase.co`]) {
+      const r = runMetrics({
         DRAFTO_LIVE_REQUIRED: "1",
         NEXT_PUBLIC_SUPABASE_URL: url,
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_KEY,

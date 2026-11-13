@@ -40,14 +40,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { isMainModule } from "./lib/is-main.mjs";
-import { SERVICE_KEYS_TXT, serviceKeyFromText } from "./lib/service-keys-txt.mjs";
+import { PROJECTS, defaultKeysTxtPath, readServiceKey } from "./lib/service-keys-txt.mjs";
 import { parseEnvFile } from "./lib/verify-lane.mjs";
 import { UNATTENDED_VAR } from "./run-dev-live-tests.mjs";
 
-export const PROJECTS = Object.freeze({
-  prod: { ref: "tbmjbxxseonkciqovnpl", tag: "PROD" },
-  dev: { ref: "huhzactreblzcogqkbsd", tag: "DEV" },
-});
+export { PROJECTS };
 export const BUCKET = "attachments"; // packages/shared/src/constants.ts BUCKET_NAME
 // Every public table keyed to a user. note_content_history has no FK to
 // auth.users, so the cascade reaches it only through notes.
@@ -80,7 +77,7 @@ export function parseArgs(argv) {
     execute: false,
     notify: false,
     reason: null,
-    keysTxt: path.join(homedir(), "drafto-secrets", SERVICE_KEYS_TXT),
+    keysTxt: defaultKeysTxtPath(),
     resendEnv: path.join(homedir(), "drafto-secrets", "account-approval-secrets.env"),
     emails: [],
     help: false,
@@ -394,9 +391,7 @@ async function runOne(opts, { admin, sendEmail, log }, email, id) {
 }
 
 function readKeys(opts, env) {
-  const { tag, ref } = PROJECTS[opts.project];
-  const serviceKey = serviceKeyFromText(readFileSync(opts.keysTxt, "utf8"), tag);
-  if (!serviceKey) throw new Error(`no ${tag}: line in ${opts.keysTxt}`);
+  const { ref, serviceKey } = readServiceKey({ project: opts.project, keysTxt: opts.keysTxt });
   let resendKey = null;
   // A dry run never sends, so it doesn't need the Resend key.
   if (opts.notify && opts.execute) {
