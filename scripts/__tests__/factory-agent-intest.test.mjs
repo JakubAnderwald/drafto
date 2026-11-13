@@ -344,6 +344,64 @@ describe("In Test sweep — scenario backfill and refresh", () => {
   });
 });
 
+// ADR-0078: the sweep ties migration-approved to the SQL too, so a voided label
+// comes off before the card is dragged to Approved.
+describe("In Test sweep — migration approval", () => {
+  const at = (s) => {
+    const i = sweepBlock.indexOf(s);
+    assert.ok(i !== -1, `missing: ${s}`);
+    return i;
+  };
+
+  it("reads the labels in the PR view it already fetches, not in a call of its own", () => {
+    assert.match(sweepBlock, /--json statusCheckRollup,comments,headRefOid,mergeable,labels/);
+    assert.equal(sweepBlock.split("gh pr view ").length - 1, 1);
+    assert.match(
+      sweepBlock,
+      /if INTEST_PR_LABELS=\$\(jq -er '\.labels \| map\(\.name\) \| join\(","\)' <<<"\$\{INTEST_PR_VIEW:-\}" 2>\/dev\/null\); then/,
+    );
+  });
+
+  it("vouches with the sweep's head and diff, after the conflict hand-back and before any beta", () => {
+    const vouch = at(
+      'migration_approval_vouch "$ISSUE_NUM" "$INTEST_PR_NUM" "$INTEST_HEAD_SHA" \\\n            "$INTEST_PR_LABELS" "$INTEST_FILES"',
+    );
+    assert.ok(at("INTEST_FILES=$(gh pr diff") < vouch);
+    assert.ok(at('conflict_handback "$ITEM_ID" "$ISSUE_NUM" "$INTEST_PR_NUM"') < vouch);
+    assert.ok(vouch < at("intest_check_lane_outcomes"));
+    assert.ok(vouch < at("intest_dispatch_betas"));
+    assert.equal(sweepBlock.split("migration_approval_vouch ").length - 1, 1);
+  });
+
+  it("skips it when the view has no labels, instead of reading them as removed", () => {
+    const start = at("        if INTEST_PR_LABELS=");
+    const end = sweepBlock.indexOf("        fi\n", start) + "        fi\n".length;
+    const run = (view) => {
+      const r = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+ISSUE_NUM=794; INTEST_PR_NUM=802; INTEST_HEAD_SHA=abc; INTEST_FILES=supabase/migrations/x.sql
+INTEST_PR_VIEW=${JSON.stringify(view)}
+migration_approval_vouch() { echo "VOUCH $1 $2 $3 [$4] $5"; }
+${sweepBlock.slice(start, end)}`,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    assert.equal(
+      run('{"labels":[{"name":"status:in-test"},{"name":"migration-approved"}]}'),
+      "VOUCH 794 802 abc [status:in-test,migration-approved] supabase/migrations/x.sql",
+    );
+    assert.equal(run('{"labels":[]}'), "VOUCH 794 802 abc [] supabase/migrations/x.sql");
+    assert.equal(run('{"headRefOid":"abc"}'), "");
+    assert.equal(run(""), "");
+  });
+});
+
 describe("intest_beta_gate (extracted from factory-agent.sh)", () => {
   // Exercise the real function with the knob globals set per case. free_disk_gb
   // is stubbed so the matrix doesn't depend on the machine's actual free space.

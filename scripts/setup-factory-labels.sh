@@ -57,7 +57,7 @@ LABELS=(
 
   # Operator gates.
   "factory-pause|D93F0B|Global kill switch — factory exits early when set."
-  "migration-approved|0052CC|Authorises factory to merge a PR with supabase/migrations changes."
+  "migration-approved|0052CC|Authorises merging this PR's migration SQL as it is when added; an SQL edit removes it."
   "hosted-config-applied|0052CC|Operator applied this PR's supabase/config.toml changes to dev and prod."
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."
 
