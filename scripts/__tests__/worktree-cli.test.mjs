@@ -725,7 +725,7 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
   // ADR-0077: #802 and #829 both added 20261111000001. Merging main into the
   // second is clean for git and red for CI, so the conflict pass must see it.
   it("reports a migration-order error that git merged without a conflict", () => {
-    const wt = prWorktree(209, {
+    const wt = prWorktree(211, {
       "supabase/migrations/20261111000001_storage_quota.sql": "select 1;\n",
     });
     const mainSha = advanceMain({
@@ -745,7 +745,7 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
   });
 
   it("reports no migration errors for a merge whose migrations sort after main's", () => {
-    const wt = prWorktree(210, {
+    const wt = prWorktree(212, {
       "supabase/migrations/20991231000001_later.sql": "select 1;\n",
     });
     advanceMain({ "supabase/migrations/20261112000001_main.sql": "select 2;\n" });
