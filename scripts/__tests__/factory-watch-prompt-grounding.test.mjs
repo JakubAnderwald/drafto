@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatFinding } from "../lib/check-migration-order.mjs";
 
 // Mirrors factory-plan-prompt-grounding.test.mjs (item 1, screenshots) for the
 // watcher prompt. The screenshot capability shipped for the planner (#554) was
@@ -113,8 +114,9 @@ describe("watcher prompt — migration order (ADR 0057)", () => {
     assert.match(flat, /run `git fetch origin main` before `pnpm migration:check`/);
   });
 
-  it("names the check's error and the full renumber recipe", () => {
-    assert.match(flat, /`new migration version <v> is not newer than <base>'s newest migration`/);
+  // The error wordings themselves are pinned by "quotes each order error the
+  // check prints", built from the check's formatter.
+  it("names the full renumber recipe", () => {
     assert.match(flat, /`git grep <old version>`/);
     assert.match(flat, /`fix: renumber migration after main moved`/);
   });
@@ -129,7 +131,7 @@ describe("watcher prompt — migration order (ADR 0057)", () => {
   // With a stale origin/main, a migration main already has looks "added" to the
   // check. Renaming it would rewrite applied history, so only the PR's own files move.
   it("renames only files in the PR's own changed files, else fetches, else blocks", () => {
-    assert.match(flat, /`gh pr view <n> --repo JakubAnderwald\/drafto --json files`/);
+    assert.match(flat, /`gh pr diff <n> --repo JakubAnderwald\/drafto --name-only`/);
     assert.match(flat, /\*\*Every file you rename must be in that list\.\*\*/);
     assert.match(
       flat,
@@ -140,6 +142,88 @@ describe("watcher prompt — migration order (ADR 0057)", () => {
       /If a flagged file is still not one of the PR's own, rename nothing and emit `action=blocked`/,
     );
     assert.match(flat, /never renumber a migration main already has/);
+  });
+
+  // #802 and #829 both added 20261111000001. The second to merge gets
+  // `duplicate-base`, not `stale`, so a recipe that quotes only the stale wording
+  // leaves the fix loop without a match for the error it actually sees. The
+  // quotes are built from the check's own formatter so they can't drift from it.
+  it("quotes each order error the check prints, word for word", () => {
+    const message = (reason) =>
+      formatFinding(
+        {
+          kind: "error",
+          reason,
+          file: "20260101000001_example.sql",
+          version: "<v>",
+          baseMax: "<newest>",
+          others: ["<file>"],
+        },
+        { dir: "supabase/migrations", ref: "<base>" },
+      ).split("\t")[2];
+    for (const [reason, quoted] of [
+      ["stale", "new migration version <v> is not newer than <base>'s newest migration"],
+      ["duplicate-base", "new migration version <v> is already used by <file>, which <base> has"],
+      ["duplicate", "version <v> is also used by <file>"],
+    ]) {
+      assert.ok(
+        message(reason).startsWith(quoted),
+        `${reason}: the check prints "${message(reason)}"`,
+      );
+      assert.ok(flat.includes(`\`${quoted}\``), `the prompt must quote the ${reason} error`);
+    }
+  });
+
+  // PR #802 has exactly 100 changed files, and `gh pr view --json files` stops
+  // there: its two migrations were missing from that list, so the recipe would
+  // have blocked on the PR's own files. `gh pr diff --name-only` isn't capped at
+  // 100, but it reads the whole diff, which GitHub refuses (406) for a very large
+  // PR, so the paginated files API is the fallback.
+  it("lists the PR's files with gh pr diff, never --json files, with a fallback", () => {
+    assert.match(
+      flat,
+      /`gh pr diff <n> --repo JakubAnderwald\/drafto --name-only` — list the PR's own changed files/,
+    );
+    assert.doesNotMatch(flat, /--repo JakubAnderwald\/drafto --json files/);
+    assert.match(flat, /GitHub refuses \(HTTP 406\) for a very large PR/);
+    assert.match(
+      flat,
+      /`gh api --paginate repos\/JakubAnderwald\/drafto\/pulls\/<n>\/files --jq '\.\[\]\.filename'`/,
+    );
+  });
+
+  // With `duplicate-base`, main's migration has the same version, so a blanket
+  // `git grep <old version>` edit would also rewrite main's references.
+  it("updates only the references the PR added", () => {
+    assert.match(
+      flat,
+      /update every reference \*\*the PR added\*\* to each old version or file name/,
+    );
+    assert.match(
+      flat,
+      /main's file and main's references to it carry that version too and must not change/,
+    );
+    assert.match(flat, /`git diff origin\/main\.\.\.HEAD`/);
+  });
+
+  // The conflict pass never pushes (bash pushes a checked resolution), so the
+  // recipe's "commit ... and push" can't apply there as written. The renumber is
+  // its own commit on top of the merge, which also works when git committed the
+  // merge itself (an ADR-only pass). It fetches nothing, so the check and the
+  // PR-side diff stay on the main being merged. And it posts no PR comment,
+  // because bash may still roll the pass back.
+  it("renumbers on a conflict pass without pushing, fetching or commenting", () => {
+    assert.match(flat, /Leave a migration order error for the end of step 6/);
+    assert.match(
+      flat,
+      /Commit the renames and reference updates as a commit of their own on top of the merge, `fix: renumber migration after main moved`, and don't push/,
+    );
+    assert.match(
+      flat,
+      /\*\*Don't run `git fetch` at all\.\*\* Bash fetched `origin\/main` for this merge/,
+    );
+    assert.match(flat, /\*\*Post no PR comment\.\*\* Bash may still roll the pass back/);
+    assert.doesNotMatch(flat, /"Migration order", applies as written/);
   });
 
   it("blocks on an order error the check can't give a git mv for", () => {
