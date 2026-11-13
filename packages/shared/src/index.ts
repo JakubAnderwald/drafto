@@ -28,7 +28,25 @@ export {
   SIGNUP_EMAIL_REDIRECT_URL,
   SIGNUP_CONFIRMATION_SENT,
   EMAIL_CONFIRMED,
+  DRAFTO_CLIENT_TAGS,
+  ACTIVITY_QUEUE_MAX_DAYS,
+  RECORD_ACTIVITY_MAX_DAYS,
 } from "./constants";
+export type { DraftoClientTag } from "./constants";
+export {
+  utcDay,
+  isUtcDay,
+  normalizeActivityQueue,
+  addDay,
+  withoutSent,
+  isDraftoClientTag,
+} from "./activity/activity-days";
+export { recordActivity } from "./activity/record-activity";
+export type {
+  ActivityRpcClient,
+  ActivityRpcResponse,
+  RecordActivityOutcome,
+} from "./activity/record-activity";
 export {
   ACCOUNT_DELETION_PATH,
   APPLE_NATIVE_CLIENT_ID,

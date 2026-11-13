@@ -27,3 +27,21 @@ export const SIGNUP_CONFIRMATION_SENT =
   "If this address is new to Drafto, we've sent it a link to confirm your account. Open the link, then log in. If you already have an account, just log in.";
 // The web login page's notice for `?confirmed=1`, where that confirmation link lands.
 export const EMAIL_CONFIRMED = "Email confirmed. Log in to continue, here or in the Drafto app.";
+
+// The `x-drafto-client` tags (ADR 0023), one per client. `usage_daily.client`
+// (20261113000003_usage_daily.sql) mirrors this list in its check constraint,
+// and record_activity rejects any other tag; packages/shared's
+// client-tags-drift test keeps the two in step.
+export const DRAFTO_CLIENT_TAGS = [
+  "web",
+  "mobile-ios",
+  "mobile-android",
+  "desktop-macos",
+  "web-mcp",
+] as const;
+export type DraftoClientTag = (typeof DRAFTO_CLIENT_TAGS)[number];
+// Activity days (ADR 0080): how many UTC days a device keeps queued while it
+// can't reach the server (the newest are kept), and how many record_activity
+// accepts per call. The server also ignores days more than 30 days back.
+export const ACTIVITY_QUEUE_MAX_DAYS = 30;
+export const RECORD_ACTIVITY_MAX_DAYS = 31;

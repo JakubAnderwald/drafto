@@ -5,6 +5,11 @@
 // saves, so it covers the week buckets, the 14-day window, the retention nulls
 // and the 24-hour emptying rule.
 //
+// The activity-days migration (20261113000003_usage_daily.sql, ADR 0080) runs
+// after them, because it re-creates metrics_activation over the per-user
+// metrics_cohort_activation: every activation case below runs against that
+// definition. Its own functions are tested in usage-daily.test.mjs.
+//
 // The stand-ins carry only the columns the functions read, with the grants the
 // real projects give the API roles (20261020000001_explicit_data_api_grants.sql,
 // and Supabase's own on storage.objects). auth.users gets no grant here, so the
@@ -25,9 +30,11 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const MIGRATIONS = ["20261112000001_note_text_chars.sql", "20261112000002_product_metrics.sql"].map(
-  (f) => path.join(REPO_ROOT, "supabase", "migrations", f),
-);
+const MIGRATIONS = [
+  "20261112000001_note_text_chars.sql",
+  "20261112000002_product_metrics.sql",
+  "20261113000003_usage_daily.sql",
+].map((f) => path.join(REPO_ROOT, "supabase", "migrations", f));
 
 const STUB_SQL = `
 create role anon;
@@ -44,6 +51,10 @@ create table auth.users (
   created_at timestamptz not null default now(),
   raw_app_meta_data jsonb
 );
+-- Supabase's auth.uid(), which record_activity (20261113000003) reads.
+create function auth.uid() returns uuid
+language sql stable
+as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 
 create schema storage;
 grant usage on schema storage to anon, authenticated, service_role;
@@ -434,6 +445,7 @@ describe("product metrics: excluded accounts, sign-ups, activation and writers (
   });
 
   describe("permissions", () => {
+    // SECURITY INVOKER, service_role only.
     const FUNCTIONS = [
       "note_text_chars(jsonb)",
       "metrics_excluded_user_ids()",
@@ -445,26 +457,40 @@ describe("product metrics: excluded accounts, sign-ups, activation and writers (
       "metrics_emptied_notes(timestamptz, timestamptz)",
       "metrics_depth()",
       "metrics_platform_limits()",
+      "metrics_cohort_activation(int)",
+      "metrics_active_users(int)",
+      "metrics_retention(int)",
     ];
+    // The activity-days writers (20261113000003): SECURITY DEFINER, since
+    // neither caller may write usage_daily itself. record_activity is for
+    // signed-in users only; the rollup for service_role (and pg_cron).
+    const DEFINER_FUNCTIONS = {
+      "record_activity(date[], text)": { authenticated: true, service_role: false },
+      "rollup_usage_daily(date)": { authenticated: false, service_role: true },
+    };
 
-    it("lets only service_role execute every function", async () => {
+    async function privileges(fn) {
+      const { rows } = await db.query(
+        `select
+           has_function_privilege('anon', $1, 'execute') as anon,
+           has_function_privilege('authenticated', $1, 'execute') as authenticated,
+           has_function_privilege('service_role', $1, 'execute') as service_role,
+           exists (
+             select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+              where x.grantee = 0 and x.privilege_type = 'EXECUTE'
+           ) as public,
+           p.prosecdef as definer,
+           p.proconfig as config
+         from pg_proc p where p.oid = $1::regprocedure`,
+        [`public.${fn}`],
+      );
+      return rows[0];
+    }
+
+    it("lets only service_role execute every metrics function", async () => {
       for (const fn of FUNCTIONS) {
-        const { rows } = await db.query(
-          `select
-             has_function_privilege('anon', $1, 'execute') as anon,
-             has_function_privilege('authenticated', $1, 'execute') as authenticated,
-             has_function_privilege('service_role', $1, 'execute') as service_role,
-             exists (
-               select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
-                where x.grantee = 0 and x.privilege_type = 'EXECUTE'
-             ) as public,
-             p.prosecdef as definer,
-             p.proconfig as config
-           from pg_proc p where p.oid = $1::regprocedure`,
-          [`public.${fn}`],
-        );
         assert.deepEqual(
-          rows[0],
+          await privileges(fn),
           {
             anon: false,
             authenticated: false,
@@ -478,6 +504,22 @@ describe("product metrics: excluded accounts, sign-ups, activation and writers (
       }
     });
 
+    it("runs the activity-days writers as definer, each for its one caller", async () => {
+      for (const [fn, callers] of Object.entries(DEFINER_FUNCTIONS)) {
+        assert.deepEqual(
+          await privileges(fn),
+          {
+            anon: false,
+            public: false,
+            definer: true,
+            config: ["search_path=public, pg_catalog"],
+            ...callers,
+          },
+          fn,
+        );
+      }
+    });
+
     it("creates no other public function", async () => {
       const oids = async (sql, params) => (await db.query(sql, params)).rows.map((r) => r.oid);
       const created = await oids(
@@ -485,7 +527,7 @@ describe("product metrics: excluded accounts, sign-ups, activation and writers (
            join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'`,
       );
       const listed = [];
-      for (const fn of FUNCTIONS) {
+      for (const fn of [...FUNCTIONS, ...Object.keys(DEFINER_FUNCTIONS)]) {
         listed.push(...(await oids("select $1::regprocedure::oid::text as oid", [`public.${fn}`])));
       }
       assert.deepEqual(created.sort(), listed.sort());
@@ -498,6 +540,8 @@ describe("product metrics: excluded accounts, sign-ups, activation and writers (
           for (const sql of [
             "select * from public.metrics_depth()",
             "select * from public.metrics_signups(1)",
+            "select * from public.metrics_active_users(1)",
+            "select * from public.metrics_retention(1)",
             "select public.note_text_chars('{}'::jsonb)",
             "select * from public.metrics_excluded_users",
           ]) {

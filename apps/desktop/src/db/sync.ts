@@ -6,7 +6,8 @@ import type { SyncPullResult } from "@nozbe/watermelondb/sync";
 import { isVisibleRemoteChange } from "@drafto/shared";
 import type { Database } from "@drafto/shared";
 
-import { supabase } from "@/lib/supabase";
+import { flushActivityDays, markAppOpened } from "@/db/activity-days";
+import { clientTag, supabase } from "@/lib/supabase";
 
 type NotebookRow = Database["public"]["Tables"]["notebooks"]["Row"];
 type NoteRow = Database["public"]["Tables"]["notes"]["Row"];
@@ -406,7 +407,7 @@ export interface SyncResult {
   remoteChangeCount: number;
 }
 
-async function runSync(db: WMDatabase): Promise<SyncResult> {
+async function runSync(db: WMDatabase, opened: Promise<void>): Promise<SyncResult> {
   let remoteChangeCount = 0;
 
   try {
@@ -432,7 +433,38 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
     throw error;
   }
 
+  // The activity ping (ADR-0080, docs/features/offline-sync.md) goes only
+  // after a sync got through, with every day queued since the last one. Both
+  // calls never reject; the catch is a backstop so a ping can never change
+  // the sync's result. A failed ping keeps its days for the next sync. The
+  // sync waits for it at most ACTIVITY_PING_MAX_WAIT_MS.
+  const ping = opened
+    .then(() => flushActivityDays(db, supabase, clientTag))
+    .catch((error: unknown) => console.warn("[Sync] Activity ping failed:", error));
+  await settleWithin(ping, ACTIVITY_PING_MAX_WAIT_MS);
+
   return { remoteChangeCount };
+}
+
+/**
+ * How long a sync waits for its activity ping before returning. A ping that
+ * hasn't answered by then carries on in the background, and its days stay
+ * queued until the server answers, so a stalled request can't hold the
+ * in-flight latch below and delay the next sync's push.
+ */
+export const ACTIVITY_PING_MAX_WAIT_MS = 10_000;
+
+/** Resolves once <task> settles or <ms> have passed, whichever comes first. */
+async function settleWithin(task: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([task, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Module-level in-flight coalesce. WatermelonDB forbids concurrent
@@ -464,11 +496,15 @@ export function resetSyncState(): void {
 }
 
 export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+  // Every sync attempt, offline ones included, counts as opening the app
+  // today (ADR-0080). Started before the latch check and not awaited here, so
+  // coalescing and resetSyncState work as before; runSync awaits it.
+  const opened = markAppOpened(db);
   if (inFlightSync) {
     return inFlightSync;
   }
   const generation = syncGeneration;
-  const pending = runSync(db);
+  const pending = runSync(db, opened);
   inFlightSync = pending;
   try {
     return await pending;

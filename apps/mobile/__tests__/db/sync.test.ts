@@ -1,6 +1,8 @@
 const mockSynchronize = jest.fn().mockResolvedValue(undefined);
 const mockSupabaseFrom = jest.fn();
 const mockSupabaseRpc = jest.fn();
+// The x-drafto-client tag; a getter so a test can switch platforms.
+let mockClientTag = "mobile-ios";
 
 jest.mock("@nozbe/watermelondb/sync", () => ({
   synchronize: (...args: unknown[]) => mockSynchronize(...args),
@@ -11,9 +13,17 @@ jest.mock("@/lib/supabase", () => ({
     from: (...args: unknown[]) => mockSupabaseFrom(...args),
     rpc: (...args: unknown[]) => mockSupabaseRpc(...args),
   },
+  get clientTag() {
+    return mockClientTag;
+  },
 }));
 
-import { syncDatabase, resetSyncState } from "@/db/sync";
+import {
+  ACTIVITY_PING_MAX_WAIT_MS,
+  syncDatabase,
+  resetSyncState,
+  SyncNetworkError,
+} from "@/db/sync";
 
 const mockDb = {
   get: () => ({ query: () => ({ fetch: () => Promise.resolve([]) }) }),
@@ -324,5 +334,188 @@ describe("in-flight sync coalescing + resetSyncState", () => {
     await stale;
     await syncDatabase(mockDb);
     expect(mockSynchronize).toHaveBeenCalledTimes(3);
+  });
+});
+
+// Mirror of apps/desktop/__tests__/db/sync.test.ts's activity ping suite,
+// plus the tags only mobile has.
+describe("activity ping after a successful sync (ADR-0080)", () => {
+  const TODAY = "2026-11-13";
+  const TOMORROW = "2026-11-14";
+
+  /** A database whose WatermelonDB localStorage keeps JSON in memory. */
+  function makeDb() {
+    const store = new Map<string, string>();
+    return {
+      get: () => ({ query: () => ({ fetch: () => Promise.resolve([]) }) }),
+      localStorage: {
+        get: async (key: string): Promise<unknown> => {
+          const json = store.get(key);
+          return json === undefined ? undefined : JSON.parse(json);
+        },
+        set: async (key: string, value: unknown): Promise<void> => {
+          store.set(key, JSON.stringify(value));
+        },
+      },
+    } as unknown as Parameters<typeof syncDatabase>[0];
+  }
+
+  /** The record_activity calls made so far (get_server_time is the other RPC). */
+  function pings(): unknown[][] {
+    return mockSupabaseRpc.mock.calls.filter(([fn]) => fn === "record_activity");
+  }
+
+  function ping(days: string[], tag = "mobile-ios"): unknown[] {
+    return ["record_activity", { p_days: days, p_client: tag }];
+  }
+
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    // Fake only Date, so "today" is fixed while promises and timers run as usual.
+    jest.useFakeTimers({
+      now: new Date(`${TODAY}T10:00:00.000Z`),
+      doNotFake: [
+        "hrtime",
+        "nextTick",
+        "performance",
+        "queueMicrotask",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "requestIdleCallback",
+        "cancelIdleCallback",
+        "setImmediate",
+        "clearImmediate",
+        "setInterval",
+        "clearInterval",
+        "setTimeout",
+        "clearTimeout",
+      ],
+    });
+    jest.clearAllMocks();
+    mockSynchronize.mockReset();
+    mockSynchronize.mockResolvedValue(undefined);
+    mockSupabaseRpc.mockReset();
+    mockSupabaseRpc.mockResolvedValue({ data: null, error: null });
+    mockClientTag = "mobile-ios";
+    resetSyncState();
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    warnSpy.mockRestore();
+  });
+
+  it.each(["mobile-ios", "mobile-android"])(
+    "records today as %s once synchronize() has succeeded",
+    async (tag) => {
+      mockClientTag = tag;
+
+      await expect(syncDatabase(makeDb())).resolves.toEqual({ remoteChangeCount: 0 });
+
+      expect(pings()).toEqual([ping([TODAY], tag)]);
+      expect(mockSupabaseRpc.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mockSynchronize.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it("sends nothing while syncs fail, then every queued day with the next one that succeeds", async () => {
+    const db = makeDb();
+    mockSynchronize.mockRejectedValueOnce(new Error("Network request failed"));
+    await expect(syncDatabase(db)).rejects.toThrow(SyncNetworkError);
+
+    jest.setSystemTime(new Date(`${TOMORROW}T08:00:00.000Z`));
+    const original = new Error("Some database error");
+    mockSynchronize.mockRejectedValueOnce(original);
+    await expect(syncDatabase(db)).rejects.toBe(original);
+    expect(pings()).toEqual([]);
+
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    expect(pings()).toEqual([ping([TODAY, TOMORROW])]);
+  });
+
+  it("doesn't fail the sync when the ping fails, and the next sync sends it again", async () => {
+    const db = makeDb();
+    mockSupabaseRpc.mockResolvedValueOnce({ data: null, error: { message: "permission denied" } });
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+
+    mockSupabaseRpc.mockRejectedValueOnce(new Error("Network request failed"));
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+
+    await syncDatabase(db);
+    await syncDatabase(db);
+    expect(pings()).toEqual([ping([TODAY]), ping([TODAY]), ping([TODAY])]);
+  });
+
+  it("pings once a day, and again on the next UTC day", async () => {
+    const db = makeDb();
+    await syncDatabase(db);
+    await syncDatabase(db);
+    expect(pings()).toEqual([ping([TODAY])]);
+
+    jest.setSystemTime(new Date(`${TOMORROW}T00:05:00.000Z`));
+    await syncDatabase(db);
+    expect(pings()).toEqual([ping([TODAY]), ping([TOMORROW])]);
+  });
+
+  it("returns without waiting for a ping that never answers, and keeps its days", async () => {
+    // Fake setTimeout too, so the wait limit passes at once.
+    jest.useFakeTimers({
+      now: new Date(`${TODAY}T10:00:00.000Z`),
+      doNotFake: [
+        "hrtime",
+        "nextTick",
+        "performance",
+        "queueMicrotask",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "requestIdleCallback",
+        "cancelIdleCallback",
+        "setImmediate",
+        "clearImmediate",
+        "setInterval",
+        "clearInterval",
+      ],
+    });
+    const db = makeDb();
+    mockSupabaseRpc.mockImplementationOnce(() => new Promise(() => {}));
+
+    const first = syncDatabase(db);
+    await jest.advanceTimersByTimeAsync(ACTIVITY_PING_MAX_WAIT_MS);
+    await expect(first).resolves.toEqual({ remoteChangeCount: 0 });
+
+    // The latch is free, so the next sync runs its own synchronize(), and the
+    // unanswered day is still queued, so it goes again.
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    expect(mockSynchronize).toHaveBeenCalledTimes(2);
+    expect(pings()).toEqual([ping([TODAY]), ping([TODAY])]);
+  });
+
+  it("makes one synchronize() and one ping for coalesced concurrent callers", async () => {
+    const db = makeDb();
+    let release!: () => void;
+    mockSynchronize.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (release = () => resolve(undefined))),
+    );
+
+    const p1 = syncDatabase(db);
+    const p2 = syncDatabase(db);
+    release();
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(r2);
+    expect(mockSynchronize).toHaveBeenCalledTimes(1);
+    expect(pings()).toEqual([ping([TODAY])]);
+  });
+
+  it("syncs without pinging on a build whose tag usage_daily doesn't accept", async () => {
+    mockClientTag = "mobile";
+
+    await expect(syncDatabase(makeDb())).resolves.toEqual({ remoteChangeCount: 0 });
+
+    expect(mockSynchronize).toHaveBeenCalledTimes(1);
+    expect(pings()).toEqual([]);
   });
 });

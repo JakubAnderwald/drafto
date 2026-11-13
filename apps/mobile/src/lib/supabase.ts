@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 
-import type { Database } from "@drafto/shared";
+import type { Database, DraftoClientTag } from "@drafto/shared";
 
 import { installCryptoDigest } from "@/lib/crypto-digest";
 import { installCryptoRandom } from "@/lib/crypto-random";
@@ -29,8 +29,9 @@ if (!supabaseUrl || !supabaseAnonKey) {
 // platform did a write (see ADR 0023). Platform.OS is "ios" | "android" |
 // "web" — the mobile app ships only on iOS and Android, so anything
 // unexpected falls back to a generic "mobile" tag rather than silently
-// emitting a NULL.
-const clientTag =
+// emitting a NULL. Exported for the activity ping (ADR-0080), which sends the
+// same tag; usage_daily doesn't accept "mobile", so that fallback never pings.
+export const clientTag: DraftoClientTag | "mobile" =
   Platform.OS === "ios" ? "mobile-ios" : Platform.OS === "android" ? "mobile-android" : "mobile";
 
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {

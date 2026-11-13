@@ -2,9 +2,10 @@
 // Prints Drafto's product metrics for an operator: `pnpm users:stats`.
 //
 // Every number comes from the service-role SQL functions in
-// supabase/migrations/20261112000002_product_metrics.sql (ADR 0075); this
-// script only calls them and lays the rows out. Definitions:
-// docs/features/product-metrics.md.
+// supabase/migrations/20261112000002_product_metrics.sql (ADR 0075) and
+// 20261113000003_usage_daily.sql (active users and retention, read from the
+// activity days of ADR 0080); this script only calls them and lays the rows
+// out. Definitions: docs/features/product-metrics.md.
 //
 // Read-only. Each function is called with GET /rest/v1/rpc/<name>, which
 // PostgREST runs in a read-only transaction, and the functions are STABLE, so
@@ -35,20 +36,24 @@ export const MAX_WEEKS = 104;
 const DAY_MS = 86_400_000;
 const MB = 1024 * 1024;
 
-// The client tags ADR 0023 defines that write notes, in column order.
-export const CLIENT_COLUMNS = Object.freeze([
+// The client tags ADR 0023 defines, in column order: DRAFTO_CLIENT_TAGS in
+// packages/shared, which this plain-node script can't import.
+export const ACTIVE_CLIENT_COLUMNS = Object.freeze([
   "web",
   "mobile-ios",
   "mobile-android",
   "desktop-macos",
   "web-mcp",
-  "untagged",
 ]);
+// The writers table adds a column for writes that carried no tag.
+export const CLIENT_COLUMNS = Object.freeze([...ACTIVE_CLIENT_COLUMNS, "untagged"]);
 
 // What the script reads, in report order: the JSON key and the SQL function.
 export const METRICS = Object.freeze([
   { key: "signups", fn: "metrics_signups" },
   { key: "activation", fn: "metrics_activation" },
+  { key: "retention", fn: "metrics_retention" },
+  { key: "activeUsers", fn: "metrics_active_users" },
   { key: "writers", fn: "metrics_writers" },
   { key: "emptiedNotes", fn: "metrics_emptied_notes" },
   { key: "depth", fn: "metrics_depth" },
@@ -133,6 +138,8 @@ export function metricParams({ weeks, now }) {
   return {
     signups: { p_weeks: weeks },
     activation: { p_weeks: weeks },
+    retention: { p_weeks: weeks },
+    activeUsers: { p_weeks: weeks },
     writers: { p_weeks: weeks },
     emptiedNotes: { p_since: since },
     depth: {},
@@ -310,6 +317,44 @@ function activationSection(rows) {
   );
 }
 
+const pct = (v) => (v === null || v === undefined ? null : `${fixed(v)}%`);
+
+function retentionSection(rows) {
+  return formatTable(
+    ["Cohort", "Starts", "Activated", "Week 1", "Week 1 %", "Week 4", "Week 4 %"],
+    rows.map((r) => [
+      r.iso_week,
+      r.week_start,
+      // As in the activation table: past the history retention, nobody can
+      // tell who activated.
+      r.activated === null ? "n/a" : r.activated,
+      r.active_week1,
+      pct(r.pct_week1),
+      r.active_week4,
+      pct(r.pct_week4),
+    ]),
+  );
+}
+
+function activeUsersSection(rows) {
+  const clients = columnsFor(
+    rows.map((r) => r.by_client),
+    ACTIVE_CLIENT_COLUMNS,
+    { always: true },
+  );
+  return formatTable(
+    ["Week", "Starts", "Active", "Writers", ...clients, "Status"],
+    rows.map((r) => [
+      r.iso_week,
+      r.week_start,
+      r.active_users,
+      r.writers,
+      ...clients.map((c) => r.by_client?.[c] ?? 0),
+      r.week_complete ? "complete" : "in progress",
+    ]),
+  );
+}
+
 function writersSection(rows) {
   const clients = columnsFor(
     rows.map((r) => r.by_client),
@@ -354,7 +399,6 @@ function depthSection(d) {
       ["Attachments (MB)", fixed(d.attachment_mb_median, 2), fixed(d.attachment_mb_max, 2)],
     ],
   );
-  const pct = (v) => (v === null || v === undefined ? null : `${fixed(v)}%`);
   const shares = formatTable(
     ["Share of writers", "%"],
     [
@@ -380,6 +424,16 @@ const SECTIONS = [
     "activation",
     "Activation by sign-up week (first value: a 50+ character version within 14 days; activated: on 2+ days)",
     activationSection,
+  ],
+  [
+    "retention",
+    "Retention by sign-up week (activated users seen again 7-13 and 28-34 days after sign-up; – while a window is open or started before activity days were recorded)",
+    retentionSection,
+  ],
+  [
+    "activeUsers",
+    "Active users per ISO week (opened Drafto on 1+ UTC day), writers among them (content changes from the nightly rollup, so not today's) and by client",
+    activeUsersSection,
   ],
   ["writers", "Writers per ISO week, overall and by client tag", writersSection],
   [

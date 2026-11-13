@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped **Updated:** 2026-10-25
+**Status:** shipped **Updated:** 2026-11-13
 
 ## What it is
 
@@ -242,7 +242,7 @@ Every platform uses the same copy: the "Delete account" label, the warning "This
   - `AppMenu` hosts the whole sidebar through a render prop (`trigger`, `onAnchorLayout`) and renders its transparent backdrop and menu as the last children of that host, positioned from the user section's measured height. On react-native-macos a view laid out outside its parent's bounds is not reliably hit-testable, so nothing clickable may overflow its parent. The menu closes on the trigger, on choosing an item, on Escape (it takes keyboard focus when it opens), or on a click anywhere else in the sidebar. Its backdrop only covers the sidebar, so a click in the note list or editor leaves the menu open. Closing on those clicks would need a window-wide backdrop in `apps/desktop/src/screens/main.tsx`.
   - The panel and menu are inline rather than a `Modal`, because `Modal` is unproven on react-native-macos.
   - Offline (same `isConnected` / `isInternetReachable === false` rule as mobile), "Delete account…" is disabled and the offline note is shown under it inside the menu, and the panel's confirm is disabled too. On `ok`, `app-navigator.tsx` renders the login screen once the session is null.
-- **Public page.** `/account/delete` works signed out. It lists the in-app steps for each platform, what is deleted (account, notebooks, notes including trash and edit history, attachments, API keys), and what may be kept outside the account (Sentry error reports and Vercel request logs until those services delete them, support emails, administrator notification emails about the sign-up or support requests, GitHub issues filed from support emails, and the local copy on devices that were not signed out before the deletion — the page says to sign out of other devices first, or uninstall the app there afterwards). It also gives the `support@drafto.eu` fallback for people who no longer have the app. `/support` and `/privacy` link to it from their footers.
+- **Public page.** `/account/delete` works signed out. It lists the in-app steps for each platform, what is deleted (account, notebooks, notes including trash and edit history, attachments, API keys, usage days), and what may be kept outside the account (Sentry error reports and Vercel request logs until those services delete them, support emails, administrator notification emails about the sign-up or support requests, GitHub issues filed from support emails, and the local copy on devices that were not signed out before the deletion — the page says to sign out of other devices first, or uninstall the app there afterwards). It also gives the `support@drafto.eu` fallback for people who no longer have the app. `/support` and `/privacy` link to it from their footers.
 
 ### The endpoint and its authentication
 
@@ -275,7 +275,7 @@ On the client, `requestAccountDeletion` maps 401 to `unauthorized` and 409 to `l
 2. **Last-admin guard** (`rejectLastAdmin` in the route, service-role client). The route reads the caller's `profiles.is_admin`; a missing profile counts as not an admin. For an admin it counts `is_admin = true` rows, and a count ≤ 1 returns 409 with nothing touched. A lookup error or a null count goes to Sentry (`account-delete:profileLookup` / `account-delete:adminCount`) and returns 500.
 3. **`deleteUserAccount(admin, userId)`** (`apps/web/src/lib/account/delete-user.ts`):
    1. **Strict storage sweep.** `removeAllUserAttachments` walks the user's `{userId}/` prefix in the `attachments` bucket (`BUCKET_NAME`) recursively. It pages `list()` 1,000 entries at a time, because the default page is only 100, and removes files in batches of up to 1,000. It throws on the first list or remove error. The helper reports that to Sentry (`delete-user-account:storage`) and returns `stage: "storage"`, which the route maps to 500. The auth user is untouched, and removal is idempotent, so a retry re-lists and finishes the job.
-   2. **`admin.auth.admin.deleteUser(userId)`.** The `on delete cascade` foreign keys remove `profiles`, `notebooks`, `notes` (and `note_content_history` through `notes`), `attachments` rows and `api_keys`. An error goes to Sentry (`delete-user-account:deleteUser`) and returns `stage: "auth"`, which becomes 500.
+   2. **`admin.auth.admin.deleteUser(userId)`.** The `on delete cascade` foreign keys remove `profiles`, `notebooks`, `notes` (and `note_content_history` through `notes`), `attachments` rows, `api_keys` and `usage_daily`. An error goes to Sentry (`delete-user-account:deleteUser`) and returns `stage: "auth"`, which becomes 500.
    3. **Best-effort sweep.** `removeUserAttachments` catches an upload that landed between steps 1 and 2. Its errors go to Sentry (`remove-user-attachments:list` / `:remove`) and never fail the request.
 4. **Revoke Sign in with Apple**, only if the request carried an Apple grant and the deletion succeeded. Best-effort: the outcome never changes the response ([Sign in with Apple token revocation](#sign-in-with-apple-token-revocation)).
 5. Return `{ success: true }`.

@@ -1,7 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { after } from "next/server";
 import { z } from "zod";
 import { authenticateMcpRequest } from "@/lib/api/mcp-auth";
+import { recordMcpActivity } from "@/lib/api/record-mcp-activity";
 import {
   listNotebooks,
   listNotes,
@@ -118,6 +120,8 @@ function createMcpServer(supabase: SupabaseClient<Database>, userId: string): Mc
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // The activity day is the day the call arrived, not the day `after` gets to run it.
+  const receivedAt = new Date();
   let supabase: SupabaseClient<Database>;
   let userId: string;
 
@@ -135,6 +139,11 @@ export async function POST(request: Request): Promise<Response> {
       { status: 401, headers: { "Content-Type": "application/json" } },
     );
   }
+
+  // Count the day the call arrived as a `web-mcp` activity day for this user (ADR 0080).
+  // `after` runs the write once the response has gone out, so it never delays the reply, and
+  // recordMcpActivity never throws, so it can't change it either.
+  after(() => recordMcpActivity(supabase, userId, receivedAt));
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
