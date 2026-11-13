@@ -79,6 +79,75 @@ export function suggestVersion(baseMax, today = new Date()) {
   return baseMax ? later(nextVersion(baseMax), todayFirst) : todayFirst;
 }
 
+// The newest 14-digit version among `names` (migration file names), or null.
+export function newestVersion(names) {
+  let max = null;
+  for (const name of names) {
+    if (!isValidMigrationName(name)) continue;
+    const version = versionOf(name);
+    if (max === null || version > max) max = version;
+  }
+  return max;
+}
+
+// The 14-digit versions named by `entries`: versions, migration file names, or
+// {file} objects such as claimedVersions() returns. Anything else is ignored.
+function versionsIn(entries) {
+  const out = new Set();
+  for (const entry of entries ?? []) {
+    const text =
+      typeof entry === "string" ? entry : typeof entry?.file === "string" ? entry.file : "";
+    const version = versionOf(text) ?? text;
+    if (/^\d{14}$/.test(version)) out.add(version);
+  }
+  return out;
+}
+
+// The versions a card's new migrations take, in order (ADR-0079). Each is after
+// main's newest, after the newest migration the card's own open PR already adds
+// (`ownNames`, on a revision) and after today's 000000, and none is in
+// `claimed`, which other open PRs already add. They are strictly increasing.
+// The factory hands them to the implementer, so two cards implemented on the
+// same day don't both pick <today>000001, and a revision's new migration sorts
+// after the ones its PR already has.
+export function allocateMigrationVersions({
+  mainNames = [],
+  ownNames = [],
+  claimed = [],
+  today = new Date(),
+  count = 5,
+} = {}) {
+  const taken = versionsIn(claimed);
+  const mainNewest = newestVersion(mainNames);
+  const ownNewest = newestVersion(ownNames);
+  const floor = mainNewest && ownNewest ? later(mainNewest, ownNewest) : (mainNewest ?? ownNewest);
+  const versions = [];
+  let version = suggestVersion(floor, today);
+  while (versions.length < count) {
+    while (taken.has(version)) version = nextVersion(version);
+    versions.push(version);
+    version = nextVersion(version);
+  }
+  return versions;
+}
+
+// version → {prs, files} of the open PRs whose claims (`{pr, file}` entries,
+// versions or file names) name it.
+function claimIndex(claims) {
+  const by = new Map();
+  for (const entry of claims ?? []) {
+    for (const version of versionsIn([entry])) {
+      const at = by.get(version) ?? { prs: [], files: [] };
+      if (Number.isInteger(entry?.pr) && !at.prs.includes(entry.pr)) at.prs.push(entry.pr);
+      if (typeof entry?.file === "string" && !at.files.includes(entry.file)) {
+        at.files.push(entry.file);
+      }
+      by.set(version, at);
+    }
+  }
+  return by;
+}
+
 function byVersionThenName(a, b) {
   if (a.version !== b.version) return a.version < b.version ? -1 : 1;
   if (a.file !== b.file) return a.file < b.file ? -1 : 1;
@@ -92,17 +161,30 @@ function byVersionThenName(a, b) {
 //   duplicate-base error the version is also a base file's that is still present
 //   stale         error  the version is not newer than the base's newest
 //   duplicate     error  the version is also an earlier added file's
+//   claimed       error  the version is one `moveOff` names, or `moveNewOff` for a
+//                        file in `newFiles` (only when they're passed)
 //   order         move   a fresh file renumbered to stay after a renamed one
 // Every suggestion is free: it skips the versions of every local and base file and
 // every earlier suggestion, so no `git mv` target collides with an existing file.
 // `extraTaken` (versions or file names) only makes suggestions skip more versions:
 // the factory passes the ones other open PRs use (ADR-0077). It never changes what
 // is reported, so CI and the CLI, which don't pass it, behave as before.
+// `moveOff` ({pr, file} entries, versions or file names) is the factory's
+// implement post-check (ADR-0079): an added file whose version an older open PR
+// already adds moves too, reported as `claimed` with that PR's `prs` and files
+// (`others`). `moveNewOff` is the same for the files in `newFiles` only, the
+// migrations the implement run itself added: they move off any open PR's
+// version, and their finding has `addedInRun: true` unless `moveOff` also names
+// the version. Both lists' versions are skipped like `extraTaken`'s. Nothing
+// else passes them.
 export function checkMigrationOrder({
   localFiles,
   baseFiles,
   today = new Date(),
   extraTaken = [],
+  moveOff = [],
+  moveNewOff = [],
+  newFiles = [],
 }) {
   const baseSet = new Set(baseFiles);
   const localSet = new Set(localFiles);
@@ -139,11 +221,24 @@ export function checkMigrationOrder({
   }
   candidates.sort(byVersionThenName);
 
+  const claimedBy = claimIndex(moveOff);
+  const newClaimedBy = claimIndex(moveNewOff);
+  const newSet = new Set(newFiles ?? []);
+  // The claims an added file moves off, or null: `moveOff`'s for any added
+  // file, and `moveNewOff`'s for a file the implement run added.
+  const claimOf = (c) => {
+    const older = claimedBy.get(c.version);
+    const any = newSet.has(c.file) ? newClaimedBy.get(c.version) : undefined;
+    if (!older && !any) return null;
+    const union = (key) => [...new Set([...(older?.[key] ?? []), ...(any?.[key] ?? [])])];
+    return { prs: union("prs"), files: union("files"), addedInRun: !older };
+  };
   const isStale = (c) => baseMax !== null && c.version <= baseMax;
+  const isClaimed = (c) => claimOf(c) !== null;
   const uses = new Map();
   for (const c of candidates) uses.set(c.version, (uses.get(c.version) ?? 0) + 1);
   const needsRenumber = candidates.some(
-    (c) => isStale(c) || c.keptBase.length > 0 || uses.get(c.version) > 1,
+    (c) => isStale(c) || c.keptBase.length > 0 || uses.get(c.version) > 1 || isClaimed(c),
   );
   if (!needsRenumber) return findings;
 
@@ -151,10 +246,9 @@ export function checkMigrationOrder({
   for (const name of [...localFiles, ...baseFiles]) {
     if (isValidMigrationName(name)) taken.add(versionOf(name));
   }
-  for (const entry of extraTaken) {
-    const version = versionOf(entry) ?? entry;
-    if (/^\d{14}$/.test(version)) taken.add(version);
-  }
+  for (const version of versionsIn(extraTaken)) taken.add(version);
+  for (const version of claimedBy.keys()) taken.add(version);
+  for (const version of newClaimedBy.keys()) taken.add(version);
   const floor = suggestVersion(baseMax, today);
   const seen = new Map();
   let prev = baseMax;
@@ -163,7 +257,12 @@ export function checkMigrationOrder({
     const earlier = seen.get(c.version) ?? [];
     seen.set(c.version, [...earlier, c.file]);
     // A fresh file already after the previous one keeps its version.
-    if (!isStale(c) && c.keptBase.length === 0 && (prev === null || c.version > prev)) {
+    if (
+      !isStale(c) &&
+      c.keptBase.length === 0 &&
+      !isClaimed(c) &&
+      (prev === null || c.version > prev)
+    ) {
       prev = c.version;
       prevFile = c.file;
       continue;
@@ -176,6 +275,16 @@ export function checkMigrationOrder({
       findings.push({ kind: "error", reason: "duplicate-base", ...base, others: c.keptBase });
     } else if (isStale(c)) {
       findings.push({ kind: "error", reason: "stale", ...base });
+    } else if (isClaimed(c)) {
+      const by = claimOf(c);
+      findings.push({
+        kind: "error",
+        reason: "claimed",
+        ...base,
+        others: by.files,
+        prs: by.prs,
+        ...(by.addedInRun ? { addedInRun: true } : {}),
+      });
     } else if (earlier.length > 0) {
       findings.push({ kind: "error", reason: "duplicate", ...base, others: earlier });
     } else {
@@ -228,7 +337,9 @@ export function directMigrationNames(paths, dir = DEFAULT_DIR) {
   ];
 }
 
-function localFileNames(dir) {
+// The `*.sql` file names in the working tree's `dir`: what the checkout holds,
+// committed or not. Exported for migration-renumber.mjs's claimed-check.
+export function localFileNames(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((name) => name.endsWith(".sql"));
 }
@@ -236,6 +347,13 @@ function localFileNames(dir) {
 // A full 40-hex SHA (CI passes one) reads better shortened in the message.
 function refLabel(ref) {
   return /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 12) : ref;
+}
+
+// "open PR #829", "open PRs #829, #830", or "another open PR" with no numbers.
+export function openPrs(prs = []) {
+  const list = (prs ?? []).filter((n) => Number.isInteger(n));
+  if (list.length === 0) return "another open PR";
+  return `open PR${list.length > 1 ? "s" : ""} ${list.map((n) => `#${n}`).join(", ")}`;
 }
 
 function messageFor(finding, label) {
@@ -260,6 +378,12 @@ function messageFor(finding, label) {
       );
     case "duplicate":
       return `version ${finding.version} is also used by ${others}; every migration needs its own version`;
+    case "claimed":
+      return (
+        `version ${finding.version} is also used by ${openPrs(finding.prs)}` +
+        `${others ? ` (${others})` : ""}; ` +
+        (finding.addedInRun ? "this run added it, so it moves" : "the newer PR moves")
+      );
     case "order":
       return `renumbered to stay after ${finding.after}`;
     default:
