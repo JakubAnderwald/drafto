@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
-import type { Database } from "@drafto/shared";
+import type { Database, DraftoClientTag } from "@drafto/shared";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { installCryptoRandom } from "@/lib/crypto-random";
@@ -16,6 +16,12 @@ import { supabaseUrl, supabaseAnonKey } from "./config";
  * the self-test's time limit.
  */
 export const cryptoReady: Promise<void> = installCryptoRandom();
+
+// Tag every request so note_content_history.archived_by records which
+// platform did a write (see ADR 0023), and the activity ping (ADR-0077) sends
+// the same tag. The desktop app today targets macOS only — if a future build
+// lands on Windows/Linux, broaden this mapping rather than emitting a NULL.
+export const clientTag: DraftoClientTag = "desktop-macos";
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
@@ -35,11 +41,7 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: false,
     flowType: "pkce",
   },
-  // Tag every request so note_content_history.archived_by records which
-  // platform did a write (see ADR 0023). The desktop app today targets
-  // macOS only — if a future build lands on Windows/Linux, broaden this
-  // mapping rather than emitting a NULL.
   global: {
-    headers: { "x-drafto-client": "desktop-macos" },
+    headers: { "x-drafto-client": clientTag },
   },
 });

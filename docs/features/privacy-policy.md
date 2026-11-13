@@ -1,6 +1,6 @@
 # Privacy policy
 
-**Status:** shipped **Updated:** 2026-11-01
+**Status:** shipped **Updated:** 2026-11-13
 
 ## What it is
 
@@ -11,7 +11,7 @@ The public privacy policy at [drafto.eu/privacy](https://drafto.eu/privacy). The
 The page covers:
 
 - the data controller (Jakub Anderwald, Warsaw, Poland, `support@drafto.eu`)
-- the data collected: account and sign-in data, account approval, notes and note history, support emails, device and usage data, cookies, offline data
+- the data collected: account and sign-in data, account approval, notes and note history, support emails, device and usage data (including the usage days under "Days you use Drafto"), cookies and browser storage, offline data
 - the purposes and the GDPR legal basis for each
 - the processor table
 - support email handling (AI assistant, public GitHub issues)
@@ -63,11 +63,13 @@ Not processors, on purpose: Expo (builds are local Fastlane, OTA is off: `update
 - [0018 — OAuth with Google and Apple](../adr/0018-oauth-google-apple.md)
 - [0022 — Note content history](../adr/0022-note-content-history.md): the 30-day edit-history retention the page discloses
 - [0024 — Real-time support agent](../adr/0024-realtime-support-agent.md): the Zoho, Anthropic and GitHub flows
+- [0077 — Activity days instead of event analytics](../adr/0077-activity-days-instead-of-event-analytics.md): the usage days (`usage_daily`) the page discloses, and why PostHog stays off
 
 ## Cross-platform notes
 
 - One page describes all four platforms. The store listings point to `https://drafto.eu/privacy` (`privacyUrl` in `apps/mobile/store/metadata/en-US.json`; the Mac App Store URL is set in App Store Connect). Neither native app links to it in-app.
 - Session storage differs by platform and the page says so: cookies on the web, the iOS Keychain or Android Keystore on mobile (`expo-secure-store`), and AsyncStorage on macOS (`apps/desktop/src/lib/supabase.ts`, not the Keychain). Moving macOS to the Keychain is a separate change and triggers the maintenance rule.
+- **Usage days** ([product metrics → Activity days](./product-metrics.md#activity-days-usage_daily)) are recorded on every platform: web from the app shell (with a day marker in session storage), iOS, Android and macOS after a sync (with up to 30 unsent days in the local database), and MCP calls server-side. The page describes each of these. The store disclosures are edited by hand, outside the repo: since #821 the App Store Connect privacy details (iOS and macOS) and the Play Console Data safety form must declare this usage data, linked to the account.
 - `apps/mobile/store/metadata/privacy-policy.md` is an older Markdown copy kept with the store metadata, and `apps/mobile/store/metadata/store-listing.md` still calls it the "source of truth". Both have pre-#648 text; the source of truth is `apps/web/src/app/privacy/page.tsx`. Sync or retire the copy, and fix the `store-listing.md` line, in a follow-up. Any change under `apps/mobile/` makes the factory queue a mobile beta build, which is why it was left out of #648.
 
 ## Modifying safely
@@ -86,7 +88,7 @@ Also: a route that must be reachable signed out (legal, support, store-review pa
 - **Invariants:**
   - Every row in the sharing table is a service that actually receives data. A row for a service that receives nothing (Expo before #648, PostHog today) is as wrong as a missing one.
   - The first cell of each row is exactly the service name. The guard test matches on it.
-  - The page must not say note content is used to train AI models, and must not claim more than the code does: no Keychain on macOS, no database backups (production is on the Supabase Free tier), no "anonymous" analytics.
+  - The page must not say note content is used to train AI models, and must not claim more than the code does: no Keychain on macOS, no database backups (production is on the Supabase Free tier), no "anonymous" analytics. Usage days are tied to the account ID, so they aren't anonymous either, and the page must not say the native apps send Drafto no usage data at all.
   - `/privacy` and `/support` stay in `PUBLIC_ROUTES`. Prefix matching makes any `/privacy/*` or `/support/*` route public too, so keep those static.
 - **Page structure:** the numbered sections and the "On this page" contents box both come from `SECTIONS` in `page.tsx`, so a new section is one entry there plus a `<NumberedSection {...section("id")}>` block (`apps/web/src/components/legal/`). Sharing-table rows come from `PROCESSORS`; a new processor is one entry there. The pages are styled by the `.doc-prose` class in `apps/web/src/app/globals.css`, not by Tailwind's `prose`: the typography plugin is not installed, so `prose` does nothing. See [design system → Long-form documents](./design-system.md#long-form-documents).
 - **Guard test blind spots:** the dependency scan reads only the `package.json` files of `apps/web`, `apps/mobile`, `apps/desktop` and `packages/shared`. It cannot see:
@@ -99,7 +101,7 @@ Also: a route that must be reachable signed out (legal, support, store-review pa
   A green guard test is not proof the policy is complete.
 
 - **Resolving a guard failure:** if a new dependency matches a suspicious name and receives user data, add it to `PROCESSOR_FOR_DEPENDENCY` and give the processor a row in the sharing table (an entry in `PROCESSORS`). If it sends no user data, add it to `NOT_A_PROCESSOR` with the reason. A mapped processor that receives nothing until it is configured (PostHog today) is named in the page text instead of the table, and listed in `NAMED_IN_TEXT_ONLY` with the reason.
-- **Files that must change together:** the policy page, `legal-pages.test.tsx`, and the "What may be kept" paragraph on `/account/delete` (it summarises the retention section). A new processor also needs a row in this doc's inventory table.
+- **Files that must change together:** the policy page, `legal-pages.test.tsx`, and the "What may be kept" paragraph on `/account/delete` (it summarises the retention section). A new processor also needs a row in this doc's inventory table. A change to what `usage_daily` records, which clients write it, or its 13-month retention also needs the page's "Days you use Drafto" part and its retention list, [product metrics](./product-metrics.md) and the store disclosures.
 
 ## Verify
 

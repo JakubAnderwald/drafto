@@ -6,7 +6,8 @@ import type { SyncPullResult } from "@nozbe/watermelondb/sync";
 import { isVisibleRemoteChange } from "@drafto/shared";
 import type { Database } from "@drafto/shared";
 
-import { supabase } from "@/lib/supabase";
+import { flushActivityDays, markAppOpened } from "@/db/activity-days";
+import { clientTag, supabase } from "@/lib/supabase";
 
 type NotebookRow = Database["public"]["Tables"]["notebooks"]["Row"];
 type NoteRow = Database["public"]["Tables"]["notes"]["Row"];
@@ -286,7 +287,7 @@ export interface SyncResult {
   remoteChangeCount: number;
 }
 
-async function runSync(db: WMDatabase): Promise<SyncResult> {
+async function runSync(db: WMDatabase, opened: Promise<void>): Promise<SyncResult> {
   let remoteChangeCount = 0;
 
   try {
@@ -310,6 +311,17 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
       throw new SyncNetworkError(error);
     }
     throw error;
+  }
+
+  // The activity ping (ADR-0077, docs/features/offline-sync.md) goes only
+  // after a sync got through, with every day queued since the last one. Both
+  // calls never reject; the catch is a backstop so a ping can never change
+  // the sync's result. A failed ping keeps its days for the next sync.
+  try {
+    await opened;
+    await flushActivityDays(db, supabase, clientTag);
+  } catch (error) {
+    console.warn("[Sync] Activity ping failed:", error);
   }
 
   return { remoteChangeCount };
@@ -344,11 +356,15 @@ export function resetSyncState(): void {
 }
 
 export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+  // Every sync attempt, offline ones included, counts as opening the app
+  // today (ADR-0077). Started before the latch check and not awaited here, so
+  // coalescing and resetSyncState work as before; runSync awaits it.
+  const opened = markAppOpened(db);
   if (inFlightSync) {
     return inFlightSync;
   }
   const generation = syncGeneration;
-  const pending = runSync(db);
+  const pending = runSync(db, opened);
   inFlightSync = pending;
   try {
     return await pending;

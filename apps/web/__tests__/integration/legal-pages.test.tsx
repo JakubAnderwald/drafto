@@ -96,7 +96,7 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     expect(screen.getByText(/Effective date: March 8, 2026/)).toHaveTextContent(
-      "Last updated: November 8, 2026",
+      "Last updated: November 13, 2026",
     );
   });
 
@@ -130,13 +130,61 @@ describe("Privacy policy page", () => {
     expect(screen.getByText(/includes PostHog/)).toHaveTextContent(
       /not enabled: no PostHog key is configured, so nothing is sent to PostHog/,
     );
-    expect(
-      screen.getByText(
-        /The iOS, Android and macOS apps contain no analytics or crash-reporting SDK/,
-      ),
-    ).toBeInTheDocument();
-    // Nothing is collected anonymously any more, and there are no analytics to retain.
+    const nativeApps = screen.getByText(
+      /The iOS, Android and macOS apps contain no analytics or crash-reporting SDK/,
+    );
+    // The apps now send usage days (#821), so the old "no usage analytics" claim must stay gone.
+    expect(nativeApps).toHaveTextContent(/no usage data other than your usage days/);
+    expect(nativeApps).not.toHaveTextContent(/no usage analytics/);
+    // Nothing is collected anonymously: usage days are tied to the account.
     expect(document.body.textContent).not.toMatch(/anonymous/i);
+  });
+
+  it("explains usage days: what is recorded, on which apps, why, and for how long", () => {
+    render(<PrivacyPolicyPage />);
+
+    const heading = screen.getByRole("heading", { level: 4, name: "Days you use Drafto" });
+    // The part is every sibling after its heading, up to the next h3 or h4.
+    const parts: string[] = [];
+    let el = heading.nextElementSibling;
+    while (el && el.tagName !== "H3" && el.tagName !== "H4") {
+      parts.push(el.textContent ?? "");
+      el = el.nextElementSibling;
+    }
+    const usage = parts.join(" ");
+
+    expect(heading.previousElementSibling).toHaveTextContent("Device and usage data");
+    // One row per day and client tag: web, mobile-ios, mobile-android, desktop-macos, web-mcp.
+    expect(usage).toMatch(
+      /which days you use it, and on which kind of app: the web app, iOS, Android, macOS, or an AI assistant/,
+    );
+    expect(usage).toMatch(/so days spent offline count too/);
+    expect(usage).toMatch(/connects to Drafto with your API key/);
+    // content_changes is a nightly count from note_content_history and new notes.
+    expect(usage).toMatch(/Each night we add a count/);
+    expect(usage).toMatch(/we never record which notes you open or anything you write/);
+    expect(usage).toMatch(/only to understand overall usage/);
+    expect(usage).toMatch(/stored in our database at Supabase, kept for 13 months/);
+    expect(usage).toMatch(/deleted with your account/);
+  });
+
+  it("names the stored day markers and queue for usage days", () => {
+    render(<PrivacyPolicyPage />);
+
+    const collected = sectionText(/Data We Collect/);
+    // Web: sessionStorage "drafto:activity-day" holds "<userId>:<day>".
+    expect(collected).toMatch(
+      /the web app keeps a day marker \(your account ID and today's date\) so it records each usage day only once per browser session/,
+    );
+    // Native: the "drafto_activity_days" queue in the WatermelonDB (SQLite) local storage.
+    expect(collected).toMatch(/holds up to 30 usage days that have not been sent yet/);
+    expect(sectionText(/API Keys and MCP/)).toMatch(
+      /Each day an assistant uses one of your keys is recorded as one of your usage days/,
+    );
+    expect(sectionText(/Data Storage and Security/)).toMatch(
+      /note history and usage days are stored by Supabase in the EU/,
+    );
+    expect(rowFor("Supabase")).toHaveTextContent("usage days");
   });
 
   it("names every way device data reaches a third party, not just the SDKs", () => {
@@ -160,6 +208,9 @@ describe("Privacy policy page", () => {
     );
     expect(purposes).toMatch(/Fix issues and keep the Service secure:.*legitimate interest/);
     expect(purposes).toMatch(/Provide support:.*legitimate interest/);
+    expect(purposes).toMatch(
+      /Understand overall usage:.*from usage days.*legitimate interest.*Art\. 6\(1\)\(f\)/,
+    );
     expect(purposes).toMatch(/not.*use your note content for advertising, training AI models/);
   });
 
@@ -254,6 +305,8 @@ describe("Privacy policy page", () => {
     expect(retention).toMatch(/Our support system deletes its run logs after 30 days\. It keeps/);
     expect(retention).toMatch(/subject line and Zoho message reference/);
     expect(retention).toMatch(/until you ask us to remove them/);
+    // rollup_usage_daily deletes usage_daily rows older than 13 months.
+    expect(retention).toMatch(/Usage days are kept for 13 months, then deleted automatically/);
   });
 
   it("describes immediate in-app deletion and links to the deletion page", () => {
@@ -262,7 +315,7 @@ describe("Privacy policy page", () => {
     expect(screen.getByText(/Deletion is immediate/)).toBeInTheDocument();
     expect(
       screen.getByText(
-        /When you delete your account in the app, we immediately delete your account, notebooks, notes, attachments and API keys/,
+        /When you delete your account in the app, we immediately delete your account, notebooks, notes, note history, attachments, API keys and usage days/,
       ),
     ).toBeInTheDocument();
     expect(screen.getByText(/by email, we process the request within 30 days/)).toBeInTheDocument();
@@ -337,6 +390,10 @@ describe("Privacy policy page", () => {
     expect(screen.getByRole("link", { name: "Section 4" })).toHaveAttribute(
       "href",
       "#data-sharing",
+    );
+    expect(screen.getByRole("link", { name: "Section 5" })).toHaveAttribute(
+      "href",
+      "#connected-ai-assistants",
     );
     const rightsLinks = screen.getAllByRole("link", { name: "Your Rights" });
     expect(rightsLinks.map((link) => link.getAttribute("href"))).toEqual([

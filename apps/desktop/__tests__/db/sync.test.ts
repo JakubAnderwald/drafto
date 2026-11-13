@@ -13,6 +13,7 @@ jest.mock("@/lib/supabase", () => ({
     rpc: (...args: unknown[]) => mockSupabaseRpc(...args),
     auth: { getSession: (...args: unknown[]) => mockGetSession(...args) },
   },
+  clientTag: "desktop-macos",
 }));
 
 import { syncDatabase, SyncNetworkError, resetSyncState } from "@/db/sync";
@@ -516,5 +517,140 @@ describe("SyncNetworkError", () => {
     const err = new SyncNetworkError("string cause");
     expect(err.message).toBe("Network error during sync");
     expect(err.syncCause).toBe("string cause");
+  });
+});
+
+// Mirror of apps/mobile/__tests__/db/sync.test.ts's activity ping suite, minus
+// the mobile tags.
+describe("activity ping after a successful sync (ADR-0077)", () => {
+  const TODAY = "2026-11-13";
+  const TOMORROW = "2026-11-14";
+
+  /** A database whose WatermelonDB localStorage keeps JSON in memory. */
+  function makeDb() {
+    const store = new Map<string, string>();
+    return {
+      get: () => ({ query: () => ({ fetch: () => Promise.resolve([]) }) }),
+      localStorage: {
+        get: async (key: string): Promise<unknown> => {
+          const json = store.get(key);
+          return json === undefined ? undefined : JSON.parse(json);
+        },
+        set: async (key: string, value: unknown): Promise<void> => {
+          store.set(key, JSON.stringify(value));
+        },
+      },
+    } as unknown as Parameters<typeof syncDatabase>[0];
+  }
+
+  /** The record_activity calls made so far (get_server_time is the other RPC). */
+  function pings(): unknown[][] {
+    return mockSupabaseRpc.mock.calls.filter(([fn]) => fn === "record_activity");
+  }
+
+  function ping(days: string[]): unknown[] {
+    return ["record_activity", { p_days: days, p_client: "desktop-macos" }];
+  }
+
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    // Fake only Date, so "today" is fixed while promises and timers run as usual.
+    jest.useFakeTimers({
+      now: new Date(`${TODAY}T10:00:00.000Z`),
+      doNotFake: [
+        "hrtime",
+        "nextTick",
+        "performance",
+        "queueMicrotask",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "requestIdleCallback",
+        "cancelIdleCallback",
+        "setImmediate",
+        "clearImmediate",
+        "setInterval",
+        "clearInterval",
+        "setTimeout",
+        "clearTimeout",
+      ],
+    });
+    jest.clearAllMocks();
+    mockSynchronize.mockReset();
+    mockSynchronize.mockResolvedValue(undefined);
+    mockSupabaseRpc.mockReset();
+    mockSupabaseRpc.mockResolvedValue({ data: null, error: null });
+    resetSyncState();
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    warnSpy.mockRestore();
+  });
+
+  it("records today as desktop-macos once synchronize() has succeeded", async () => {
+    await expect(syncDatabase(makeDb())).resolves.toEqual({ remoteChangeCount: 0 });
+
+    expect(pings()).toEqual([ping([TODAY])]);
+    expect(mockSupabaseRpc.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockSynchronize.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("sends nothing while syncs fail, then every queued day with the next one that succeeds", async () => {
+    const db = makeDb();
+    mockSynchronize.mockRejectedValueOnce(new Error("Network request failed"));
+    await expect(syncDatabase(db)).rejects.toThrow(SyncNetworkError);
+
+    jest.setSystemTime(new Date(`${TOMORROW}T08:00:00.000Z`));
+    const original = new Error("Some database error");
+    mockSynchronize.mockRejectedValueOnce(original);
+    await expect(syncDatabase(db)).rejects.toBe(original);
+    expect(pings()).toEqual([]);
+
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    expect(pings()).toEqual([ping([TODAY, TOMORROW])]);
+  });
+
+  it("doesn't fail the sync when the ping fails, and the next sync sends it again", async () => {
+    const db = makeDb();
+    mockSupabaseRpc.mockResolvedValueOnce({ data: null, error: { message: "permission denied" } });
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+
+    mockSupabaseRpc.mockRejectedValueOnce(new Error("Network request failed"));
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+
+    await syncDatabase(db);
+    await syncDatabase(db);
+    expect(pings()).toEqual([ping([TODAY]), ping([TODAY]), ping([TODAY])]);
+  });
+
+  it("pings once a day, and again on the next UTC day", async () => {
+    const db = makeDb();
+    await syncDatabase(db);
+    await syncDatabase(db);
+    expect(pings()).toEqual([ping([TODAY])]);
+
+    jest.setSystemTime(new Date(`${TOMORROW}T00:05:00.000Z`));
+    await syncDatabase(db);
+    expect(pings()).toEqual([ping([TODAY]), ping([TOMORROW])]);
+  });
+
+  it("makes one synchronize() and one ping for coalesced concurrent callers", async () => {
+    const db = makeDb();
+    let release!: () => void;
+    mockSynchronize.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (release = () => resolve(undefined))),
+    );
+
+    const p1 = syncDatabase(db);
+    const p2 = syncDatabase(db);
+    release();
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(r2);
+    expect(mockSynchronize).toHaveBeenCalledTimes(1);
+    expect(pings()).toEqual([ping([TODAY])]);
   });
 });

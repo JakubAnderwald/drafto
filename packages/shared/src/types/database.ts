@@ -210,6 +210,35 @@ export interface Database {
           },
         ];
       };
+      usage_daily: {
+        Row: {
+          user_id: string;
+          day: string;
+          client: string;
+          content_changes: number;
+        };
+        Insert: {
+          user_id: string;
+          day: string;
+          client: string;
+          content_changes?: number;
+        };
+        Update: {
+          user_id?: string;
+          day?: string;
+          client?: string;
+          content_changes?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "usage_daily_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

@@ -58,7 +58,7 @@ const PROCESSORS: readonly Processor[] = [
     service: "Supabase",
     purpose: "Database, sign-in and file storage (EU, Ireland)",
     dataShared:
-      "Account data, notes, attachments, note history, API key hashes; requests from your devices, including IP address",
+      "Account data, notes, attachments, note history, API key hashes, usage days; requests from your devices, including IP address",
   },
   {
     service: "Vercel",
@@ -112,7 +112,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;8,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;13,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -196,6 +196,30 @@ export default function PrivacyPolicyPage() {
           </p>
 
           <h3>Device and usage data</h3>
+          <h4>Days you use Drafto</h4>
+          <p>
+            Drafto records which days you use it, and on which kind of app: the web app, iOS,
+            Android, macOS, or an AI assistant you connected with an API key (see{" "}
+            <SectionLink id="connected-ai-assistants">
+              Section {section("connected-ai-assistants").number}
+            </SectionLink>
+            ). We call these your usage days. The web app records a day when you open it signed in.
+            The iOS, Android and macOS apps record each day you open them and send those days the
+            next time they sync, so days spent offline count too. An AI assistant&apos;s day is
+            recorded when it connects to Drafto with your API key.
+          </p>
+          <p>
+            For each usage day we store your account ID, the date (in UTC) and the kind of app. Each
+            night we add a count of how many times that day you created a note or saved a change to
+            a note&apos;s content. It is only a number: we never record which notes you open or
+            anything you write.
+          </p>
+          <p>
+            We use usage days only to understand overall usage, for example how many people use
+            Drafto each week. They are stored in our database at Supabase, kept for 13 months, and
+            deleted with your account.
+          </p>
+
           <h4>Error and performance monitoring on the web</h4>
           <p>
             When you use the web app at drafto.eu, we use Sentry to find and fix bugs. Sentry
@@ -226,10 +250,11 @@ export default function PrivacyPolicyPage() {
           <h4>iOS, Android and macOS apps</h4>
           <p>
             The iOS, Android and macOS apps contain no analytics or crash-reporting SDK. They send
-            no usage analytics or crash reports to Drafto. If our drafto.eu servers fail to handle a
-            request from one of the apps (for example, an account deletion), the server may record
-            that error in Sentry. Apple and Google may separately collect diagnostic data from your
-            device, depending on your device settings and their own privacy policies.
+            no crash reports to Drafto, and no usage data other than your usage days, described
+            above. If our drafto.eu servers fail to handle a request from one of the apps (for
+            example, an account deletion), the server may record that error in Sentry. Apple and
+            Google may separately collect diagnostic data from your device, depending on your device
+            settings and their own privacy policies.
           </p>
           <p>
             Signing in to the macOS app with Google or Apple, or opening a macOS password-reset
@@ -256,8 +281,10 @@ export default function PrivacyPolicyPage() {
           <h3>Cookies and browser storage</h3>
           <p>
             The web app uses cookies only to keep you signed in. It also stores your light or dark
-            theme choice in your browser, and Session Replay keeps a session marker in your
-            browser&apos;s session storage. We use no advertising or analytics cookies.
+            theme choice in your browser. In your browser&apos;s session storage, Session Replay
+            keeps a session marker, and the web app keeps a day marker (your account ID and
+            today&apos;s date) so it records each usage day only once per browser session. We use no
+            advertising or analytics cookies.
           </p>
 
           <h3>Offline data</h3>
@@ -265,7 +292,8 @@ export default function PrivacyPolicyPage() {
             The iOS, Android and macOS apps store a local copy of your notes on your device using
             SQLite for offline access. This data stays on your device and syncs with our servers
             when you are online. Files you attach while offline stay on the device only until they
-            upload.
+            upload. The same local database holds up to 30 usage days that have not been sent yet,
+            until the next sync.
           </p>
           <p>
             The local copy is erased when you sign out or delete your account in that app. Copies on
@@ -300,6 +328,14 @@ export default function PrivacyPolicyPage() {
               <span className="mt-1 block text-sm">
                 Legal basis: our legitimate interest in a reliable and secure Service (Art.
                 6(1)(f)).
+              </span>
+            </li>
+            <li>
+              <strong>Understand overall usage:</strong> count, from usage days, how many people use
+              Drafto each week, on which kind of app, and how many of them come back.{" "}
+              <span className="mt-1 block text-sm">
+                Legal basis: our legitimate interest in knowing how Drafto is used, so we can
+                improve it (Art. 6(1)(f)).
               </span>
             </li>
             <li>
@@ -427,6 +463,10 @@ export default function PrivacyPolicyPage() {
               We store only a hash of each key, its first few characters, the name you give it, and
               when it was created, last used and revoked.
             </li>
+            <li>
+              Each day an assistant uses one of your keys is recorded as one of your usage days,
+              marked as an AI assistant.
+            </li>
           </ul>
         </NumberedSection>
 
@@ -447,8 +487,8 @@ export default function PrivacyPolicyPage() {
         <NumberedSection {...section("storage-and-security")}>
           <ul>
             <li>
-              Your account data, notes, attachments and note history are stored by Supabase in the
-              EU (West EU, Ireland)
+              Your account data, notes, attachments, note history and usage days are stored by
+              Supabase in the EU (West EU, Ireland)
             </li>
             <li>
               Requests to drafto.eu are handled by Vercel, whose servers may be outside the EU
@@ -550,7 +590,7 @@ export default function PrivacyPolicyPage() {
           <ul>
             <li>
               When you delete your account in the app, we immediately delete your account,
-              notebooks, notes, attachments and API keys, including note history
+              notebooks, notes, note history, attachments, API keys and usage days
             </li>
             <li>
               If you use Sign in with Apple and delete your account on the web, iOS, Android or
@@ -572,6 +612,7 @@ export default function PrivacyPolicyPage() {
               Revoked API keys are kept (the hash, first few characters, name and dates described
               above) until you delete your account
             </li>
+            <li>Usage days are kept for 13 months, then deleted automatically</li>
           </ul>
 
           <h3>Data held outside your account</h3>

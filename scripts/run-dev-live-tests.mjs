@@ -10,6 +10,10 @@
 //   - metrics: scripts/__tests__/product-metrics.live.test.mjs (the product
 //     metrics functions, ADR 0075; needs the dev URL, anon key and
 //     service-role key, and both product-metrics migrations applied to dev)
+//   - usage-daily: scripts/__tests__/usage-daily.live.test.mjs (activity days,
+//     ADR 0077: record_activity's limits, the table's lockdown and who may read
+//     the active-user and retention metrics; needs the dev URL, anon key and
+//     service-role key, and the usage_daily migration applied to dev)
 //
 // Each creates real users on dev and deletes them again.
 //
@@ -37,9 +41,9 @@
 // also denies any command naming it or a `test:live` script.
 //
 // Usage:
-//   pnpm test:live:supabase [-- --only profile-guard|account-deletion|metrics] [--dry-run]
-//   node scripts/run-dev-live-tests.mjs [--key-file <f>] [--keys-txt <f>]
-//        [--env-local <f>] [--only profile-guard|account-deletion|metrics] [--dry-run] [--help]
+//   pnpm test:live:supabase [-- --only profile-guard|account-deletion|metrics|usage-daily] [--dry-run]
+//   node scripts/run-dev-live-tests.mjs [--key-file <f>] [--keys-txt <f>] [--env-local <f>]
+//        [--only profile-guard|account-deletion|metrics|usage-daily] [--dry-run] [--help]
 //
 // --dry-run prints the commands and the names of the env vars it would set,
 // then exits 0. Output names files and variables, never a key's value. Exit 0
@@ -96,6 +100,11 @@ export const LIVE_TESTS = {
   metrics: {
     command: "node",
     args: ["--test", "scripts/__tests__/product-metrics.live.test.mjs"],
+    needs: [URL_VAR, ANON_VAR, SERVICE_VAR],
+  },
+  "usage-daily": {
+    command: "node",
+    args: ["--test", "scripts/__tests__/usage-daily.live.test.mjs"],
     needs: [URL_VAR, ANON_VAR, SERVICE_VAR],
   },
 };

@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
+import { ActivityPing } from "@/components/layout/activity-ping";
 
 async function ensureDefaultNotebook(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -96,13 +97,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <AppShell
-      initialNotebooks={notebooks ?? []}
-      initialNotebookId={firstNotebookId}
-      initialNotes={initialNotes}
-      isAdmin={isAdmin}
-    >
-      {children}
-    </AppShell>
+    <>
+      {/* Records today's activity day from the browser (ADR 0077); renders nothing. */}
+      <ActivityPing userId={userId} />
+      <AppShell
+        initialNotebooks={notebooks ?? []}
+        initialNotebookId={firstNotebookId}
+        initialNotes={initialNotes}
+        isAdmin={isAdmin}
+      >
+        {children}
+      </AppShell>
+    </>
   );
 }
