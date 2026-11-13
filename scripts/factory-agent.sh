@@ -2170,6 +2170,15 @@ pr_head_oid() {
   gh pr view "$1" --repo JakubAnderwald/drafto --json headRefOid --jq '.headRefOid' 2>>"$LOG_FILE" || echo ""
 }
 
+# Head branch of PR <n> when that branch lives in this repo (the one the
+# factory pushes to as `origin`), or "" for a PR from a fork or on any failure.
+# Unlike the head OID it doesn't change after a push, so reading it before one
+# has no lag. Callers treat "" as "unknown" and fail closed.
+pr_head_branch() {
+  gh pr view "$1" --repo JakubAnderwald/drafto --json headRefName,isCrossRepository \
+    --jq 'if .isCrossRepository then "" else .headRefName end' 2>>"$LOG_FILE" || echo ""
+}
+
 # implement_queue_order <items-json> — the In Progress items in the order
 # --implement should take them: cards already holding a slot first (they never
 # need a free one, and only they can free one mid-sweep), then cards with an
@@ -2755,12 +2764,14 @@ rollback_conflict_pass() {
 # few seconds, so reading it right after pushing used to see the old head and
 # spend an attempt on a merge that had landed. Every one of the nine "never
 # reached the PR" warnings up to 2026-11-10 was that race (ADR-0076). worktree-
-# cli's push is a plain, non-force `git push`: it prints {"pushed":true,head}
-# only after GitHub accepted the ref, so that output is the proof. Sets
-# CONFLICT_PASS_WHY on failure.
+# cli's push is a plain, non-force `git push` to origin: it prints
+# {"pushed":true,branch,head} only after GitHub accepted the ref, so that output
+# is the proof, provided its branch is the PR's own head branch in this repo
+# (pr_head_branch, read before the push). Anything else falls back to the PR
+# view, as before. Sets CONFLICT_PASS_WHY on failure.
 conflict_pass_verified() {
   local wt_path="$1" pr_num="$2" merge_json="$3"
-  local main_sha files check head pr_head push_out pushed_head=""
+  local main_sha files check head pr_head pr_branch push_out pushed_head=""
   CONFLICT_PASS_WHY=""
   main_sha=$(echo "$merge_json" | jq -r '.mainSha // ""')
   files=$(echo "$merge_json" | jq -c '.conflictedFiles // []')
@@ -2775,16 +2786,19 @@ conflict_pass_verified() {
   head=$(echo "$check" | jq -r '.head // ""')
   pr_head=$(pr_head_oid "$pr_num")
   if [[ -n "$head" && "$pr_head" != "$head" ]]; then
+    pr_branch=$(pr_head_branch "$pr_num")
     log "Conflict pass for PR #$pr_num verified; pushing ${head:0:12}"
     push_out=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" push --path "$wt_path" 2>>"$LOG_FILE") || push_out=""
     [[ -n "$push_out" ]] && echo "$push_out" >>"$LOG_FILE"
-    pushed_head=$(echo "$push_out" | jq -r 'select(.pushed == true) | .head // ""' 2>/dev/null) || pushed_head=""
-    if [[ "$pushed_head" == "$head" ]]; then
-      log "Conflict pass for PR #$pr_num: push of ${head:0:12} accepted (the PR view can take a few seconds to show it)"
+    pushed_head=$(echo "$push_out" | jq -r --arg b "$pr_branch" \
+      'select(.pushed == true and $b != "" and .branch == $b) | .head // ""' 2>/dev/null) || pushed_head=""
+    if [[ -n "$pushed_head" && "$pushed_head" == "$head" ]]; then
+      log "Conflict pass for PR #$pr_num: push of ${head:0:12} to $pr_branch accepted (the PR view can take a few seconds to show it)"
       return 0
     fi
-    # No proof from the push (it failed, or its output didn't parse): fall
-    # back to what the PR shows, in case it landed anyway.
+    # No proof from the push (it failed, its output didn't parse, or it went to
+    # a branch that isn't this PR's): fall back to what the PR shows, in case it
+    # landed anyway.
     pr_head=$(pr_head_oid "$pr_num")
   fi
   if [[ -z "$head" || "$pr_head" != "$head" ]]; then

@@ -136,6 +136,7 @@ node() {
   esac
 }
 pr_head_oid() { cat "$PR_HEAD_FILE"; }
+pr_head_branch() { echo "PRBRANCH" >>"$CALLS"; echo factory/issue-797; }
 `;
 
   // The agent commits but never pushes on a conflict pass: bash checks first
@@ -218,11 +219,59 @@ pr_head_oid() { cat "$PR_HEAD_FILE"; }
     );
     assert.match(out, /PUSH /);
     assert.match(out, /VERIFIED/);
-    assert.match(out, /LOG Conflict pass for PR #755: push of abc accepted/);
-    // The PR view is read once, before the push, and never after it: a lagging
-    // or failing `gh pr view` can't override the push's own answer.
+    assert.match(out, /LOG Conflict pass for PR #755: push of abc to factory\/issue-797 accepted/);
+    // The PR's branch is read before the push (it doesn't lag), and the PR
+    // view never after it: a lagging or failing `gh pr view` can't override
+    // the push's own answer.
+    assert.ok(out.indexOf("PRBRANCH") < out.indexOf("PUSH "), "branch read before the push");
     const afterPush = out.slice(out.indexOf("PUSH "));
     assert.doesNotMatch(afterPush, /PRVIEW/);
+  });
+
+  // The push only proves the commit reached the PR when it went to the PR's
+  // own head branch in this repo. Anything else falls back to the PR view.
+  it("doesn't take a push to another branch as proof", () => {
+    const out = run(
+      ["conflict_pass_verified"],
+      `${stubs}
+       node() {
+         case "$2" in
+           merge-check) echo "$CHECK" ;;
+           push) echo '{"pushed":true,"branch":"factory/issue-1","head":"abc"}' ;;
+         esac
+       }
+       pr_head_oid() { echo old; }
+       LOCAL=abc; CHECK='${resolved("abc")}'
+       conflict_pass_verified /wt 755 '${merge}' || echo "WHY=$CONFLICT_PASS_WHY"`,
+    );
+    assert.match(out, /WHY=the resolution never reached the PR \(local abc, PR old\)/);
+    assert.doesNotMatch(out, /accepted/);
+  });
+
+  it("falls back to the PR view when the PR's branch is unknown (a fork, or gh failed)", () => {
+    const fallback = (prView) =>
+      run(
+        ["conflict_pass_verified"],
+        `${stubs}
+         node() {
+           case "$2" in
+             merge-check) echo "$CHECK" ;;
+             push) echo '{"pushed":true,"branch":"factory/issue-797","head":"abc"}' ;;
+           esac
+         }
+         pr_head_branch() { echo ""; }
+         # Called in a $(…) subshell, so count calls in a file, not a variable.
+         CNT=$(mktemp)
+         pr_head_oid() { echo x >>"$CNT"; [[ $(wc -l <"$CNT") -eq 1 ]] && echo old || echo ${prView}; }
+         LOCAL=abc; CHECK='${resolved("abc")}'
+         conflict_pass_verified /wt 755 '${merge}' && echo VERIFIED || echo "WHY=$CONFLICT_PASS_WHY"`,
+      );
+    // Still old after the push: unproven, so it fails as before.
+    const stale = fallback("old");
+    assert.match(stale, /WHY=the resolution never reached the PR/);
+    assert.doesNotMatch(stale, /accepted/);
+    // The PR view shows the commit: the old check passes it.
+    assert.match(fallback("abc"), /VERIFIED/);
   });
 
   it("still rejects a resolution whose push failed", () => {
@@ -259,6 +308,53 @@ pr_head_oid() { cat "$PR_HEAD_FILE"; }
        conflict_pass_verified /wt 755 '${merge}' || echo "WHY=$CONFLICT_PASS_WHY"`,
     );
     assert.match(out, /WHY=the resolution never reached the PR/);
+  });
+});
+
+describe("pr_head_branch", () => {
+  // gh stands in for `gh pr view`: it applies the real --jq filter to $FIXTURE,
+  // so the cross-repository rule is tested, not just the call.
+  const ghStub = `
+gh() {
+  echo "GH $*" >>"$CALLS"
+  local q=""
+  while [[ $# -gt 0 ]]; do [[ "$1" == "--jq" ]] && q="$2"; shift; done
+  [[ -n "$FIXTURE" ]] || return 1
+  echo "$FIXTURE" | jq -r "$q"
+}`;
+
+  it("returns the PR's head branch when it lives in this repo", () => {
+    const out = run(
+      ["pr_head_branch"],
+      `${ghStub}
+       FIXTURE='{"headRefName":"factory/issue-797","isCrossRepository":false}'
+       echo "BRANCH=[$(pr_head_branch 819)]"`,
+    );
+    assert.match(out, /BRANCH=\[factory\/issue-797\]/);
+    assert.match(
+      out,
+      /GH pr view 819 --repo JakubAnderwald\/drafto --json headRefName,isCrossRepository/,
+    );
+  });
+
+  it("returns nothing for a PR from a fork, which the factory's push can't reach", () => {
+    const out = run(
+      ["pr_head_branch"],
+      `${ghStub}
+       FIXTURE='{"headRefName":"factory/issue-797","isCrossRepository":true}'
+       echo "BRANCH=[$(pr_head_branch 819)]"`,
+    );
+    assert.match(out, /BRANCH=\[\]/);
+  });
+
+  it("returns nothing when gh fails", () => {
+    const out = run(
+      ["pr_head_branch"],
+      `${ghStub}
+       FIXTURE=''
+       echo "BRANCH=[$(pr_head_branch 819)]"`,
+    );
+    assert.match(out, /BRANCH=\[\]/);
   });
 });
 
