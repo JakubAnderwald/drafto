@@ -395,6 +395,9 @@ describe("build_watch_bundle carries the merge result", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [],
       nextFreeAdr: "0062",
+      migrationErrors: [
+        { reason: "stale", file: "20261101000001_q.sql", suggested: "20261113000001" },
+      ],
     });
     const out = run(
       ["build_watch_bundle"],
@@ -409,6 +412,9 @@ describe("build_watch_bundle carries the merge result", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [],
       nextFreeAdr: "0062",
+      migrationErrors: [
+        { reason: "stale", file: "20261101000001_q.sql", suggested: "20261113000001" },
+      ],
     });
   });
 });
@@ -472,6 +478,110 @@ describe("--watch conflict pass wiring", () => {
     assert.match(failure, /"Blocked"/);
     assert.match(failure, /factory:bump-attempts/);
     assert.match(outcome, /continue/);
+  });
+
+  // ADR-0077: a conflict or red CI after main moved can be a migration of this
+  // PR's that no longer sorts after main's. The renumber gate gets it first, so
+  // neither the merge nor a fix pass (and its attempt) is spent on a rename.
+  it("runs the migration renumber gate before merge-main and before any attempt is spent", () => {
+    const gateAt = watchBlock.indexOf(
+      'migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$(echo "$PR_VIEW"',
+    );
+    const budgetAt = watchBlock.indexOf("# Retry budget for the fix loop.");
+    const mergeAt = watchBlock.indexOf('worktree-cli.mjs" merge-main --path "$WT_PATH"');
+    const bumpAt = watchBlock.indexOf("factory:bump-attempts");
+    assert.ok(gateAt > 0 && gateAt < budgetAt && gateAt < mergeAt && gateAt < bumpAt);
+    const call = watchBlock.slice(gateAt - 200, gateAt + 300);
+    assert.match(call, /if \[\[ "\$CONFLICTING" -eq 1 \|\| "\$FAILING" -gt 0 \]\]; then/);
+    // Only a renumber skips the pass (the card waits for CI on the new head).
+    // A plan that needs a person, a spent budget or an error lets it run, so the
+    // watch prompt's "Migration order" recipe stays the fallback instead of the
+    // card sitting in In Review for good.
+    assert.match(
+      call,
+      /migration_renumber_gate [^\n]* "In Review" \|\| true\n\s*\[\[ "\$MIGRATION_RENUMBER_RESULT" == "renumbered" \]\] && continue/,
+    );
+    assert.doesNotMatch(call, /== "error" \]\] \|\| continue/);
+  });
+
+  // A clean merge that leaves a migration-order error reaches here only when the
+  // gate couldn't rename it mechanically. Rolling it back every tick, spending
+  // nothing, would loop forever; the agent gets it like an ADR clash, and
+  // merge-check refuses a resolution that still leaves one.
+  it("hands a clean merge that leaves a migration-order error to the agent, unpushed", () => {
+    const arm = watchBlock.slice(
+      watchBlock.indexOf("          up-to-date|clean)"),
+      watchBlock.indexOf("          conflicts) ;;"),
+    );
+    const pushGate = 'if [[ "$ADR_CLASHES" -eq 0 && "$MIG_ERRORS" -eq 0 ]]; then';
+    assert.ok(arm.includes(pushGate), "the push must wait for zero migration-order errors");
+    const check = arm.slice(0, arm.indexOf(pushGate));
+    assert.match(
+      check,
+      /MIG_ERRORS=\$\(echo "\$MERGE_JSON" \| jq '\(\.migrationErrors \/\/ \[\]\) \| length'/,
+    );
+    assert.match(check, /handing the merge to the agent/);
+    assert.doesNotMatch(
+      check,
+      /rollback_conflict_pass|continue|bump-attempts|worktree-cli\.mjs" push/,
+    );
+    // And it runs before the push.
+    assert.ok(arm.indexOf("MIG_ERRORS") < arm.indexOf('worktree-cli.mjs" push'));
+  });
+
+  // Only a merge git just made goes to the agent. up-to-date made none (the
+  // branch already holds main), so it waits for GitHub with no Claude run, as
+  // before, and the red CI reaches the fix loop on a later tick.
+  describe("the up-to-date|clean arm", () => {
+    const start = watchBlock.indexOf('        case "$MERGE_STATUS" in');
+    const end = watchBlock.indexOf("        esac", start);
+    assert.ok(start !== -1 && end !== -1, "conflict pass case not found");
+    const ERR = [{ reason: "duplicate-base", file: "20261111000001_q.sql" }];
+    function arm(status, { ahead = false, migrationErrors = [] } = {}) {
+      const json = JSON.stringify({ status, ahead, migrationErrors });
+      const out = run(
+        [],
+        `
+ISSUE_NUM=794; PR_NUM=802; WT_PATH=/wt; MERGE_BEFORE=b; ADR_CLASHES=0; STATE_FILE=/s
+MERGE_STATUS=${status}
+MERGE_JSON='${json}'
+node() { echo "NODE $*" >>"$CALLS"; }
+rollback_conflict_pass() { echo "ROLLBACK $*" >>"$CALLS"; }
+for _once in 1; do
+${watchBlock.slice(start, end)}        esac
+  echo AGENT
+done`,
+      );
+      const [stdout, calls] = out.split("---\n");
+      return { agent: stdout.includes("AGENT"), calls };
+    }
+
+    it("hands a clean merge with a migration-order error to the agent, unpushed", () => {
+      const r = arm("clean", { ahead: true, migrationErrors: ERR });
+      assert.ok(r.agent);
+      assert.match(r.calls, /leaves 1 migration-order error\(s\) \(20261111000001_q\.sql\)/);
+      assert.doesNotMatch(r.calls, /NODE .*push|ROLLBACK/);
+    });
+
+    it("waits for GitHub on up-to-date, as before, whatever the order check says", () => {
+      const r = arm("up-to-date", { migrationErrors: ERR });
+      assert.ok(!r.agent, "no Claude run when git made no merge");
+      assert.match(r.calls, /already contains main; waiting for GitHub to recompute mergeability/);
+      assert.doesNotMatch(r.calls, /handing the merge to the agent/);
+    });
+
+    it("pushes a clean merge that leaves no error, with no Claude run", () => {
+      const r = arm("clean", { ahead: true });
+      assert.ok(!r.agent);
+      assert.match(r.calls, /NODE \/factory\/scripts\/lib\/worktree-cli\.mjs push/);
+    });
+  });
+
+  it("counts a migration-order error left by the agent as unresolved", () => {
+    assert.match(
+      script,
+      /CONFLICT_PASS_WHY="unresolved: \$\(echo "\$check" \| jq -c '\{[^}]*adrCollisions, migrationErrors\}'\)"/,
+    );
   });
 
   it("retries an unreachable origin without spending budget", () => {

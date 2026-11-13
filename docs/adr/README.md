@@ -107,3 +107,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0074](./0074-app-links-verify-on-apex-only.md)                                | App Links and Universal Links Verify on the Apex Only                           | Accepted           | 2026-11-11 |
 | [0075](./0075-product-metrics-as-service-role-sql-functions.md)                | Product Metrics as Service-Role SQL Functions                                   | Accepted           | 2026-11-12 |
 | [0076](./0076-factory-watch-effort-and-retry-budget.md)                        | Factory Watch Effort and Retry Budget                                           | Accepted           | 2026-11-13 |
+| [0077](./0077-factory-renumbers-migrations-mechanically.md)                    | The Factory Renumbers Stale Migrations Mechanically                             | Accepted           | 2026-11-13 |
