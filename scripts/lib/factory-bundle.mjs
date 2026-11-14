@@ -86,6 +86,10 @@
 //     "replyDir":      "<factory>/logs/factory/replies/issue-<n>" | null,
 //     "priorPr":       { "number", "url", "headRef", "state" } | null,
 //     "attempts":      <number>,
+//     "migrations"?:   { "mainNewest", "ownNewest", "versions": [...],
+//                        "claimed": [{ "pr", "file" }] }
+//                      (migration-renumber.mjs next-version; only when the spec
+//                      says schema changes, ADR-0079),
 //     "config":        { "phase", ... },
 //     "repo":          { "nameWithOwner", "headRef" }
 //   }
@@ -595,6 +599,69 @@ export function buildFactoryPlanBundle({
   return bundle;
 }
 
+// The migration versions the implementer must use (ADR-0079), from
+// `migration-renumber.mjs next-version`: `versions` in order, one per new
+// migration. Other open PRs' file names reach the model here, and anyone can
+// open a PR on this public repo, so only names of the strict `<14
+// digits>_<word chars>.sql` shape get through. Claims at or below main's
+// newest can't collide with a new version, so they are dropped before the list
+// is capped. Null unless `versions` is a non-empty, strictly increasing list of
+// 14-digit versions.
+const MAX_CLAIMED_MIGRATIONS = 200;
+const MAX_VERSIONS = 20;
+const VERSION_14 = /^\d{14}$/;
+const CLAIMED_FILE = /^(\d{14})_[A-Za-z0-9_.-]{1,120}\.sql$/;
+
+function shapeVersions(versions) {
+  if (!Array.isArray(versions) || versions.length === 0 || versions.length > MAX_VERSIONS) {
+    return null;
+  }
+  for (let i = 0; i < versions.length; i++) {
+    const v = versions[i];
+    if (typeof v !== "string" || !VERSION_14.test(v)) return null;
+    if (i > 0 && v <= versions[i - 1]) return null;
+  }
+  return [...versions];
+}
+
+export function shapeMigrations(m) {
+  if (!m || typeof m !== "object") return null;
+  const versions = shapeVersions(m.versions);
+  if (!versions) return null;
+  const version14 = (v) => (typeof v === "string" && VERSION_14.test(v) ? v : null);
+  const mainNewest = version14(m.mainNewest);
+  const all = Array.isArray(m.claimed) ? m.claimed : [];
+  const shaped = all.filter(
+    (c) =>
+      c &&
+      Number.isInteger(c.pr) &&
+      c.pr > 0 &&
+      typeof c.file === "string" &&
+      CLAIMED_FILE.test(c.file),
+  );
+  const live = shaped.filter(
+    (c) => mainNewest === null || CLAIMED_FILE.exec(c.file)[1] > mainNewest,
+  );
+  return {
+    mainNewest,
+    ownNewest: version14(m.ownNewest),
+    versions,
+    claimed: live
+      .slice(0, MAX_CLAIMED_MIGRATIONS)
+      .map((c) => ({ pr: c.pr, file: c.file, version: CLAIMED_FILE.exec(c.file)[1] })),
+    // For bash, not the implementer: whether `claimed` holds every live claim
+    // bash sent. The shaping above is for the model; the implement post-check
+    // reuses `claimed` only when nothing was dropped (an odd name, a version
+    // that isn't 14 digits, the cap) and the sweep read every open PR (no
+    // `skipped`), and sweeps the open PRs itself otherwise.
+    claimedComplete:
+      Array.isArray(m.claimed) &&
+      !(Array.isArray(m.skipped) && m.skipped.length > 0) &&
+      shaped.length === all.length &&
+      live.length <= MAX_CLAIMED_MIGRATIONS,
+  };
+}
+
 export function buildFactoryImplementBundle({
   issue,
   approvedPlan,
@@ -605,6 +672,7 @@ export function buildFactoryImplementBundle({
   replyDir = null,
   priorPr = null,
   attempts = 0,
+  migrations = null,
   config,
   repo,
   nowIso,
@@ -663,6 +731,11 @@ export function buildFactoryImplementBundle({
         }
       : null,
     attempts: Number.isInteger(attempts) ? attempts : 0,
+    // The versions for new migrations, clear of main and of every other open
+    // PR's (ADR-0079). Only for a spec that says schema changes; null
+    // otherwise, or when bash couldn't work them out, and the prompt's date
+    // rule applies.
+    migrations: spec.schemaChanges === true ? shapeMigrations(migrations) : null,
     config: shapeConfig(config),
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
@@ -1350,6 +1423,7 @@ async function main() {
       replyDir: input.replyDir,
       priorPr: input.priorPr,
       attempts: input.attempts,
+      migrations: input.migrations,
       config: input.config,
       repo: input.repo,
       nowIso: input.nowIso,
