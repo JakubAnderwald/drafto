@@ -54,7 +54,7 @@ Add a factory-owned **Testing** column between In Review and In Test. With `FACT
   - Two more lanes compete for the Mac mini's RAM with the beta builds. The shell lane runs one at a time, under `nice`, and is deferred under memory pressure.
   - The board has one more column, which the board-migration script had to learn to add without wiping card statuses (Wave 3A).
 - **Neutral**:
-  - **Privacy policy: no change.** The lanes use only the dedicated dev test account, dev Supabase and per-commit previews. Evidence stays on the Mac mini; only the scanned, defanged report reaches GitHub. No new third-party processor receives user data.
+  - **Privacy policy: no change.** The lanes use only the dedicated dev test account, dev Supabase and per-commit previews. Evidence stays on the Mac mini; only the scanned, defanged report reaches GitHub. Since [ADR-0072](./0072-factory-test-run-screenshots-on-github.md), that report also carries the Web lane's screenshots, inside the lane's details: they show the dev test account on dev data, and are published only when the lane reported and its text wasn't withheld. The shell lane's evidence still never leaves the Mac mini. No new third-party processor receives user data.
   - The report is posted once per commit. A card handed back and re-verified on the same commit doesn't post a second report.
 
 ## Alternatives Considered

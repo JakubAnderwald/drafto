@@ -8,6 +8,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,10 +34,18 @@ import { BROWSER_RUN_KINDS } from "../lib/factory-bundle.mjs";
 //      are validated under bash 3.2;
 //   4. the In Test web run is once per head SHA, bounded per SHA, waits for
 //      the scenario and the per-commit preview, never moves the card, and only
-//      posts what browser-report.mjs rendered.
+//      posts what browser-report.mjs rendered;
+//   5. the run's screenshots (ADR-0072) are published by the factory's own
+//      node after the run, never inside a claude call: only an In Test run
+//      whose report wasn't withheld, found through the session id the runner
+//      call wrote, scanned with an OCR helper compiled into $LOG_DIR/bin, and
+//      a failed upload or re-render posts the report as first rendered, with
+//      the card, the claim and the attempt as they would be without it.
 //
 // Two layers, like factory-agent-cr-cli.test.mjs: static lock-ins over the
 // script source, and the real functions run in bash with node and gh stubbed.
+// swiftc is always a fake on PATH (CI has none; the Mac mini's real one would
+// take a minute per test).
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const scriptsDir = resolve(HERE, "..");
@@ -72,6 +82,62 @@ const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
 const repoRoot = resolve(scriptsDir, "..");
 const SIGNIN_ROUTE_PATH = script.match(/^FACTORY_SIGNIN_ROUTE_PATH="([^"]+)"$/m)?.[1];
+// The browser runner's session id, as run_browser_task writes it to the run dir.
+const SESSION_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const OCR_SRC_REL = "apps/desktop/e2e/in-test/lib/ocr.swift";
+
+// A fake swiftc in <dir>/fakebin: logs its argv and writes an executable to
+// its -o argument (or fails). Put first on PATH, it shadows the Mac mini's.
+function fakeSwiftc(dir, { fail = false } = {}) {
+  const bin = join(dir, "fakebin");
+  mkdirSync(bin, { recursive: true });
+  const log = join(dir, "swiftc-calls.txt");
+  writeFileSync(
+    join(bin, "swiftc"),
+    `#!/bin/sh
+echo "swiftc $*" >>${JSON.stringify(log)}
+${fail ? "exit 1" : ""}
+out=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-o" ]; then out="$2"; shift; fi
+  shift
+done
+printf '#!/bin/sh\\necho fake-ocr\\n' >"$out"
+chmod +x "$out"
+`,
+    { mode: 0o755 },
+  );
+  return { bin, log };
+}
+
+// A PATH directory holding only node and <tools>: no swiftc, wherever it lives.
+function minimalPath(dir, tools) {
+  const bin = join(dir, "minbin");
+  mkdirSync(bin, { recursive: true });
+  symlinkSync(process.execPath, join(bin, "node"));
+  for (const t of tools) {
+    const r = spawnSync("bash", ["-c", `command -v ${t}`], { encoding: "utf8" });
+    const p = r.stdout.trim();
+    if (r.status === 0 && p.startsWith("/")) symlinkSync(p, join(bin, t));
+  }
+  return bin;
+}
+
+// `upload --issue 501 --sha …` as recorded by a stub → {"--issue": "501", …}.
+function uploadFlags(args) {
+  assert.equal(args[0], "upload");
+  const flags = {};
+  for (let i = 1; i < args.length; i += 2) flags[args[i]] = args[i + 1];
+  return flags;
+}
+
+const readLines = (file) =>
+  existsSync(file)
+    ? readFileSync(file, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+    : [];
 
 describe("factory-agent.sh browser runner: static wiring", () => {
   it("passes bash -n", () => {
@@ -119,6 +185,92 @@ describe("factory-agent.sh browser runner: static wiring", () => {
       extract("run_browser_task"),
       /printf '%s' "\$input" \| PATH="\$path_prefix\$PATH" CLAUDE_CALL_TIMEOUT_SEC="\$FACTORY_BROWSER_TIMEOUT_SEC" \\\n\s+node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p --chrome/,
     );
+  });
+
+  it("writes the runner's session id to the run dir before the runner starts", () => {
+    // It names the guard's decision log, which lists the screenshots the guard
+    // copied: publishing them after the run finds the log through it.
+    const fn = extract("run_browser_task");
+    const write = fn.indexOf(`printf '%s\\n' "$uuid" >"$run_dir/session-id"`);
+    assert.ok(write !== -1, "run_browser_task must write $run_dir/session-id");
+    assert.ok(write > fn.indexOf("uuid=$(uuidgen"), "after the uuid is drawn");
+    assert.ok(write < fn.indexOf('run-claude.mjs" -p --chrome'), "before the runner call");
+    // A failed write can't stop the run: the upload then has no guard log.
+    assert.match(fn, /"\$run_dir\/session-id" 2>>"\$LOG_FILE" \|\| true\n/);
+  });
+
+  it("publishes screenshots from the factory's own node only, never inside a claude call", () => {
+    // ADR-0072: the runner keeps no gh and no Bash beyond ADR-0073's
+    // dev-inspect; the upload is evidence-upload.mjs, run by bash after the
+    // session, from one function.
+    const calls = script.match(/node "\$SCRIPT_DIR\/lib\/evidence-upload\.mjs"/g) || [];
+    assert.equal(calls.length, 1, "one invocation in the whole script");
+    assert.match(
+      extract("evidence_upload"),
+      /node "\$SCRIPT_DIR\/lib\/evidence-upload\.mjs" upload --issue "\$issue_num"/,
+    );
+    assert.equal(claudeCalls(script).length, 7, "no claude call was added for it");
+    for (const c of claudeCalls(script)) {
+      assert.doesNotMatch(c, /evidence-upload|evidence_upload|publish_screenshots/);
+    }
+    const [runner] = claudeCalls(script).filter((c) => /\s--chrome\b/.test(c));
+    // Its built-in tools still come from the guard alone: "" (Chrome only), or
+    // "Bash" for a dev-inspect run, whose hook allows only that one command.
+    assert.match(runner, /--tools "\$tools"/, "the runner's tools still come from the guard");
+    assert.match(
+      extract("run_browser_task"),
+      /tools=\$\(node "\$guard" session-tools --config "\$cfg"/,
+      "and only from its session-tools: no gh, no publishing",
+    );
+    assert.doesNotMatch(
+      extract("run_browser_task"),
+      /evidence-upload|evidence_upload|publish_screenshots|evidence_ocr_bin/,
+      "nothing is published from inside the runner's function",
+    );
+    for (const name of [
+      "evidence_ocr_bin",
+      "browser_guard_log",
+      "evidence_upload",
+      "browser_publish_screenshots",
+      "verify_publish_screenshots",
+    ]) {
+      const fn = extract(name);
+      assert.doesNotMatch(fn, /run-claude\.mjs|--chrome|claude -p/, name);
+      assert.doesNotMatch(
+        fn,
+        /^\s*gh |\| gh |\$\(gh /m,
+        `${name} talks to GitHub only through node`,
+      );
+    }
+  });
+
+  it("publishes the intest kind's screenshots after the verify branch returns, before the post", () => {
+    const fn = extract("browser_run");
+    const verifyEnd = fn.indexOf(
+      'browser_lane_finish verify "$issue_num" "$head_sha" "reported:$verdict" "$run_dir"',
+    );
+    const publish = fn.indexOf(
+      'browser_publish_screenshots "$issue_num" "$head_sha" "$run_dir" "$body_file" "$withheld"',
+    );
+    const post = fn.indexOf(
+      'gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file "$body_file"',
+    );
+    assert.ok(verifyEnd !== -1 && publish !== -1 && post !== -1);
+    assert.ok(verifyEnd < publish && publish < post);
+    assert.match(fn.slice(verifyEnd, publish), /\n\s*return 0\n\s*fi\n/, "verify has returned");
+    // One call site in the whole script, and none in the plan kind's run.
+    assert.equal(
+      script.split("\n").filter((l) => /^\s*browser_publish_screenshots "/.test(l)).length,
+      1,
+    );
+    assert.doesNotMatch(
+      extract("plan_probe_browser_run"),
+      /browser_publish_screenshots|evidence_upload/,
+      "plan-probe screenshots stay on the Mac mini",
+    );
+    // The intest kind's first render writes the JSON the upload reads.
+    assert.match(fn, /--json-out "\$run_dir\/render\.json"/);
+    assert.match(extract("browser_publish_screenshots"), /"\$run_dir\/render\.json"/);
   });
 
   it("keeps the operator's claude.ai connectors out of every factory call", () => {
@@ -428,6 +580,58 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
       assert.equal(r.status, expected, `switch=${sw} kinds=${kinds} kind=${kind}`);
     }
   });
+
+  describe("FACTORY_EVIDENCE_UPLOAD (ADR-0072)", () => {
+    const evidenceBlock = script.match(
+      /FACTORY_EVIDENCE_UPLOAD="\$\{FACTORY_EVIDENCE_UPLOAD:-1\}"[\s\S]*?\nexport FACTORY_EVIDENCE_UPLOAD\n/,
+    );
+
+    // The value as the script sets it, and as a child process (node) sees it.
+    function evidenceKnob(env) {
+      assert.ok(evidenceBlock, "FACTORY_EVIDENCE_UPLOAD block not found");
+      const r = spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          `set -euo pipefail\n${evidenceBlock[0]}\necho "E=$FACTORY_EVIDENCE_UPLOAD"\n` +
+            `/bin/bash -c 'echo "CHILD=\${FACTORY_EVIDENCE_UPLOAD:-unset}"'`,
+        ],
+        { encoding: "utf8", env: { PATH: process.env.PATH, ...env } },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      return r;
+    }
+
+    it("is on by default, and exported for evidence-upload.mjs", () => {
+      const r = evidenceKnob({});
+      assert.match(r.stdout, /^E=1$/m);
+      assert.match(r.stdout, /^CHILD=1$/m, "node reads the switch itself too");
+      assert.equal(r.stderr, "");
+    });
+
+    it("keeps screenshots on the Mac mini with 0", () => {
+      const r = evidenceKnob({ FACTORY_EVIDENCE_UPLOAD: "0" });
+      assert.match(r.stdout, /^E=0$/m);
+      assert.match(r.stdout, /^CHILD=0$/m);
+      assert.equal(r.stderr, "");
+    });
+
+    it("turns publishing off on a bad value, with a warning, and exports that", () => {
+      for (const bad of ["yes", "2", "true", " 1"]) {
+        const r = evidenceKnob({ FACTORY_EVIDENCE_UPLOAD: bad });
+        assert.match(r.stdout, /^E=0$/m, bad);
+        assert.match(r.stdout, /^CHILD=0$/m, `${bad}: the child must see the fallback`);
+        assert.match(
+          r.stderr,
+          /invalid FACTORY_EVIDENCE_UPLOAD=.*keeping screenshots on the Mac mini/,
+        );
+      }
+    });
+
+    it("takes the default for an empty value (`:-`)", () => {
+      assert.match(evidenceKnob({ FACTORY_EVIDENCE_UPLOAD: "" }).stdout, /^E=1$/m);
+    });
+  });
 });
 
 describe("preview_url_for_sha", () => {
@@ -568,7 +772,11 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
       assert.ok(i !== -1, `missing ${flag}`);
       assert.equal(args[i + 1], value, flag);
     }
-    assert.match(args[args.indexOf("--session-id") + 1], /^[0-9a-f-]{36}$/);
+    const sid = args[args.indexOf("--session-id") + 1];
+    assert.match(sid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    // The run dir names the session, so the guard's log for it can be found
+    // after the run (ADR-0072's screenshot manifest).
+    assert.equal(readFileSync(join(dir, "run", "session-id"), "utf8"), `${sid}\n`);
     assert.ok(!args.some((a) => a.includes("s3cret-pw")), "the password must never be in argv");
     assert.match(stdin, /s3cret-pw/, "the bundle reaches the runner on stdin");
     assert.match(stdin, /# Factory browser runner/, "with the runner prompt in front");
@@ -616,10 +824,31 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
   });
 });
 
+// The upload record the evidence-upload.mjs stub writes for a published run.
+const PUBLISHED = JSON.stringify({
+  ok: true,
+  issue: "501",
+  sha: SHA,
+  commit: "c".repeat(40),
+  images: [
+    {
+      n: 1,
+      url: `https://raw.githubusercontent.com/JakubAnderwald/drafto/${"c".repeat(40)}/501/${SHA.slice(0, 12)}/intest-x/01.png`,
+    },
+  ],
+  overflow: [],
+});
+
 // browser_run's harness. kind "intest" goes through the intest_browser_run
 // wrapper (its behaviour is pinned below); kind "verify" calls browser_run
 // verify. The board (factory-project.mjs) answers the verify sink's "still in
-// Testing?" check from `testingItems`.
+// Testing?" check from `testingItems`. The screenshots' half (ADR-0072):
+// evidence-upload.mjs is stubbed (`upload`: ok writes PUBLISHED, or the "off"
+// record under FACTORY_EVIDENCE_UPLOAD=0, as the real one refuses; fail exits
+// 1; empty writes no record), the report stub renders "rendered body" first
+// and "rendered body with screenshots" when given --images-json (`rerender`:
+// fail / empty), and swiftc is a fake on PATH that compiles the real repo's
+// ocr.swift path into $LOG_DIR/bin/ocr.
 function runBrowser({
   kind = "intest",
   state = {},
@@ -647,6 +876,12 @@ function runBrowser({
   previewWaitMin = 10,
   previewRc = 1,
   preflightFailedBefore = "",
+  evidenceSwitch = 1,
+  withheldRender = false,
+  upload = "ok",
+  rerender = "ok",
+  sessionId = SESSION_ID,
+  signinKeyFile = "/nonexistent/dev-supabase-admin.env",
 } = {}) {
   {
     const dir = mkdtempSync(join(tmpdir(), "browser-intest-"));
@@ -657,6 +892,8 @@ function runBrowser({
     const stateFile = join(stateDir, "state.json");
     writeFileSync(stateFile, JSON.stringify({ issues: { 501: state } }));
     const calls = join(dir, "calls.txt");
+    const uploadsFile = join(dir, "uploads.jsonl");
+    const swiftc = fakeSwiftc(dir);
     const bundle = JSON.stringify({
       kind: "factory_browser_run",
       target: { origin: "https://drafto-x-jakubanderwalds-projects.vercel.app" },
@@ -672,7 +909,7 @@ STATE_FILE=${JSON.stringify(stateFile)}
 SCRIPT_DIR=${JSON.stringify(scriptsDir)}
 DRY_RUN=${dryRun}
 FACTORY_BROWSER_ACCOUNT_FILE=/nonexistent/account.env
-FACTORY_BROWSER_SIGNIN_KEY_FILE=/nonexistent/dev-supabase-admin.env
+FACTORY_BROWSER_SIGNIN_KEY_FILE=${JSON.stringify(signinKeyFile)}
 FACTORY_BROWSER_DEVICE_ID=9796912b-8977-4d74-9c08-d9bb283b9496
 FACTORY_BROWSER_MAX_ATTEMPTS=2
 FACTORY_SIGNIN_LEASE_SEC=300
@@ -699,6 +936,14 @@ gh() {
   fi
   echo "gh $*" >>${JSON.stringify(calls)}
   ${commentOk ? "" : 'if [[ "$1 $2" == "issue comment" ]]; then return 1; fi'}
+  if [[ "$1 $2" == "issue comment" ]]; then
+    local _p="" _a
+    for _a in "$@"; do
+      [[ "$_p" != "--body-file" ]] || echo "posted $(cat "$_a")" >>${JSON.stringify(calls)}
+      _p="$_a"
+    done
+  fi
+  return 0
 }
 transition_status() { echo "transition $*" >>${JSON.stringify(calls)}; }
 run_browser_task() {
@@ -706,7 +951,8 @@ run_browser_task() {
   echo "rundir $2" >>${JSON.stringify(calls)}
   echo "bundle-signin $(printf '%s' "$4" | jq -r '.account.signInUrl // "none"')" >>${JSON.stringify(calls)}
   ${taskRc ? `return ${taskRc}` : ""}
-  mkdir -p "$2"
+  mkdir -p "$2/evidence"
+  ${sessionId ? `printf '%s\\n' ${JSON.stringify(sessionId)} >"$2/session-id"` : ""}
   BROWSER_OUT="$2/runner-output.txt"
   echo 'browser=${renderStatus} verdict=pass' >"$BROWSER_OUT"
   BROWSER_RESULT=${JSON.stringify(taskResult)}
@@ -738,8 +984,29 @@ node() {
       echo "report $(printf '%s ' "\${@:2}")" >>${JSON.stringify(calls)}
       ${renderFails ? "return 1" : ""}
       out=$(printf '%s\\n' "$@" | grep -A1 -- '--out' | tail -1)
-      echo "rendered body" >"$out"
-      echo '{"status":"${renderStatus}","verdict":"pass","withheld":false,"secretHits":[]}' ;;
+      if [[ " $* " == *" --images-json "* ]]; then
+        ${rerender === "fail" ? "return 1" : rerender === "empty" ? ': >"$out"; echo "{}"; return 0' : ":"}
+        echo "rendered body with screenshots" >"$out"
+      else
+        echo "rendered body" >"$out"
+      fi
+      echo '{"status":"${renderStatus}","verdict":"pass","withheld":${withheldRender},"secretHits":[]}' ;;
+    */evidence-upload.mjs)
+      echo "upload" >>${JSON.stringify(calls)}
+      printf '%s\\n' "\${@:2}" | jq -Rsc 'split("\\n")[:-1]' >>${JSON.stringify(uploadsFile)}
+      uout=$(printf '%s\\n' "$@" | grep -A1 -- '--out' | tail -1)
+      case ${JSON.stringify(upload)} in
+        fail) echo "push failed" >&2; return 1 ;;
+        empty) echo '{"ok":false,"reason":"error"}'; return 0 ;;
+      esac
+      if [[ "$FACTORY_EVIDENCE_UPLOAD" == 0 ]]; then
+        echo '{"ok":false,"reason":"off"}' >"$uout"
+        echo '{"ok":false,"reason":"off","images":0}'
+      else
+        echo '${PUBLISHED}' >"$uout"
+        echo '{"ok":true,"reason":null,"images":1}'
+      fi ;;
+    */run-with-timeout.mjs) command node "$@" ;;
     */factory-project.mjs)
       echo "board $(printf '%s ' "\${@:2}")" >>${JSON.stringify(calls)}
       ${boardFails ? "return 1" : ""}
@@ -749,6 +1016,11 @@ node() {
 }
 REPO_ROOT=${JSON.stringify(repoRoot)}
 FACTORY_SIGNIN_ROUTE_PATH=${JSON.stringify(routePath)}
+FACTORY_EVIDENCE_UPLOAD=${evidenceSwitch}
+${extract("evidence_ocr_bin")}
+${extract("browser_guard_log")}
+${extract("evidence_upload")}
+${extract("browser_publish_screenshots")}
 ${extract("browser_record_result")}
 ${extract("browser_signin_release")}
 ${extract("browser_admin_link")}
@@ -770,12 +1042,18 @@ rc=0
 ${kind === "intest" ? "intest_browser_run" : `browser_run ${kind}`} 501 77 ${SHA} || rc=$?
 echo "rc=$rc"
 `;
-    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("/bin/bash", ["-c", snippet], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${swiftc.bin}:${process.env.PATH}` },
+    });
     const callLog = existsSync(calls) ? readFileSync(calls, "utf8") : "";
     const finalState = JSON.parse(readFileSync(stateFile, "utf8")).issues["501"] ?? {};
+    const uploads = readLines(uploadsFile).map(uploadFlags);
+    const swiftcCalls = existsSync(swiftc.log) ? readFileSync(swiftc.log, "utf8") : "";
+    const runDir = callLog.match(/^rundir (.*)$/m)?.[1] ?? null;
     chmodSync(stateDir, 0o700);
     rmSync(dir, { recursive: true, force: true });
-    return { r, callLog, finalState };
+    return { r, callLog, finalState, uploads, swiftcCalls, runDir, dir };
   }
 }
 
@@ -1157,6 +1435,480 @@ describe("intest_browser_run", () => {
       "a dry run mints no link",
     );
     assert.equal(finalState.browserRunAttempts ?? null, null);
+  });
+});
+
+describe("intest_browser_run: the run's screenshots (ADR-0072)", () => {
+  const run = (opts) => runBrowser({ ...opts, kind: "intest" });
+  const ready = { intestCommentSha: SHA };
+  const posted = (callLog) =>
+    callLog
+      .split("\n")
+      .filter((l) => l.startsWith("posted "))
+      .map((l) => l.slice(7));
+  const renders = (callLog) => callLog.split("\n").filter((l) => l.startsWith("report render "));
+
+  it("publishes a run's screenshots after its scan, then posts the report re-rendered with them", () => {
+    const { r, callLog, finalState, uploads, swiftcCalls, runDir, dir } = run({ state: ready });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /rc=0/);
+    assert.match(runDir, /\/browser\/issue-501-a{12}-\d{8}T\d{6}$/);
+    assert.equal(uploads.length, 1, "one upload per run");
+    const f = uploads[0];
+    assert.equal(f["--issue"], "501");
+    assert.equal(f["--sha"], SHA);
+    assert.equal(f["--source"], "browser");
+    assert.equal(f["--run-id"], `intest-${runDir.match(/-(\d{8}T\d{6})$/)[1]}`);
+    assert.equal(f["--evidence-dir"], `${runDir}/evidence`);
+    assert.equal(f["--guard-log"], `${dir}/browser-guard/${SESSION_ID}.jsonl`);
+    assert.equal(f["--render-json"], `${runDir}/render.json`, "the first render's own JSON");
+    assert.equal(f["--account-file"], "/nonexistent/account.env");
+    // The runner never held the bypass secret, and this sign-in key file
+    // doesn't exist, so neither is a literal to scan for.
+    assert.equal(f["--bypass-file"], "");
+    assert.equal(f["--signin-key-file"], "");
+    assert.equal(f["--ocr"], `${dir}/bin/ocr`, "the helper compiled into $LOG_DIR/bin");
+    assert.equal(f["--log-dir"], dir);
+    assert.equal(f["--repo-root"], repoRoot);
+    assert.equal(f["--out"], `${runDir}/upload.json`);
+    assert.equal(swiftcCalls.split("\n").filter(Boolean).length, 1, "compiled once");
+    assert.ok(swiftcCalls.includes(`-o ${dir}/bin/ocr.tmp ${repoRoot}/${OCR_SRC_REL}`));
+    // Rendered, published, rendered again with the record, then posted.
+    const [first, second, ...more] = renders(callLog);
+    assert.deepEqual(more, []);
+    assert.doesNotMatch(first, /--images-json/);
+    assert.match(first, /--json-out \S+\/render\.json /);
+    assert.ok(second.includes(`--images-json ${runDir}/upload.json `), second);
+    assert.match(second, /--json-out \S+\/render-images\.json /, "never over the first JSON");
+    assert.match(second, /--out \S+\/comment\.md\.images /);
+    const at = (needle) => callLog.indexOf(needle);
+    assert.ok(at("task intest") < at(first), "after the session, never during it");
+    assert.ok(at(first) < at("upload\n") && at("upload\n") < at(second));
+    assert.ok(at(second) < at("gh issue comment 501 "));
+    assert.deepEqual(posted(callLog), ["rendered body with screenshots"]);
+    assert.match(
+      callLog,
+      /gh issue comment 501 --repo JakubAnderwald\/drafto --body-file \S+\/comment\.md\n/,
+    );
+    assert.equal(finalState.browserRunSha, SHA);
+    assert.equal(finalState.browserRunAttempts, `${SHA}:1`);
+    assert.doesNotMatch(callLog, /^transition /m, "it never moves the card");
+  });
+
+  it("scans the screenshots for the sign-in key that minted the run's link, when its file exists", () => {
+    const keyDir = mkdtempSync(join(tmpdir(), "browser-signin-key-"));
+    try {
+      const keyFile = join(keyDir, "dev-supabase-admin.env");
+      writeFileSync(keyFile, "DEV_SUPABASE_SERVICE_ROLE_KEY=not-a-real-key\n", { mode: 0o600 });
+      const { r, uploads } = run({ state: ready, signinKeyFile: keyFile });
+      assert.match(r.stdout, /rc=0/);
+      assert.equal(uploads.length, 1);
+      assert.equal(uploads[0]["--signin-key-file"], keyFile);
+      assert.equal(uploads[0]["--bypass-file"], "", "the runner never held the bypass secret");
+    } finally {
+      rmSync(keyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a withheld report's screenshots on the Mac mini: no upload, the first render posted", () => {
+    const { r, callLog, finalState, uploads, swiftcCalls } = run({
+      state: ready,
+      withheldRender: true,
+    });
+    assert.match(r.stdout, /rc=0/);
+    assert.match(
+      r.stdout,
+      /the browser report was withheld, so its screenshots stay on the Mac mini/,
+    );
+    assert.deepEqual(uploads, []);
+    assert.equal(swiftcCalls, "", "no OCR helper is even compiled");
+    assert.equal(renders(callLog).length, 1);
+    assert.deepEqual(posted(callLog), ["rendered body"]);
+    assert.equal(finalState.browserRunSha, SHA);
+  });
+
+  for (const [what, upload] of [
+    ["exits non-zero", "fail"],
+    ["writes no upload record", "empty"],
+  ]) {
+    it(`posts the first render when the upload ${what}, the card, claim and attempt as without it`, () => {
+      const { r, callLog, finalState, uploads } = run({ state: ready, upload });
+      assert.match(r.stdout, /rc=0/, "the run's result is unchanged");
+      assert.equal(uploads.length, 1);
+      assert.match(r.stdout, /publishing #501's screenshots of a{12} failed/);
+      assert.equal(renders(callLog).length, 1, "no re-render without a record");
+      assert.deepEqual(posted(callLog), ["rendered body"]);
+      assert.equal(finalState.browserRunSha, SHA);
+      assert.equal(finalState.browserRunAttempts, `${SHA}:1`, "no attempt spent or refunded");
+      assert.doesNotMatch(callLog, /^transition /m);
+      assert.match(callLog, /health record .*--result ok /);
+      assert.equal((callLog.match(/^health record /gm) || []).length, 1);
+    });
+  }
+
+  for (const rerender of ["fail", "empty"]) {
+    it(`posts the first render when the re-render with screenshots ${rerender === "fail" ? "fails" : "writes nothing"}`, () => {
+      const { r, callLog, finalState, uploads } = run({ state: ready, rerender });
+      assert.match(r.stdout, /rc=0/);
+      assert.equal(uploads.length, 1);
+      assert.equal(renders(callLog).length, 2);
+      assert.match(r.stdout, /re-rendering #501's browser report with its screenshots failed/);
+      assert.deepEqual(posted(callLog), ["rendered body"], "the body as first rendered");
+      assert.equal(finalState.browserRunSha, SHA);
+    });
+  }
+
+  it("with FACTORY_EVIDENCE_UPLOAD=0, still asks node (which refuses) but compiles no OCR helper", () => {
+    // The node side writes the "off" record, so the re-render's footer says
+    // why the screenshots stayed on the Mac mini.
+    const { r, callLog, uploads, swiftcCalls } = run({ state: ready, evidenceSwitch: 0 });
+    assert.match(r.stdout, /rc=0/);
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0]["--ocr"], "", "no helper");
+    assert.equal(swiftcCalls, "", "no compile attempted");
+    assert.doesNotMatch(
+      r.stdout,
+      /OCR helper .* isn't available/,
+      "no warning for a switch that's off",
+    );
+    assert.match(renders(callLog)[1], /--images-json /);
+    assert.equal(posted(callLog).length, 1);
+  });
+
+  it("hands node an empty guard log when the run left no session id", () => {
+    // The node side then refuses with no-session; nothing is published blind.
+    const { r, uploads } = run({ state: ready, sessionId: null });
+    assert.match(r.stdout, /rc=0/);
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0]["--guard-log"], "");
+  });
+
+  it("publishes nothing from the verify kind's run: its screenshots go into the verification report", () => {
+    const { r, callLog, uploads, swiftcCalls, dir } = runBrowser({
+      kind: "verify",
+      state: {
+        intestCommentSha: SHA,
+        verifySha: SHA,
+        verifyStartedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      },
+    });
+    assert.match(r.stdout, /rc=0/);
+    assert.deepEqual(uploads, []);
+    // It only builds the OCR helper now, so the --watch tick that composes
+    // the verification report never has to wait for swiftc.
+    assert.equal(
+      swiftcCalls.split("\n").filter(Boolean).length,
+      1,
+      "compiled once, ahead of --watch",
+    );
+    assert.ok(swiftcCalls.includes(`-o ${dir}/bin/ocr.tmp `), swiftcCalls);
+    assert.equal(renders(callLog).length, 1);
+    assert.doesNotMatch(callLog, /--images-json/);
+  });
+
+  it("publishes nothing for a run that posts nothing", () => {
+    for (const opts of [
+      { renderStatus: "signin-failed" },
+      { renderStatus: "malformed" },
+      { renderStatus: "unavailable" },
+      { taskResult: "timeout" },
+      { renderFails: true },
+    ]) {
+      const { uploads, callLog } = run({ state: ready, ...opts });
+      assert.deepEqual(uploads, [], JSON.stringify(opts));
+      assert.deepEqual(posted(callLog), [], JSON.stringify(opts));
+    }
+  });
+});
+
+// evidence_ocr_bin, browser_guard_log and evidence_upload on their own: a temp
+// repo root (with or without ocr.swift), a temp $LOG_DIR, swiftc a fake on
+// PATH or absent from it, and evidence-upload.mjs stubbed ("stub", recording
+// its argv) or the real CLI ("real", which must accept every flag bash passes).
+function withEvidence(
+  body,
+  { sw = 1, source = true, swiftc = "ok", upload = "stub", uploadMode = "ok" } = {},
+  fn,
+) {
+  const dir = mkdtempSync(join(tmpdir(), "browser-evidence-"));
+  try {
+    const repo = join(dir, "repo");
+    mkdirSync(join(repo, dirname(OCR_SRC_REL)), { recursive: true });
+    if (source) writeFileSync(join(repo, OCR_SRC_REL), "// the Vision OCR helper\n");
+    const logDir = join(dir, "logs");
+    mkdirSync(logDir);
+    const logFile = join(dir, "agent.log");
+    const uploadsFile = join(dir, "uploads.jsonl");
+    const fake = swiftc === "none" ? null : fakeSwiftc(dir, { fail: swiftc === "fail" });
+    const PATH = fake
+      ? `${fake.bin}:${process.env.PATH}`
+      : minimalPath(dir, ["head", "tail", "cat", "mkdir", "mv", "rm", "chmod", "jq", "grep"]);
+    const stub =
+      upload !== "stub"
+        ? ""
+        : `node() {
+  case "$1" in
+    */evidence-upload.mjs)
+      printf '%s\\n' "\${@:2}" | jq -Rsc 'split("\\n")[:-1]' >>${JSON.stringify(uploadsFile)}
+      uout=$(printf '%s\\n' "$@" | grep -A1 -- '--out' | tail -1)
+      case ${JSON.stringify(uploadMode)} in
+        fail) return 1 ;;
+        empty) echo '{"ok":false}'; return 0 ;;
+      esac
+      echo '${PUBLISHED}' >"$uout"
+      echo '{"ok":true,"images":1}' ;;
+    *) command node "$@" ;;
+  esac
+}`;
+    const snippet = `set -euo pipefail
+LOG_DIR=${JSON.stringify(logDir)}
+LOG_FILE=${JSON.stringify(logFile)}
+SCRIPT_DIR=${JSON.stringify(scriptsDir)}
+REPO_ROOT=${JSON.stringify(repo)}
+FACTORY_EVIDENCE_UPLOAD=${sw}
+export FACTORY_EVIDENCE_UPLOAD
+log() { echo "[log] $*" >>"$LOG_FILE"; }
+${stub}
+${extract("evidence_ocr_bin")}
+${extract("browser_guard_log")}
+${extract("evidence_upload")}
+${body}
+`;
+    const r = spawnSync("/bin/bash", ["-c", snippet], {
+      encoding: "utf8",
+      env: { HOME: process.env.HOME, PATH },
+    });
+    const read = (f) => (existsSync(f) ? readFileSync(f, "utf8") : "");
+    fn({
+      r,
+      dir,
+      repo,
+      logDir,
+      log: read(logFile),
+      swiftcCalls: fake ? read(fake.log) : "",
+      uploads: readLines(uploadsFile).map(uploadFlags),
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("evidence_ocr_bin", () => {
+  const twice = 'a=$(evidence_ocr_bin); b=$(evidence_ocr_bin); echo "a=$a"; echo "b=$b"';
+  const once = 'rc=0; out=$(evidence_ocr_bin) || rc=$?; echo "rc=$rc out=[$out]"';
+
+  it("compiles ocr.swift into $LOG_DIR/bin/ocr once, and reuses it while it isn't stale", () => {
+    withEvidence(twice, {}, ({ r, logDir, repo, swiftcCalls }) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, `a=${logDir}/bin/ocr\nb=${logDir}/bin/ocr\n`);
+      const compiles = swiftcCalls.split("\n").filter(Boolean);
+      assert.deepEqual(compiles, [`swiftc -O -o ${logDir}/bin/ocr.tmp ${repo}/${OCR_SRC_REL}`]);
+      assert.ok(statSync(join(logDir, "bin", "ocr")).mode & 0o100, "executable");
+      assert.ok(!existsSync(join(logDir, "bin", "ocr.tmp")), "compiled to a temp name, then moved");
+    });
+  });
+
+  it("compiles again once the source is newer than the helper", () => {
+    const body = `evidence_ocr_bin >/dev/null\ntouch -t 202001010000 "$LOG_DIR/bin/ocr"\n${twice}`;
+    withEvidence(body, {}, ({ r, swiftcCalls }) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(swiftcCalls.split("\n").filter(Boolean).length, 2, "stale once, then fresh");
+    });
+  });
+
+  it("fails, printing nothing and leaving no helper, when the compile fails", () => {
+    withEvidence(once, { swiftc: "fail" }, ({ r, logDir, swiftcCalls }) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), "rc=1 out=[]");
+      assert.equal(swiftcCalls.split("\n").filter(Boolean).length, 1);
+      assert.ok(!existsSync(join(logDir, "bin", "ocr")));
+      assert.ok(!existsSync(join(logDir, "bin", "ocr.tmp")));
+    });
+  });
+
+  it("fails when there is no swiftc on PATH (CI, a Mac without the Xcode tools)", () => {
+    withEvidence(once, { swiftc: "none" }, ({ r, logDir }) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), "rc=1 out=[]");
+      assert.ok(!existsSync(join(logDir, "bin")), "nothing created");
+    });
+  });
+
+  it("fails without compiling when the source isn't in the checkout", () => {
+    withEvidence(once, { source: false }, ({ r, swiftcCalls }) => {
+      assert.equal(r.stdout.trim(), "rc=1 out=[]");
+      assert.equal(swiftcCalls, "");
+    });
+  });
+
+  it("points at the macOS harness's real OCR source", () => {
+    assert.ok(existsSync(join(repoRoot, OCR_SRC_REL)), `${OCR_SRC_REL} must exist`);
+    assert.ok(
+      extract("evidence_ocr_bin").includes(`"$REPO_ROOT/${OCR_SRC_REL}"`),
+      "evidence_ocr_bin compiles that file",
+    );
+    assert.match(
+      extract("evidence_ocr_bin"),
+      /node "\$SCRIPT_DIR\/lib\/run-with-timeout\.mjs" 300 swiftc /,
+      "a capped compile",
+    );
+  });
+});
+
+describe("browser_guard_log", () => {
+  const guard = (sessionFile) =>
+    `mkdir -p "$LOG_DIR/run"\n${sessionFile}\nrc=0; out=$(browser_guard_log "$LOG_DIR/run") || rc=$?; echo "rc=$rc out=[$out]"`;
+
+  it("names the run's guard log from its session id", () => {
+    withEvidence(
+      guard(`printf '%s\\n' ${SESSION_ID} >"$LOG_DIR/run/session-id"`),
+      {},
+      ({ r, logDir }) => {
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(r.stdout.trim(), `rc=0 out=[${logDir}/browser-guard/${SESSION_ID}.jsonl]`);
+      },
+    );
+    // Only the first line counts.
+    withEvidence(
+      guard(`printf '%s\\nextra\\n' ${SESSION_ID} >"$LOG_DIR/run/session-id"`),
+      {},
+      ({ r }) => assert.match(r.stdout, /^rc=0 /),
+    );
+  });
+
+  it("fails when the session id is missing or isn't a lowercase uuid", () => {
+    for (const [what, write] of [
+      ["missing", ":"],
+      ["empty", ': >"$LOG_DIR/run/session-id"'],
+      ["garbage", `printf 'not-a-uuid\\n' >"$LOG_DIR/run/session-id"`],
+      ["uppercase", `printf '%s\\n' ${SESSION_ID.toUpperCase()} >"$LOG_DIR/run/session-id"`],
+      ["a path", `printf '../../etc/passwd\\n' >"$LOG_DIR/run/session-id"`],
+      ["trailing junk", `printf '%s/x\\n' ${SESSION_ID} >"$LOG_DIR/run/session-id"`],
+    ]) {
+      withEvidence(guard(write), {}, ({ r }) => {
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(r.stdout.trim(), "rc=1 out=[]", what);
+      });
+    }
+  });
+});
+
+describe("evidence_upload", () => {
+  const call = (account = "/acct.env") =>
+    [
+      'mkdir -p "$LOG_DIR/run"',
+      "rc=0",
+      `evidence_upload 501 ${SHA} intest-20261110T051950 "$LOG_DIR/run/evidence" "$LOG_DIR/browser-guard/${SESSION_ID}.jsonl" "$LOG_DIR/run/render.json" "${account}" "$LOG_DIR/run/upload.json" || rc=$?`,
+      'echo "rc=$rc"',
+    ].join("\n");
+
+  it("passes the run's facts to evidence-upload.mjs upload, with the compiled helper", () => {
+    withEvidence(call(), {}, ({ r, logDir, repo, uploads, log }) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /^rc=0$/m);
+      assert.equal(uploads.length, 1);
+      assert.deepEqual(uploads[0], {
+        "--issue": "501",
+        "--sha": SHA,
+        "--run-id": "intest-20261110T051950",
+        "--evidence-dir": `${logDir}/run/evidence`,
+        "--source": "browser",
+        "--guard-log": `${logDir}/browser-guard/${SESSION_ID}.jsonl`,
+        "--render-json": `${logDir}/run/render.json`,
+        "--account-file": "/acct.env",
+        "--ocr": `${logDir}/bin/ocr`,
+        // Not given in this call: node then scans for the password alone.
+        "--bypass-file": "",
+        "--signin-key-file": "",
+        "--log-dir": logDir,
+        "--repo-root": repo,
+        "--out": `${logDir}/run/upload.json`,
+      });
+      assert.match(log, /Issue #501: screenshots of a{12} \(intest-20261110T051950\): \{"ok":true/);
+    });
+  });
+
+  it('still asks node, with --ocr "", when the helper can\'t be compiled (node then refuses)', () => {
+    for (const opts of [{ swiftc: "none" }, { swiftc: "fail" }, { source: false }]) {
+      withEvidence(call(), opts, ({ r, uploads, log }) => {
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(uploads.length, 1, JSON.stringify(opts));
+        assert.equal(uploads[0]["--ocr"], "", JSON.stringify(opts));
+        assert.match(log, /OCR helper that scans screenshots for secrets isn't available/);
+      });
+    }
+  });
+
+  it("never compiles the helper with the switch off", () => {
+    withEvidence(call(), { sw: 0 }, ({ r, logDir, uploads, swiftcCalls, log }) => {
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(uploads[0]["--ocr"], "");
+      assert.equal(swiftcCalls, "");
+      assert.ok(!existsSync(join(logDir, "bin")));
+      assert.doesNotMatch(log, /OCR helper/);
+    });
+  });
+
+  it("returns 1, with a warning, when node fails or leaves no record", () => {
+    for (const uploadMode of ["fail", "empty"]) {
+      withEvidence(call(), { uploadMode }, ({ r, log }) => {
+        assert.equal(r.status, 0, r.stderr);
+        assert.match(r.stdout, /^rc=1$/m, uploadMode);
+        assert.match(log, /publishing #501's screenshots of a{12} failed/);
+      });
+    }
+  });
+
+  // The real CLI: a usage error (a flag bash doesn't pass, or "" where a value
+  // is required) would exit 2 and leave no record, turning every refusal into
+  // a "failed" upload. These end at a gate before any git call, except the
+  // last: past the gates, the run's ref is asked first (a retry reuses what is
+  // published), so it gets a temp origin with no evidence ref and ends at the
+  // missing guard log, before anything is pushed.
+  describe("against the real evidence-upload.mjs", () => {
+    const real = (setup) => `${setup}\n${call("")}\ncat "$LOG_DIR/run/upload.json"`;
+    const clean = `mkdir -p "$LOG_DIR/run"; printf '%s\\n' '{"withheld":false,"secretHits":[]}' >"$LOG_DIR/run/render.json"`;
+    const record = (stdout) => JSON.parse(stdout.slice(stdout.indexOf("{")));
+
+    for (const [what, setup, opts, reason] of [
+      ["the switch is off", clean, { sw: 0 }, "off"],
+      [
+        "the render was withheld",
+        `mkdir -p "$LOG_DIR/run"; printf '%s\\n' '{"withheld":true}' >"$LOG_DIR/run/render.json"`,
+        {},
+        "withheld",
+      ],
+      ["the render JSON is missing (fails closed)", ":", {}, "withheld"],
+      ["the selftest hasn't passed", clean, {}, "selftest-missing"],
+      [
+        "the selftest failed",
+        `${clean}; printf '%s\\n' '{"ok":false}' >"$LOG_DIR/evidence-selftest.json"`,
+        {},
+        "selftest-failed",
+      ],
+      [
+        "the guard log isn't there",
+        [
+          clean,
+          `printf '%s\\n' '{"ok":true}' >"$LOG_DIR/evidence-selftest.json"`,
+          'git init -q --bare "$LOG_DIR/origin.git"',
+          'git -C "$REPO_ROOT" init -q',
+          'git -C "$REPO_ROOT" remote add origin "$LOG_DIR/origin.git"',
+        ].join("; "),
+        {},
+        "no-session",
+      ],
+    ]) {
+      it(`records why nothing was published when ${what}, and returns 0`, () => {
+        withEvidence(real(setup), { ...opts, upload: "real" }, ({ r, logDir }) => {
+          assert.equal(r.status, 0, r.stderr);
+          assert.match(r.stdout, /^rc=0$/m);
+          assert.deepEqual(record(r.stdout), { ok: false, reason });
+          const mode = statSync(join(logDir, "run", "upload.json")).mode & 0o777;
+          assert.equal(mode, 0o600, "the record is private");
+        });
+      });
+    }
   });
 });
 

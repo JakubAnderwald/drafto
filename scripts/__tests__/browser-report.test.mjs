@@ -34,10 +34,17 @@ import {
   runShaMarker,
   scanForSecrets,
 } from "../lib/browser-report.mjs";
+import { CAP_WHY } from "../lib/evidence-images.mjs";
+import { fenceStep } from "../lib/markdown-fence.mjs";
 
 // Guards the only path from the browser runner's stdout to a public GitHub
 // comment: the runner drives the Mac mini's signed-in Chrome, so its output is
 // parsed strictly, scanned for secrets and defanged before bash posts it.
+// Since ADR-0072 the comment can also embed the run's published screenshots
+// (an upload record from evidence-upload.mjs): these lock in that they sit
+// under the step that took them, survive truncation, never show for a
+// withheld report or the plan kind, and that whenever nothing is embedded the
+// footer is still "Screenshots stay on the Mac mini", with why.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cli = resolve(here, "..", "lib", "browser-report.mjs");
@@ -51,6 +58,56 @@ function output({
 } = {}) {
   return `Some preamble.\n<<<REPORT\n${report}\nREPORT>>>\nbrowser=${status} verdict=${verdict}\n`;
 }
+
+// An upload record (evidence-upload.mjs's upload.json), built by hand the way
+// publishRun writes one: every image pinned to the run's evidence commit.
+const EVIDENCE_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
+const RUN_ID = "intest-20261110T000000";
+const pad = (n) => String(n).padStart(2, "0");
+
+function imageUrl(n, commit = EVIDENCE_COMMIT) {
+  return `https://raw.githubusercontent.com/JakubAnderwald/drafto/${commit}/42/${SHA.slice(0, 12)}/${RUN_ID}/${pad(n)}.png`;
+}
+
+function upload({ ns = [1, 2, 3], overflow = [], images } = {}) {
+  return {
+    ok: true,
+    issue: "42",
+    sha: SHA,
+    runId: RUN_ID,
+    ref: `refs/factory-evidence/42/${SHA.slice(0, 12)}/${RUN_ID}`,
+    commit: EVIDENCE_COMMIT,
+    images:
+      images ??
+      ns.map((n) => ({
+        n,
+        url: imageUrl(n),
+        local: `/ev/run-1/evidence/${pad(n)}.png`,
+        name: `${pad(n)}.png`,
+      })),
+    overflow,
+  };
+}
+
+const imgTag = (n) => `<img src="${imageUrl(n)}" width="480" alt="Screenshot ${n}">`;
+const imgCount = (body) => (body.match(/<img /g) ?? []).length;
+const PUBLISHED_FOOTER =
+  "<sub>Screenshots are published with this report (ADR-0072): they show the dev test " +
+  "account on dev data. Local copies and the runner's output: `/ev/run-1`.</sub>";
+const localFooter = (why = "") =>
+  `<sub>Screenshots stay on the Mac mini (this repo is public): \`/ev/run-1\`.${
+    why ? ` They weren't published: ${why}.` : ""
+  }</sub>`;
+
+// A report whose rows refer to the runner's screenshots the way rule 7 of
+// factory-browser-prompt.md asks: one, two, and none.
+const SHOTS_REPORT = [
+  "| # | Step | Result | Evidence |",
+  "|---|---|---|---|",
+  "| 1 | Sign in | PASS | the notebooks list, screenshot 1 |",
+  "| 2 | Open the notebook | PASS | screenshots 2 and 3 |",
+  "| 3 | Move it to Trash | PASS | gone from the list |",
+].join("\n");
 
 describe("parseRunnerOutput", () => {
   it("reads the report, status and verdict of a well-formed run", () => {
@@ -509,7 +566,6 @@ describe("renderVerifySection", () => {
     assert.equal(body.split("\n")[0], "**Web (browser) — verify run on the preview**");
     assert.match(body, /\*\*Verdict: PASS\*\* for `0123456`/);
     assert.match(body, /\| 1 \| Sign in \| PASS \|/);
-    assert.match(body, /Screenshots stay on the Mac mini/);
     assert.doesNotMatch(body, /drafto-factory/);
     assert.doesNotMatch(body, /<!--/);
   });
@@ -532,6 +588,263 @@ describe("renderVerifySection", () => {
     const body = renderVerifySection({ ...base, report: "x".repeat(150_000) });
     assert.ok(body.length <= COMMENT_MAX_CHARS);
     assert.match(body, /report truncated to \d+ of 150000 characters/);
+  });
+});
+
+describe("screenshots in the report (ADR-0072)", () => {
+  const base = {
+    issue: "42",
+    sha: SHA,
+    verdict: "pass",
+    status: "ok",
+    evidenceDir: "/ev/run-1",
+    withheld: [],
+  };
+  const lines = (body) => body.split("\n");
+
+  it("embeds each image under the row that mentions it: inline for one, collapsed for several", () => {
+    const body = renderIntestComment({ ...base, report: SHOTS_REPORT, images: upload() });
+    const l = lines(body);
+    const tableEnd = l.indexOf("| 3 | Move it to Trash | PASS | gone from the list |");
+    assert.ok(tableEnd !== -1, "the report is kept");
+    const heading = l.indexOf("**Screenshots**");
+    assert.ok(heading > tableEnd, "the screenshots follow the report");
+    const step1 = l.indexOf("**Step 1** · PASS · Sign in");
+    assert.ok(step1 > heading);
+    assert.deepEqual(l.slice(step1, step1 + 3), ["**Step 1** · PASS · Sign in", "", imgTag(1)]);
+    const step2 = l.indexOf("**Step 2** · PASS · Open the notebook");
+    assert.ok(step2 > step1);
+    assert.deepEqual(l.slice(step2, step2 + 9), [
+      "**Step 2** · PASS · Open the notebook",
+      "",
+      "<details>",
+      "<summary>Screenshots (2)</summary>",
+      "",
+      imgTag(2),
+      imgTag(3),
+      "",
+      "</details>",
+    ]);
+    assert.ok(!l.some((x) => x.startsWith("**Step 3**")), "a step with no screenshot gets none");
+    assert.equal(imgCount(body), 3);
+  });
+
+  it("closes a fence the report left open, so the screenshots and markers still render", () => {
+    const report = `${SHOTS_REPORT}\n\n\`\`\`\nconsole output, never closed`;
+    const body = renderIntestComment({ ...base, report, images: upload() });
+    const l = lines(body);
+    const heading = l.indexOf("**Screenshots**");
+    assert.ok(heading !== -1);
+    const fencesBefore = l.slice(0, heading).filter((x) => x.startsWith("```")).length;
+    assert.equal(fencesBefore % 2, 0, "no fence is open above the screenshots");
+    assert.equal(imgCount(body), 3);
+    assert.deepEqual(l.slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
+  });
+
+  it("shows the published footer instead of the Mac-mini line, and still ends with the markers", () => {
+    const body = renderIntestComment({ ...base, report: SHOTS_REPORT, images: upload() });
+    const l = lines(body);
+    const footer = l.indexOf(PUBLISHED_FOOTER);
+    assert.ok(footer !== -1, "the published footer");
+    assert.ok(footer > l.indexOf(imgTag(3)), "after the images");
+    assert.doesNotMatch(body, /Screenshots stay on the Mac mini/);
+    assert.doesNotMatch(body, /weren't published/);
+    assert.deepEqual(l.slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
+    assert.equal(body.match(/<!-- drafto-factory-/g).length, 2, "only the two real markers");
+  });
+
+  it("puts images no row mentions under Other screenshots, or under one heading without a table", () => {
+    const body = renderIntestComment({
+      ...base,
+      report: SHOTS_REPORT,
+      images: upload({ ns: [1, 2, 3, 4] }),
+    });
+    const l = lines(body);
+    const other = l.indexOf("**Other screenshots**");
+    assert.ok(other > l.indexOf(imgTag(3)));
+    assert.deepEqual(l.slice(other, other + 3), ["**Other screenshots**", "", imgTag(4)]);
+
+    const plain = renderIntestComment({
+      ...base,
+      report: "Signed in and opened the notebook.",
+      images: upload({ ns: [1, 2] }),
+    });
+    assert.ok(plain.includes("**Screenshots taken during the run**"));
+    assert.doesNotMatch(plain, /\*\*Other screenshots\*\*|\*\*Step /);
+    assert.equal(imgCount(plain), 2);
+  });
+
+  it("lists overflow entries as kept on the Mac mini, with their local path and why", () => {
+    const overflow = [
+      { n: 21, path: "/ev/run-1/evidence/21.png", why: CAP_WHY },
+      { n: 4, path: "/ev/run-1/evidence/04.png", why: "a symlink" },
+    ];
+    const body = renderIntestComment({
+      ...base,
+      report: SHOTS_REPORT,
+      images: upload({ overflow }),
+    });
+    const l = lines(body);
+    const kept = l.indexOf("**Kept on the Mac mini** (not published):");
+    assert.ok(kept > l.indexOf(imgTag(3)), "after the published images");
+    assert.ok(l.indexOf(PUBLISHED_FOOTER) > kept, "before the footer");
+    assert.ok(l.includes(`- screenshot 21, ${CAP_WHY}: \`/ev/run-1/evidence/21.png\``));
+    assert.ok(l.includes("- screenshot 4, a symlink: `/ev/run-1/evidence/04.png`"));
+    assert.equal(imgCount(body), 3, "the published ones are still embedded");
+  });
+
+  it("with every screenshot kept back, lists them and keeps the Mac-mini footer with why", () => {
+    const overflow = [{ n: 1, path: "/ev/run-1/evidence/01.png", why: "not a .png or .jpg file" }];
+    const body = renderIntestComment({
+      ...base,
+      report: SHOTS_REPORT,
+      images: { ...upload({ ns: [], overflow }), commit: null },
+    });
+    assert.equal(imgCount(body), 0);
+    assert.ok(
+      lines(body).includes("- screenshot 1, not a .png or .jpg file: `/ev/run-1/evidence/01.png`"),
+    );
+    assert.ok(lines(body).includes(localFooter("none of its screenshots passed the checks")));
+  });
+
+  it("withholds the screenshots with a withheld report, and says they weren't published", () => {
+    for (const render of [renderIntestComment, renderVerifySection]) {
+      const body = render({
+        ...base,
+        report: SHOTS_REPORT,
+        withheld: ["jwt"],
+        images: upload({
+          overflow: [{ n: 4, path: "/ev/run-1/evidence/04.png", why: CAP_WHY }],
+        }),
+      });
+      assert.equal(imgCount(body), 0, render.name);
+      assert.ok(!body.includes(EVIDENCE_COMMIT), `${render.name}: no image URL at all`);
+      assert.doesNotMatch(body, /Kept on the Mac mini|\*\*Screenshots\*\*/, render.name);
+      assert.ok(
+        lines(body).includes(localFooter("the report was withheld, so its screenshots were too")),
+        render.name,
+      );
+    }
+  });
+
+  it("renders only images pinned to the record's own evidence commit, never a branch tip", () => {
+    const sha12 = SHA.slice(0, 12);
+    const body = renderIntestComment({
+      ...base,
+      report: SHOTS_REPORT,
+      images: upload({
+        images: [
+          { n: 1, url: imageUrl(1, "a".repeat(40)) },
+          {
+            n: 2,
+            url: `https://raw.githubusercontent.com/JakubAnderwald/drafto/main/42/${sha12}/${RUN_ID}/02.png`,
+          },
+          { n: 3, url: `https://example.com/JakubAnderwald/drafto/${EVIDENCE_COMMIT}/03.png` },
+          { n: 4, url: `${imageUrl(4)}" onerror="x` },
+          { n: 5, url: imageUrl(5) },
+        ],
+      }),
+    });
+    assert.equal(imgCount(body), 1);
+    assert.ok(body.includes(imgTag(5)));
+    assert.doesNotMatch(body, /\/main\/|example\.com|onerror|a{40}/);
+  });
+
+  it(`keeps every image when a 150 000-character report is cut to ${COMMENT_MAX_CHARS}`, () => {
+    const ns = Array.from({ length: 20 }, (_, i) => i + 1);
+    const report = `${SHOTS_REPORT}\n\n${"x".repeat(150_000)}`;
+    const body = renderIntestComment({ ...base, report, images: upload({ ns }) });
+    assert.ok(body.length <= COMMENT_MAX_CHARS, `length ${body.length}`);
+    assert.ok(body.length > COMMENT_MAX_CHARS - 500, "the report still uses most of the room");
+    assert.match(
+      body,
+      /report truncated to \d+ of \d+ characters; the full output is at `\/ev\/run-1\/runner-output\.txt`/,
+    );
+    assert.equal(imgCount(body), 20);
+    for (const n of ns) assert.ok(body.includes(imgTag(n)), `screenshot ${n}`);
+    assert.ok(body.indexOf("report truncated") < body.indexOf(imgTag(1)), "only the text is cut");
+    assert.ok(lines(body).includes(PUBLISHED_FOOTER));
+    assert.deepEqual(lines(body).slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
+  });
+
+  it("closes a ~~~ fence the cut leaves open, so the screenshots after it aren't code", () => {
+    const report = `${SHOTS_REPORT}\n\n~~~\n\`\`\`js\n${"x\n".repeat(75_000)}~~~\n`;
+    const body = renderIntestComment({ ...base, report, images: upload() });
+    assert.ok(body.length <= COMMENT_MAX_CHARS, `length ${body.length}`);
+    assert.match(body, /report truncated to \d+ of \d+ characters/);
+    const at = lines(body).indexOf(imgTag(1));
+    assert.notEqual(at, -1);
+    assert.equal(
+      lines(body).slice(0, at).reduce(fenceStep, null),
+      null,
+      "the screenshots are inside a code block",
+    );
+    assert.deepEqual(lines(body).slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
+  });
+
+  it("never embeds in the plan kind, whatever it is given", () => {
+    const body = renderPlanSection({ ...base, report: SHOTS_REPORT, images: upload() });
+    assert.equal(imgCount(body), 0);
+    assert.ok(!body.includes(EVIDENCE_COMMIT));
+    assert.ok(lines(body).includes(localFooter()), "today's footer, with no reason");
+    const withheld = renderPlanSection({
+      ...base,
+      report: SHOTS_REPORT,
+      images: upload(),
+      withheld: ["jwt"],
+    });
+    assert.equal(imgCount(withheld), 0);
+    assert.match(withheld, /Report withheld: the output matched a secret pattern \(jwt\)/);
+    assert.ok(lines(withheld).includes(localFooter()), "a withheld plan report gives no reason");
+    assert.ok(!withheld.includes("weren't published"));
+  });
+
+  it("keeps the Mac-mini footer, with why, whenever nothing is embedded", () => {
+    const cases = [
+      ["no upload record given", undefined, localFooter()],
+      ["a null record", null, localFooter()],
+      [
+        "a failed push",
+        { ok: false, reason: "push" },
+        localFooter("pushing them to GitHub failed"),
+      ],
+      [
+        "no OCR helper",
+        { ok: false, reason: "ocr-missing" },
+        localFooter("the OCR helper that scans each screenshot for secrets isn't available"),
+      ],
+      [
+        "publishing switched off",
+        { ok: false, reason: "off" },
+        localFooter("publishing is switched off (FACTORY_EVIDENCE_UPLOAD=0)"),
+      ],
+      [
+        "an unknown reason, sanitised",
+        { ok: false, reason: "weird <b>token</b>" },
+        localFooter("the upload failed (weirdbtokenb)"),
+      ],
+      ["no reason at all", { ok: false }, localFooter("the upload failed")],
+      [
+        "a run that saved none",
+        { ...upload({ ns: [] }), commit: null },
+        localFooter("the run saved no screenshots"),
+      ],
+    ];
+    for (const render of [renderIntestComment, renderVerifySection]) {
+      for (const [name, images, footer] of cases) {
+        const body = render({ ...base, report: SHOTS_REPORT, images });
+        assert.ok(lines(body).includes(footer), `${render.name}: ${name}`);
+        assert.equal(imgCount(body), 0, `${render.name}: ${name}`);
+        assert.doesNotMatch(body, /are published with this report/, `${render.name}: ${name}`);
+      }
+    }
+  });
+
+  it("embeds in the verify kind's section too, with no factory marker", () => {
+    const body = renderVerifySection({ ...base, report: SHOTS_REPORT, images: upload() });
+    assert.equal(imgCount(body), 3);
+    assert.ok(lines(body).includes(PUBLISHED_FOOTER));
+    assert.doesNotMatch(body, /drafto-factory|<!--/);
   });
 });
 
@@ -586,7 +899,7 @@ describe("browser-report CLI", () => {
     const jsonOut = join(dir, "render.json");
     const r = run(renderArgs(inFile, ["--json-out", jsonOut]));
     assert.equal(r.status, 0, r.stderr);
-    const summary = { status: "ok", verdict: "fail", withheld: false, secretHits: [] };
+    const summary = { status: "ok", verdict: "fail", withheld: false, secretHits: [], images: 0 };
     assert.deepEqual(JSON.parse(r.stdout), summary);
     assert.deepEqual(JSON.parse(readFileSync(jsonOut, "utf8")), summary, "and in --json-out");
     const body = readFileSync(join(dir, "body.md"), "utf8");
@@ -612,7 +925,13 @@ describe("browser-report CLI", () => {
     );
     const r = run(args);
     assert.equal(r.status, 0, r.stderr);
-    const summary = { status: "ok", verdict: "warn", withheld: true, secretHits: ["password"] };
+    const summary = {
+      status: "ok",
+      verdict: "warn",
+      withheld: true,
+      secretHits: ["password"],
+      images: 0,
+    };
     assert.deepEqual(JSON.parse(r.stdout), summary);
     assert.deepEqual(JSON.parse(readFileSync(jsonOut, "utf8")), summary);
     assert.equal(statSync(jsonOut).mode & 0o777, 0o600);
@@ -633,6 +952,7 @@ describe("browser-report CLI", () => {
       verdict: "pass",
       withheld: true,
       secretHits: ["password"],
+      images: 0,
     });
     const body = readFileSync(join(dir, "body.md"), "utf8");
     assert.ok(!body.includes("S3cret.pass*"));
@@ -652,6 +972,86 @@ describe("browser-report CLI", () => {
   it("render fails (exit 1) on a missing input file", () => {
     const r = run(renderArgs(join(dir, "missing.txt")));
     assert.equal(r.status, 1);
+  });
+
+  // evidence's footer path is the temp dir: match the footers by their wording.
+  const PUBLISHED = /<sub>Screenshots are published with this report \(ADR-0072\)/;
+  const STAY = /<sub>Screenshots stay on the Mac mini \(this repo is public\): `[^`]+`\./;
+
+  it("render --images-json embeds the uploaded screenshots and counts them", () => {
+    const inFile = join(dir, "out.txt");
+    writeFileSync(inFile, output({ report: SHOTS_REPORT }));
+    const record = join(dir, "upload.json");
+    writeFileSync(record, JSON.stringify(upload()), { mode: 0o600 });
+    const jsonOut = join(dir, "render.json");
+    const r = run(renderArgs(inFile, ["--images-json", record, "--json-out", jsonOut]));
+    assert.equal(r.status, 0, r.stderr);
+    const summary = { status: "ok", verdict: "pass", withheld: false, secretHits: [], images: 3 };
+    assert.deepEqual(JSON.parse(r.stdout), summary);
+    assert.deepEqual(JSON.parse(readFileSync(jsonOut, "utf8")), summary);
+    const body = readFileSync(join(dir, "body.md"), "utf8");
+    for (const n of [1, 2, 3]) assert.ok(body.includes(imgTag(n)), `screenshot ${n}`);
+    assert.ok(body.includes("**Step 1** · PASS · Sign in"));
+    assert.match(body, PUBLISHED);
+    assert.doesNotMatch(body, STAY);
+    assert.deepEqual(body.split("\n").slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
+  });
+
+  it("render with an unreadable --images-json falls back and says the record couldn't be read", () => {
+    const inFile = join(dir, "out.txt");
+    writeFileSync(inFile, output({ report: SHOTS_REPORT }));
+    const garbled = join(dir, "garbled.json");
+    writeFileSync(garbled, "{not json");
+    for (const record of [join(dir, "missing.json"), garbled]) {
+      const r = run(renderArgs(inFile, ["--images-json", record]));
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).images, 0, record);
+      const body = readFileSync(join(dir, "body.md"), "utf8");
+      assert.equal(imgCount(body), 0, record);
+      assert.match(body, STAY, record);
+      assert.match(body, /They weren't published: the upload record couldn't be read\.<\/sub>/);
+      assert.deepEqual(body.split("\n").slice(-2), [REPORT_MARKER, runShaMarker(SHA)]);
+    }
+  });
+
+  it("render embeds nothing for a withheld report, even with --images-json", () => {
+    const inFile = join(dir, "out.txt");
+    writeFileSync(inFile, output({ report: `${SHOTS_REPORT}\ntyped S3cret.pass*` }));
+    const record = join(dir, "upload.json");
+    writeFileSync(record, JSON.stringify(upload()));
+    const r = run(renderArgs(inFile, ["--images-json", record]));
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      status: "ok",
+      verdict: "pass",
+      withheld: true,
+      secretHits: ["password"],
+      images: 0,
+    });
+    const body = readFileSync(join(dir, "body.md"), "utf8");
+    assert.equal(imgCount(body), 0);
+    assert.ok(!body.includes(EVIDENCE_COMMIT));
+    assert.match(
+      body,
+      /They weren't published: the report was withheld, so its screenshots were too\./,
+    );
+  });
+
+  it("render --kind plan ignores --images-json", () => {
+    const inFile = join(dir, "out.txt");
+    writeFileSync(inFile, output({ report: SHOTS_REPORT }));
+    const record = join(dir, "upload.json");
+    writeFileSync(record, JSON.stringify(upload()));
+    const args = renderArgs(inFile, ["--images-json", record]).map((a) =>
+      a === "intest" ? "plan" : a,
+    );
+    const r = run(args);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).images, 0);
+    const body = readFileSync(join(dir, "body.md"), "utf8");
+    assert.equal(imgCount(body), 0);
+    assert.match(body, STAY);
+    assert.doesNotMatch(body, /weren't published/);
   });
 
   it("render rejects usage errors with exit 2", () => {

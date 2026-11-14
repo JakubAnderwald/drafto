@@ -70,7 +70,16 @@
 //      didn't report or was withheld, then --cr-note.
 //   6. Each lane's full report in <details>; the body stays within
 //      COMMENT_MAX_CHARS by truncating these first, pointing at the local file.
-//   7. The local evidence paths (they stay on the Mac mini; the repo is public).
+//      The Web lane's screenshots, when --browser-images gives its upload
+//      record (evidence-upload.mjs, ADR-0072), go inside its <details> under
+//      the steps that took them (evidence-embed.mjs); they are never cut, the
+//      lane text is. Only a lane that reported and wasn't withheld shows any,
+//      and the shell lane never does. Images are kept per lane, so a future
+//      device lane can add its own.
+//   7. The local evidence paths (they stay on the Mac mini; the repo is
+//      public), for every lane that had nothing embedded, with why the Web
+//      screenshots weren't published when an upload was tried; a lane whose
+//      screenshots are embedded says so on a line of its own.
 //   8. The two markers below, exactly once, as the last two lines.
 //
 // Secrets, per lane: the lane's whole output is scanned with browser-report's
@@ -97,9 +106,10 @@
 //        --browser-state <state> --browser-dir <dir|"">
 //        --gaps '[{"lane":…,"reason":…} | {"lane":…,"token":…}]' --cr-note <text|"">
 //        --account-file <f|""> --bypass-file <f|""> --signin-key-file <f|"">
-//        --out <body-file>
+//        [--browser-images <upload.json|"">] --out <body-file>
 //     Writes the comment body to --out and prints one JSON line
-//     {verdict, withheld: {shell, browser}, secretHits}: verdict is
+//     {verdict, withheld: {shell, browser}, secretHits, images: {browser}}
+//     (images: how many screenshots the body embeds, per lane): verdict is
 //     pass|warn|fail|incomplete; secretHits lists "<lane>:<pattern>" for each
 //     match and "<lane>:<file>-unreadable" for each fail-closed file
 //     ("body:<pattern>" when the final check tripped). --issue is validated
@@ -122,10 +132,14 @@ import {
   parseRunnerOutput,
   scanForSecrets,
 } from "./browser-report.mjs";
+import { evidenceSection, readUpload, reasonSentence } from "./evidence-embed.mjs";
 import { extractScenarioSections, shapePlatforms } from "./factory-bundle.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { FENCE_LINE, closeFences, fenceStep } from "./markdown-fence.mjs";
 import { parseFlags } from "./parse-flags.mjs";
+import { parseResultTable, splitRow } from "./result-table.mjs";
+
+export { parseResultTable, splitRow };
 
 export const VERIFY_REPORT_MARKER = "<!-- drafto-factory-verify-report -->";
 export const VERIFY_SHA_MARKER_PREFIX = "drafto-factory-verify-sha:";
@@ -384,53 +398,8 @@ export function parseLaneState(raw) {
   };
 }
 
-function splitRow(line) {
-  let s = line.trim();
-  if (s.startsWith("|")) s = s.slice(1);
-  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
-  return s.split(/(?<!\\)\|/).map((c) => c.trim());
-}
-
-const RESULT_WORD = /\b(PASS(?:ED)?|FAIL(?:ED|URE)?|WARN(?:ING)?|SKIP(?:PED)?)\b/i;
-
-// Rows of every Markdown table in <markdown> that has a Result column:
-// [{ num, step, result, evidence }], result one of PASS|FAIL|WARN|SKIP or null.
-export function parseResultTable(markdown) {
-  const rows = [];
-  let header = null;
-  for (const raw of String(markdown ?? "").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line.startsWith("|")) {
-      header = null;
-      continue;
-    }
-    const cells = splitRow(line);
-    if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
-    if (!header) {
-      const names = cells.map((c) => c.replace(/[*_`]/g, "").trim().toLowerCase());
-      header = {
-        result: names.indexOf("result"),
-        step: names.indexOf("step"),
-        num: names.indexOf("#"),
-        evidence: names.indexOf("evidence"),
-      };
-      continue;
-    }
-    if (header.result === -1) continue;
-    const m = RESULT_WORD.exec(cells[header.result] ?? "");
-    const stepIdx =
-      header.step !== -1
-        ? header.step
-        : cells.findIndex((_, i) => i !== header.result && i !== header.num);
-    rows.push({
-      num: header.num !== -1 ? (cells[header.num] ?? "") : "",
-      step: cells[stepIdx] ?? "",
-      result: m ? m[1].slice(0, 4).toUpperCase() : null,
-      evidence: header.evidence !== -1 ? (cells[header.evidence] ?? "") : "",
-    });
-  }
-  return rows;
-}
+// parseResultTable / splitRow live in result-table.mjs, so browser-report.mjs
+// can use them without importing this module back (it imports browser-report).
 
 // The paragraph after a `**Label:**` line (the rest of that line included), as
 // lines, or null. It ends at a blank line (with multi, blank lines are kept
@@ -1015,16 +984,36 @@ function detailsText(lane) {
   return closeFences(defang(parts.join("\n\n")));
 }
 
-function detailsBlock(lane, content) {
+// <extra> (the lane's screenshots) goes after the content and is never cut.
+function detailsBlock(lane, content, extra = "") {
   const title = lane.reported ? "full report" : "output";
   return [
     "<details>",
     `<summary>${lane.meta.label.replace(/&/g, "&amp;")}: ${title}</summary>`,
     "",
     content,
+    ...(extra ? ["", extra] : []),
     "",
     "</details>",
   ].join("\n");
+}
+
+// A lane's screenshots (ADR-0072): {block, embedded, reason, given}. given is
+// whether an upload record was passed for the lane at all; with none, nothing
+// about screenshots changes in the report. Only the browser lane has any yet.
+function laneShots(lane, upload, secrets) {
+  const none = { block: [], embedded: 0, reason: null, given: false };
+  if (lane.key !== "browser" || upload === undefined || upload === null) return none;
+  if (lane.withheld) return { ...none, reason: "withheld", given: true };
+  if (!lane.reported) return { ...none, reason: "not-reported", given: true };
+  const ev = evidenceSection({
+    report: lane.parsed?.report ?? null,
+    upload,
+    withheld: false,
+    evidenceDir: lane.dir,
+    isSafe: (lines) => scanLaneText(lines.join("\n"), secrets).length === 0,
+  });
+  return { block: ev.block, embedded: ev.embedded, reason: ev.reason, given: true };
 }
 
 // Truncate each lane's details so the whole body fits in <room>: lanes are
@@ -1092,7 +1081,9 @@ function normaliseBetaLanes(lanes) {
  * @param {{password?:string|null,bypass?:string|null,signinKey?:string|null}} o.secrets
  *   each secret's literal value; "" when the lanes were never given it; null
  *   (or absent) when its file couldn't be read, which fails closed
- * @returns {{body:string,verdict:string,withheld:{shell:boolean,browser:boolean},secretHits:string[]}}
+ * @param {{browser?:object|null}} [o.images] each lane's upload record
+ *   (evidence-upload.mjs), by lane key; absent when none was tried
+ * @returns {{body:string,verdict:string,withheld:{shell:boolean,browser:boolean},secretHits:string[],images:{browser:number}}}
  */
 export function composeVerifyReport({
   sha,
@@ -1105,6 +1096,7 @@ export function composeVerifyReport({
   gaps = [],
   crNote = "",
   secrets = {},
+  images = {},
 } = {}) {
   if (!FULL_SHA.test(String(sha ?? ""))) throw new Error(`invalid sha: ${sha}`);
   const platforms = normalisePlatforms(rawPlatforms);
@@ -1139,19 +1131,44 @@ export function composeVerifyReport({
       ? `**Verdict: INCOMPLETE** for \`${short}\`${prText}: no verification lane reported a result.`
       : `**Verdict: ${verdict.toUpperCase()}** for \`${short}\`${prText}.${qualifier}`;
 
-  const evidenceDirs = [shell, browser]
-    .filter((l) => l.dir)
-    .map((l) => `${l.meta.short} \`${pathText(l.dir)}\``);
-  const footer = [
-    ...(evidenceDirs.length
-      ? [
-          `<sub>Local evidence stays on the Mac mini (the repo is public): ${evidenceDirs.join(" · ")}.</sub>`,
-          "",
-        ]
-      : []),
-    VERIFY_REPORT_MARKER,
-    verifyShaMarker(sha),
-  ];
+  const shots = {
+    shell: laneShots(shell, null, secrets),
+    browser: laneShots(browser, images?.browser, secrets),
+  };
+  // <showShots>: whether the body shows the lanes' screenshots (the fallback
+  // and withheld bodies below don't).
+  const buildFooter = (showShots) => {
+    const embedded = (lane) => showShots && shots[lane.key].embedded > 0;
+    const evidenceDirs = [shell, browser]
+      .filter((l) => l.dir && !embedded(l))
+      .map((l) => `${l.meta.short} \`${pathText(l.dir)}\``);
+    const web = shots.browser;
+    const why =
+      web.given && !embedded(browser) && web.reason
+        ? ` Web screenshots weren't published: ${reasonSentence(web.reason)}.`
+        : "";
+    const lines = [];
+    if (evidenceDirs.length) {
+      lines.push(
+        `<sub>Local evidence stays on the Mac mini (the repo is public): ${evidenceDirs.join(" · ")}.${why}</sub>`,
+        "",
+      );
+    } else if (why) {
+      lines.push(`<sub>${why.trim()}</sub>`, "");
+    }
+    if (embedded(browser)) {
+      const rest = browser.dir
+        ? ` The rest of the Web lane's evidence stays on the Mac mini: \`${pathText(browser.dir)}\`.`
+        : "";
+      lines.push(
+        "<sub>Web screenshots are published in this report (ADR-0072): they show the dev test " +
+          `account on dev data.${rest}</sub>`,
+        "",
+      );
+    }
+    return [...lines, VERIFY_REPORT_MARKER, verifyShaMarker(sha)];
+  };
+  const footer = buildFooter(true);
 
   const head = [
     HEADER,
@@ -1177,23 +1194,32 @@ export function composeVerifyReport({
   ];
 
   const entries = [shell, browser]
-    .map((lane) => ({ lane, content: detailsText(lane) }))
+    .map((lane) => ({
+      lane,
+      content: detailsText(lane),
+      extra: shots[lane.key].block.join("\n").trim(),
+    }))
     .filter((e) => e.content != null);
   const assemble = (contents) =>
     [
       ...head,
-      ...entries.flatMap((e, i) => [detailsBlock(e.lane, contents[i]), ""]),
+      ...entries.flatMap((e, i) => [detailsBlock(e.lane, contents[i], e.extra), ""]),
       ...footer,
     ].join("\n");
 
+  // The room is what's left with every lane's text empty and its screenshots
+  // in place: only the text is ever cut.
   const empty = assemble(entries.map(() => ""));
   let body = assemble(fitDetails(entries, COMMENT_MAX_CHARS - empty.length));
+  let shotsShown = true;
   if (body.length > COMMENT_MAX_CHARS) {
     // Every other section is capped, so this needs a pathological input; the
     // details go first, then the middle, but the markers always survive.
-    body = [...head, ...footer].join("\n");
+    shotsShown = false;
+    const plainFooter = buildFooter(false);
+    body = [...head, ...plainFooter].join("\n");
     if (body.length > COMMENT_MAX_CHARS) {
-      const tail = `\n\n_…report truncated._\n\n${footer.join("\n")}`;
+      const tail = `\n\n_…report truncated._\n\n${plainFooter.join("\n")}`;
       body = cutWithin(head.join("\n"), COMMENT_MAX_CHARS - tail.length) + tail;
     }
   }
@@ -1209,6 +1235,7 @@ export function composeVerifyReport({
   // reasons and the CR note aren't. A hit anywhere replaces the body.
   const bodyHits = scanLaneText(body, secrets);
   if (bodyHits.length > 0) {
+    shotsShown = false;
     for (const h of bodyHits) secretHits.push(`body:${h}`);
     body = [
       HEADER,
@@ -1219,13 +1246,19 @@ export function composeVerifyReport({
       "",
       `The rest of this report was withheld: the composed comment matched a secret pattern (${bodyHits.join(", ")}).`,
       "",
-      ...footer,
+      ...buildFooter(false),
     ].join("\n");
     withheld.shell = withheld.shell || shell.text != null;
     withheld.browser = withheld.browser || browser.text != null;
   }
 
-  return { body, verdict, withheld, secretHits };
+  return {
+    body,
+    verdict,
+    withheld,
+    secretHits,
+    images: { browser: shotsShown ? shots.browser.embedded : 0 },
+  };
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
@@ -1308,16 +1341,32 @@ export function render(argv) {
       bypass: secretFlag(flags, "bypass-file", "VERCEL_AUTOMATION_BYPASS_SECRET"),
       signinKey: secretFlag(flags, "signin-key-file", "DEV_SUPABASE_SERVICE_ROLE_KEY"),
     },
+    images: browserImages(flags),
   });
   writeFileSync(out, result.body);
-  return { verdict: result.verdict, withheld: result.withheld, secretHits: result.secretHits };
+  return {
+    verdict: result.verdict,
+    withheld: result.withheld,
+    secretHits: result.secretHits,
+    images: result.images,
+  };
+}
+
+// The Web lane's upload record. A flag left out or given as "" means no upload
+// was tried (the report reads as before); a file that can't be read is a
+// failed upload.
+function browserImages(flags) {
+  const file = flags["browser-images"];
+  if (!file) return {};
+  return { browser: readUpload(file) ?? { ok: false, reason: "unreadable" } };
 }
 
 const USAGE =
   "Usage: verify-report.mjs render --issue <n> --pr <n> --sha <40-hex> --scenario-file <f> " +
   "--platforms <json> --beta-lanes <csv> --shell-state <state> --shell-dir <dir> " +
   "--browser-state <state> --browser-dir <dir> --gaps <json> --cr-note <text> " +
-  "--account-file <f> --bypass-file <f> --signin-key-file <f> --out <body-file>\n";
+  "--account-file <f> --bypass-file <f> --signin-key-file <f> " +
+  "[--browser-images <upload.json>] --out <body-file>\n";
 
 function main(argv) {
   const [cmd, ...rest] = argv;

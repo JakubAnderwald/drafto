@@ -25,6 +25,10 @@ import {
 // a public GitHub comment. Its lanes run with the test password, the Vercel
 // bypass secret and the dev service-role key within reach, so these tests lock
 // in per-lane withholding and fail-closed scanning as much as the layout.
+// Since ADR-0072 the Web lane's published screenshots can be embedded too:
+// only inside that lane's <details>, never cut, never for a lane that was
+// withheld or didn't report, never for the shell lane (its output has no
+// provenance), and the footer says where the rest of the evidence stays.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cli = resolve(here, "..", "lib", "verify-report.mjs");
@@ -139,6 +143,54 @@ function gapsSection(body) {
 
 function tableRow(body, label) {
   return body.split("\n").find((l) => l.startsWith(`| ${label} |`));
+}
+
+// The Web lane's upload record (evidence-upload.mjs's upload.json), built by
+// hand the way publishRun writes one: every image pinned to the evidence commit.
+const EVIDENCE_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
+const RUN_ID = "verify-20261110T000000";
+
+function imageUrl(n) {
+  return `https://raw.githubusercontent.com/JakubAnderwald/drafto/${EVIDENCE_COMMIT}/465/${SHA.slice(0, 12)}/${RUN_ID}/${String(n).padStart(2, "0")}.png`;
+}
+
+function upload(ns = [1, 2], extra = {}) {
+  return {
+    ok: true,
+    issue: "465",
+    sha: SHA,
+    runId: RUN_ID,
+    ref: `refs/factory-evidence/465/${SHA.slice(0, 12)}/${RUN_ID}`,
+    commit: EVIDENCE_COMMIT,
+    images: ns.map((n) => ({ n, url: imageUrl(n), local: `/ev/browser/evidence/${n}.png` })),
+    overflow: [],
+    ...extra,
+  };
+}
+
+const imgTag = (n) => `<img src="${imageUrl(n)}" width="480" alt="Screenshot ${n}">`;
+const imgCount = (body) => (body.match(/<img /g) ?? []).length;
+// Browser rows that refer to the runner's screenshots (factory-browser-prompt.md, rule 7).
+const SHOT_ROWS = [
+  "| 1 | Open /notebooks | PASS | the list shows, screenshot 1 |",
+  "| 2 | Open a note | PASS | screenshot 2 |",
+];
+const SHOT_BROWSER = {
+  state: "reported:pass",
+  dir: "/ev/browser",
+  text: browserOutput({ rows: SHOT_ROWS }),
+};
+const LOCAL_BOTH =
+  "<sub>Local evidence stays on the Mac mini (the repo is public): Repo & API `/ev/shell` · Web `/ev/browser`.";
+const WEB_PUBLISHED =
+  "<sub>Web screenshots are published in this report (ADR-0072): they show the dev test " +
+  "account on dev data. The rest of the Web lane's evidence stays on the Mac mini: `/ev/browser`.</sub>";
+
+// The Web lane's <details>, from its summary to its own closer (the body's
+// last </details>; the shell lane's comes first).
+function webLane(body) {
+  const start = body.indexOf("<summary>Web (browser):");
+  return start === -1 ? "" : body.slice(start, body.lastIndexOf("</details>"));
 }
 
 describe("verdict merge", () => {
@@ -1400,6 +1452,258 @@ describe(`${COMMENT_MAX_CHARS}-character cap`, () => {
   });
 });
 
+describe("Web lane screenshots (ADR-0072)", () => {
+  it("embeds them inside the Web lane's <details>, after its text, under the rows that took them", () => {
+    const r = compose({ browser: SHOT_BROWSER, images: { browser: upload() } });
+    assert.deepEqual(r.images, { browser: 2 });
+    assert.equal(imgCount(r.body), 2);
+    const web = webLane(r.body);
+    assert.ok(web.includes(imgTag(1)) && web.includes(imgTag(2)), "both in the Web lane");
+    assert.ok(web.indexOf("**Summary:**") < web.indexOf("**Screenshots**"), "after its text");
+    const l = web.split("\n");
+    const step1 = l.indexOf("**Step 1** · PASS · Open /notebooks");
+    assert.deepEqual(l.slice(step1, step1 + 3), [
+      "**Step 1** · PASS · Open /notebooks",
+      "",
+      imgTag(1),
+    ]);
+    const step2 = l.indexOf("**Step 2** · PASS · Open a note");
+    assert.deepEqual(l.slice(step2, step2 + 3), ["**Step 2** · PASS · Open a note", "", imgTag(2)]);
+    // Nowhere else: not in the shell lane, not above the details, not in the footer.
+    const shell = r.body.slice(
+      r.body.indexOf("<summary>Repo &amp; API (shell):"),
+      r.body.indexOf("<summary>Web (browser):"),
+    );
+    assert.doesNotMatch(shell, /<img/);
+    assert.doesNotMatch(r.body.slice(0, r.body.indexOf("<details>")), /<img/);
+    assert.doesNotMatch(r.body.slice(r.body.lastIndexOf("</details>")), /<img/);
+    assert.deepEqual(r.body.split("\n").slice(-2), [VERIFY_REPORT_MARKER, verifyShaMarker(SHA)]);
+  });
+
+  it("collapses several images for one row, and keeps the overflow list in the Web lane", () => {
+    const r = compose({
+      browser: {
+        ...SHOT_BROWSER,
+        text: browserOutput({ rows: ["| 1 | Open /notebooks | PASS | screenshots 1–3 |"] }),
+      },
+      images: {
+        browser: upload([1, 2, 3], {
+          overflow: [{ n: 4, path: "/ev/browser/evidence/04.png", why: "a symlink" }],
+        }),
+      },
+    });
+    const web = webLane(r.body);
+    assert.ok(
+      web.includes(
+        [
+          "<details>",
+          "<summary>Screenshots (3)</summary>",
+          "",
+          imgTag(1),
+          imgTag(2),
+          imgTag(3),
+        ].join("\n"),
+      ),
+    );
+    assert.ok(web.includes("- screenshot 4, a symlink: `/ev/browser/evidence/04.png`"));
+    assert.deepEqual(r.images, { browser: 3 });
+  });
+
+  it(`keeps every image when a huge browser report is cut to ${COMMENT_MAX_CHARS}`, () => {
+    const ns = Array.from({ length: 20 }, (_, i) => i + 1);
+    const r = compose({
+      browser: {
+        ...SHOT_BROWSER,
+        text: browserOutput({ rows: SHOT_ROWS, extra: "b".repeat(150_000) }),
+      },
+      images: { browser: upload(ns) },
+    });
+    assert.ok(r.body.length <= COMMENT_MAX_CHARS, `length ${r.body.length}`);
+    assert.match(
+      r.body,
+      /_…truncated to \d+ of \d+ characters; the full output is at `\/ev\/browser\/runner-output\.txt`\._/,
+    );
+    for (const n of ns) assert.ok(r.body.includes(imgTag(n)), `screenshot ${n}`);
+    assert.equal(imgCount(r.body), 20);
+    assert.deepEqual(r.images, { browser: 20 });
+    const web = webLane(r.body);
+    assert.ok(web.indexOf("_…truncated to") < web.indexOf(imgTag(1)), "only the text is cut");
+    assert.ok(r.body.split("\n").includes(WEB_PUBLISHED));
+    assert.deepEqual(r.body.split("\n").slice(-2), [VERIFY_REPORT_MARKER, verifyShaMarker(SHA)]);
+  });
+
+  it("never gives the shell lane any, even when passed images for it", () => {
+    const shell = {
+      state: "reported:pass",
+      dir: "/ev/shell",
+      text: shellOutput({ rows: ["| 1 | `curl /api/notes` | PASS | screenshot 1 |"] }),
+    };
+    const r = compose({ shell, images: { shell: upload() } });
+    assert.equal(imgCount(r.body), 0);
+    assert.ok(!r.body.includes(EVIDENCE_COMMIT));
+    assert.deepEqual(r.images, { browser: 0 });
+    assert.ok(r.body.split("\n").includes(`${LOCAL_BOTH}</sub>`), "the footer is as before");
+
+    const both = compose({
+      shell,
+      browser: SHOT_BROWSER,
+      images: { shell: upload(), browser: upload() },
+    });
+    const shellLane = both.body.slice(0, both.body.indexOf("<summary>Web (browser):"));
+    assert.doesNotMatch(shellLane, /<img/);
+    assert.equal(imgCount(webLane(both.body)), 2);
+  });
+
+  it("renders none for a withheld browser lane, and the footer says why", () => {
+    const jwt = "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkw";
+    const r = compose({
+      browser: { ...SHOT_BROWSER, text: browserOutput({ rows: SHOT_ROWS, extra: jwt }) },
+      images: { browser: upload() },
+    });
+    assert.deepEqual(r.withheld, { shell: false, browser: true });
+    assert.equal(imgCount(r.body), 0);
+    assert.ok(!r.body.includes(EVIDENCE_COMMIT));
+    assert.deepEqual(r.images, { browser: 0 });
+    assert.ok(
+      r.body
+        .split("\n")
+        .includes(
+          `${LOCAL_BOTH} Web screenshots weren't published: the report was withheld, so its screenshots were too.</sub>`,
+        ),
+    );
+    assert.doesNotMatch(r.body, /Web screenshots are published/);
+  });
+
+  it("renders none for a lane that didn't report", () => {
+    for (const browser of [
+      { state: "timeout", dir: "/ev/browser", text: browserOutput({ rows: SHOT_ROWS }) },
+      {
+        state: "reported:none",
+        dir: "/ev/browser",
+        text: browserOutput({ rows: SHOT_ROWS, status: "unavailable", verdict: "none" }),
+      },
+      { state: "reported:pass", dir: "/ev/browser", text: null },
+    ]) {
+      const r = compose({ browser, images: { browser: upload() } });
+      assert.equal(imgCount(r.body), 0, browser.state);
+      assert.deepEqual(r.images, { browser: 0 }, browser.state);
+      assert.ok(
+        r.body
+          .split("\n")
+          .includes(
+            `${LOCAL_BOTH} Web screenshots weren't published: the lane didn't report a result.</sub>`,
+          ),
+        browser.state,
+      );
+    }
+  });
+
+  it("leaves no image when a body-level secret hit replaces the body", () => {
+    const r = compose({
+      browser: SHOT_BROWSER,
+      gaps: [{ lane: "shell", reason: `curl failed with ${BYPASS}` }],
+      images: { browser: upload() },
+    });
+    assert.ok(r.secretHits.includes("body:bypass-secret"));
+    assert.match(r.body, /The rest of this report was withheld/);
+    assert.equal(imgCount(r.body), 0);
+    assert.ok(!r.body.includes(EVIDENCE_COMMIT));
+    assert.deepEqual(r.images, { browser: 0 });
+    assert.doesNotMatch(r.body, /Web screenshots are published/);
+    assert.ok(
+      r.body.split("\n").some((l) => l.startsWith(LOCAL_BOTH)),
+      "both dirs stay local",
+    );
+    assert.deepEqual(r.body.split("\n").slice(-2), [VERIFY_REPORT_MARKER, verifyShaMarker(SHA)]);
+  });
+
+  it("with no images passed, the footer is exactly as before", () => {
+    const r = compose({ browser: SHOT_BROWSER });
+    assert.ok(r.body.split("\n").includes(`${LOCAL_BOTH}</sub>`));
+    assert.doesNotMatch(r.body, /<img|Web screenshots|\*\*Screenshots\*\*/);
+    assert.deepEqual(r.images, { browser: 0 });
+    for (const images of [{}, { browser: null }, { browser: undefined }, undefined]) {
+      assert.equal(compose({ browser: SHOT_BROWSER, images }).body, r.body, JSON.stringify(images));
+    }
+  });
+
+  it("moves the Web dir to its own published line when images are embedded; the shell dir stays", () => {
+    const l = compose({ browser: SHOT_BROWSER, images: { browser: upload() } }).body.split("\n");
+    assert.ok(
+      l.includes(
+        "<sub>Local evidence stays on the Mac mini (the repo is public): Repo & API `/ev/shell`.</sub>",
+      ),
+    );
+    assert.ok(l.includes(WEB_PUBLISHED));
+    assert.ok(l.indexOf(WEB_PUBLISHED) > l.lastIndexOf("</details>"), "in the footer");
+    assert.ok(!l.some((x) => x.includes("Web `/ev/browser`")), "not in the local line");
+
+    // No shell dir: no local line at all.
+    const alone = compose({
+      shell: { state: "timeout", text: null },
+      browser: SHOT_BROWSER,
+      images: { browser: upload() },
+    }).body;
+    assert.doesNotMatch(alone, /Local evidence stays on the Mac mini/);
+    assert.ok(alone.split("\n").includes(WEB_PUBLISHED));
+  });
+
+  it("appends why the Web screenshots weren't published when the upload failed", () => {
+    const cases = [
+      [{ ok: false, reason: "push" }, "pushing them to GitHub failed"],
+      [
+        { ok: false, reason: "selftest-missing" },
+        "the publishing self-test hasn't passed on this Mac mini yet (see the factory runbook)",
+      ],
+      [{ ok: false, reason: "unreadable" }, "the upload record couldn't be read"],
+      [{ ok: false }, "the upload failed"],
+      [upload([], { commit: null }), "the run saved no screenshots"],
+    ];
+    for (const [record, why] of cases) {
+      const r = compose({ browser: SHOT_BROWSER, images: { browser: record } });
+      assert.equal(imgCount(r.body), 0, why);
+      assert.deepEqual(r.images, { browser: 0 }, why);
+      assert.ok(
+        r.body
+          .split("\n")
+          .includes(`${LOCAL_BOTH} Web screenshots weren't published: ${why}.</sub>`),
+        why,
+      );
+      assert.doesNotMatch(r.body, /Web screenshots are published/, why);
+    }
+    // Every image kept back: the list is in the Web lane, the reason in the footer.
+    const kept = compose({
+      browser: SHOT_BROWSER,
+      images: {
+        browser: upload([], {
+          commit: null,
+          overflow: [{ n: 1, path: "/ev/browser/evidence/01.png", why: "a symlink" }],
+        }),
+      },
+    }).body;
+    assert.ok(webLane(kept).includes("- screenshot 1, a symlink: `/ev/browser/evidence/01.png`"));
+    assert.ok(
+      kept
+        .split("\n")
+        .includes(
+          `${LOCAL_BOTH} Web screenshots weren't published: none of its screenshots passed the checks.</sub>`,
+        ),
+    );
+    // No local dir to hang the reason on: it gets a line of its own.
+    const bare = compose({
+      shell: { state: "reported:pass", dir: "", text: shellOutput() },
+      browser: { ...SHOT_BROWSER, dir: "" },
+      images: { browser: { ok: false, reason: "push" } },
+    }).body;
+    assert.ok(
+      bare
+        .split("\n")
+        .includes("<sub>Web screenshots weren't published: pushing them to GitHub failed.</sub>"),
+    );
+    assert.doesNotMatch(bare, /Local evidence stays on the Mac mini/);
+  });
+});
+
 describe("verify-report CLI", () => {
   let dir;
   let files;
@@ -1474,6 +1778,7 @@ describe("verify-report CLI", () => {
       verdict: "fail",
       withheld: { shell: false, browser: false },
       secretHits: [],
+      images: { browser: 0 },
     });
     assert.equal(r.stdout.trim().split("\n").length, 1);
     const body = readFileSync(files.out, "utf8");
@@ -1515,8 +1820,61 @@ describe("verify-report CLI", () => {
       verdict: "fail",
       withheld: { shell: false, browser: false },
       secretHits: [],
+      images: { browser: 0 },
     });
     assert.match(readFileSync(files.out, "utf8"), /12 tests/);
+  });
+
+  it("--browser-images embeds the Web lane's uploaded screenshots and counts them", () => {
+    writeFileSync(
+      join(files.browserDir, "runner-output.txt"),
+      browserOutput({ rows: SHOT_ROWS, verdict: "fail" }),
+    );
+    const record = join(dir, "upload.json");
+    writeFileSync(record, JSON.stringify(upload()), { mode: 0o600 });
+    const r = run(args({ "browser-images": record }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      verdict: "fail",
+      withheld: { shell: false, browser: false },
+      secretHits: [],
+      images: { browser: 2 },
+    });
+    const body = readFileSync(files.out, "utf8");
+    assert.ok(webLane(body).includes(imgTag(1)) && webLane(body).includes(imgTag(2)));
+    assert.equal(imgCount(body), 2);
+    assert.match(body, /<sub>Web screenshots are published in this report \(ADR-0072\)/);
+    assert.deepEqual(body.split("\n").slice(-2), [VERIFY_REPORT_MARKER, verifyShaMarker(SHA)]);
+  });
+
+  it('--browser-images "" reads as no upload tried: the body is as without the flag', () => {
+    writeFileSync(join(files.browserDir, "runner-output.txt"), browserOutput({ rows: SHOT_ROWS }));
+    assert.equal(run(args()).status, 0);
+    const without = readFileSync(files.out, "utf8");
+    const r = run(args({ "browser-images": "" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout).images, { browser: 0 });
+    const body = readFileSync(files.out, "utf8");
+    assert.equal(body, without);
+    assert.doesNotMatch(body, /<img|Web screenshots/);
+  });
+
+  it("--browser-images that can't be read says the upload record couldn't be read", () => {
+    writeFileSync(join(files.browserDir, "runner-output.txt"), browserOutput({ rows: SHOT_ROWS }));
+    const garbled = join(dir, "garbled.json");
+    writeFileSync(garbled, "{not json");
+    for (const record of [join(dir, "missing.json"), garbled]) {
+      const r = run(args({ "browser-images": record }));
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(JSON.parse(r.stdout).images, { browser: 0 }, record);
+      const body = readFileSync(files.out, "utf8");
+      assert.equal(imgCount(body), 0, record);
+      assert.match(
+        body,
+        /<sub>Local evidence stays on the Mac mini \(the repo is public\): [^\n]*\. Web screenshots weren't published: the upload record couldn't be read\.<\/sub>/,
+        record,
+      );
+    }
   });
 
   it("treats a missing lane output or scenario file as a gap, not an error", () => {

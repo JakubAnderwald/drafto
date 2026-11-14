@@ -82,7 +82,10 @@
 // can be captured before the navigation it started has committed, so ONE more
 // call can land on the new page before the next response reveals it. The
 // runner has no tools besides these and its only output is stdout, which
-// bash scans for secrets before posting anything.
+// bash scans for secrets before posting anything. That one call can be a
+// screenshot, so each copy is logged with onOrigin, from its own response's
+// Tab Context: only a copy of an owned tab on the allowed origin is ever
+// published (evidence-images.mjs, ADR-0072).
 //
 // The decision log never carries tool_input values that can hold a secret
 // (form_input's value, computer's text): it records the tool, the tabId, the
@@ -1142,11 +1145,18 @@ export function applyPost({
   // Only computer saves screenshots; a page-reading tool's response is page
   // text, and a page could print a look-alike line.
   if (name === "computer") {
+    // Where the tab was when the screenshot was taken, from this response's
+    // own Tab Context: only a shot of an owned tab on the allowed origin may
+    // be published (ADR-0072). A click's navigation can show up one call
+    // late, so a neutral, unknown or off-origin page records false.
+    const tabUrl =
+      isTabId(args.tabId) && owns(next, args.tabId) ? next.tabs[String(args.tabId)] : undefined;
+    const onOrigin = typeof tabUrl === "string" && isAllowedNavigation(tabUrl, origins);
     for (const t of texts) {
       const m = SCREENSHOT_BLOCK_RE.exec(t.trim());
       if (!m) continue;
       const problem = screenshotSourceProblem(m[1], tmpRoots ? { tmpRoots } : undefined);
-      events.push(problem ? { screenshotRejected: problem } : { copy: m[1] });
+      events.push(problem ? { screenshotRejected: problem } : { copy: m[1], onOrigin });
     }
   }
 
@@ -1509,6 +1519,7 @@ export function runPostHook({ configPath, stdin, now = new Date().toISOString(),
     try {
       logged.push({
         copied: path.basename(copyEvidence(e.copy, config.evidenceDir, { tmpRoots })),
+        onOrigin: e.onOrigin === true,
       });
     } catch (err) {
       logged.push({ copyFailed: err.message });
