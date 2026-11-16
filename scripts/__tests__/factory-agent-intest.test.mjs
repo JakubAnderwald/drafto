@@ -272,6 +272,7 @@ node() {
     *) command node "$@" ;;
   esac
 }
+${fnBody("intest_reused_builds")}
 ${fnBody("intest_handoff")}
 intest_handoff 12 34 '{}' https://drafto-x.vercel.app '' ${SHA} 'apps/web/x.ts' web '' ''
 echo "rc=$?"
