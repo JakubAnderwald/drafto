@@ -3956,8 +3956,11 @@ intest_check_lane_outcomes() {
   for lane in $(echo "$prior_lanes" | tr ',' ' '); do
     [[ -n "$lane" ]] || continue
     # Reused from an earlier commit's build (ADR-0081): nothing was built for
-    # this head, so there is no log or exit code to read.
-    if [[ ",$reused," == *",${lane}:"* ]]; then
+    # this head, so there is no log or exit code to read. intest_dispatch_betas
+    # never lists a reused lane here, so this only guards a hand-edited or
+    # half-written record. A lane with an attempt on record was dispatched for
+    # this head, and its outcome is read as usual.
+    if [[ ",$reused," == *",${lane}:"* && "$(lane_attempt_of "$prior_attempts" "$lane")" == "0" ]]; then
       kept="${kept:+$kept,}$lane"
       continue
     fi
@@ -4201,14 +4204,17 @@ intest_beta_reuse_decide() {
         intestBetaBuilt "$built" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     fi
     if [[ "$evaluated" -eq 1 ]]; then
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-        intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      # intestBetaSha LAST: the others are only read under a matching SHA, so a
+      # write lost or cut short before it leaves the old head's record, never
+      # the old head's lanes filed under the new one.
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
         intestBetaLanes "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
         intestBetaAttempts "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
         intestBetaReused "$reused" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+        intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     fi
   fi
   echo "$reused"
@@ -4415,16 +4421,17 @@ intest_dispatch_betas() {
     done < <(echo "$dispatch_json" | jq -r '.dispatched[]? | "\(.id)\t\(.pid // "")"' 2>/dev/null || true)
     merged_lanes=$(printf '%s\n%s\n' "${prior_lanes//,/$'\n'}" "${confirmed_csv//,/$'\n'}" \
       | grep -v '^$' | sort -u | paste -sd, -)
+    # Rewritten before the SHA, as intest_beta_reuse_decide does, so a value
+    # left by an earlier commit (or by reuse before FACTORY_INTEST_BETA_REUSE
+    # was turned off) is never read for this one.
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaReused "$reused_csv" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaLanes "$merged_lanes" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-    # Rewritten with the SHA, so a value left by an earlier commit (or by reuse
-    # before FACTORY_INTEST_BETA_REUSE was turned off) is never read for this one.
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaReused "$reused_csv" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     new_attempts="$prior_attempts"
     for want in $(echo "$confirmed_csv" | tr ',' ' '); do
       [[ -n "$want" ]] || continue

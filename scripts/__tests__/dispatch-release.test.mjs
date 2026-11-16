@@ -831,7 +831,7 @@ describe("laneNeedsRebuild (beta reuse across heads)", () => {
         "README.md",
         `apps/${lane}/CLAUDE.md`,
         "supabase/migrations/20261116000001_x.sql",
-        "supabase/config.toml",
+        "supabase/functions/x/index.ts",
         "apps/web/src/app/page.tsx",
         ".github/workflows/ci.yml",
         ".claude/settings.json",
@@ -869,6 +869,14 @@ describe("laneNeedsRebuild (beta reuse across heads)", () => {
       ]) {
         assert.equal(laneNeedsRebuild([file], lane), true, `${lane}: ${file}`);
       }
+    }
+  });
+
+  it("rebuilds on supabase/config.toml, so the hosted-config gate (ADR-0065) sees the head", () => {
+    for (const lane of ["mobile", "desktop"]) {
+      assert.deepEqual(laneRebuildTriggers(["docs/a.md", "supabase/config.toml"], lane), [
+        "supabase/config.toml",
+      ]);
     }
   });
 

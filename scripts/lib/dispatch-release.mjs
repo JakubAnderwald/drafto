@@ -218,9 +218,14 @@ const NEVER_NATIVE = [
   /^\.github\//,
   /^\.claude\//,
 ];
+// Not in any binary either, but a head that changes it must go through the
+// hosted-config gate (ADR-0065) before a tester is sent to a beta, and only a
+// dispatch reaches that gate.
+const ALWAYS_REBUILD = ["supabase/config.toml"];
 const LANE_APP_DIRS = Object.freeze({ mobile: "apps/mobile/", desktop: "apps/desktop/" });
 
 function outsideLane(file, laneId) {
+  if (ALWAYS_REBUILD.includes(file)) return false;
   if (NEVER_NATIVE.some((re) => re.test(file))) return true;
   if (file.startsWith("scripts/")) return !FASTLANE_SCRIPT_INPUTS.includes(file);
   // The other lane's app: each app builds only from its own directory, the

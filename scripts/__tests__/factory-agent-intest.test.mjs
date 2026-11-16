@@ -14,6 +14,7 @@ import {
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { buildBody } from "../comment-intest-build.mjs";
 
 // Tests for the In Review → In Test hand-off: the stage that writes the human
 // test scenario and posts it as the In Test comment.
@@ -1397,6 +1398,7 @@ cat "$STATE_FILE"
       writeLog: false,
       dispatchedAgoMin: 500,
       dryRun: 0,
+      attempts: "",
       extraState: { intestBetaReused: "mobile:abc123" },
     });
     assert.equal(r.status, 0, r.stderr);
@@ -1404,6 +1406,19 @@ cat "$STATE_FILE"
     assert.doesNotMatch(r.agentLog, /issue comment/);
     const issue = JSON.parse(readFileSync(r.stateFile, "utf8")).issues["463"];
     assert.equal(issue.intestBetaLanes, "mobile");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("still reads the outcome of a lane dispatched for this head, whatever intestBetaReused says", () => {
+    // A lane with an attempt on record was really built here; a stale reuse
+    // entry must not hide its failure.
+    const r = run({
+      exitContent: "1\n",
+      dryRun: 0,
+      extraState: { intestBetaReused: "mobile:abc123" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /re-arming attempt 2/);
     rmSync(r.dir, { recursive: true, force: true });
   });
 });
@@ -1969,11 +1984,17 @@ done
 describe("reused beta build numbers and the fallback line (ADR-0081, real bash)", () => {
   const FROM = "9248da9a0c630a0836ff781b224dc1d2a34faff7";
   const S12 = FROM.slice(0, 12);
+  // The lane's own notice, from comment-intest-build.mjs, so a change to its
+  // wording that the parser below can't read fails here.
   const notice = (platform, build, sha12 = S12, authorAssociation = "OWNER") => ({
     authorAssociation,
-    body:
-      `🏭 **${platform} beta build ${build} uploaded** — TestFlight, built from PR #802 @ \`${sha12}\` (pre-merge).\n\n` +
-      `<!-- drafto-factory-intest-build:${platform}:${build} -->`,
+    body: buildBody({
+      platform,
+      build,
+      track: "TestFlight",
+      pr: 802,
+      sha: `${sha12}${"0".repeat(28)}`,
+    }),
   });
   const bash = (script, env = {}) => {
     const r = spawnSync(
@@ -2172,7 +2193,17 @@ describe("beta reuse wiring (ADR-0081)", () => {
     const shaWrite = body.indexOf('intestBetaSha "$sha"');
     const reusedWrite = body.indexOf('intestBetaReused "$reused_csv"');
     const elseIdx = body.indexOf("leaving retry armed");
-    assert.ok(shaWrite !== -1 && shaWrite < reusedWrite && reusedWrite < elseIdx);
+    // Before the SHA: the field is only read under a matching SHA.
+    assert.ok(reusedWrite !== -1 && reusedWrite < shaWrite && shaWrite < elseIdx);
+  });
+
+  it("records a reuse decision with intestBetaSha written last", () => {
+    const body = fnBody("intest_beta_reuse_decide");
+    const sha = body.indexOf('intestBetaSha "$sha"');
+    for (const w of ['intestBetaLanes ""', 'intestBetaAttempts ""', 'intestBetaReused "$reused"']) {
+      const i = body.indexOf(w);
+      assert.ok(i !== -1 && i < sha, w);
+    }
   });
 
   it("reports the reused lanes on every path that reports a dispatch", () => {
