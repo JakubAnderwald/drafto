@@ -479,6 +479,25 @@ function shapeReplyDir(dir) {
     : null;
 }
 
+// The size marker every plan carries (ADR-0083), re-emitted on every replan:
+// <!-- drafto-factory-plan-size:<class>:<estLines> -->. <class> is S, M, L or
+// XL; <estLines> is the planner's best estimate of the lines the PR adds.
+export const FACTORY_PLAN_SIZE_PREFIX = "drafto-factory-plan-size:";
+export const PLAN_SIZE_CLASSES = Object.freeze(["S", "M", "L", "XL"]);
+const PLAN_SIZE_RE = /<!--\s*drafto-factory-plan-size:(S|M|L|XL):(\d{1,7})\s*-->/g;
+
+// Pure: the size marker in a plan body, as {sizeClass, estLines}, or null when
+// there is none. The last marker wins, so a plan that quotes an older one
+// further up still reads as its own. Bash compares estLines with
+// FACTORY_PLAN_OVERSIZE_LINES to keep the factory-oversize label in step.
+export function parsePlanSize(body) {
+  if (typeof body !== "string" || body.length === 0) return null;
+  let last = null;
+  for (const m of body.matchAll(PLAN_SIZE_RE)) last = m;
+  if (!last) return null;
+  return { sizeClass: last[1], estLines: Number(last[2]) };
+}
+
 // Keep only { commentId, marker } pairs whose marker is exactly the one bash
 // builds for that comment (<prefix><commentId>), so nothing else can pass for
 // a reply marker.

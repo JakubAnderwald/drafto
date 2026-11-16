@@ -56,27 +56,28 @@ The factory agent reads the Status field directly via the GitHub GraphQL API on 
 
 The full set is created idempotently by `scripts/setup-factory-labels.sh`. Reference:
 
-| Label                   | Set by               | Meaning                                                                                |
-| ----------------------- | -------------------- | -------------------------------------------------------------------------------------- |
-| `status:ready`          | human (via board)    | Spec accepted; factory may plan.                                                       |
-| `status:planning`       | factory              | Plan in progress.                                                                      |
-| `status:plan-review`    | factory              | Awaiting plan approval.                                                                |
-| `status:in-progress`    | human / factory      | Implementation in progress.                                                            |
-| `status:in-review`      | factory              | PR open, CI / review comments active.                                                  |
-| `status:testing`        | factory              | Pre-In-Test verification running (ADR-0053).                                           |
-| `status:in-test`        | factory              | Testable build + scenario posted, awaiting ship approval.                              |
-| `status:approved`       | human / factory      | Approved for release; merge + dispatch authorised.                                     |
-| `status:released`       | factory              | Merged + beta dispatched.                                                              |
-| `status:done`           | human / support      | Final acceptance.                                                                      |
-| `status:blocked`        | factory              | Hard stop — see comment on issue.                                                      |
-| `factory-pause`         | operator             | Global kill switch on this issue (factory ignores).                                    |
-| `migration-approved`    | operator             | Authorises merging the PR's migration SQL as it is when added; an SQL edit removes it. |
-| `hosted-config-applied` | operator             | Its `config.toml` changes are applied to dev and prod (ADR-0065).                      |
-| `factory-failure`       | factory failure trap | Filed by `cleanup()` on a run error, or by the toolchain check.                        |
-| `parity:web-only`       | operator             | Skip cross-platform parity check (legitimate web-only work).                           |
-| `parity:mobile-only`    | operator             | Skip cross-platform parity check (legitimate mobile-only work).                        |
-| `parity:desktop-only`   | operator             | Skip cross-platform parity check (legitimate desktop-only work).                       |
-| `parity:infra-only`     | operator             | Skip parity check; change touches no app platform (scripts/docs/CI).                   |
+| Label                   | Set by               | Meaning                                                                                                                |
+| ----------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `status:ready`          | human (via board)    | Spec accepted; factory may plan.                                                                                       |
+| `status:planning`       | factory              | Plan in progress.                                                                                                      |
+| `status:plan-review`    | factory              | Awaiting plan approval.                                                                                                |
+| `status:in-progress`    | human / factory      | Implementation in progress.                                                                                            |
+| `status:in-review`      | factory              | PR open, CI / review comments active.                                                                                  |
+| `status:testing`        | factory              | Pre-In-Test verification running (ADR-0053).                                                                           |
+| `status:in-test`        | factory              | Testable build + scenario posted, awaiting ship approval.                                                              |
+| `status:approved`       | human / factory      | Approved for release; merge + dispatch authorised.                                                                     |
+| `status:released`       | factory              | Merged + beta dispatched.                                                                                              |
+| `status:done`           | human / support      | Final acceptance.                                                                                                      |
+| `status:blocked`        | factory              | Hard stop — see comment on issue.                                                                                      |
+| `factory-pause`         | operator             | Global kill switch on this issue (factory ignores).                                                                    |
+| `migration-approved`    | operator             | Authorises merging the PR's migration SQL as it is when added; an SQL edit removes it.                                 |
+| `hosted-config-applied` | operator             | Its `config.toml` changes are applied to dev and prod (ADR-0065).                                                      |
+| `factory-failure`       | factory failure trap | Filed by `cleanup()` on a run error, or by the toolchain check.                                                        |
+| `factory-oversize`      | factory              | The plan estimates 1,500+ added lines (`FACTORY_PLAN_OVERSIZE_LINES`); consider splitting the card by hand (ADR-0083). |
+| `parity:web-only`       | operator             | Skip cross-platform parity check (legitimate web-only work).                                                           |
+| `parity:mobile-only`    | operator             | Skip cross-platform parity check (legitimate mobile-only work).                                                        |
+| `parity:desktop-only`   | operator             | Skip cross-platform parity check (legitimate desktop-only work).                                                       |
+| `parity:infra-only`     | operator             | Skip parity check; change touches no app platform (scripts/docs/CI).                                                   |
 
 ## How to file an issue for the factory
 
@@ -98,6 +99,7 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 - **Automatic (self-healing)**: when a claude call dies on a Claude subscription _session usage_ limit, the factory pauses itself until the limit resets (`factory:pause-until`) instead of burning the card's retry budget, then auto-resumes on the first tick past the deadline. See [factory-runbook.md → "Automatic pause on a Claude session limit"](../operations/factory-runbook.md#automatic-pause-on-a-claude-session-limit-self-healing).
 - **Automatic toolchain pause (self-healing)**: every tick probes git / gh / claude on the Mac mini before running the modes. If one stays broken for two ticks (e.g. git refusing to run on an unaccepted Xcode license after an Xcode update), the factory pauses itself, emails the operator the exact fix and files one `factory-failure` issue, then resumes on its own once the probes pass. See [factory-runbook.md → "Automatic toolchain pause"](../operations/factory-runbook.md#automatic-toolchain-pause-self-healing).
 - **Verification stage**: `FACTORY_VERIFY=0` in the plist (the default). Cards then go straight to In Test, and any card already in **Testing** is promoted on the next tick with a report that says verification was switched off. `FACTORY_VERIFY_ONLY_LABEL` limits the stage to cards carrying one label. Dragging a card out of Testing by hand works too; `factory-pause` on the issue freezes it where it is.
+- **Oversize label**: `FACTORY_PLAN_OVERSIZE_LINES=0` in the plist stops the `factory-oversize` label. Plans keep their **Size** section either way ([ADR-0083](../adr/0083-planner-size-estimate-and-oversize-label.md)).
 - **Plan-stage browser probe**: `FACTORY_PLAN_PROBE=0` in the plist (the default). On the next `--plan` tick, any queued probe is cancelled and its branch deleted. `FACTORY_PLAN_PROBE_SPIKE=0` keeps probes on but stops the planner's spike code from being built. Approving the plan also cancels a probe that is still running.
 - **Implement session resume**: `FACTORY_IMPLEMENT_RESUME=0` in the plist (default `1`). Every implement attempt then starts a fresh Claude session; the deadline facts in the prompt stay. To stop one card's next run from resuming, run `node scripts/lib/state-cli.mjs factory:implement-resume-clear <n>`.
 - **Emergency stop**: `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist` on the Mac mini, or `kill` the active claude PID under `logs/factory.*.pid`.
@@ -123,6 +125,13 @@ This is exactly what the Plan Review gate catches. Don't drag to In Progress. Tw
 - **Full restart.** If you want the factory to discard the plan and start fresh, delete the bot's `<!-- drafto-factory-plan -->` comment, then drag the card back to **Ready**. The next tick will plan from scratch.
 
 How the in-place replan stays idempotent: after a successful replan, the edited plan body carries one `<!-- drafto-factory-replan-ack:<comment-id> -->` marker per trigger comment. The next tick only re-fires if there's a newer OWNER comment whose ID isn't in the ack set — a thank-you reply that produces `action=noop` still gets ack-stamped, so it doesn't loop. The planner only writes each reply to a file; the factory posts it with `<!-- drafto-factory-plan-reply-<comment-id> -->` appended. The detector skips the factory's own marker comments (it posts under your identity, so they're `OWNER` too), so a reply never starts another replan. If a handled comment has no reply after the run, the factory posts a short "no reply was posted to your comment" notice carrying that marker instead; if the replan ends in **Blocked**, every comment it was answering gets one.
+
+### Plan size and the `factory-oversize` label
+
+Every plan has a **Size** section after **Confidence** ([ADR-0083](../adr/0083-planner-size-estimate-and-oversize-label.md)). It gives the planner's estimate of the lines the PR will add, as a range, plus the number of files, the platforms and a class: `S` (under 200 lines), `M` (200–699), `L` (700–1,499) or `XL` (1,500 and up). The estimate counts code, tests, docs and migrations. The plan ends with a hidden `<!-- drafto-factory-plan-size:<class>:<estLines> -->` marker, and every replan re-estimates it.
+
+- **The label.** When the estimate is at least `FACTORY_PLAN_OVERSIZE_LINES` (default 1,500), the factory adds `factory-oversize` to the issue. A replan that brings the estimate below that removes the label again. The factory re-checks the label on every tick while the card is in Plan Review, so a failed label edit, or a label created later, catches up on its own. Big PRs are the ones that time out, conflict with `main` and take the most review rounds, so the label is a prompt to look at the proposed split. Until `scripts/setup-factory-labels.sh` has created the label in the repo, nothing is labelled and the plan log says so.
+- **The proposed split.** A plan of class `L` or `XL` also has a **Proposed split** section: 2–4 sub-cards that can each ship on their own, in merge order, each with a title, what it does, acceptance criteria and platforms. Its **If approved as-is:** line says what this card keeps if you approve the plan unchanged (normally everything, in one PR). It is advice only: the factory never files issues. To split the card, file the sub-issues yourself from it (`gh issue create --project "Drafto Factory"`, as in "How to file an issue for the factory"), then close this card or narrow its spec and comment to replan it.
 
 ### Plan-stage browser probe
 
