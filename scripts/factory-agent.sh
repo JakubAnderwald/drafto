@@ -333,6 +333,15 @@ export FACTORY_CR_CLI FACTORY_CR_CLI_MAX_PER_HOUR FACTORY_CR_CLI_MAX_RUNS_PER_CA
 # See ADR-0030, ADR-0067 and docs/operations/factory-runbook.md.
 FACTORY_INTEST_BETA="${FACTORY_INTEST_BETA:-0}"
 FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
+# Reuse a lane's last successful pre-merge beta for a new PR head when nothing
+# the lane builds from changed since (ADR-0081). On by default; 0 rebuilds every
+# lane for every head, as before. It's a kill switch, so a value it doesn't know
+# turns it off.
+FACTORY_INTEST_BETA_REUSE="${FACTORY_INTEST_BETA_REUSE:-1}"
+if [[ "$FACTORY_INTEST_BETA_REUSE" != "0" && "$FACTORY_INTEST_BETA_REUSE" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_INTEST_BETA_REUSE='$FACTORY_INTEST_BETA_REUSE'; turning beta reuse off" >&2
+  FACTORY_INTEST_BETA_REUSE=0
+fi
 
 # ── Browser runner (Claude in Chrome, ADR-0051) ────────────────────────────
 # On by default; FACTORY_BROWSER=0 in the plist turns it off. ONE kind of claude
@@ -3888,12 +3897,48 @@ lane_attempt_set() {
   echo "${out:+$out,}${lane}:${n}"
 }
 
+# intest_reused_json <reused-csv> [<lanes-csv>] — intestBetaReused
+# ("mobile:<sha40>,…") as betaDispatch's reused list, [{id, fromSha, builds: []}],
+# keeping only <lanes-csv> when it is given. intest_reused_builds fills builds.
+intest_reused_json() {
+  jq -nc --arg r "${1:-}" --arg only "${2-__all__}" '
+    [ $r | split(",")[] | select(test("^[a-z]+:[0-9a-f]{40}$")) | split(":")
+      | select(.[0] as $id | $only == "__all__" or ($only | split(",") | index($id)))
+      | { id: .[0], fromSha: .[1], builds: [] } ]' 2>/dev/null || echo "[]"
+}
+
+# intest_reused_builds <beta-json> <comments-json> — <beta-json> with each
+# .reused[] entry's build numbers filled in from the notices its lane posted
+# (comment-intest-build.mjs): an OWNER comment carrying
+# drafto-factory-intest-build:<platform>:<n> and "@ `<fromSha12>`", for that
+# lane's platforms (mobile: android, ios; desktop: macos). The latest notice
+# per platform wins, since a retried lane posts again. Anyone can comment on a
+# public repo, hence OWNER only. Prints <beta-json> unchanged when it has no
+# reused entry or anything fails. The comments go on stdin: an issue's
+# comments can outgrow an argument.
+intest_reused_builds() {
+  local out
+  out=$(jq -c --argjson beta "$1" '. as $c | $beta
+    | if ((.reused // []) | length) == 0 then . else
+        .reused |= map(. as $r | (($r.fromSha // "") | .[0:12]) as $s
+          | ({ mobile: ["android", "ios"], desktop: ["macos"] }[$r.id] // []) as $plats
+          | .builds = ([ $c[]? | select(.authorAssociation == "OWNER") | (.body // "")
+              | select(($s | length) == 12 and contains("@ `" + $s + "`"))
+              | match("drafto-factory-intest-build:([a-z]+):([0-9]+)"; "g")
+              | { platform: .captures[0].string, build: .captures[1].string }
+              | select(.platform as $p | $plats | index($p)) ]
+            | reduce .[] as $b ({}; .[$b.platform] = $b) | [ .[] ] | sort_by(.platform)))
+      end' <<<"${2:-[]}" 2>/dev/null) && [[ -n "$out" ]] || out="$1"
+  printf '%s\n' "$out"
+}
+
 # $1 issue, $2 head sha, $3 pr number.
 intest_check_lane_outcomes() {
   local issue_num="$1" sha="$2" pr_num="${3:-}"
   local state_json prior_sha prior_lanes prior_attempts dispatched_at lane exit_file
   local log_file_path code lane_attempt kept="" changed=0 give_up
   local reason new_attempts attempts_changed=0 lane_at_csv lane_started lane_age_min
+  local built reused built_changed=0
 
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
@@ -3902,12 +3947,20 @@ intest_check_lane_outcomes() {
   dispatched_at=$(echo "$state_json" | jq -r '.intestBetaAt // ""' 2>/dev/null || echo "")
   prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
   lane_at_csv=$(echo "$state_json" | jq -r '.intestBetaLaneAt // ""' 2>/dev/null || echo "")
+  built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  reused=$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null || echo "")
   new_attempts="$prior_attempts"
   # Only meaningful for the commit currently under test.
   [[ -n "$sha" && "$prior_sha" == "$sha" && -n "$prior_lanes" ]] || return 0
 
   for lane in $(echo "$prior_lanes" | tr ',' ' '); do
     [[ -n "$lane" ]] || continue
+    # Reused from an earlier commit's build (ADR-0081): nothing was built for
+    # this head, so there is no log or exit code to read.
+    if [[ ",$reused," == *",${lane}:"* ]]; then
+      kept="${kept:+$kept,}$lane"
+      continue
+    fi
     # Same scoping key the dispatcher used, so we read OUR dispatch's outcome
     # and never a concurrent card's or a post-merge lane's.
     # Per ATTEMPT, not per commit: a lane declared stale may still be alive
@@ -3981,6 +4034,11 @@ intest_check_lane_outcomes() {
       code="${code:0:4}"
       if [[ "$code" == "0" ]]; then
         kept="${kept:+$kept,}$lane"          # succeeded — stay suppressed
+        # The lane's last successful build, which a later head may reuse (ADR-0081).
+        if [[ "$(lane_attempt_of "$built" "$lane")" != "$sha" ]]; then
+          built=$(lane_attempt_set "$built" "$lane" "$sha")
+          built_changed=1
+        fi
         # A retry that succeeds must retract its own failure notice. GitHub
         # comments are append-only, so an earlier "the mobile beta build failed"
         # stays the last word on the issue unless something supersedes it — which
@@ -4053,7 +4111,107 @@ Log on the build machine: \`$log_file_path\`
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaAttempts "$new_attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
+  if [[ "$built_changed" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaBuilt "$built" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
   return 0
+}
+
+# intest_beta_reuse_decide <issue> <head-sha> <lanes-csv> <state-json>
+# ADR-0081. For a new PR head, decide which of <lanes-csv> can keep the beta
+# built at an earlier commit instead of building again. A lane qualifies when
+# its last successful build (intestBetaBuilt) is from a commit whose compare
+# with the head (`gh api …/compare/<built>...<head>`) is `ahead` or `identical`
+# with fewer than 300 files, none of which laneNeedsRebuild counts as an input
+# of that lane. Merges from main are in that tree diff, so they count too. A
+# lane of the previous head whose .exit says 0 is a successful build even when
+# no outcome check saw it. Anything else (no build, an API error, a rebase, too
+# many files) leaves the lane out, so it is dispatched as before.
+#
+# Prints the reused lanes as intestBetaReused ("mobile:<built-sha40>,…").
+# When it compared anything it records the decision for the head: intestBetaSha
+# moves to the head with the previous head's lanes and retry budget cleared (a
+# new head drops those anyway), so later ticks read the decision back instead of
+# calling the API again. No lane is confirmed started, so the dispatch retry
+# stays armed. Logs via logerr only: the caller captures its stdout.
+intest_beta_reuse_decide() {
+  local issue_num="$1" sha="$2" lanes="$3" state_json="$4"
+  local built prev_sha prev_lanes prev_attempts lane from n exit_file code cmp="" cmp_from="" status count verdict
+  local reused="" evaluated=0 built_changed=0
+  [[ "${FACTORY_INTEST_BETA_REUSE:-1}" == "1" && "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+  built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  prev_sha=$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
+  prev_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
+  prev_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
+  if [[ "$prev_sha" =~ ^[0-9a-f]{40}$ && "$prev_sha" != "$sha" ]]; then
+    for lane in $(echo "$prev_lanes" | tr ',' ' '); do
+      n=$(lane_attempt_of "$prev_attempts" "$lane")
+      [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+      exit_file="$LOG_DIR/beta-lane-${lane}-${issue_num}-${prev_sha:0:12}-a${n}.log.exit"
+      [[ -f "$exit_file" ]] || continue
+      code=$(tr -cd '0-9' <"$exit_file" 2>/dev/null || true)
+      [[ "$code" == "0" && "$(lane_attempt_of "$built" "$lane")" != "$prev_sha" ]] || continue
+      built=$(lane_attempt_set "$built" "$lane" "$prev_sha")
+      built_changed=1
+    done
+  fi
+  for lane in $(echo "$lanes" | tr ',' ' '); do
+    from=$(lane_attempt_of "$built" "$lane")
+    [[ "$from" =~ ^[0-9a-f]{40}$ ]] || continue
+    evaluated=1
+    if [[ "$from" != "$sha" ]]; then
+      # One line each: the status, the file count, then every path, a rename's
+      # old one too (a file moved out of the lane's app changes the lane). Both
+      # lanes usually share a build commit, so one call serves both.
+      if [[ "$from" != "$cmp_from" ]]; then
+        cmp_from="$from"
+        if ! cmp=$(gh api "repos/JakubAnderwald/drafto/compare/${from}...${sha}" \
+            --jq '([.status, (.files | length)] + [ .files[] | .filename, (.previous_filename // empty) ]) | .[]' \
+            2>>"$LOG_FILE"); then
+          cmp=""
+        fi
+      fi
+      if [[ -z "$cmp" ]]; then
+        logerr "Issue #$issue_num: couldn't compare ${from:0:12}...${sha:0:12} for the $lane beta; building it again"
+        continue
+      fi
+      status=$(sed -n 1p <<<"$cmp")
+      count=$(sed -n 2p <<<"$cmp")
+      if [[ "$status" != "ahead" && "$status" != "identical" ]] \
+          || ! [[ "$count" =~ ^[0-9]+$ ]] || [[ "$count" -ge 300 ]]; then
+        logerr "Issue #$issue_num: ${from:0:12}...${sha:0:12} is '${status:-?}' with ${count:-?} file(s); building the $lane beta again"
+        continue
+      fi
+      verdict=$(sed -n '3,$p' <<<"$cmp" \
+        | node "$SCRIPT_DIR/lib/dispatch-release.mjs" lane-reuse --lane "$lane" --files-file - 2>>"$LOG_FILE" \
+        | jq -r 'if .rebuild == false then "reuse" else "rebuild " + ((.triggers // [])[0] // "?") end' 2>/dev/null \
+        || echo "")
+      if [[ "$verdict" != "reuse" ]]; then
+        logerr "Issue #$issue_num: beta lane $lane needs a new build at ${sha:0:12} (${verdict:-lane-reuse failed})"
+        continue
+      fi
+    fi
+    reused=$(lane_attempt_set "$reused" "$lane" "$from")
+    logerr "Issue #$issue_num: beta lane $lane reused from ${from:0:12} at ${sha:0:12}: nothing it builds from changed"
+  done
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    if [[ "$built_changed" -eq 1 ]]; then
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+        intestBetaBuilt "$built" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    fi
+    if [[ "$evaluated" -eq 1 ]]; then
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+        intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+        intestBetaLanes "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+        intestBetaAttempts "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+        intestBetaReused "$reused" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    fi
+  fi
+  echo "$reused"
 }
 
 # Dispatch pre-merge beta builds for an In Test card, so a native change is
@@ -4129,38 +4287,47 @@ intest_dispatch_betas() {
   # re-dispatched while a healthy sibling is left alone. A single shared SHA
   # used to suppress both: mobile succeeding hid a desktop failure entirely.
   local prior_lanes="" prior_attempts="" state_json="" want to_dispatch="" new_attempts="" new_lane_at=""
-  local lane_attempt log_key
+  local lane_attempt log_key reused_csv="" reused_json
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
   prior_sha=$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
   prior_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
   prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
+  # Lanes kept from an earlier commit's build for this SHA (ADR-0081).
+  if [[ "${FACTORY_INTEST_BETA_REUSE:-1}" == "1" ]]; then
+    reused_csv=$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null || echo "")
+  fi
   # A different commit invalidates every prior lane AND its retry budget.
   if [[ -z "$sha" || "$prior_sha" != "$sha" ]]; then
     prior_lanes=""
     prior_attempts=""
+    # …and decides, once, which lanes the new commit can reuse.
+    reused_csv=$(intest_beta_reuse_decide "$issue_num" "$sha" "$lanes" "$state_json")
   fi
+  reused_json=$(intest_reused_json "$reused_csv" "$lanes")
 
   for want in $(echo "$lanes" | tr ',' ' '); do
     [[ -n "$want" ]] || continue
     case ",$prior_lanes," in
       *",$want,"*) ;;                                   # already started for this SHA
-      *) to_dispatch="${to_dispatch:+$to_dispatch,}$want" ;;
+      *) [[ ",$reused_csv," == *",$want:"* ]] \
+           || to_dispatch="${to_dispatch:+$to_dispatch,}$want" ;;  # unless reused
     esac
   done
 
   if [[ -z "$to_dispatch" ]]; then
-    logerr "Issue #$issue_num: beta lane(s) '$lanes' already dispatched for ${sha:0:12}; nothing to do"
+    logerr "Issue #$issue_num: beta lane(s) '$lanes' already dispatched for ${sha:0:12}${reused_csv:+ or reused ($reused_csv)}; nothing to do"
     # Report them as dispatched, not as an empty list: a scenario written on a
     # later tick would otherwise tell the tester to build locally when a beta
     # has in fact already shipped.
-    jq -nc --arg lanes "$prior_lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" '
+    jq -nc --arg lanes "$prior_lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" \
+      --argjson reused "$reused_json" '
       { dispatched: [ ($lanes | split(",") | .[] | select(length > 0) | { id: ., alreadyRunning: true }) ],
-        skipped: $skipped, manualCommands: $manual }'
+        skipped: $skipped, manualCommands: $manual, reused: $reused }'
     return 0
   fi
   [[ "$to_dispatch" == "$lanes" ]] \
-    || logerr "Issue #$issue_num: re-dispatching only the missing lane(s) '$to_dispatch' (already started: '${prior_lanes:-none}')"
+    || logerr "Issue #$issue_num: re-dispatching only the missing lane(s) '$to_dispatch' (already started: '${prior_lanes:-none}'${reused_csv:+, reused: '$reused_csv'})"
   lanes="$to_dispatch"
 
   # Hosted-config gate (ADR-0065). Every beta dispatch comes through here: the
@@ -4174,15 +4341,17 @@ intest_dispatch_betas() {
     skipped_json=$(jq -nc --argjson skipped "$skipped_json" --arg lanes "$lanes" '
       $skipped + [ $lanes | split(",") | .[] | select(length > 0) | { id: ., reason: "hosted-config-hold" } ]' \
       2>/dev/null || echo "$skipped_json")
-    jq -nc --argjson skipped "$skipped_json" '{ dispatched: [], skipped: $skipped, manualCommands: [] }'
+    jq -nc --argjson skipped "$skipped_json" --argjson reused "$reused_json" \
+      '{ dispatched: [], skipped: $skipped, manualCommands: [], reused: $reused }'
     return 0
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     logerr "DRY-RUN: would dispatch pre-merge beta lane(s) '$lanes' for #$issue_num at ${sha:0:12}"
-    jq -nc --arg lanes "$lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" '
+    jq -nc --arg lanes "$lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" \
+      --argjson reused "$reused_json" '
       { dispatched: [ ($lanes | split(",") | .[] | select(length > 0) | { id: ., dryRun: true }) ],
-        skipped: $skipped, manualCommands: $manual }'
+        skipped: $skipped, manualCommands: $manual, reused: $reused }'
     return 0
   fi
 
@@ -4196,8 +4365,8 @@ intest_dispatch_betas() {
   fi
   if [[ -z "${mobile_root:-}" && -z "${desktop_root:-}" ]]; then
     logerr "ERROR: no beta build root available for #$issue_num; skipping dispatch"
-    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" \
-      '{ dispatched: [], skipped: $skipped, manualCommands: $manual }'
+    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" --argjson reused "$reused_json" \
+      '{ dispatched: [], skipped: $skipped, manualCommands: $manual, reused: $reused }'
     return 0
   fi
   # dispatch-premerge resolves each lane's root: mobile from --repo-root, desktop
@@ -4252,6 +4421,10 @@ intest_dispatch_betas() {
       intestBetaAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaLanes "$merged_lanes" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    # Rewritten with the SHA, so a value left by an earlier commit (or by reuse
+    # before FACTORY_INTEST_BETA_REUSE was turned off) is never read for this one.
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaReused "$reused_csv" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     new_attempts="$prior_attempts"
     for want in $(echo "$confirmed_csv" | tr ',' ' '); do
       [[ -n "$want" ]] || continue
@@ -4282,8 +4455,8 @@ intest_dispatch_betas() {
   jq -nc --argjson d "$(echo "${dispatch_json:-{\}}" | jq -c '.dispatched // []' 2>/dev/null || echo '[]')" \
     --argjson gateSkipped "$skipped_json" \
     --argjson laneSkipped "$(echo "${dispatch_json:-{\}}" | jq -c '(.skipped // []) + [ (.failed // [])[] | { id: .id, reason: ("failed to start: " + .reason) } ]' 2>/dev/null || echo '[]')" \
-    --argjson manual "$manual" \
-    '{ dispatched: $d, skipped: ($gateSkipped + $laneSkipped), manualCommands: $manual }'
+    --argjson manual "$manual" --argjson reused "$reused_json" \
+    '{ dispatched: $d, skipped: ($gateSkipped + $laneSkipped), manualCommands: $manual, reused: $reused }'
 }
 
 # Deterministic In Test comment. Used when the scenario writer times out, is
@@ -4298,7 +4471,7 @@ intest_fallback_comment() {
   local issue_num="$1" pr_num="$2" preview_url="$3" advisory="$4" head_sha="$5" platforms="$6"
   local beta="${7:-}" cr_note="${8:-}"
   local web mobile desktop dispatched desktop_skip build_note="" advisory_note=""
-  local title="🏭 **Ready to test — In Test.**" stage_note=""
+  local title="🏭 **Ready to test — In Test.**" stage_note="" mobile_reused desktop_reused
   if [[ "${INTEST_STAGE:-intest}" == "testing" ]]; then
     title="🏭 **Test scenario — verifying now (Testing).**"
     stage_note=" The factory is running its own checks on it first; the card moves to \
@@ -4308,6 +4481,18 @@ intest_fallback_comment() {
   mobile=$(echo "$platforms" | jq -r '.mobile // false' 2>/dev/null || echo "false")
   desktop=$(echo "$platforms" | jq -r '.desktop // false' 2>/dev/null || echo "false")
   dispatched=$(echo "${beta:-{\}}" | jq -r '[.dispatched[]?.id] | join(",")' 2>/dev/null || echo "")
+  # A lane kept from an earlier commit's build (ADR-0081) gets one line naming
+  # that build, "" otherwise. The build numbers come from intest_reused_builds.
+  local reused_jq='first(.reused[]? | select(.id == $lane)) as $r
+    | (($r.fromSha // "") | .[0:12]) as $s
+    | ([ $r.builds[]? | (if $lane == "mobile" then (({ ios: "iOS", android: "Android" }[.platform] // .platform) + " ") else "" end)
+         + "build " + .build ] | join(" / ")) as $b
+    | "No " + (if $lane == "mobile" then "mobile" else "macOS" end) + " change since "
+      + (if $b == "" then "the beta built from `" + $s + "`" else $b + " (`" + $s + "`)" end)
+      + "; keep testing that build."
+      + (if $b == "" then " An earlier comment on this issue gives its build number." else "" end)'
+  mobile_reused=$(echo "${beta:-{\}}" | jq -r --arg lane mobile "$reused_jq" 2>/dev/null || echo "")
+  desktop_reused=$(echo "${beta:-{\}}" | jq -r --arg lane desktop "$reused_jq" 2>/dev/null || echo "")
   if [[ "$web" == "true" && -n "$preview_url" ]]; then
     build_note="$build_note
 - **Web** — Vercel preview: $preview_url"
@@ -4316,6 +4501,9 @@ intest_fallback_comment() {
     if [[ ",$dispatched," == *",mobile,"* ]]; then
       build_note="$build_note
 - **iOS / Android** — beta builds are building now from PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}; you'll get a follow-up comment with each build number (~20-40 min)."
+    elif [[ -n "$mobile_reused" ]]; then
+      build_note="$build_note
+- **iOS / Android** — $mobile_reused"
     else
       build_note="$build_note
 - **iOS / Android** — run the branch locally: worktree \`factory/issue-$issue_num\`, \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then a debug build on a simulator or emulator as in [Mobile debug builds](https://github.com/JakubAnderwald/drafto/blob/main/docs/architecture/testing.md#mobile-debug-builds). Not \`pnpm ios\`: it fails under Xcode 27."
@@ -4325,6 +4513,9 @@ intest_fallback_comment() {
     if [[ ",$dispatched," == *",desktop,"* ]]; then
       build_note="$build_note
 - **macOS** — a TestFlight build is building now from PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}; you'll get a follow-up comment with the build number (~20-40 min)."
+    elif [[ -n "$desktop_reused" ]]; then
+      build_note="$build_note
+- **macOS** — $desktop_reused"
     else
       # The gate's reason (FACTORY_INTEST_BETA=0, phase-B, low-disk-…, …) tells
       # the operator which switch to flip; there's more than one.
@@ -4424,6 +4615,8 @@ intest_handoff() {
   [[ -n "$plan_json" ]] || plan_json="null"
 
   [[ -n "$beta_json" ]] || beta_json='{"dispatched":[],"skipped":[],"manualCommands":[]}'
+  # A reused beta (ADR-0081) is reported with the build numbers its lane posted.
+  beta_json=$(intest_reused_builds "$beta_json" "$comments_json")
   # The diff is the scenario's ground truth. An empty one still produces a
   # usable (if thinner) scenario, so a failure here is not fatal.
   pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
@@ -6662,14 +6855,18 @@ verify_compose_report() {
   local issue_num="$1" pr_num="$2" head_sha="$3" platforms="$4" lanes="$5" cr_note="$6"
   local comments_json="$7" state_json="$8" gaps="$9" body_file="${10}"
   local scenario_file beta_lanes="" bypass="" account="" signin_key="" shell_dir="" browser_dir="" out
-  local lane_facts merged
+  local lane_facts merged beta_reused="[]"
   mkdir -p "$VERIFY_DIR" 2>>"$LOG_FILE" || return 1
   scenario_file="$VERIFY_DIR/report-$issue_num-$head_sha.scenario.md"
   verify_scenario_file "$comments_json" "$head_sha" "$scenario_file" || scenario_file=""
   # The beta lanes dispatched for this commit, as intest_dispatch_betas recorded
   # them: read, never re-dispatched, so composing a report can't start a build.
+  # Lanes reused from an earlier commit's build (ADR-0081) come with its numbers.
   if [[ "$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null)" == "$head_sha" ]]; then
     beta_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
+    beta_reused=$(intest_reused_builds \
+      "{\"reused\":$(intest_reused_json "$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null)")}" \
+      "$comments_json" | jq -c '.reused // []' 2>/dev/null || echo "[]")
   fi
   [[ -e "$FACTORY_VERIFY_BYPASS_FILE" ]] && bypass="$FACTORY_VERIFY_BYPASS_FILE"
   [[ -e "$FACTORY_BROWSER_ACCOUNT_FILE" ]] && account="$FACTORY_BROWSER_ACCOUNT_FILE"
@@ -6694,7 +6891,7 @@ verify_compose_report() {
   fi
   if ! out=$(node "$SCRIPT_DIR/lib/verify-report.mjs" render --issue "$issue_num" --pr "$pr_num" \
       --sha "$head_sha" --scenario-file "$scenario_file" --platforms "$platforms" \
-      --beta-lanes "$beta_lanes" \
+      --beta-lanes "$beta_lanes" --beta-reused "$beta_reused" \
       --shell-state "$(echo "$lanes" | jq -r '.shell // "none"' 2>/dev/null || echo none)" \
       --shell-dir "$shell_dir" \
       --browser-state "$(echo "$lanes" | jq -r '.browser // "none"' 2>/dev/null || echo none)" \

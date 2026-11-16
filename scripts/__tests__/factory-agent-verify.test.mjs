@@ -80,6 +80,8 @@ const REAL_HELPERS = [
   "issue_marker_check",
   "migration_approval_vouch",
   "migration_approval_vouch_view",
+  "intest_reused_json",
+  "intest_reused_builds",
 ];
 
 const STUBS = `
@@ -1782,6 +1784,40 @@ describe("verify_compose_report with a shell run (real composer, lane module stu
       assert.match(body, /\*\*Verdict: PASS\*\*/);
       assert.match(r.calls, /^lane gaps --run-dir .*\/run$/m);
     });
+  });
+
+  it("names a beta reused from an earlier commit, with its build numbers (ADR-0081)", () => {
+    const notice = {
+      id: 6,
+      body: `🏭 **iOS beta build 147 uploaded** — TestFlight, built from PR #70 @ \`${OLD.slice(0, 12)}\` (pre-merge).\n\n<!-- drafto-factory-intest-build:ios:147 -->`,
+      createdAt: "t",
+      authorAssociation: "OWNER",
+    };
+    withBash(
+      promote,
+      {
+        env: { HEAD, DIFF_STUB: "apps/web/a.ts\napps/mobile/b.ts" },
+        state: { ...state, intestBetaSha: HEAD, intestBetaReused: `mobile:${OLD}` },
+        comments: [...comments, notice],
+      },
+      (r) => {
+        const body = r.comments.at(-1).body;
+        assert.match(
+          body,
+          /\| iOS \/ Android \| manual \| — \| No mobile change since iOS build 147 \(`bbbbbbbbbbbb`\); keep testing that build\. \|/,
+        );
+      },
+    );
+    // Reuse recorded for another head is not this commit's.
+    withBash(
+      promote,
+      {
+        env: { HEAD, DIFF_STUB: "apps/web/a.ts\napps/mobile/b.ts" },
+        state: { ...state, intestBetaSha: OLD, intestBetaReused: `mobile:${OLD}` },
+        comments: [...comments, notice],
+      },
+      (r) => assert.doesNotMatch(r.comments.at(-1).body, /No mobile change since/),
+    );
   });
 
   it("scans for the bypass secret the run held even after its file is gone (fails closed)", () => {

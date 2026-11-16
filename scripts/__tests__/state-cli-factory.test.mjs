@@ -390,6 +390,27 @@ describe("factory:set-issue-field / get-issue", () => {
     }
   });
 
+  it("accepts the beta-reuse fields (ADR-0081), which bash writes under `|| true`", () => {
+    // A rejected intestBetaBuilt would lose every successful build, so nothing
+    // is ever reused; a rejected intestBetaReused would re-call the compare API
+    // every tick and rebuild what was meant to be reused.
+    const sha = "a".repeat(40);
+    for (const [field, value] of [
+      ["intestBetaBuilt", `mobile:${sha},desktop:${sha}`],
+      ["intestBetaReused", `mobile:${sha}`],
+    ]) {
+      let r = run(["factory:set-issue-field", "42", field, value, "--state-file", stateFile]);
+      assert.equal(r.status, 0, `${field}: ${r.stderr}`);
+      assert.equal(readState().issues["42"][field], value);
+      r = run(["factory:set-issue-field", "42", field, "", "--state-file", stateFile]);
+      assert.equal(r.status, 0, `${field}: ${r.stderr}`);
+      assert.equal(readState().issues["42"][field], null);
+    }
+    const fresh = JSON.parse(run(["factory:get-issue", "999", "--state-file", stateFile]).stdout);
+    assert.equal(fresh.intestBetaBuilt, null);
+    assert.equal(fresh.intestBetaReused, null);
+  });
+
   it("accepts and resets the behind-main update budget (ADR-0070)", () => {
     // --watch writes it under `|| true`: a rejected write would read back as 0
     // on every tick and lift FACTORY_MAX_BRANCH_UPDATES entirely.

@@ -173,6 +173,14 @@ function emptyIssue() {
     // FACTORY_LANE_MAX_MIN cap per lane: intestBetaAt is shared and reset by
     // any lane's re-dispatch, which would let a hung sibling outlive the cap.
     intestBetaLaneAt: null,
+    // Beta reuse across heads (ADR-0081). intestBetaBuilt is the commit of each
+    // lane's last SUCCESSFUL pre-merge beta, "mobile:<sha40>,desktop:<sha40>".
+    // intestBetaReused lists the lanes not rebuilt for intestBetaSha because
+    // nothing they build from changed since that build, "mobile:<sha40>" (the
+    // build's commit); it is written once per head, so later ticks don't call
+    // the compare API again.
+    intestBetaBuilt: null,
+    intestBetaReused: null,
     // Head SHA the code-review stage last ran against, so --watch reviews each
     // commit exactly once. Re-armed by every new push, which is what makes a
     // fix-then-re-review cycle converge instead of repeating. See ADR-0035.
@@ -623,6 +631,8 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   "intestBetaLanes",
   "intestBetaAttempts",
   "intestBetaLaneAt",
+  "intestBetaBuilt",
+  "intestBetaReused",
   // Code-review stage idempotency key (ADR-0035): the head SHA the review stage
   // last ran against. Same silent-failure hazard as the In Test keys above — a
   // rejected field would make --watch re-review (and re-comment on) every tick.

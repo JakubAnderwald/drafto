@@ -983,6 +983,58 @@ export function shapePlatforms(platforms, keys) {
   return out;
 }
 
+// ── Reused pre-merge betas (ADR-0081) ──────────────────────────────────────
+// betaDispatch.reused lists the lanes the factory did not rebuild for this
+// head because nothing they build from changed since an earlier commit's
+// beta: [{id, fromSha, builds: [{platform, build}]}]. bash fills `builds` from
+// the lane's own build-number notices (intest_reused_builds).
+const REUSED_LANE_PLATFORMS = Object.freeze({ mobile: ["android", "ios"], desktop: ["macos"] });
+const BUILD_PLATFORM_LABELS = Object.freeze({ android: "Android", ios: "iOS", macos: "macOS" });
+
+// Pure: the reused list, validated. An entry needs a known lane and a full
+// commit SHA; builds keep only that lane's platforms and numeric build numbers.
+export function shapeReusedBetas(list) {
+  const out = [];
+  for (const r of Array.isArray(list) ? list : []) {
+    const id = r?.id;
+    const fromSha = String(r?.fromSha ?? "");
+    if (!Object.hasOwn(REUSED_LANE_PLATFORMS, id) || !/^[0-9a-f]{40}$/.test(fromSha)) continue;
+    if (out.some((o) => o.id === id)) continue;
+    const builds = (Array.isArray(r.builds) ? r.builds : [])
+      .filter(
+        (b) =>
+          REUSED_LANE_PLATFORMS[id].includes(b?.platform) &&
+          /^[0-9]{1,12}$/.test(String(b?.build ?? "")),
+      )
+      .map((b) => ({ platform: b.platform, build: String(b.build) }));
+    out.push({ id, fromSha, builds });
+  }
+  return out;
+}
+
+// Pure: a shaped entry's build numbers, "Android build 152 / iOS build 147"
+// for mobile and "build 80" for desktop; "" when none was found.
+export function reusedBuildsText(entry) {
+  return entry.builds
+    .map(
+      (b) =>
+        `${entry.id === "mobile" ? `${BUILD_PLATFORM_LABELS[b.platform]} ` : ""}build ${b.build}`,
+    )
+    .join(" / ");
+}
+
+// Pure: the one line a tester reads for a reused lane. The bash fallback
+// comment (intest_fallback_comment) renders the same words.
+export function reusedBetaNote(entry) {
+  const sha12 = entry.fromSha.slice(0, 12);
+  const what = entry.id === "mobile" ? "mobile" : "macOS";
+  const builds = reusedBuildsText(entry);
+  return builds
+    ? `No ${what} change since ${builds} (\`${sha12}\`); keep testing that build.`
+    : `No ${what} change since the beta built from \`${sha12}\`; keep testing that build. ` +
+        "An earlier comment on this issue gives its build number.";
+}
+
 export function buildFactoryInTestBundle({
   stage = "intest",
   issue,
@@ -1070,8 +1122,9 @@ export function buildFactoryInTestBundle({
             ? betaDispatch.manualCommands
             : []
           ).map((c) => (typeof c === "string" ? { id: "", command: c } : c)),
+          reused: shapeReusedBetas(betaDispatch.reused),
         }
-      : { dispatched: [], skipped: [], manualCommands: [] },
+      : { dispatched: [], skipped: [], manualCommands: [], reused: [] },
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
     config: shapeConfig(config),

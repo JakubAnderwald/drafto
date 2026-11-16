@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RUNNER_TOOLS } from "../lib/browser-guard.mjs";
-import { buildFactoryInTestBundle } from "../lib/factory-bundle.mjs";
+import { buildFactoryInTestBundle, reusedBetaNote } from "../lib/factory-bundle.mjs";
 import { buildPreviewCurlArgs } from "../lib/verify-lane.mjs";
 
 // Grounding tests for the In Test scenario writer's prompt. This stage is the
@@ -66,6 +66,53 @@ describe("In Test prompt — bundle contract", () => {
     assert.match(flat, /`advisory` never carries it/);
     assert.doesNotMatch(flat, /`advisory` may also carry/);
     assert.doesNotMatch(flat, /If `advisory` carries a CodeRabbit/);
+  });
+});
+
+describe("In Test prompt — reused betas (ADR-0081)", () => {
+  const from = "9248da9a0c630a0836ff781b224dc1d2a34faff7";
+  const mobile = {
+    id: "mobile",
+    fromSha: from,
+    builds: [
+      { platform: "android", build: "152" },
+      { platform: "ios", build: "147" },
+    ],
+  };
+
+  it("documents betaDispatch.reused in the shape the bundle builder emits", () => {
+    assert.match(
+      prompt,
+      /"reused": \[ \{ "id": "mobile", "fromSha": "[0-9a-f]+\.\.\.", "builds": \[/,
+    );
+    const bundle = buildFactoryInTestBundle({
+      issue: { number: 7, title: "t", body: "", labels: [] },
+      betaDispatch: { dispatched: [], skipped: [], manualCommands: [], reused: [mobile] },
+    });
+    assert.deepEqual(bundle.betaDispatch.reused, [mobile]);
+  });
+
+  it("gives the exact line the fallback comment and the report use", () => {
+    assert.match(flat, /each entry in `betaDispatch\.reused` → no new build/);
+    // The prompt's example is what reusedBetaNote renders for the same entry.
+    assert.ok(prompt.includes(reusedBetaNote(mobile)), "example drifted from reusedBetaNote");
+    const desktop = reusedBetaNote({
+      id: "desktop",
+      fromSha: from,
+      builds: [{ platform: "macos", build: "80" }],
+    });
+    assert.ok(flat.includes(desktop.replace(from.slice(0, 12), "<sha12>")), desktop);
+    const none = reusedBetaNote({ id: "mobile", fromSha: from, builds: [] });
+    assert.ok(flat.includes(none.split(". ")[0].replace(from.slice(0, 12), "<sha12>")), none);
+    assert.match(flat, /earlier comment on this issue gives its build number/);
+  });
+
+  it("forbids inventing a reused build's number", () => {
+    assert.match(flat, /Only `builds` holds build numbers: never compute or guess one/);
+  });
+
+  it("sends a platform in no list at all to the local build", () => {
+    assert.match(flat, /appears in none of these lists, say it must be run locally/);
   });
 });
 

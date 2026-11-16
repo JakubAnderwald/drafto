@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   derivePlatforms,
@@ -17,6 +17,9 @@ import {
   dispatchLanes,
   DESKTOP_ROOT_DEFAULT,
   parseReleaseIssues,
+  laneNeedsRebuild,
+  laneRebuildTriggers,
+  FASTLANE_SCRIPT_INPUTS,
   _setSpawnForTests,
 } from "../lib/dispatch-release.mjs";
 
@@ -815,5 +818,159 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
     } finally {
       rmSync(desktopRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// ADR-0081: a pre-merge beta built at an earlier commit is reused for a later
+// head only when every changed file is known never to reach that lane's binary.
+describe("laneNeedsRebuild (beta reuse across heads)", () => {
+  it("reuses across changes that never reach a native binary", () => {
+    for (const lane of ["mobile", "desktop"]) {
+      for (const file of [
+        "docs/adr/0081-x.md",
+        "README.md",
+        `apps/${lane}/CLAUDE.md`,
+        "supabase/migrations/20261116000001_x.sql",
+        "supabase/config.toml",
+        "apps/web/src/app/page.tsx",
+        ".github/workflows/ci.yml",
+        ".claude/settings.json",
+        "scripts/factory-agent.sh",
+        "scripts/lib/dispatch-release.mjs",
+        "scripts/lib/beta-build-root.sh",
+      ]) {
+        assert.equal(laneNeedsRebuild([file], lane), false, `${lane}: ${file}`);
+      }
+    }
+  });
+
+  it("reuses across the other lane's app, and rebuilds its own", () => {
+    assert.equal(laneNeedsRebuild("apps/desktop/src/app.tsx", "mobile"), false);
+    assert.equal(laneNeedsRebuild("apps/mobile/src/app.tsx", "desktop"), false);
+    assert.equal(laneNeedsRebuild("apps/mobile/src/app.tsx", "mobile"), true);
+    assert.equal(laneNeedsRebuild("apps/desktop/macos/Podfile.lock", "desktop"), true);
+    // Tests and fixtures in the lane's own app still rebuild: conservative.
+    assert.equal(laneNeedsRebuild("apps/mobile/__tests__/a.test.ts", "mobile"), true);
+  });
+
+  it("rebuilds on root files, patches and packages/shared, which change binaries", () => {
+    for (const lane of ["mobile", "desktop"]) {
+      for (const file of [
+        "pnpm-lock.yaml",
+        "package.json",
+        "pnpm-workspace.yaml",
+        ".npmrc",
+        ".nvmrc",
+        "app.json",
+        "index.js",
+        "patches/react-native-macos@0.83.0.patch",
+        "packages/shared/src/constants.ts",
+        "packages/shared/package.json",
+      ]) {
+        assert.equal(laneNeedsRebuild([file], lane), true, `${lane}: ${file}`);
+      }
+    }
+  });
+
+  it("rebuilds on anything it doesn't know", () => {
+    for (const file of ["turbo.json", "support-attachments/x.png", "packages/new/a.ts", "x"]) {
+      assert.equal(laneNeedsRebuild([file], "mobile"), true, file);
+    }
+  });
+
+  it("rebuilds when a script a Fastfile runs changes", () => {
+    for (const file of FASTLANE_SCRIPT_INPUTS) {
+      assert.equal(laneNeedsRebuild([file], "mobile"), true, file);
+      assert.equal(laneNeedsRebuild([file], "desktop"), true, file);
+    }
+  });
+
+  it("reuses across an empty list (the same tree)", () => {
+    assert.equal(laneNeedsRebuild([], "mobile"), false);
+    assert.equal(laneNeedsRebuild("", "desktop"), false);
+    assert.equal(laneNeedsRebuild("\n  \n", "desktop"), false);
+  });
+
+  it("needs only one trigger, and names every one", () => {
+    const files = "docs/a.md\napps/web/b.ts\npnpm-lock.yaml\napps/mobile/c.ts\n";
+    assert.deepEqual(laneRebuildTriggers(files, "mobile"), ["pnpm-lock.yaml", "apps/mobile/c.ts"]);
+    assert.deepEqual(laneRebuildTriggers(files, "desktop"), ["pnpm-lock.yaml"]);
+  });
+
+  it("refuses a lane it doesn't know, so a typo can't reuse a build", () => {
+    assert.throws(() => laneNeedsRebuild(["docs/a.md"], "web"), /unknown lane: web/);
+    assert.throws(() => laneNeedsRebuild(["docs/a.md"], undefined), /unknown lane/);
+  });
+
+  it("lists every root script the Fastfiles run, with what they import", () => {
+    // A Fastfile names its root scripts as File.join(repo_root, "scripts", …).
+    // Walk their relative imports, so a new import can't slip past the list.
+    const repo = fileURLToPath(new URL("../../", import.meta.url));
+    const queue = [];
+    for (const app of ["mobile", "desktop"]) {
+      const fastfile = readFileSync(join(repo, "apps", app, "fastlane", "Fastfile"), "utf8");
+      for (const m of fastfile.matchAll(/File\.join\(repo_root, "scripts", "([^"]+)"\)/g)) {
+        queue.push(`scripts/${m[1]}`);
+      }
+    }
+    assert.ok(queue.includes("scripts/comment-intest-build.mjs"), "the build-number notice");
+    const seen = new Set();
+    while (queue.length) {
+      const file = queue.shift();
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const src = readFileSync(join(repo, file), "utf8");
+      for (const m of src.matchAll(/(?:import|export)[^"';]*?from\s+["'](\.[^"']+)["']/g)) {
+        queue.push(normalize(join(dirname(file), m[1])));
+      }
+    }
+    assert.deepEqual([...FASTLANE_SCRIPT_INPUTS].sort(), [...seen].sort());
+  });
+});
+
+describe("lane-reuse CLI", () => {
+  const CLI = fileURLToPath(new URL("../lib/dispatch-release.mjs", import.meta.url));
+  const run = (args, input) => spawnSync("node", [CLI, ...args], { encoding: "utf8", input });
+
+  it("reads paths on stdin and prints the verdict with its triggers", () => {
+    const r = run(
+      ["lane-reuse", "--lane", "mobile", "--files-file", "-"],
+      "docs/a.md\napps/web/b.ts\n",
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      lane: "mobile",
+      rebuild: false,
+      files: 2,
+      triggers: [],
+    });
+    const again = run(
+      ["lane-reuse", "--lane", "desktop", "--files-file", "-"],
+      "apps/desktop/a.ts\npnpm-lock.yaml\n",
+    );
+    assert.equal(again.status, 0, again.stderr);
+    assert.deepEqual(JSON.parse(again.stdout), {
+      lane: "desktop",
+      rebuild: true,
+      files: 2,
+      triggers: ["apps/desktop/a.ts", "pnpm-lock.yaml"],
+    });
+  });
+
+  it("caps the triggers it prints at 20", () => {
+    const files = Array.from({ length: 30 }, (_, i) => `apps/mobile/f${i}.ts`).join("\n");
+    const out = JSON.parse(run(["lane-reuse", "--lane", "mobile", "--files", files]).stdout);
+    assert.equal(out.rebuild, true);
+    assert.equal(out.files, 30);
+    assert.equal(out.triggers.length, 20);
+  });
+
+  it("fails on an unknown lane or a missing file list", () => {
+    const bad = run(["lane-reuse", "--lane", "web", "--files", "docs/a.md"]);
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /unknown lane: web/);
+    const none = run(["lane-reuse", "--lane", "mobile"]);
+    assert.equal(none.status, 1);
+    assert.match(none.stderr, /requires --files-file/);
   });
 });

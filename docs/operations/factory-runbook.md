@@ -253,6 +253,7 @@ A card in **In Test** needs a build a human can actually install. `--watch` ther
 | ------------------------------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FACTORY_INTEST_BETA`          | `0`                            | Master switch. `1` + Phase C/D dispatches the **mobile** lane (iOS TestFlight + Play internal).                                                                                                                                                                                                                                     |
 | `FACTORY_INTEST_BETA_DESKTOP`  | `0`                            | Additionally dispatch the **macOS** lane. Only turn on after the one-time desktop validation below.                                                                                                                                                                                                                                 |
+| `FACTORY_INTEST_BETA_REUSE`    | `1`                            | Keep a lane's last successful beta for a new PR head when nothing that lane builds from changed since (see **Reusing a beta across PR heads** below). `0` rebuilds every lane for every head, as before. Any other value turns it off with a warning.                                                                               |
 | `FACTORY_INTEST_TIMEOUT_SEC`   | `600`                          | Wall-clock cap for the In Test scenario writer (read-only stage).                                                                                                                                                                                                                                                                   |
 | `FACTORY_LANE_STALE_MIN`       | `120`                          | A lane silent this long with no exit code is declared dead and retried.                                                                                                                                                                                                                                                             |
 | `FACTORY_LANE_MAX_MIN`         | `240`                          | A lane still running this long after ITS dispatch is killed (whole process group) and retried.                                                                                                                                                                                                                                      |
@@ -340,11 +341,21 @@ Mobile tags the same way, as `mobile@<version>+<platform>.<build>` — the platf
 ```bash
 node scripts/lib/state-cli.mjs factory:get-issue <n>     # intestBetaSha  = commit the lanes were dispatched for
                                                          # intestBetaLanes = lanes CONFIRMED STARTED for it
+                                                         # intestBetaReused = lanes kept from an earlier build for it
+                                                         # intestBetaBuilt = each lane's last successful build
                                                          # intestCommentSha = scenario's SHA
 # Lane logs are scoped per dispatch: beta-lane-<lane>-<issue>-<sha12>.log
 tail -f logs/factory/beta-lane-mobile-463-b243d8196fa2.log        # what it's doing
 cat  logs/factory/beta-lane-mobile-463-b243d8196fa2.log.exit      # its exit code, once done
 ```
+
+**Reusing a beta across PR heads.** A new PR head doesn't always rebuild every lane ([ADR-0081](../adr/0081-reuse-pre-merge-betas-across-heads.md)). `intestBetaBuilt` records each lane's last **successful** build (`mobile:<sha40>,desktop:<sha40>`), written when its `.exit` reads 0. The first tick that sees a new head compares that commit with the head (`gh api repos/JakubAnderwald/drafto/compare/<built>...<head>`) and keeps the build when:
+
+- the compare is `ahead` or `identical`, so the head contains the build's commit (a merge from main counts, a rebase doesn't);
+- it lists fewer than 300 files;
+- every one of them is in `docs/`, a `*.md` file, `supabase/`, `apps/web/`, `.github/`, `.claude/`, `scripts/` other than what the Fastfiles run (`FASTLANE_SCRIPT_INPUTS` in `dispatch-release.mjs`), or the **other** lane's app.
+
+Any other file rebuilds the lane: root files such as `pnpm-lock.yaml`, `package.json`, `.npmrc` and `patches/`, `packages/shared/`, the lane's own app, and anything the rule doesn't know. So does an API error, a non-`ahead` status, too many files, or a lane whose last build failed or is still running. The decision is written once per head: `intestBetaSha` moves to the head with `intestBetaLanes` and `intestBetaAttempts` cleared, and `intestBetaReused` lists the kept lanes (`mobile:<built-sha40>`). Later ticks read it back instead of calling the API again. A kept lane is never dispatched for that head, and the outcome check skips it. The log says `beta lane mobile reused from <sha12> at <sha12>`, or `needs a new build at <sha12> (rebuild <first file>)`, and the In Test comment and the verification report say "No mobile change since Android build 152 / iOS build 147 (`<sha12>`); keep testing that build." The numbers come from the lane's own `drafto-factory-intest-build` notices for that commit. To check a list of paths by hand: `git diff --name-only <built> <head> | node scripts/lib/dispatch-release.mjs lane-reuse --lane mobile --files-file -`. Play's internal track installs only its latest release, so a reused Android build can be superseded by another card's upload. TestFlight keeps older builds.
 
 **Dispatch is idempotent per lane, not per card.** `intestBetaLanes` holds only the lanes whose process the OS confirmed started for `intestBetaSha`. Each tick re-dispatches whatever is missing from that set, so a lane that was gated off (low disk, knob off), that failed to start, or that has since failed is picked up automatically — while a healthy sibling is left alone. A new commit invalidates the whole set.
 
@@ -372,6 +383,7 @@ If you _do_ want to force everything to rebuild:
 
 ```bash
 node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaLanes ""   # re-dispatch every lane
+node scripts/lib/state-cli.mjs factory:set-issue-field <n> intestBetaReused ""  # …including a reused one
 ```
 
 Lanes are still skipped up front — with the reason in the In Test comment — when a knob is off, the phase is B, free disk is below `FACTORY_MIN_FREE_DISK_GB`, a build root can't be prepared, or the desktop dependency check (`assertDesktopDeps`) fails.

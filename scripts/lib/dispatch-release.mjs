@@ -31,6 +31,13 @@
 //   platformsToLanes(platforms) → [{id, cwd, command, args}]   (pure)
 //        mobile → apps/mobile `pnpm release:beta:all` (iOS TestFlight + Android
 //        internal); desktop → apps/desktop `pnpm release:beta` (macOS TestFlight).
+//   laneRebuildTriggers(changedFiles, laneId) → [file]   (pure)
+//   laneNeedsRebuild(changedFiles, laneId) → boolean   (pure)
+//        Whether a pre-merge beta built at an earlier commit is still current
+//        for a later one, given the files that changed between them
+//        (ADR-0081). A conservative allowlist: the build is reused only when
+//        EVERY changed file is known never to reach that lane's binary. The
+//        triggers are the files that force a rebuild.
 //   assertBetaOnly(lane)
 //        Throws if the lane resolves to a production command.
 //   resolveLaneRoot(lane, {repoRoot, desktopRoot, env})   (pure)
@@ -68,6 +75,10 @@
 //        --release-issues becomes DRAFTO_RELEASE_ISSUES in the lane env, so the
 //        Fastlane "now live" hook (comment-released-issues.mjs) announces those
 //        support issues even when its tag-range walk misses them (ADR-0042).
+//   lane-reuse --lane <mobile|desktop> (--files-file <path|-> | --files <str>)
+//        Prints {lane, rebuild, files, triggers} for a newline-separated list
+//        of changed paths: laneNeedsRebuild, the number of paths, and the
+//        first 20 triggers (factory-agent.sh's pre-merge beta reuse).
 //
 // Prints JSON to stdout and exits 0; errors print {"error": "..."} to stderr and
 // exit non-zero — same shape as factory-project.mjs / state-cli.mjs.
@@ -176,6 +187,62 @@ export function platformsToLanes(platforms) {
     lanes.push({ id: "desktop", cwd: "apps/desktop", command: "pnpm", args: ["release:beta"] });
   }
   return lanes;
+}
+
+// ── Reusing a pre-merge beta across PR heads (ADR-0081) ─────────────────────
+// The root scripts a beta lane's Fastfile runs, and everything they import.
+// comment-intest-build.mjs posts the build-number notice the factory reads
+// back to report a reused build, so a change to any of these changes what the
+// lane does and rebuilds it. The test recomputes this list from the Fastfiles.
+export const FASTLANE_SCRIPT_INPUTS = Object.freeze([
+  "scripts/comment-intest-build.mjs",
+  "scripts/comment-released-issues.mjs",
+  "scripts/lib/github-sync.mjs",
+  "scripts/lib/is-main.mjs",
+  "scripts/lib/now-live.mjs",
+  "scripts/lib/parse-flags.mjs",
+  "scripts/lib/parse-issue-footer.mjs",
+  "scripts/lib/route-value.mjs",
+  "scripts/lib/state.mjs",
+]);
+
+// Paths that never reach a native binary. Everything else, including every
+// root file (pnpm-lock.yaml, package.json, pnpm-workspace.yaml, .npmrc,
+// patches/, app.json, index.js), packages/shared/ and the lane's own app,
+// rebuilds: derivePlatforms ignores the root files, but they change binaries.
+const NEVER_NATIVE = [
+  /^docs\//,
+  /\.md$/,
+  /^supabase\//,
+  /^apps\/web\//,
+  /^\.github\//,
+  /^\.claude\//,
+];
+const LANE_APP_DIRS = Object.freeze({ mobile: "apps/mobile/", desktop: "apps/desktop/" });
+
+function outsideLane(file, laneId) {
+  if (NEVER_NATIVE.some((re) => re.test(file))) return true;
+  if (file.startsWith("scripts/")) return !FASTLANE_SCRIPT_INPUTS.includes(file);
+  // The other lane's app: each app builds only from its own directory, the
+  // root and packages/shared/.
+  return Object.entries(LANE_APP_DIRS).some(([id, dir]) => id !== laneId && file.startsWith(dir));
+}
+
+// Pure: the changed files that force <laneId> to rebuild. `changedFiles` is an
+// array or a newline-separated list. An empty list (the same tree) forces
+// nothing. Throws on a lane it doesn't know, so a typo can't reuse a build.
+export function laneRebuildTriggers(changedFiles, laneId) {
+  if (!Object.hasOwn(LANE_APP_DIRS, laneId)) throw new Error(`unknown lane: ${laneId}`);
+  const files = (
+    Array.isArray(changedFiles) ? changedFiles : String(changedFiles ?? "").split("\n")
+  )
+    .map((f) => String(f).trim())
+    .filter(Boolean);
+  return files.filter((f) => !outsideLane(f, laneId));
+}
+
+export function laneNeedsRebuild(changedFiles, laneId) {
+  return laneRebuildTriggers(changedFiles, laneId).length > 0;
 }
 
 export function assertBetaOnly(lane) {
@@ -580,6 +647,22 @@ async function main(argv) {
         },
       });
     }
+    // ADR-0081: is a lane's earlier pre-merge beta still current, given the
+    // files changed since it was built? Reads paths, never touches anything.
+    case "lane-reuse": {
+      const lane = flags.lane;
+      if (!lane) throw new Error("lane-reuse requires --lane <mobile|desktop>");
+      let files;
+      if (flags.files !== undefined) files = flags.files;
+      else if (flags["files-file"] === "-") files = await readStdin();
+      else if (flags["files-file"]) files = readFileSync(flags["files-file"], "utf8");
+      else throw new Error("lane-reuse requires --files-file <path|-> or --files <str>");
+      const triggers = laneRebuildTriggers(files, lane);
+      const count = String(files)
+        .split("\n")
+        .filter((f) => f.trim()).length;
+      return { lane, rebuild: triggers.length > 0, files: count, triggers: triggers.slice(0, 20) };
+    }
     case "--help":
     case "-h":
     case undefined:
@@ -587,7 +670,8 @@ async function main(argv) {
         "Usage: dispatch-release.mjs <derive-platforms (--diff-file <path|-> | --diff <str>) [--verify]|" +
           "dispatch (--diff-file <path|-> | --platforms mobile,desktop) [--repo-root <dir>] " +
           "[--desktop-root <dir>] [--log-dir <dir>] [--log-key <key>] [--release-issues <n,n>] [--dry-run]|" +
-          "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>] [--only <ids>]>\n",
+          "dispatch-premerge (same flags) --issue <n> [--pr <n>] [--sha <sha>] [--only <ids>]|" +
+          "lane-reuse --lane <mobile|desktop> (--files-file <path|-> | --files <str>)>\n",
       );
       return null;
     default:

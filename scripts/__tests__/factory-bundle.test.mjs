@@ -18,6 +18,8 @@ import {
   effectiveParityOverride,
   reporterFromBody,
   extractScreenshots,
+  shapeReusedBetas,
+  reusedBetaNote,
 } from "../lib/factory-bundle.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1039,7 +1041,12 @@ describe("buildFactoryInTestBundle", () => {
 
   it("normalises a missing betaDispatch to empty lists", () => {
     const bundle = buildFactoryInTestBundle(base);
-    assert.deepEqual(bundle.betaDispatch, { dispatched: [], skipped: [], manualCommands: [] });
+    assert.deepEqual(bundle.betaDispatch, {
+      dispatched: [],
+      skipped: [],
+      manualCommands: [],
+      reused: [],
+    });
   });
 
   it("keeps manualCommands keyed by platform when both natives are skipped", () => {
@@ -1069,6 +1076,44 @@ describe("buildFactoryInTestBundle", () => {
     );
     assert.equal(byId.desktop, "pnpm release:beta");
     assert.equal(byId.mobile, "pnpm release:beta:all");
+  });
+
+  it("passes reused betas through, shaped (ADR-0081)", () => {
+    const from = "9248da9a0c630a0836ff781b224dc1d2a34faff7";
+    const bundle = buildFactoryInTestBundle({
+      ...base,
+      betaDispatch: {
+        dispatched: [{ id: "desktop" }],
+        skipped: [],
+        manualCommands: [],
+        reused: [
+          {
+            id: "mobile",
+            fromSha: from,
+            builds: [
+              { platform: "android", build: "152" },
+              { platform: "ios", build: 147 },
+            ],
+          },
+        ],
+      },
+    });
+    assert.deepEqual(bundle.betaDispatch.reused, [
+      {
+        id: "mobile",
+        fromSha: from,
+        builds: [
+          { platform: "android", build: "152" },
+          { platform: "ios", build: "147" },
+        ],
+      },
+    ]);
+    // An older bash that sends no `reused` still gets the field.
+    const legacy = buildFactoryInTestBundle({
+      ...base,
+      betaDispatch: { dispatched: [], skipped: [], manualCommands: [] },
+    });
+    assert.deepEqual(legacy.betaDispatch.reused, []);
   });
 
   it("coerces legacy string manualCommands rather than dropping them", () => {
@@ -1554,5 +1599,68 @@ describe("factory-bundle CLI", () => {
     assert.equal(bundle.advisory, "CodeRabbit");
     assert.equal(bundle.crCoverageNote, "CodeRabbit coverage of a1b2c3d4e5f6 unknown (lane error)");
     assert.equal(bundle.headSha, "a1b2c3d4e5f6a7b8");
+  });
+});
+
+describe("shapeReusedBetas / reusedBetaNote (ADR-0081)", () => {
+  const from = "9248da9a0c630a0836ff781b224dc1d2a34faff7";
+
+  it("keeps a known lane with a full SHA, once, and only its own platforms", () => {
+    assert.deepEqual(
+      shapeReusedBetas([
+        {
+          id: "mobile",
+          fromSha: from,
+          builds: [
+            { platform: "ios", build: "147" },
+            { platform: "macos", build: "80" },
+            { platform: "android", build: "15x" },
+            { platform: "android", build: "" },
+            null,
+          ],
+        },
+        { id: "mobile", fromSha: "b".repeat(40), builds: [] },
+        { id: "desktop", fromSha: from },
+        { id: "web", fromSha: from, builds: [] },
+        { id: "desktop", fromSha: from.slice(0, 12), builds: [] },
+        { id: "desktop", fromSha: from.toUpperCase(), builds: [] },
+        "mobile",
+      ]),
+      [
+        { id: "mobile", fromSha: from, builds: [{ platform: "ios", build: "147" }] },
+        { id: "desktop", fromSha: from, builds: [] },
+      ],
+    );
+    for (const bad of [null, undefined, "x", {}, 7]) assert.deepEqual(shapeReusedBetas(bad), []);
+  });
+
+  it("names the build it keeps, by platform for mobile", () => {
+    assert.equal(
+      reusedBetaNote({
+        id: "mobile",
+        fromSha: from,
+        builds: [
+          { platform: "android", build: "152" },
+          { platform: "ios", build: "147" },
+        ],
+      }),
+      "No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build.",
+    );
+    assert.equal(
+      reusedBetaNote({
+        id: "desktop",
+        fromSha: from,
+        builds: [{ platform: "macos", build: "80" }],
+      }),
+      "No macOS change since build 80 (`9248da9a0c63`); keep testing that build.",
+    );
+  });
+
+  it("points at the earlier comment when no build number was found", () => {
+    assert.equal(
+      reusedBetaNote({ id: "mobile", fromSha: from, builds: [] }),
+      "No mobile change since the beta built from `9248da9a0c63`; keep testing that build. " +
+        "An earlier comment on this issue gives its build number.",
+    );
   });
 });
