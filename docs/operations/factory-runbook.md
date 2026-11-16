@@ -341,7 +341,7 @@ Mobile tags the same way, as `mobile@<version>+<platform>.<build>` — the platf
 
 - `intestBetaSha`: the commit the lanes were dispatched for;
 - `intestBetaLanes`: the lanes confirmed started for it;
-- `intestBetaReused`: the lanes kept from an earlier build for it;
+- `intestBetaReused`: the lanes kept from an earlier build for it (every reader, the verification report included, ignores an entry whose build is too old or no longer the lane's last);
 - `intestBetaBuilt` and `intestBetaBuiltAt`: each lane's last successful build, and when it finished;
 - `intestCommentSha`: the scenario's SHA.
 

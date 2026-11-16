@@ -4428,6 +4428,27 @@ intest_beta_reuse_decide() {
   echo "$reused"
 }
 
+# intest_reused_valid <reused-csv> <state-json> — the entries of <reused-csv>
+# (intestBetaReused) a tester may still be sent to: the build is still the
+# lane's last successful one (intestBetaBuilt) and finished less than
+# FACTORY_INTEST_BETA_REUSE_MAX_DAYS ago (intestBetaBuiltAt). Pure: every
+# reader of the field filters through this, so an expired, unknown-age or
+# superseded entry is never reported as reusable, even on a tick where the
+# dispatch didn't run (ADR-0081).
+intest_reused_valid() {
+  local reused="$1" state_json="$2" built built_at pair lane from kept=""
+  built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  built_at=$(echo "$state_json" | jq -r '.intestBetaBuiltAt // ""' 2>/dev/null || echo "")
+  for pair in $(echo "$reused" | tr ',' ' '); do
+    lane="${pair%%:*}"
+    from="${pair#*:}"
+    if [[ "$(lane_attempt_of "$built" "$lane")" == "$from" ]] && intest_reuse_fresh "$built_at" "$lane"; then
+      kept="${kept:+$kept,}$pair"
+    fi
+  done
+  echo "$kept"
+}
+
 # intest_reused_drop_stale <issue> <reused-csv> <state-json> — <reused-csv>
 # without the lanes whose build may no longer be tested: it is no longer the
 # lane's last successful build, or it is over FACTORY_INTEST_BETA_REUSE_MAX_DAYS
@@ -4436,17 +4457,11 @@ intest_beta_reuse_decide() {
 # written back at once (the verification report reads the field), and is then
 # dispatched as missing. Logs via logerr only: the caller captures its stdout.
 intest_reused_drop_stale() {
-  local issue_num="$1" reused="$2" state_json="$3" built built_at pair lane from kept=""
-  built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
-  built_at=$(echo "$state_json" | jq -r '.intestBetaBuiltAt // ""' 2>/dev/null || echo "")
+  local issue_num="$1" reused="$2" state_json="$3" pair kept
+  kept=$(intest_reused_valid "$reused" "$state_json")
   for pair in $(echo "$reused" | tr ',' ' '); do
-    lane="${pair%%:*}"
-    from="${pair#*:}"
-    if [[ "$(lane_attempt_of "$built" "$lane")" == "$from" ]] && intest_reuse_fresh "$built_at" "$lane"; then
-      kept="${kept:+$kept,}$pair"
-    else
-      logerr "Issue #$issue_num: the reused $lane beta from ${from:0:12} is over ${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60} days old or no longer its last build; building it again"
-    fi
+    [[ ",$kept," == *",$pair,"* ]] && continue
+    logerr "Issue #$issue_num: the reused ${pair%%:*} beta from $(echo "${pair#*:}" | cut -c1-12) is over ${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60} days old or no longer its last build; building it again"
   done
   if [[ "$kept" != "$reused" && "$DRY_RUN" -eq 0 ]]; then
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
@@ -7275,8 +7290,11 @@ verify_compose_report() {
   # Lanes reused from an earlier commit's build (ADR-0081) come with its numbers.
   if [[ "$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null)" == "$head_sha" ]]; then
     beta_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
+    # Only entries still valid now: this may run on a tick where the dispatch
+    # didn't (beta dispatch off, or a Testing card), so the record can be stale.
     beta_reused=$(intest_reused_builds \
-      "{\"reused\":$(intest_reused_json "$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null)")}" \
+      "{\"reused\":$(intest_reused_json "$(intest_reused_valid \
+        "$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null)" "$state_json")")}" \
       "$comments_json" | jq -c '.reused // []' 2>/dev/null || echo "[]")
   fi
   [[ -e "$FACTORY_VERIFY_BYPASS_FILE" ]] && bypass="$FACTORY_VERIFY_BYPASS_FILE"

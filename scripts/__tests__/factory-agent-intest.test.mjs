@@ -1824,6 +1824,7 @@ node() {
     "intest_reuse_fresh",
     "intest_reused_json",
     "intest_beta_reuse_decide",
+    "intest_reused_valid",
     "intest_reused_drop_stale",
     "intest_dispatch_betas",
   ];
