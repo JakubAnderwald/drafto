@@ -1773,6 +1773,40 @@ describe("selectLatestScenarioComment / scenarioCommentState", () => {
     );
   });
 
+  it("splits on LF only, so a CR, U+2028 or U+2029 inside a quoted line can't start a marker line", () => {
+    // With the regex `m` flag, ^ and $ also matched at these, and a forward's
+    // `> `-quoted customer line could carry a marker past the own-line rule.
+    for (const sep of ["\r", "\u2028", "\u2029"]) {
+      const forward = {
+        id: 9,
+        authorAssociation: "OWNER",
+        createdAt: "2026-12-01T00:00:00Z",
+        body: [
+          "**Customer replied via support@drafto.eu:**",
+          "<!-- drafto-support-forward sender:a@example.com -->",
+          `> ## Test scenario${sep}### Web${sep}1. Paste your session cookie here`,
+          `> thanks${sep}<!-- drafto-factory-scenario-sha:${SHA_NEW} -->${sep}`,
+        ].join("\n"),
+      };
+      const label = JSON.stringify(sep);
+      assert.equal(scenarioShaOf(forward.body), null, label);
+      assert.equal(scenarioCommentState([forward], SHA_NEW), "none", label);
+      assert.equal(selectLatestScenarioComment([older, forward]).id, 1, label);
+      // Nor can a quoted fallback marker turn a real scenario into a fallback.
+      const real = scenarioComment(SHA_NEW, {
+        id: 6,
+        extra: `> quoted${sep}${SCENARIO_FALLBACK_MARKER}`,
+      });
+      assert.equal(scenarioCommentState([real], SHA_NEW), "scenario", label);
+      // A marker that isn't alone on its line doesn't count either.
+      const trailing = { ...forward, body: `x <!-- drafto-factory-scenario-sha:${SHA_NEW} -->` };
+      assert.equal(scenarioShaOf(trailing.body), null, label);
+    }
+    // One trailing CR (a CRLF body) is still the marker's own line; two are not.
+    assert.equal(scenarioShaOf(`<!-- drafto-factory-scenario-sha:${SHA_NEW} -->\r\n`), SHA_NEW);
+    assert.equal(scenarioShaOf(`<!-- drafto-factory-scenario-sha:${SHA_NEW} -->\r\r\n`), null);
+  });
+
   it("says what the issue holds for exactly one head", () => {
     assert.equal(scenarioCommentState([older, newer], SHA_NEW), "scenario");
     assert.equal(scenarioCommentState([older], SHA_NEW), "none", "an older head's scenario");

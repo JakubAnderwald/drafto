@@ -409,6 +409,13 @@ describe("In Test prompt — machine contract", () => {
 
   it("allows noop ONLY on an exact full-SHA match, never on judgement", () => {
     assert.match(flat, /byte-for-byte equal to `bundle\.headSha`/);
+    // The same check bash makes (scenarioCommentState): OWNER, the marker on
+    // its own unquoted line, the exact SHA, not the fallback.
+    assert.match(flat, /only\*\* when an existing comment passes the same check bash makes/);
+    assert.match(flat, /`authorAssociation` is `OWNER`/);
+    assert.match(flat, /on its own and not quoted with `> `/);
+    assert.match(flat, /- it is not the fallback\./);
+    assert.match(flat, /a marker inside someone else's comment or a quoted line/);
     assert.match(flat, /Do not judge staleness by reading the steps/);
     // The fallback carries the head's SHA marker too, but bash runs the writer
     // for a fallback-only head precisely to replace it (ADR-0082).

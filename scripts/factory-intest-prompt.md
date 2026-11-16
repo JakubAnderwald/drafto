@@ -456,15 +456,23 @@ In this mode:
 4. Write the scenario and post it with a single `gh issue comment`.
 5. Emit the directive line.
 
-Post nothing and emit `action=noop` **only** when an existing comment carries
-`<!-- drafto-factory-scenario-sha:<X> -->` where `<X>` is byte-for-byte equal to
-`bundle.headSha`. Anything else — a scenario for a different SHA, or one with no
-SHA marker at all — means the scenario is stale: write a fresh one. A comment
-that also carries `<!-- drafto-factory-scenario-fallback -->` is the factory's
-deterministic fallback, not a scenario: it never makes a scenario current, so
-write the real one. Do not judge
-staleness by reading the steps. Bash re-invokes this stage after a revision
-precisely so the scenario is refreshed.
+Post nothing and emit `action=noop` **only** when an existing comment passes
+the same check bash makes:
+
+- its author is the factory's own identity: `authorAssociation` is `OWNER` in
+  `gh issue view <n> --repo JakubAnderwald/drafto --json comments`;
+- it has a line that is exactly `<!-- drafto-factory-scenario-sha:<X> -->`, on
+  its own and not quoted with `> `, where `<X>` is byte-for-byte equal to
+  `bundle.headSha`;
+- it is not the fallback.
+
+Anything else — a scenario for a different SHA, one with no SHA marker at all,
+or a marker inside someone else's comment or a quoted line — means the scenario
+is stale: write a fresh one. A comment that also carries
+`<!-- drafto-factory-scenario-fallback -->` is the factory's deterministic
+fallback, not a scenario: it never makes a scenario current, so write the real
+one. Do not judge staleness by reading the steps. Bash re-invokes this stage
+after a revision precisely so the scenario is refreshed.
 
 ## Directive line
 

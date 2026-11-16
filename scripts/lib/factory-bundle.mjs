@@ -1123,13 +1123,24 @@ export const SCENARIO_FALLBACK_MARKER = "<!-- drafto-factory-scenario-fallback -
 // support forward is posted as OWNER too, but it quotes every customer line
 // with `> ` (ADR-0066), so a customer who pastes a marker into an email can't
 // make the forward pass for a scenario.
-const SCENARIO_SHA_LINE_RE =
-  /^[ \t]*<!-- drafto-factory-scenario-sha:([0-9a-f]{40}) -->[ \t\r]*$/gm;
-const SCENARIO_FALLBACK_LINE_RE = /^[ \t]*<!-- drafto-factory-scenario-fallback -->[ \t\r]*$/m;
+//
+// Lines are split on LF only, as support_forward_filter splits them, and lose
+// one trailing CR (a body edited on the web). The patterns have no `m` flag:
+// with it, `^` and `$` also match at a CR, U+2028 or U+2029 inside a line, so
+// a quoted line could carry a marker past the rule.
+const SCENARIO_SHA_LINE_RE = /^[ \t]*<!-- drafto-factory-scenario-sha:([0-9a-f]{40}) -->[ \t]*$/;
+const SCENARIO_FALLBACK_LINE_RE = /^[ \t]*<!-- drafto-factory-scenario-fallback -->[ \t]*$/;
+
+function bodyLines(body) {
+  return body.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+}
 
 // The full SHAs a comment's own scenario-sha marker lines name, in order.
 function scenarioShasOf(body) {
-  return typeof body === "string" ? [...body.matchAll(SCENARIO_SHA_LINE_RE)].map((m) => m[1]) : [];
+  if (typeof body !== "string") return [];
+  return bodyLines(body)
+    .map((line) => SCENARIO_SHA_LINE_RE.exec(line)?.[1])
+    .filter(Boolean);
 }
 
 // A comment the factory itself posted for a test scenario, real or fallback:
@@ -1144,7 +1155,10 @@ function scenarioCommentShas(c) {
 }
 
 function isScenarioFallback(c) {
-  return SCENARIO_FALLBACK_LINE_RE.test(c.body);
+  return (
+    typeof c?.body === "string" &&
+    bodyLines(c.body).some((line) => SCENARIO_FALLBACK_LINE_RE.test(line))
+  );
 }
 
 function newest(comments) {
