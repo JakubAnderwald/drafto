@@ -247,11 +247,11 @@ export default function PrivacyPolicyPage() {
             temporary attachment links.
           </p>
 
-          <h4>Analytics (not enabled)</h4>
+          <h4>PostHog (not enabled)</h4>
           <p>
             The web app&apos;s code includes PostHog, a product-analytics tool, but it is not
             enabled: no PostHog key is configured, so nothing is sent to PostHog. We will update
-            this policy before we turn on any analytics.
+            this policy before we turn on PostHog or any other third-party analytics.
           </p>
 
           <h4>iOS, Android and macOS apps</h4>

@@ -130,6 +130,12 @@ describe("Privacy policy page", () => {
     expect(screen.getByText(/includes PostHog/)).toHaveTextContent(
       /not enabled: no PostHog key is configured, so nothing is sent to PostHog/,
     );
+    // Usage days are first-party analytics (#821), so "not enabled" names PostHog only.
+    expect(screen.getByRole("heading", { name: "PostHog (not enabled)" })).toBeInTheDocument();
+    expect(screen.getByText(/includes PostHog/)).toHaveTextContent(
+      /before we turn on PostHog or any other third-party analytics/,
+    );
+    expect(screen.queryByRole("heading", { name: /^Analytics/ })).not.toBeInTheDocument();
     const nativeApps = screen.getByText(
       /The iOS, Android and macOS apps contain no analytics or crash-reporting SDK/,
     );
