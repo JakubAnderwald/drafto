@@ -140,7 +140,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Count the day the call arrived as a `web-mcp` activity day for this user (ADR 0084).
+  // Count the day the call arrived as a `web-mcp` activity day for this user (ADR 0085).
   // `after` runs the write once the response has gone out, so it never delays the reply, and
   // recordMcpActivity never throws, so it can't change it either.
   after(() => recordMcpActivity(supabase, userId, receivedAt));

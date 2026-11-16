@@ -30,7 +30,7 @@ also sends the UTC days the app was opened ([Activity ping](#activity-ping)).
 Each sync also tells the server on which UTC days the app was opened, so weekly
 active users include people who only read their notes
 ([product metrics → Activity days](./product-metrics.md#activity-days-usage_daily),
-[ADR-0084](../adr/0084-activity-days-instead-of-event-analytics.md)). It sends
+[ADR-0085](../adr/0085-activity-days-instead-of-event-analytics.md)). It sends
 days only: no note, screen or action. `apps/{mobile,desktop}/src/db/activity-days.ts`
 holds the logic, identical on both apps.
 
@@ -112,7 +112,7 @@ holds the logic, identical on both apps.
 - [0010 — Offline Sync Strategy with WatermelonDB](../adr/0010-offline-sync-strategy.md)
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [0048 — Local Writes Trigger a Debounced Sync](../adr/0048-local-writes-trigger-debounced-sync.md)
-- [0084 — Activity Days Instead of Event Analytics](../adr/0084-activity-days-instead-of-event-analytics.md)
+- [0085 — Activity Days Instead of Event Analytics](../adr/0085-activity-days-instead-of-event-analytics.md)
 
 ## Cross-platform notes
 

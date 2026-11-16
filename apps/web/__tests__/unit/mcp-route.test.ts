@@ -171,7 +171,7 @@ describe("POST /api/mcp", () => {
   });
 });
 
-describe("POST /api/mcp activity day (ADR 0084)", () => {
+describe("POST /api/mcp activity day (ADR 0085)", () => {
   const today = () => new Date().toISOString().slice(0, 10);
 
   function authenticatedRequest(): Request {

@@ -1,6 +1,6 @@
 # Dark factory
 
-**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-11-09
+**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-11-16
 
 ## What it is
 
@@ -21,7 +21,9 @@ The runtime phase is set by `FACTORY_PHASE` on the launchd plist (see the runboo
 
 **Claude model.** Every stage runs on the `claude` CLI's default model unless a knob says otherwise. Two read-only stages have one, both empty by default: `FACTORY_BROWSER_MODEL` for the browser runner (all kinds) and `FACTORY_INTEST_MODEL` for the scenario writer (In Test and Testing). Set to an alias such as `sonnet` or a full `claude-…` name, the stage passes `--model`; an invalid value warns and falls back to the default. They exist to trial a cheaper model on that mechanical work ([ADR-0080](../adr/0080-factory-model-knobs-browser-runner-scenario-writer.md)).
 
-**Retry budget.** A card gets `FACTORY_MAX_ATTEMPTS` (default **10**, raised from 5 by [ADR-0076](../adr/0076-factory-watch-effort-and-retry-budget.md)) failed Claude passes across planning, implementation and fixes, before it goes to **Blocked** for a human. Review-thread fix passes spend from the same budget. The count resets whenever a stage hands the card on, for example when an implement pass opens the PR or the card is promoted to In Test. It does **not** reset when you drag a Blocked card back: run `node scripts/lib/state-cli.mjs factory:reset-attempts <n>` first, or the next tick blocks it again.
+**Implement deadline and resume.** An `--implement` run is told its deadline: bash appends a **Run-time facts** block with `softDeadlineAt` (the 45-min cap minus `FACTORY_IMPLEMENT_SOFT_MARGIN_MIN`, 15) and `hardDeadlineAt`, and the prompt's **Time budget** section has the agent check the clock before anything long, commit `chore(wip)` work locally, and stop at the soft deadline with `action=incomplete` rather than be killed. A fresh run that hits the cap or stops that way is recorded, and the next attempt **resumes the same Claude session** (`claude --resume`) instead of starting over, if the worktree, its HEAD and uncommitted files, the plan and the feedback (text included) are all unchanged and the PR is still open. That happens at most once per chain; `FACTORY_IMPLEMENT_RESUME=0` turns it off. See [ADR-0084](../adr/0084-factory-implement-deadline-and-resume.md) and the runbook's "Resuming a timed-out implement".
+
+**Retry budget.** A card gets `FACTORY_MAX_ATTEMPTS` (default **10**, raised from 5 by [ADR-0076](../adr/0076-factory-watch-effort-and-retry-budget.md)) failed Claude passes across planning, implementation and fixes, before it goes to **Blocked** for a human. Review-thread fix passes spend from the same budget. The count resets whenever a stage hands the card on, for example when an implement pass opens the PR or the card is promoted to In Test. It does **not** reset when you drag a Blocked card back: run `node scripts/lib/state-cli.mjs factory:reset-attempts <n>` first, or the next tick blocks it again. An implement run that times out, or stops with `action=incomplete`, still spends an attempt, even when the next attempt resumes its session ([ADR-0084](../adr/0084-factory-implement-deadline-and-resume.md)). Only a resume that never got going (it ended within 3 minutes without the model answering once) spends none.
 
 ## The board
 
@@ -99,6 +101,7 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 - **Verification stage**: `FACTORY_VERIFY=0` in the plist (the default). Cards then go straight to In Test, and any card already in **Testing** is promoted on the next tick with a report that says verification was switched off. `FACTORY_VERIFY_ONLY_LABEL` limits the stage to cards carrying one label. Dragging a card out of Testing by hand works too; `factory-pause` on the issue freezes it where it is.
 - **Oversize label**: `FACTORY_PLAN_OVERSIZE_LINES=0` in the plist stops the `factory-oversize` label. Plans keep their **Size** section either way ([ADR-0083](../adr/0083-planner-size-estimate-and-oversize-label.md)).
 - **Plan-stage browser probe**: `FACTORY_PLAN_PROBE=0` in the plist (the default). On the next `--plan` tick, any queued probe is cancelled and its branch deleted. `FACTORY_PLAN_PROBE_SPIKE=0` keeps probes on but stops the planner's spike code from being built. Approving the plan also cancels a probe that is still running.
+- **Implement session resume**: `FACTORY_IMPLEMENT_RESUME=0` in the plist (default `1`). Every implement attempt then starts a fresh Claude session; the deadline facts in the prompt stay. To stop one card's next run from resuming, run `node scripts/lib/state-cli.mjs factory:implement-resume-clear <n>`.
 - **Emergency stop**: `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist` on the Mac mini, or `kill` the active claude PID under `logs/factory.*.pid`.
 
 ## Troubleshooting
@@ -328,6 +331,12 @@ Fixed in [ADR-0033](../adr/0033-factory-branch-safety-and-implement-verification
 Now: the branch is kept whenever a live PR points at it, a missing branch is recovered from `origin`, and a run that claims success without moving the PR head is treated as a failed attempt — your feedback stays unconsumed and the card stays put. If it repeats until the retry budget is exhausted, the card lands in **Blocked** with a `<!-- drafto-factory-head-unchanged -->` comment rather than looking done.
 
 If you hit the old behaviour on a card that predates the fix, the recovery is in [`docs/operations/factory-runbook.md`](../operations/factory-runbook.md) → "Recovering a card whose feedback was falsely consumed".
+
+### "An implement run timed out" → the next one resumed it
+
+Expected, and nothing to do. When an `--implement` run hits its wall cap (`claude timed out (>2700s)` in `logs/factory/factory-agent-implement-*.log`), or stops itself at the soft deadline (`action=incomplete`), the log says `recorded resumable session <id>`. The card stays **In Progress** with its slot and worktree, and one attempt is spent. On the next tick the log shows either `resume session <id> …`, which means the attempt continues the same Claude session, or `fresh session <id> (no resume: <reason>)`. The reasons are `worktree-new`, `worktree-moved`, `head-moved`, `worktree-dirty-changed`, `task-changed`, `new-feedback`, `pr-closed`, `no-transcript`, `stale`, `off` and `no-record`. A fresh run starts from what the earlier one left in the worktree, wip commits included. A session is resumed once at most; a second timeout means the next run is fresh. A run stopped by the subscription's session limit is recorded too, and the run after the reset resumes it without spending an attempt. Read a run's whole session in `~/.claude/projects/*/<id>.jsonl` on the Mac mini. `implementSessionId` in `factory:get-issue <n>` names the latest one.
+
+If a card keeps timing out, it ends in **Blocked** when the retry budget runs out, as before. Lowering the plan's scope (or splitting the card) is usually the fix. See [ADR-0084](../adr/0084-factory-implement-deadline-and-resume.md) and the runbook's "Resuming a timed-out implement".
 
 ## Related
 

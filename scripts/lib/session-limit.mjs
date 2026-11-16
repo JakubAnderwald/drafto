@@ -18,11 +18,20 @@
 // the per-issue attempts counter (see check_session_limit there).
 //
 // CLI (bash-friendly, mirrors state-cli's `factory:paused?` exit-code style):
-//   node session-limit.mjs check --cwd <path> [--projects-dir <dir>]
-//        [--since <iso>] [--now <iso>] [--fallback-min <n>]
+//   node session-limit.mjs check --cwd <path> [--session-id <uuid>]
+//        [--projects-dir <dir>] [--since <iso>] [--now <iso>] [--fallback-min <n>]
 //
-//   Exit 0  — the newest transcript for <cwd> ends in a session-limit API
-//             error (newer than --since when given). Prints one JSON line:
+//   The transcript read is <session-id>.jsonl when --session-id is given and
+//   that file exists (findTranscriptById), else the newest one for <cwd>. A
+//   caller that knows its session id (--implement, ADR-0084) names it, so its
+//   own transcript is read even when another run's in the same cwd is newer.
+//   With no file by that id, the newest one in <cwd> is read as before; --since
+//   keeps it to this run's window, and a limit there is the shared
+//   subscription's anyway.
+//   --now is the clock the reset time is computed against (tests pin it).
+//
+//   Exit 0  — that transcript ends in a session-limit API error (newer than
+//             --since when given). Prints one JSON line:
 //             {"limited":true,"resetAt":"<iso>","reason":"…",
 //              "source":"parsed"|"fallback","transcript":"<path>"}
 //             When the reset time can't be parsed from the message, resetAt
@@ -32,13 +41,30 @@
 //             detection error. Deliberately fail-open: the caller falls
 //             through to its normal retry/bump-attempts path.
 
-import { promises as fs } from "node:fs";
+import * as nodeFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseFlags } from "./parse-flags.mjs";
 import { isMainModule } from "./is-main.mjs";
 
-export const DEFAULT_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
+const fs = nodeFs.promises;
+
+// Where `check` looks without --projects-dir. projectsDirFor honours
+// $CLAUDE_CONFIG_DIR like the CLI does, so this agrees with findTranscriptById's
+// default (implement-resume.mjs, verify-lane.mjs) on where a session lives.
+export const DEFAULT_PROJECTS_DIR = projectsDirFor(process.env);
+
+// A claude session id: what --session-id takes and what names its transcript.
+export const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// The claude projects dir for <env>: $CLAUDE_CONFIG_DIR/projects when set (the
+// CLI honours it), else ~/.claude/projects.
+export function projectsDirFor(env = process.env) {
+  return path.join(
+    env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), ".claude"),
+    "projects",
+  );
+}
 
 const DEFAULT_FALLBACK_MIN = 30;
 
@@ -104,6 +130,31 @@ export async function findLatestTranscript(projectsDir, cwd) {
     }
   }
   return best;
+}
+
+// <projectsDir>/<any project>/<sessionId>.jsonl, or null when <sessionId> is
+// not a session id or no project dir has it. Every project dir is searched: a
+// session's dir is named after the real path of the cwd it ran in, which a
+// caller holding a symlinked path can't always rebuild. Synchronous so the
+// verification lane (ADR-0053) can call it from its non-async checks; it moved
+// here from verify-lane.mjs (ADR-0084) so --implement can find a session too.
+export function findTranscriptById(
+  sessionId,
+  { projectsDir = null, env = process.env, fs: fsMod = nodeFs } = {},
+) {
+  if (!SESSION_ID_RE.test(String(sessionId))) return null;
+  const root = projectsDir ?? projectsDirFor(env);
+  let dirs = [];
+  try {
+    dirs = fsMod.readdirSync(root);
+  } catch {
+    return null;
+  }
+  for (const d of dirs) {
+    const p = path.join(root, d, `${sessionId}.jsonl`);
+    if (fsMod.existsSync(p)) return p;
+  }
+  return null;
 }
 
 function textOf(message) {
@@ -260,10 +311,11 @@ async function main(argv) {
   const [sub, ...rest] = argv;
   if (sub === "--help" || sub === "-h" || sub === undefined) {
     process.stdout.write(
-      "Usage: session-limit.mjs check --cwd <path> [--projects-dir <dir>] " +
-        "[--since <iso>] [--now <iso>] [--fallback-min <n>]\n" +
-        "Exit 0 + JSON line when the newest claude transcript for <cwd> ended " +
-        "in a session-limit error; exit 1 otherwise.\n",
+      "Usage: session-limit.mjs check --cwd <path> [--session-id <uuid>] " +
+        "[--projects-dir <dir>] [--since <iso>] [--now <iso>] [--fallback-min <n>]\n" +
+        "Exit 0 + JSON line when the session's transcript (or, without " +
+        "--session-id, the newest one for <cwd>) ended in a session-limit " +
+        "error; exit 1 otherwise.\n",
     );
     process.exit(1);
   }
@@ -277,8 +329,17 @@ async function main(argv) {
     throw new Error(`invalid --since: ${flags.since}`);
   }
   const fallbackMin = parsePositiveInt(flags["fallback-min"], DEFAULT_FALLBACK_MIN);
+  const sessionId = flags["session-id"] || null;
+  if (sessionId != null && !SESSION_ID_RE.test(sessionId)) {
+    throw new Error(`invalid --session-id: ${sessionId}`);
+  }
 
-  const transcript = await findLatestTranscript(flags["projects-dir"] ?? DEFAULT_PROJECTS_DIR, cwd);
+  const projectsDir = flags["projects-dir"] ?? DEFAULT_PROJECTS_DIR;
+  // The named session's own transcript first; the newest in <cwd> when there
+  // is no id, or no file by it yet (--since still keeps a stale one out).
+  const transcript =
+    (sessionId && findTranscriptById(sessionId, { projectsDir })) ||
+    (await findLatestTranscript(projectsDir, cwd));
   if (!transcript) process.exit(1);
   const result = detectSessionLimit(await fs.readFile(transcript, "utf8"), {
     now,
