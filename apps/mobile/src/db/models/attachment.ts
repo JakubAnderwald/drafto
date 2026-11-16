@@ -3,7 +3,10 @@ import { field, date, readonly, relation } from "@nozbe/watermelondb/decorators"
 
 import type { Note } from "./note";
 
-export type UploadStatus = "pending" | "uploaded" | "failed";
+// "quota_exceeded" is terminal: the server refused the upload for the user's storage
+// quota (issue #794). It is a plain string column, so no schema migration; the upload
+// queue only retries "pending" / "failed", and sync pushes only "uploaded".
+export type UploadStatus = "pending" | "uploaded" | "failed" | "quota_exceeded";
 
 export class Attachment extends Model {
   static table = "attachments";
@@ -32,5 +35,9 @@ export class Attachment extends Model {
 
   get hasFailed(): boolean {
     return this.uploadStatus === "failed";
+  }
+
+  get isStorageFull(): boolean {
+    return this.uploadStatus === "quota_exceeded";
   }
 }

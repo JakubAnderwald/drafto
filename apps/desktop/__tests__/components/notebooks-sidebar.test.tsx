@@ -1,6 +1,11 @@
 import { ActivityIndicator, Alert, ScrollView, StyleSheet } from "react-native";
 import { Q } from "@nozbe/watermelondb";
-import { describeAccountDeletionFailure, type AccountDeletionResult } from "@drafto/shared";
+import {
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  describeAccountDeletionFailure,
+  formatStorageUsage,
+  type AccountDeletionResult,
+} from "@drafto/shared";
 
 import { render, waitFor, fireEvent, act } from "../helpers/test-utils";
 import { NotebooksSidebar } from "@/components/sidebar/notebooks-sidebar";
@@ -36,6 +41,17 @@ jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
 const mockStartAppleConfirmation = jest.fn();
 jest.mock("@/lib/apple-revocation", () => ({
   startAppleConfirmation: () => mockStartAppleConfirmation(),
+}));
+
+// The storage line's reading, per test. Null until a test sets one (nothing renders).
+let mockStorageUsage: { usedBytes: number; quotaBytes: number | null } | null = null;
+const mockRefreshStorageUsage = jest.fn();
+jest.mock("@/hooks/use-storage-usage", () => ({
+  useStorageUsage: () => ({
+    usage: mockStorageUsage,
+    loading: false,
+    refresh: mockRefreshStorageUsage,
+  }),
 }));
 
 const mockSync = jest.fn();
@@ -803,5 +819,57 @@ describe("NotebooksSidebar — notebook list scrolls", () => {
     const hostViews = utils.UNSAFE_root.findAll((node) => typeof node.type === "string");
     const lastHostView = hostViews[hostViews.length - 1];
     expect(isInside(lastHostView, utils.getByTestId("sidebar-user-section"))).toBe(true);
+  });
+});
+
+describe("NotebooksSidebar — storage usage (issue #794)", () => {
+  type TestInstance = ReturnType<ReturnType<typeof render>["getByTestId"]>;
+  const isInside = (node: TestInstance | null, ancestor: TestInstance): boolean =>
+    node === null ? false : node === ancestor || isInside(node.parent, ancestor);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockNotebooks.length = 0;
+    mockLoading = false;
+    mockIsConnected = true;
+    mockIsInternetReachable = true;
+    mockStorageUsage = null;
+  });
+
+  afterAll(() => {
+    mockStorageUsage = null;
+  });
+
+  it("shows the usage line and bar in the footer, above the user section", () => {
+    mockStorageUsage = { usedBytes: 13_002_342, quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES };
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    const line = utils.getByText(formatStorageUsage(13_002_342, DEFAULT_STORAGE_QUOTA_BYTES));
+    expect(line).toBeTruthy();
+    expect(utils.getByText("Storage: 12.4 MB of 50 MB used")).toBeTruthy();
+    expect(utils.getByTestId("storage-usage-bar")).toBeTruthy();
+    const meter = utils.getByTestId("storage-usage");
+    expect(isInside(meter, utils.getByTestId("notebook-list"))).toBe(false);
+    expect(isInside(meter, utils.getByTestId("sidebar-user-section"))).toBe(false);
+
+    // The user section stays the last thing in the sidebar, which the menu position relies on.
+    const hostViews = utils.UNSAFE_root.findAll((node) => typeof node.type === "string");
+    const lastHostView = hostViews[hostViews.length - 1];
+    expect(isInside(lastHostView, utils.getByTestId("sidebar-user-section"))).toBe(true);
+  });
+
+  it("shows the line without a bar when the quota is unlimited", () => {
+    mockStorageUsage = { usedBytes: 13_002_342, quotaBytes: null };
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    expect(utils.getByText("Storage: 12.4 MB used")).toBeTruthy();
+    expect(utils.queryByTestId("storage-usage-bar")).toBeNull();
+  });
+
+  it("shows nothing while the usage is unknown", () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    expect(utils.queryByTestId("storage-usage")).toBeNull();
+    expect(utils.getByTestId("sidebar-user-section")).toBeTruthy();
   });
 });

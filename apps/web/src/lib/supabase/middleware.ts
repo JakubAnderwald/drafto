@@ -24,6 +24,9 @@ const PUBLIC_ROUTES = [
   "/api/webhooks",
   // Native apps call it with a bearer token and no cookie; the route authenticates itself.
   "/api/account",
+  // Vercel Cron calls it with the cron secret and no cookie; the route authenticates itself
+  // (cron secret or a signed-in admin), never through the x-verified-* headers.
+  "/api/cron",
   // Public account-deletion explainer that store reviewers must reach signed out.
   "/account/delete",
   // Legal and support pages: the store listings link here, so App Store / Play reviewers

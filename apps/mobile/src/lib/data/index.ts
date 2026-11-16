@@ -18,8 +18,11 @@ export {
   uploadAttachment,
   processPendingUploads,
   cleanupOrphanedFiles,
+  discardRefusedAttachment,
 } from "./attachment-queue";
 export type { UploadResult } from "./attachment-queue";
+
+export { fetchStorageUsage } from "./storage-usage";
 
 export { openAttachment } from "./open-attachment";
 export type { OpenAttachmentParams, OpenAttachmentResult } from "./open-attachment";
