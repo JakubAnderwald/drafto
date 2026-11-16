@@ -198,6 +198,11 @@ export function allowsInspect(config = null) {
   return capabilitiesOf(config).includes("inspect");
 }
 
+/** Whether the run may upload its fixtures (file_upload, and Read in the session for it). */
+export function allowsUploads(config = null) {
+  return capabilitiesOf(config).includes("uploads");
+}
+
 // Pages a tab may sit on without being quarantined. They hold nothing, but
 // they are not navigation targets either: navigate accepts only the allowed
 // origin.
@@ -348,15 +353,29 @@ export function fullToolName(short) {
   return `${CHROME_PREFIX}${short}`;
 }
 
+// Read is never on this list, even with uploads: an --allowedTools "Read"
+// would allow reading any path.
 export function allowedToolsArg(config = null) {
   const tools = runnerTools(config).map(fullToolName);
   if (allowsInspect(config)) tools.push("Bash");
   return tools.join(",");
 }
 
-/** The --tools value: "" (Chrome only), or "Bash" when the run may use dev-inspect. */
+/**
+ * The --tools value: "" (Chrome only), plus "Bash" when the run may use
+ * dev-inspect and "Read" when it may upload. Claude Code's file_upload
+ * takes only files the session may read, and a session without the Read tool
+ * may read nothing, whatever its working directories (measured with Claude
+ * Code 2.1.323: with --tools "" an upload from an additionalDirectories
+ * folder is refused, with --tools "Read" it goes through). The guard denies
+ * every Read call (decidePre), so the tool is there for that check only, and
+ * uploadDirectories keeps what it may read to the run's fixtures.
+ */
 export function sessionToolsArg(config = null) {
-  return allowsInspect(config) ? "Bash" : "";
+  const tools = [];
+  if (allowsInspect(config)) tools.push("Bash");
+  if (allowsUploads(config)) tools.push("Read");
+  return tools.join(",");
 }
 
 // Claude Code runs hook commands through a shell. Single quotes make every
@@ -383,7 +402,7 @@ function shellQuotePath(label, p) {
  */
 export function uploadDirectories(config = null) {
   const dir = config?.fixturesDir;
-  return capabilitiesOf(config).includes("uploads") && typeof dir === "string" && dir ? [dir] : [];
+  return allowsUploads(config) && typeof dir === "string" && dir ? [dir] : [];
 }
 
 /**
@@ -394,7 +413,9 @@ export function uploadDirectories(config = null) {
  * the always-denied tools removed from the session through permissions.deny
  * on top of being left out of --allowedTools. With the uploads capability,
  * permissions.additionalDirectories shares the run's fixtures directory
- * (uploadDirectories).
+ * (uploadDirectories), and the guard also hooks Read, which it always denies.
+ * Read must never be in permissions.deny: file_upload refuses every file
+ * while the Read tool is denied for the session.
  */
 export function buildGuardSettings({
   nodePath,
@@ -447,6 +468,19 @@ export function buildGuardSettings({
           ? [
               {
                 matcher: "Bash",
+                hooks: [
+                  { type: "command", command: `${alarmed} || exit 2`, timeout: HOOK_TIMEOUTS.pre },
+                ],
+              },
+            ]
+          : []),
+        // With the uploads capability the session has Read (sessionToolsArg),
+        // only so file_upload can take the fixtures; the guard denies every
+        // Read call.
+        ...(allowsUploads(config)
+          ? [
+              {
+                matcher: "Read",
                 hooks: [
                   { type: "command", command: `${alarmed} || exit 2`, timeout: HOOK_TIMEOUTS.pre },
                 ],
@@ -711,6 +745,13 @@ function decide({ tool, input, config, state }) {
     if (!allowsInspect(config)) return deny("Bash is not available to the browser runner");
     const v = bashVerdict(isPlainObject(input) ? input.command : undefined);
     return v.ok ? allow(v.reason) : deny(v.reason);
+  }
+  // Read is in an uploads run's session only for file_upload's own check
+  // (sessionToolsArg); the runner itself reads no files.
+  if (tool === "Read") {
+    return deny(
+      "the browser runner reads no files: Read is on only so file_upload can take the run's fixtures",
+    );
   }
   if (!tool.startsWith(CHROME_PREFIX)) return allow("not a Claude in Chrome tool");
   const name = tool.slice(CHROME_PREFIX.length);
