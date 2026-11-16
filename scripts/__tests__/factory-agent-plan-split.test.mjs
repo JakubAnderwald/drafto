@@ -405,6 +405,39 @@ echo "[result] $PLAN_SPLIT_RESULT"
     }
   });
 
+  it("splits lines on LF only: a CR, U+2028 or U+2029 inside a quoted line never starts a request", () => {
+    for (const sep of ["\r", "\u2028", "\u2029"]) {
+      for (const body of [
+        `> quoted${sep}Please split this card.`,
+        `${FORWARD}> > quoted${sep}Split this card`,
+        `Should we?${sep}Split this card`,
+      ]) {
+        refused(
+          runSplit({ comments: [plan("10"), ask(10, body)] }),
+          /has a line that starts with "Split this card"/,
+        );
+      }
+    }
+    // A CRLF line still counts: one trailing CR is dropped.
+    assert.equal(
+      runSplit({ comments: [plan("10"), ask(10, "Hi\r\nSplit this card\r\n")] }).creates,
+      2,
+    );
+  });
+
+  it("doesn't count a part marker that only a CR or U+2028 puts on a line of its own", () => {
+    for (const sep of ["\r", "\u2028"]) {
+      const hidden = earlierPart(1);
+      hidden.body = hidden.body.replace(
+        "\n<!-- drafto-factory-split-part:900:1 -->",
+        `\nx${sep}<!-- drafto-factory-split-part:900:1 -->`,
+      );
+      const out = runSplit({ timeline: [1001], views: { 1001: hidden } });
+      assert.equal(out.creates, 2, JSON.stringify(sep));
+      assert.doesNotMatch(out.posted, /#1001/);
+    }
+  });
+
   it("never reads a request out of code: a fenced or indented line doesn't count", () => {
     for (const body of [
       "To ask, comment:\n\n```\nSplit this card\n```",

@@ -306,6 +306,28 @@ if ! [[ "$FACTORY_INTEST_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
 fi
 INTEST_TIMEOUT_SEC="$FACTORY_INTEST_TIMEOUT_SEC"
 
+# Incremental scenario rewrite (ADR-0082). When a card's head moves, the
+# scenario writer gets its own latest scenario plus only the files whose patch
+# changed since, instead of the whole PR diff. 0 always sends the whole diff,
+# as before. It falls back to the whole diff by itself when the delta is over
+# FACTORY_SCENARIO_DELTA_MAX_LINES lines, and after FACTORY_SCENARIO_FULL_EVERY
+# incremental rounds in a row, so a scenario can't drift for ever on patches.
+FACTORY_SCENARIO_INCREMENTAL="${FACTORY_SCENARIO_INCREMENTAL:-1}"
+if [[ "$FACTORY_SCENARIO_INCREMENTAL" != "0" && "$FACTORY_SCENARIO_INCREMENTAL" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_SCENARIO_INCREMENTAL='$FACTORY_SCENARIO_INCREMENTAL'; defaulting to 1" >&2
+  FACTORY_SCENARIO_INCREMENTAL=1
+fi
+FACTORY_SCENARIO_DELTA_MAX_LINES="${FACTORY_SCENARIO_DELTA_MAX_LINES:-800}"
+if ! [[ "$FACTORY_SCENARIO_DELTA_MAX_LINES" =~ ^[1-9][0-9]{0,6}$ ]]; then
+  echo "WARNING: invalid FACTORY_SCENARIO_DELTA_MAX_LINES='$FACTORY_SCENARIO_DELTA_MAX_LINES'; defaulting to 800" >&2
+  FACTORY_SCENARIO_DELTA_MAX_LINES=800
+fi
+FACTORY_SCENARIO_FULL_EVERY="${FACTORY_SCENARIO_FULL_EVERY:-4}"
+if ! [[ "$FACTORY_SCENARIO_FULL_EVERY" =~ ^[1-9][0-9]{0,3}$ ]]; then
+  echo "WARNING: invalid FACTORY_SCENARIO_FULL_EVERY='$FACTORY_SCENARIO_FULL_EVERY'; defaulting to 4" >&2
+  FACTORY_SCENARIO_FULL_EVERY=4
+fi
+
 # Wall-clock cap for the code-review stage. Also read-only, but it reads the
 # whole diff and reasons about cross-platform invariants, so it gets more room
 # than the scenario writer and less than the code-writing modes.
@@ -831,6 +853,11 @@ find "$LOG_DIR/browser-guard" -type f -name '*.jsonl' -mtime +30 -delete 2>/dev/
 # same window. Only the report-* files at the top of logs/factory/verify: the
 # shell lane's run dirs below it are reaped by its own housekeeping.
 find "$LOG_DIR/verify" -maxdepth 1 -type f -name 'report-*' -mtime +30 -delete 2>/dev/null || true
+# The scenario writer's stored PR diffs (ADR-0082), <issue>-<sha12>.diff and
+# .json. A merged card's go at once (release_slot_and_worktree), and a card's
+# older ones whenever a new scenario lands; this window catches abandoned cards.
+SCENARIO_DIFF_DIR="$LOG_DIR/scenario"
+find "$SCENARIO_DIFF_DIR" -maxdepth 1 -type f \( -name '*.diff' -o -name '*.json' -o -name '*.json.tmp' \) -mtime +30 -delete 2>/dev/null || true
 # (Build-root locks live at "<root>.lock" beside the root itself, not in
 # $LOG_DIR, and are reaped by the pid check in ensure_beta_build_root.)
 
@@ -2674,6 +2701,10 @@ build_intest_bundle() {
   local head_sha="${10:-}"
   local comments="${11:-[]}"
   local cr_coverage_note="${12:-}"
+  # ${13}: the incremental-rewrite settings (ADR-0082), {enabled, rounds,
+  # maxLines, fullEvery, diffDir}; factory-bundle.mjs decides the mode from
+  # them. "null" (the default) is the full mode.
+  local scenario="${13:-null}"
   local repo_head_ref
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   jq -n \
@@ -2689,6 +2720,7 @@ build_intest_bundle() {
     --argjson betaDispatch "$beta_dispatch" \
     --arg headSha "$head_sha" \
     --argjson comments "$comments" \
+    --argjson scenario "$scenario" \
     --arg stage "${INTEST_STAGE:-intest}" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
@@ -2716,6 +2748,7 @@ build_intest_bundle() {
        headSha: $headSha,
        comments: [],
        screenshotSources: $comments,
+       scenario: $scenario,
        config: {
          phase: $phase,
          allowlist: ($allowlist | split(",") | map(ascii_downcase | sub("^\\s+";"") | sub("\\s+$";""))),
@@ -3660,6 +3693,9 @@ release_slot_and_worktree() {
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
   remove_worktree_for "$issue_num" "$known_state"
+  # A merged card gets no more scenarios: its stored PR diffs go with it.
+  [[ "$known_state" == "MERGED" ]] && scenario_diff_prune "$issue_num"
+  return 0
 }
 
 # free_waiting_slot <issue> <head-sha> <what-it-waits-on> — an In Review card
@@ -4839,6 +4875,68 @@ intest_record_comment_sha() {
     intestCommentSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
 }
 
+# scenario_comment_state <comments-json> <head-sha> — what the issue holds for
+# exactly <head-sha>: "scenario" (the factory's own, with that full-SHA
+# marker; factory-bundle.mjs's selectScenarioComment), "fallback" (only the
+# deterministic fallback), "none", or "unknown" when it can't be read.
+# Arguments travel in the environment, as in verify_scenario_file. Stdout is
+# the value.
+scenario_comment_state() {
+  local out
+  out=$(printf '%s' "$1" \
+    | SCENARIO_BUNDLE_LIB="$SCRIPT_DIR/lib/factory-bundle.mjs" SCENARIO_HEAD_SHA="$2" node -e '
+        let buf = "";
+        process.stdin.on("data", (d) => { buf += d; });
+        process.stdin.on("end", async () => {
+          const { scenarioCommentState } = await import(process.env.SCENARIO_BUNDLE_LIB);
+          process.stdout.write(scenarioCommentState(JSON.parse(buf || "[]"), process.env.SCENARIO_HEAD_SHA));
+        });' 2>>"$LOG_FILE") || out=""
+  case "$out" in
+    scenario|fallback|none) printf '%s\n' "$out" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# scenario_diff_store <issue> <head-sha> <pr-diff> <platforms> — keep this
+# run's PR diff and the platforms the scenario is written for, so the next
+# head's run can send only what changed since (ADR-0082):
+# $SCENARIO_DIFF_DIR/<issue>-<sha12>.diff and .json (factory-bundle.mjs's
+# scenarioDiffBase reads the same names). Mode 600, like every log. Best
+# effort: a file that isn't written only means a full run next time.
+scenario_diff_store() {
+  local issue_num="$1" head_sha="$2" diff="$3" platforms="$4" base
+  [[ -n "$diff" && "$head_sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+  mkdir -p "$SCENARIO_DIFF_DIR" 2>>"$LOG_FILE" || return 0
+  base="$SCENARIO_DIFF_DIR/$issue_num-${head_sha:0:12}"
+  # The diff first, the .json last: the reader wants both, so a run killed
+  # half way leaves nothing it would trust.
+  rm -f "$base.json"
+  if ! ( umask 077 && printf '%s\n' "$diff" >"$base.diff" \
+      && jq -n --arg sha "$head_sha" --argjson platforms "$platforms" \
+        '{headSha: $sha, platforms: $platforms}' >"$base.json.tmp" \
+      && chmod 600 "$base.diff" "$base.json.tmp" && mv -f "$base.json.tmp" "$base.json" ) 2>>"$LOG_FILE"; then
+    rm -f "$base.diff" "$base.json" "$base.json.tmp"
+    logerr "WARNING: couldn't store #$issue_num's PR diff for ${head_sha:0:12}; its next scenario runs in full"
+  fi
+  return 0
+}
+
+# scenario_diff_prune <issue> [<keep-sha>] — remove the issue's stored PR
+# diffs, except <keep-sha>'s when given: a new scenario only ever builds on
+# the newest one.
+scenario_diff_prune() {
+  local issue_num="$1" keep="${2:-}" f
+  [[ "$issue_num" =~ ^[0-9]+$ && -d "$SCENARIO_DIFF_DIR" ]] || return 0
+  for f in "$SCENARIO_DIFF_DIR/$issue_num-"*; do
+    [[ -e "$f" ]] || continue
+    if [[ -n "$keep" && "$(basename "$f")" == "$issue_num-${keep:0:12}."* ]]; then
+      continue
+    fi
+    rm -f "$f"
+  done
+  return 0
+}
+
 # In Test hand-off: write the human test scenario for a card that just reached
 # In Test (or whose head SHA changed since the last one) and post it as the
 # In Test comment.
@@ -4868,6 +4966,8 @@ intest_handoff() {
   [[ -n "$beta_json" ]] || beta_json='{"dispatched":[],"skipped":[],"manualCommands":[]}'
   local issue_record comments_json plan_json pr_diff bundle claude_input
   local out_file start_iso exit_code=0 summary_line action
+  local scenario_cfg="null" rounds=0 next_rounds="" diff_mode="full" mode_reason=""
+  local comments_after posted
 
   if [[ ! -f "$INTEST_PROMPT_FILE" ]]; then
     log "WARNING: In Test prompt missing ($INTEST_PROMPT_FILE); posting fallback comment"
@@ -4887,6 +4987,23 @@ intest_handoff() {
   fi
   comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE" || echo "[]")
   [[ -n "$comments_json" ]] || comments_json="[]"
+
+  # A real scenario for exactly this head is already on the issue (a card
+  # handed back to In Review without a new commit comes through the In Test
+  # promotion again): nothing to write, so don't start a session only for the
+  # model to noop (ADR-0082). Only the factory's own comment with this full
+  # SHA counts, never the fallback, so a head that got only the fallback is
+  # still retried.
+  if [[ "$(scenario_comment_state "$comments_json" "$head_sha")" == "scenario" ]]; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "DRY-RUN: #$issue_num already has a test scenario for ${head_sha:0:12}; would not invoke the writer"
+      return 0
+    fi
+    log "Issue #$issue_num: a test scenario for ${head_sha:0:12} is already posted; not invoking the writer"
+    intest_record_comment_sha "$issue_num" "$head_sha"
+    return 0
+  fi
+
   plan_json=$(extract_plan_comment "$comments_json")
   [[ -n "$plan_json" ]] || plan_json="null"
 
@@ -4895,9 +5012,36 @@ intest_handoff() {
   # usable (if thinner) scenario, so a failure here is not fatal.
   pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
 
+  # Incremental rewrite (ADR-0082): keep this head's diff for the next head's
+  # run, and let factory-bundle.mjs choose between the whole diff and only
+  # what changed since the latest scenario. Off (or extracted without its
+  # globals, as in the tests) it is the full mode, as before.
+  #
+  # `gh pr diff` reads whatever the PR head is when it runs, so the head is
+  # read again after it: a diff is kept, or compared, only when that head is
+  # still <head_sha>. A head that moved, or can't be read, means full mode and
+  # nothing stored, never a newer head's diff filed under this one's SHA.
+  local diff_head=""
+  if [[ "${FACTORY_SCENARIO_INCREMENTAL:-0}" == "1" && -n "${SCENARIO_DIFF_DIR:-}" && -n "$pr_diff" ]]; then
+    diff_head=$(pr_head_oid "$pr_num")
+    if [[ "$diff_head" != "$head_sha" ]]; then
+      log "Issue #$issue_num: PR #$pr_num's head is ${diff_head:-unreadable} after reading its diff, not $head_sha; not keeping the diff (full mode)"
+    else
+      [[ "$DRY_RUN" -eq 1 ]] || scenario_diff_store "$issue_num" "$head_sha" "$pr_diff" "$platforms"
+      rounds=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestScenarioRounds // ""' 2>/dev/null || echo "")
+      [[ "$rounds" =~ ^[0-9]+$ ]] || rounds=0
+      scenario_cfg=$(jq -cn --arg dir "$SCENARIO_DIFF_DIR" --argjson rounds "$rounds" \
+        --argjson maxLines "$FACTORY_SCENARIO_DELTA_MAX_LINES" --argjson fullEvery "$FACTORY_SCENARIO_FULL_EVERY" \
+        '{enabled: true, rounds: $rounds, maxLines: $maxLines, fullEvery: $fullEvery, diffDir: $dir}' \
+        2>>"$LOG_FILE") || scenario_cfg="null"
+      [[ -n "$scenario_cfg" ]] || scenario_cfg="null"
+    fi
+  fi
+
   if ! bundle=$(build_intest_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
       "$diff_files" "$platforms" "$preview_url" "$advisory" "$beta_json" \
-      "$head_sha" "$comments_json" "$cr_note"); then
+      "$head_sha" "$comments_json" "$cr_note" "$scenario_cfg"); then
     log "ERROR: build_intest_bundle failed for #$issue_num; posting fallback"
     if [[ "$DRY_RUN" -eq 0 ]]; then
       intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
@@ -4905,6 +5049,8 @@ intest_handoff() {
     fi
     return 0
   fi
+  diff_mode=$(jq -r '.prDiffMode // "full"' <<<"$bundle" 2>/dev/null || echo "full")
+  mode_reason=$(jq -r '.prDiffModeReason // ""' <<<"$bundle" 2>/dev/null || echo "")
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     # Bundles carry the issue body + comments (PII): stdout only, never the log.
@@ -4913,6 +5059,7 @@ intest_handoff() {
     return 0
   fi
 
+  log "Issue #$issue_num: scenario for ${head_sha:0:12} in $diff_mode mode${mode_reason:+ ($mode_reason)}"
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$INTEST_PROMPT_FILE")" "$bundle")
   # --model only when FACTORY_INTEST_MODEL is set (ADR-0080).
@@ -4930,8 +5077,9 @@ intest_handoff() {
     [[ $exit_code -eq 124 ]] && log "WARNING: claude timed out writing the In Test scenario for #$issue_num" \
       || log "ERROR: claude exited $exit_code writing the In Test scenario for #$issue_num"
     cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
-    # A session limit is worth pausing the whole factory for; anything else just
-    # falls back. Either way the retry budget is untouched — this is commentary.
+    # A session limit is worth pausing the whole factory for; anything else goes
+    # to the check below. Either way the retry budget is untouched — this is
+    # commentary.
     if [[ $exit_code -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
       rm -f "$out_file"
       intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
@@ -4939,26 +5087,56 @@ intest_handoff() {
       pause_for_session_limit
       return 0
     fi
-    rm -f "$out_file"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
-    intest_record_comment_sha "$issue_num" "$head_sha"
-    return 0
-  fi
-  cat "$out_file" >>"$LOG_FILE"
-  summary_line=$(grep -E '^issue=[0-9]+ action=[a-z]+ comment=[^ ]+$' "$out_file" | tail -1 || true)
-  rm -f "$out_file"
-  action=$(echo "${summary_line:-}" | sed -E 's/.*action=([^ ]+).*/\1/')
-
-  # Trust the marker, not the directive line: the comment either exists or it
-  # doesn't. A model that claims `commented` without posting still gets a
-  # fallback, and one that posted without emitting a parseable line doesn't get
-  # a duplicate.
-  if issue_has_marker "$issue_num" "drafto-factory-test-scenario"; then
-    log "Issue #$issue_num: test scenario posted (action=${action:-unknown})"
+    # A run that timed out or failed may have posted its scenario before it
+    # died: the check below decides, as for a clean exit, so a posted one
+    # gets no fallback on top and still counts its round.
+    action="exit-$exit_code"
   else
-    log "Issue #$issue_num: no test-scenario comment found (action=${action:-none}); posting fallback"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
+    cat "$out_file" >>"$LOG_FILE"
+    summary_line=$(grep -E '^issue=[0-9]+ action=[a-z]+ comment=[^ ]+$' "$out_file" | tail -1 || true)
+    action=$(echo "${summary_line:-}" | sed -E 's/.*action=([^ ]+).*/\1/')
   fi
+  rm -f "$out_file"
+
+  # Trust the comment, not the directive line or the exit code: a scenario for
+  # exactly this head either exists or it doesn't. A model that claims `commented` without
+  # posting still gets a fallback, and one that posted without emitting a
+  # parseable line doesn't get a duplicate. Only the full-SHA marker counts:
+  # every older scenario carries the plain test-scenario marker too, so
+  # matching that let a silent run leave the card with no scenario for its head.
+  if ! comments_after=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE") || [[ -z "$comments_after" ]]; then
+    posted="unknown"
+  else
+    posted=$(scenario_comment_state "$comments_after" "$head_sha")
+  fi
+  case "$posted" in
+    scenario)
+      log "Issue #$issue_num: test scenario posted (action=${action:-unknown}, $diff_mode mode)"
+      # Count delta rounds since the last full one (FACTORY_SCENARIO_FULL_EVERY),
+      # and keep only this head's stored diff: the next run builds on it.
+      if [[ "$scenario_cfg" != "null" ]]; then
+        [[ "$diff_mode" == "delta" ]] && next_rounds=$((rounds + 1))
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+          intestScenarioRounds "$next_rounds" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        scenario_diff_prune "$issue_num" "$head_sha"
+      fi
+      ;;
+    fallback)
+      log "Issue #$issue_num: no test scenario for ${head_sha:0:12} (action=${action:-none}); its fallback comment is already posted"
+      ;;
+    unknown)
+      # Fail closed, as issue_has_marker does: a duplicate comment is worse
+      # than a late fallback. Nor is the head recorded as handled: the In Test
+      # sweep then looks again on its next tick, and either finds the scenario
+      # (and records it without starting the writer) or writes one.
+      log "WARNING: couldn't read #$issue_num's comments after the scenario run (action=${action:-none}); not posting a fallback, and leaving ${head_sha:0:12} unrecorded so the next tick looks again"
+      return 0
+      ;;
+    *)
+      log "Issue #$issue_num: no test scenario for ${head_sha:0:12} found (action=${action:-none}); posting fallback"
+      intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
+      ;;
+  esac
   intest_record_comment_sha "$issue_num" "$head_sha"
   return 0
 }
@@ -9341,11 +9519,13 @@ A human should take a look. Reset with \
     # that — a finished CLI run's findings are posted by cr_cli_housekeeping at the
     # top of the tick, before fetch_review_threads reads them.
     log "Issue #$ISSUE_NUM: required CI green (platforms: $(echo "$INTEST_PLATFORMS" | jq -c . 2>/dev/null)) → In Test"
-    # The scenario is re-posted here even for a commit that already has one (a
-    # card handed back to In Review without a new commit). A commit that went
-    # through pre-In-Test verification had its scenario written with the
-    # verification platforms (packages/shared/ counts as web, ADR-0053 5C), so
-    # the re-post keeps that variant and its ### Web section; the betas keep
+    # The hand-off runs here even for a commit that already has a scenario (a
+    # card handed back to In Review without a new commit); it then records the
+    # SHA without invoking the writer (ADR-0082), and only a commit with no
+    # real scenario yet gets one written. A commit that went through
+    # pre-In-Test verification had its scenario written with the verification
+    # platforms (packages/shared/ counts as web, ADR-0053 5C), so a rewrite
+    # keeps that variant and its ### Web section; the betas keep
     # INTEST_PLATFORMS.
     SCENARIO_PLATFORMS=$(scenario_platforms "$ISSUE_NUM" "$HEAD_SHA" "$INTEST_DIFF_FILES" "$INTEST_PLATFORMS")
     if [[ "$DRY_RUN" -eq 1 ]]; then

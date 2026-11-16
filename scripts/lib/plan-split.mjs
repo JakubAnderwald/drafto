@@ -60,6 +60,19 @@ const SPLIT_FILE_RE = /^0[1-9]\.md$/;
 const TITLE_RE =
   /^(?:feat|fix|chore|docs|refactor|perf|test|build|ci|style)(?:\([a-z0-9][a-z0-9._/-]*\))?!?: \S/;
 const DEPENDS_RE = /^(?:\*\*)?depends on:(?:\*\*)?\s*(.*?)\s*$/i;
+/**
+ * A text's lines, split on LF only, each losing one trailing CR (CRLF from a
+ * body edited on the web), as factory-bundle.mjs's bodyLines and
+ * support_forward_filter split them. A lone CR, U+2028 or U+2029 never ends a
+ * line, so none of them can put a marker or a "Depends on" line on a line of
+ * its own. The line patterns that read them have no `m` flag.
+ */
+function bodyLines(text) {
+  return String(text ?? "")
+    .split("\n")
+    .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+}
+
 /** A file name safe to quote in a public comment, or a stand-in for one. */
 function safeName(name) {
   return /^[A-Za-z0-9._-]{1,40}$/.test(name) ? name : "(a file with an unusual name)";
@@ -98,9 +111,7 @@ export function parseDependsOn(value) {
  */
 export function parseSplitFile(text) {
   const problems = [];
-  const lines = String(text ?? "")
-    .replace(/\r\n?/g, "\n")
-    .split("\n");
+  const lines = bodyLines(text);
   let i = 0;
   while (i < lines.length && lines[i].trim() === "") i++;
   const titleMatch = /^#\s+(.+?)\s*$/.exec(lines[i] ?? "");
@@ -311,7 +322,7 @@ export function validateSplit(dir, { secrets, fs = nodeFs } = {}) {
 export const SPLIT_PART_MARKER_PREFIX = "drafto-factory-split-part:";
 export const splitPartMarker = (issue, part) =>
   `<!-- ${SPLIT_PART_MARKER_PREFIX}${issue}:${part} -->`;
-const DEPENDS_LINE_RE = /^\*\*Depends on:\*\* (.*)$/;
+const DEPENDS_LINE_RE = /^[ \t]*\*\*Depends on:\*\* (.*?)[ \t]*$/;
 
 /**
  * Part <part>'s issue body: where it came from, what it depends on (the issues
@@ -344,20 +355,21 @@ export function composeSplitBody({ split, part, issue, created = {} }) {
  * A part an earlier attempt filed for <issue>, read back from its issue body
  * (composeSplitBody's shape): its part number, the issues its "Depends on"
  * line names and its spec text. Null when the body isn't one of this issue's
- * parts. Line endings are normalised: a body edited on the web comes back with
- * CRLF.
+ * parts. The marker and the "Depends on" line count only on lines of their
+ * own, split as bodyLines splits them (a body edited on the web comes back
+ * with CRLF).
  */
 export function parseFiledPart(body, issue) {
-  const lines = String(body ?? "")
-    .replace(/\r\n?/g, "\n")
-    .split("\n");
-  const markerRe = new RegExp(`^<!-- ${SPLIT_PART_MARKER_PREFIX}${issue}:([1-9]) -->$`);
-  const markerAt = lines.findIndex((l) => markerRe.test(l.trim()));
-  const dependsAt = lines.findIndex((l) => DEPENDS_LINE_RE.test(l.trim()));
+  const lines = bodyLines(body);
+  const markerRe = new RegExp(
+    `^[ \\t]*<!-- ${SPLIT_PART_MARKER_PREFIX}${issue}:([1-9]) -->[ \\t]*$`,
+  );
+  const markerAt = lines.findIndex((l) => markerRe.test(l));
+  const dependsAt = lines.findIndex((l) => DEPENDS_LINE_RE.test(l));
   if (markerAt === -1 || dependsAt === -1 || dependsAt > markerAt) return null;
-  const depsText = DEPENDS_LINE_RE.exec(lines[dependsAt].trim())[1];
+  const depsText = DEPENDS_LINE_RE.exec(lines[dependsAt])[1];
   return {
-    part: Number(markerRe.exec(lines[markerAt].trim())[1]),
+    part: Number(markerRe.exec(lines[markerAt])[1]),
     deps: [...depsText.matchAll(/#(\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b),
     spec: lines
       .slice(dependsAt + 1, markerAt)

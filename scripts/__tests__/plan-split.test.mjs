@@ -592,6 +592,17 @@ describe("parseFiledPart / planSplitFiling: reusing what an earlier attempt file
       spec: "### What\n\nc",
     });
     assert.equal(parseFiledPart(body, 901), null, "another card's part");
+    // Lines split on LF only: a lone CR, U+2028 or U+2029 never ends a line,
+    // so a marker or Depends line behind one isn't on a line of its own.
+    for (const sep of ["\r", "\u2028", "\u2029"]) {
+      const hidden = body.replace(
+        "\n<!-- drafto-factory-split-part:900:3 -->",
+        `\nx${sep}<!-- drafto-factory-split-part:900:3 -->`,
+      );
+      assert.equal(parseFiledPart(hidden, 900), null, JSON.stringify(sep));
+      const deps = body.replace("\n**Depends on:**", `\nx${sep}**Depends on:**`);
+      assert.equal(parseFiledPart(deps, 900), null, JSON.stringify(sep));
+    }
     assert.equal(parseFiledPart("### What\n\nc", 900), null, "no marker");
   });
 

@@ -111,4 +111,5 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0078](./0078-migration-approval-tied-to-sql.md)                               | Tie `migration-approved` to the Migration SQL                                   | Accepted           | 2026-11-13 |
 | [0079](./0079-factory-allocates-migration-versions.md)                         | The Factory Allocates Migration Versions Clear of Open PRs                      | Accepted           | 2026-11-13 |
 | [0080](./0080-factory-model-knobs-browser-runner-scenario-writer.md)           | Factory Model Knobs for the Browser Runner and Scenario Writer                  | Accepted           | 2026-11-16 |
+| [0082](./0082-incremental-in-test-scenario-rewrite.md)                         | Incremental In Test Scenario Rewrite                                            | Accepted           | 2026-11-16 |
 | [0083](./0083-planner-size-estimate-and-split-on-request.md)                   | Planner Size Estimate and Split on Request                                      | Accepted           | 2026-11-16 |
