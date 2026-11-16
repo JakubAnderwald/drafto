@@ -98,6 +98,11 @@ import { fileURLToPath } from "node:url";
 import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
+import {
+  detectSessionLimit,
+  findTranscriptById,
+  SESSION_ID_RE as UUID_RE,
+} from "./session-limit.mjs";
 import { inspectMain } from "./dev-inspect.mjs";
 import { accountFileProblem, adminAccountFileProblem } from "./browser-report.mjs";
 import { keyFileProblem } from "./browser-signin.mjs";
@@ -146,7 +151,6 @@ const LIB_DIR = path.dirname(THIS_FILE);
 const DEFAULT_PROMPT_FILE = path.resolve(LIB_DIR, "..", "factory-verify-prompt.md");
 const RUN_CLAUDE = path.join(LIB_DIR, "run-claude.mjs");
 const SHA40 = /^[0-9a-f]{40}$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const RUN_ID_RE = /^\d+-[0-9a-f]{12}-\d{8}T\d{6}Z$/;
 const MINUTE_MS = 60_000;
 // One tick: a live start finishes reserve → attach in seconds.
@@ -1802,26 +1806,6 @@ export async function revokeLaneKeys(meta, { cfg, env, cwd }) {
   return { revoked, failed };
 }
 
-/** Find <sessionId>.jsonl under the claude projects dir, or null. */
-export function findTranscript(sessionId, { env = process.env, fs = nodeFs } = {}) {
-  if (!UUID_RE.test(String(sessionId))) return null;
-  const root = path.join(
-    env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), ".claude"),
-    "projects",
-  );
-  let dirs = [];
-  try {
-    dirs = fs.readdirSync(root);
-  } catch {
-    return null;
-  }
-  for (const d of dirs) {
-    const p = path.join(root, d, `${sessionId}.jsonl`);
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
-}
-
 /**
  * Did the guard cover the session? The canary proves the settings loaded; pre
  * records prove the matcher fired. A session that used tools with no pre
@@ -1831,7 +1815,7 @@ export async function checkGuard(meta, { env = process.env, fs = nodeFs } = {}) 
   try {
     const { verifySession } = await import("./verify-guard.mjs");
     const counts = verifySession({ configPath: meta.paths.guardConfig, session: meta.sessionId });
-    const transcript = findTranscript(meta.sessionId, { env, fs });
+    const transcript = findTranscriptById(meta.sessionId, { env, fs });
     const toolUses = transcript
       ? countToolUses(readText(fs, transcript, 16 * MAX_OUTPUT_BYTES))
       : 0;
@@ -2214,9 +2198,8 @@ async function stopReason(inFlight, deps) {
 
 async function detectLimit(meta, inFlight, { now, knobs }, deps) {
   if (!meta?.sessionId) return null;
-  const transcript = findTranscript(meta.sessionId, { env: deps.env, fs: deps.fs });
+  const transcript = findTranscriptById(meta.sessionId, { env: deps.env, fs: deps.fs });
   if (!transcript) return null;
-  const { detectSessionLimit } = await import("./session-limit.mjs");
   const r = detectSessionLimit(readText(deps.fs, transcript, 16 * MAX_OUTPUT_BYTES), {
     now: new Date(now),
     since: inFlight.startedAt ?? null,

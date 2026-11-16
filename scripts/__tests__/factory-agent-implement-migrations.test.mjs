@@ -278,7 +278,9 @@ describe("factory-agent.sh --implement — migration post-check wiring (ADR-0079
     assert.match(block, /^CLAIM_HEAD=""\n\s+CLAIM_SINCE="all"\n/);
     assert.match(
       block,
-      /if \[\[ -n "\$PRE_HEAD_OID" \]\]; then\n\s+CLAIM_HEAD="\$POST_HEAD_OID"\n\s+CLAIM_SINCE="\$PRE_HEAD_OID"\n\s+fi/,
+      // The chain's baseline (ADR-0084): what a resumed run's stopped
+      // predecessor added counts as this card's run's too.
+      /if \[\[ -n "\$CHAIN_PRE_HEAD_OID" \]\]; then\n\s+CLAIM_HEAD="\$POST_HEAD_OID"\n\s+CLAIM_SINCE="\$CHAIN_PRE_HEAD_OID"\n\s+fi/,
     );
     assert.match(
       block,
@@ -353,6 +355,9 @@ describe("factory-agent.sh — DRAFTO_UNATTENDED reaches its claude runs", () =>
   it("isn't stripped on the way: run-with-timeout spawns claude with the inherited env", () => {
     const runner = readFileSync(resolve(SCRIPTS, "lib", "run-with-timeout.mjs"), "utf8");
     assert.match(runner, /spawn\(command, args, \{ stdio: "inherit" \}\)/);
+    // Process-group mode (ADR-0084) only adds `detached`; no env is passed.
+    assert.match(runner, /spawn\(command, args, \{ stdio: "inherit", detached: true \}\)/);
+    assert.doesNotMatch(runner, /\benv:/);
     assert.doesNotMatch(script, /env -i[^\n]*run-claude/);
   });
 });
