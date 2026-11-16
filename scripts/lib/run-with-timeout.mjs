@@ -22,12 +22,15 @@
 //     call to its transcript before the SIGKILL and the session can be resumed
 //     (ADR-0084).
 //   - Process-group mode (killGroup, or CLAUDE_CALL_KILL_GROUP=1 in the env):
-//     the child leads its own process group, and SIGTERM, SIGKILL and any
-//     SIGTERM/SIGINT/SIGHUP this wrapper receives go to the whole group. A
-//     timed-out child's descendants (claude's Bash tasks, its background
-//     agents) are killed with it, so none can keep writing to the worktree
-//     after the next run starts there. --implement turns it on; every other
-//     caller keeps signalling the direct child only.
+//     the child leads its own process group. The cap, or a SIGTERM/SIGINT/
+//     SIGHUP this wrapper receives, signals the whole group and sends it
+//     SIGKILL after the grace window, whether or not the leader has exited by
+//     then, and the wrapper returns only once the group is gone (bounded; see
+//     runWithTimeoutGroup). A timed-out child's descendants in its group
+//     (claude's Bash tasks, its background agents) die with it, so none can
+//     keep writing to the worktree after the next run starts there.
+//     --implement turns it on; every other caller keeps the default above:
+//     no detached spawn, no group signals.
 //   - spawn() failure (e.g. ENOENT): resolve exit code 127.
 //
 // stdio is `inherit`ed so the caller's existing redirects keep working.
@@ -69,33 +72,26 @@ export function runWithTimeout({
   spawn = nodeSpawn,
   killGroup = resolveKillGroup(),
   signalProcess = process,
+  groupSettleMs = GROUP_SETTLE_MS,
+  pollMs = GROUP_POLL_MS,
 } = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(
+  if (killGroup) {
+    return runWithTimeoutGroup({
       command,
       args,
-      killGroup ? { stdio: "inherit", detached: true } : { stdio: "inherit" },
-    );
+      timeoutMs,
+      killGraceMs,
+      label,
+      spawn,
+      signalProcess,
+      groupSettleMs,
+      pollMs,
+    });
+  }
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: "inherit" });
     let timedOut = false;
     let killTimer = null;
-    // Group mode signals -pid (every process in the child's group); otherwise
-    // the child alone, as before.
-    const signal = (sig) => {
-      try {
-        if (killGroup && child.pid) signalProcess.kill(-child.pid, sig);
-        else child.kill(sig);
-      } catch {
-        /* already gone */
-      }
-    };
-    // A detached group no longer gets the signals sent to ours (launchd
-    // stopping the job, a Ctrl-C): pass them on.
-    const forwarded = ["SIGTERM", "SIGINT", "SIGHUP"];
-    const forward = (sig) => signal(sig);
-    if (killGroup) for (const sig of forwarded) signalProcess.on?.(sig, forward);
-    const unforward = () => {
-      if (killGroup) for (const sig of forwarded) signalProcess.off?.(sig, forward);
-    };
 
     const fireTimeout = () => {
       timedOut = true;
@@ -106,12 +102,20 @@ export function runWithTimeout({
       process.stderr.write(
         `${label}: wall-time cap reached after ${timeoutMs}ms; sending SIGTERM\n`,
       );
-      signal("SIGTERM");
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* child already exited */
+      }
       killTimer = setTimeout(() => {
         process.stderr.write(
           `${label}: child ignored SIGTERM for ${killGraceMs}ms; escalating to SIGKILL\n`,
         );
-        signal("SIGKILL");
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* child already exited */
+        }
       }, killGraceMs);
       killTimer.unref?.();
     };
@@ -119,38 +123,167 @@ export function runWithTimeout({
     const wallTimer = setTimeout(fireTimeout, timeoutMs);
     wallTimer.unref?.();
 
-    child.once("exit", (code, exitSignal) => {
+    child.once("exit", (code, signal) => {
       clearTimeout(wallTimer);
       if (killTimer) clearTimeout(killTimer);
-      unforward();
       if (timedOut) {
-        // The child is gone; in group mode take whatever it left running
-        // (descendants that ignored SIGTERM) down with it.
-        if (killGroup) signal("SIGKILL");
-        resolve({ exitCode: TIMEOUT_EXIT_CODE, timedOut: true, signal: exitSignal });
+        resolve({ exitCode: TIMEOUT_EXIT_CODE, timedOut: true, signal });
         return;
       }
       // Normal exit: propagate the child's exit code. If killed by an external
       // signal (not us), surface 128+signum like a POSIX shell.
       if (code != null) {
-        resolve({ exitCode: code, timedOut: false, signal: exitSignal });
-      } else if (exitSignal) {
-        const signum = osConstants.signals[exitSignal] ?? 0;
-        resolve({ exitCode: 128 + signum, timedOut: false, signal: exitSignal });
+        resolve({ exitCode: code, timedOut: false, signal });
+      } else if (signal) {
+        const signum = osConstants.signals[signal] ?? 0;
+        resolve({ exitCode: 128 + signum, timedOut: false, signal });
       } else {
-        resolve({ exitCode: 1, timedOut: false, signal: exitSignal });
+        resolve({ exitCode: 1, timedOut: false, signal });
       }
     });
 
     child.once("error", (err) => {
       clearTimeout(wallTimer);
       if (killTimer) clearTimeout(killTimer);
-      unforward();
       // spawn() failed (e.g. ENOENT — command not on PATH). Surface a distinct
       // exit code so the caller doesn't confuse it with a child-side error or a
       // timeout.
       process.stderr.write(`${label}: spawn failed: ${err.message}\n`);
       resolve({ exitCode: SPAWN_FAILURE_EXIT_CODE, timedOut: false, signal: null });
+    });
+  });
+}
+
+// After SIGKILL is due, how long to keep polling for the group to be gone
+// before giving up and saying so, and how often to poll.
+export const GROUP_SETTLE_MS = 10_000;
+export const GROUP_POLL_MS = 100;
+
+// Process-group mode (ADR-0084): the child leads its own process group, and
+// the wrapper returns only once that whole group is gone, so nothing the child
+// started can keep writing after the caller moves on.
+//   - Cancelling (the wall cap, a SIGTERM/SIGINT/SIGHUP sent to this wrapper,
+//     or the child dying of a signal nobody here sent) signals the group,
+//     then sends it SIGKILL after killGraceMs. That timer runs on its own:
+//     neither the wall deadline nor the leader exiting cancels it.
+//   - Once the leader has exited, the group is polled (kill -0) until it is
+//     gone, for at most killGraceMs + groupSettleMs after the cancel. A group
+//     still alive then is logged and the wrapper returns anyway.
+//   - A leader that exits on its own with a code is a normal exit: the result
+//     resolves at once, as in the default mode.
+// Descendants that leave the group (setsid, a daemon) are out of reach.
+function runWithTimeoutGroup({
+  command,
+  args,
+  timeoutMs,
+  killGraceMs,
+  label,
+  spawn,
+  signalProcess,
+  groupSettleMs,
+  pollMs,
+}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: "inherit", detached: true });
+    const pgid = child.pid;
+    let timedOut = false;
+    let cancelledAt = null;
+    let killTimer = null;
+    let wallTimer = null;
+    let exit = null;
+    let settled = false;
+
+    const signalGroup = (sig) => {
+      try {
+        if (pgid) signalProcess.kill(-pgid, sig);
+        else child.kill(sig);
+      } catch {
+        /* the group is already gone */
+      }
+    };
+    const groupAlive = () => {
+      if (!pgid) return false;
+      try {
+        signalProcess.kill(-pgid, 0);
+        return true;
+      } catch (err) {
+        return err?.code === "EPERM";
+      }
+    };
+
+    const cancel = (sig, why) => {
+      if (cancelledAt != null) return;
+      cancelledAt = Date.now();
+      process.stderr.write(`${label}: ${why}; sending ${sig} to process group ${pgid}\n`);
+      signalGroup(sig);
+      killTimer = setTimeout(() => {
+        if (!groupAlive()) return;
+        process.stderr.write(
+          `${label}: process group ${pgid} still running ${killGraceMs}ms after ${sig}; escalating to SIGKILL\n`,
+        );
+        signalGroup("SIGKILL");
+      }, killGraceMs);
+    };
+
+    const forwarded = ["SIGTERM", "SIGINT", "SIGHUP"];
+    const forward = (sig) => cancel(sig, `received ${sig}`);
+    for (const sig of forwarded) signalProcess.on?.(sig, forward);
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(wallTimer);
+      clearTimeout(killTimer);
+      for (const sig of forwarded) signalProcess.off?.(sig, forward);
+      resolve(result);
+    };
+
+    const resultOf = () => {
+      if (timedOut) return { exitCode: TIMEOUT_EXIT_CODE, timedOut: true, signal: exit.signal };
+      if (exit.code != null) return { exitCode: exit.code, timedOut: false, signal: exit.signal };
+      if (exit.signal) {
+        const signum = osConstants.signals[exit.signal] ?? 0;
+        return { exitCode: 128 + signum, timedOut: false, signal: exit.signal };
+      }
+      return { exitCode: 1, timedOut: false, signal: exit.signal };
+    };
+
+    // Resolve once the group is gone, or once the bounded wait runs out.
+    const awaitGroup = () => {
+      const deadline = cancelledAt + killGraceMs + groupSettleMs;
+      const poll = () => {
+        if (!groupAlive()) return finish(resultOf());
+        if (Date.now() >= deadline) {
+          process.stderr.write(
+            `${label}: process group ${pgid} survived SIGKILL; returning anyway\n`,
+          );
+          return finish(resultOf());
+        }
+        setTimeout(poll, pollMs);
+      };
+      poll();
+    };
+
+    wallTimer = setTimeout(() => {
+      timedOut = true;
+      cancel("SIGTERM", `wall-time cap reached after ${timeoutMs}ms`);
+    }, timeoutMs);
+
+    child.once("exit", (code, signal) => {
+      clearTimeout(wallTimer);
+      exit = { code, signal };
+      if (cancelledAt == null) {
+        // A normal exit resolves at once. A leader killed by a signal nobody
+        // here sent still gets its group cleaned up first.
+        if (signal == null) return finish(resultOf());
+        cancel("SIGTERM", `child killed by ${signal}`);
+      }
+      awaitGroup();
+    });
+
+    child.once("error", (err) => {
+      process.stderr.write(`${label}: spawn failed: ${err.message}\n`);
+      finish({ exitCode: SPAWN_FAILURE_EXIT_CODE, timedOut: false, signal: null });
     });
   });
 }

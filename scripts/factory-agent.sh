@@ -2354,19 +2354,22 @@ implement_mark_resumable() {
   fi
 }
 
-# implement_head_landed <worktree path> <issue> <PR head sha> — exit 0 when the
-# worktree's HEAD is the PR head or an ancestor of it: everything the run
-# committed reached the PR. The PR head is fetched first (bounded), so an
-# ancestry check never fails for want of the object. Exit 1 when it isn't, or
+# implement_head_landed <worktree path> <issue> <PR head sha> — exit 0 when
+# everything the worktree committed reached the PR's branch: its HEAD is the PR
+# head GitHub reported, or an ancestor of the branch head origin holds now.
+# That head is fetched (bounded) and read from the fetched ref rather than
+# taken from <PR head>: GitHub's PR view can lag a push by seconds (ADR-0076),
+# and fetching objects alone wouldn't refresh it. Exit 1 when it isn't, or
 # when anything can't be read: the caller then doesn't advance the card.
 implement_head_landed() {
-  local wt="$1" issue="$2" pr_head="$3" local_head
-  [[ -n "$pr_head" ]] || return 1
+  local wt="$1" issue="$2" pr_head="$3" local_head branch_head
   local_head=$(git -C "$wt" rev-parse HEAD 2>>"$LOG_FILE") || return 1
-  [[ "$local_head" == "$pr_head" ]] && return 0
+  [[ -n "$pr_head" && "$local_head" == "$pr_head" ]] && return 0
   node "$SCRIPT_DIR/lib/run-with-timeout.mjs" 120 git -C "$wt" fetch -q origin \
     "+refs/heads/factory/issue-$issue:refs/remotes/origin/factory/issue-$issue" >>"$LOG_FILE" 2>&1 || return 1
-  git -C "$wt" merge-base --is-ancestor "$local_head" "$pr_head" 2>>"$LOG_FILE"
+  branch_head=$(git -C "$wt" rev-parse -q --verify "refs/remotes/origin/factory/issue-$issue^{commit}" 2>>"$LOG_FILE") || return 1
+  [[ -n "$branch_head" ]] || return 1
+  git -C "$wt" merge-base --is-ancestor "$local_head" "$branch_head" 2>>"$LOG_FILE"
 }
 
 # implement_resume_never_started <session> <since-iso> <start-epoch> — exit 0

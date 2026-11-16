@@ -858,12 +858,34 @@ describe("implement_head_landed (real helper, bare origin)", () => {
     });
   });
 
-  it("is missing when the worktree has a commit the PR lacks, or the PR head is unknown", () => {
+  it("is missing when the worktree has a commit the branch lacks, whatever head GitHub reported", () => {
     withDir((dir) => {
       const { wt, b1 } = setup(dir);
       git(wt, "commit", "-q", "--allow-empty", "-m", "wip");
       assert.equal(check(dir, wt, b1).stdout.trim(), "missing");
       assert.equal(check(dir, wt, "").stdout.trim(), "missing");
+    });
+  });
+
+  // #842 review: GitHub's PR view can lag a push, so a stale reported head
+  // must not reject work origin already accepted.
+  it("reads the branch head origin accepted, not a stale reported PR head", () => {
+    withDir((dir) => {
+      const { wt, b0 } = setup(dir);
+      git(wt, "commit", "-q", "--allow-empty", "-m", "B2");
+      git(wt, "push", "-q", "origin", "HEAD:refs/heads/factory/issue-7");
+      // GitHub still reports B0; the branch on origin is the worktree's B2.
+      assert.equal(check(dir, wt, b0).stdout.trim(), "landed");
+      assert.equal(check(dir, wt, "").stdout.trim(), "landed");
+    });
+  });
+
+  it("is missing when the branch isn't on origin at all", () => {
+    withDir((dir) => {
+      const { wt, b0 } = setup(dir);
+      git(wt, "push", "-q", "origin", "--delete", "factory/issue-7");
+      git(wt, "update-ref", "-d", "refs/remotes/origin/factory/issue-7");
+      assert.equal(check(dir, wt, b0).stdout.trim(), "missing");
     });
   });
 

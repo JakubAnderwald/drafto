@@ -209,79 +209,233 @@ describe("resolveKillGraceMs (pure)", () => {
 });
 
 // #842 review: at the cap, claude's descendants (its Bash tasks, background
-// agents) must not keep writing to the worktree the next run resumes in. Real
-// processes: a child that ignores SIGTERM, with a grandchild that also ignores
-// it and writes a marker after a delay, so only SIGKILL stops them.
-describe("forced SIGKILL and the child's descendants (real processes)", () => {
-  const SCRIPT = 'trap "" TERM; ( trap "" TERM; sleep 1.2; echo late > "$MARKER" ) & sleep 30';
+// agents) must not keep writing to the worktree the next run resumes in.
+// Real processes. The leader exits as soon as it gets SIGTERM; its background
+// subshell (a plain `( … ) &`, as a Bash tool call would start) ignores
+// SIGTERM and writes a marker after a delay, so only SIGKILL to the group,
+// sent after the leader is already gone, stops it.
+describe("process-group mode (real processes)", () => {
+  const LEADER =
+    '( trap "" TERM; echo $$ > /dev/null; sh -c \'echo $PPID\' > "$DIR/desc.pid"; sleep 1.5; echo late > "$DIR/marker" ) & ' +
+    'echo $$ > "$DIR/leader.pid"; trap "exit 0" TERM; sleep 30 & wait';
 
-  async function runCase({ killGroup }) {
-    const { mkdtempSync, existsSync, rmSync } = await import("node:fs");
+  async function withDir(fn) {
+    const { mkdtempSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const path = await import("node:path");
     const dir = mkdtempSync(path.join(tmpdir(), "rwt-group-"));
-    const marker = path.join(dir, "marker");
-    const saved = process.env.MARKER;
-    process.env.MARKER = marker;
+    const saved = process.env.DIR;
+    process.env.DIR = dir;
     try {
-      const result = await lib.runWithTimeout({
-        command: "bash",
-        args: ["-c", SCRIPT],
-        timeoutMs: 200,
-        killGraceMs: 200,
-        label: "test",
-        killGroup,
-      });
-      await new Promise((r) => setTimeout(r, 1800));
-      return { result, marker: existsSync(marker) };
+      return await fn(dir, path);
     } finally {
-      if (saved === undefined) delete process.env.MARKER;
-      else process.env.MARKER = saved;
+      if (saved === undefined) delete process.env.DIR;
+      else process.env.DIR = saved;
       rmSync(dir, { recursive: true, force: true });
     }
   }
 
-  it("by default signals the direct child only: a descendant outlives the cap", async () => {
-    const { result, marker } = await runCase({ killGroup: false });
-    assert.equal(result.exitCode, 124);
-    assert.equal(marker, true, "the default for every other caller is unchanged");
-  });
-
-  it("in process-group mode kills the whole group: the descendant never writes", async () => {
-    const { result, marker } = await runCase({ killGroup: true });
-    assert.equal(result.exitCode, 124);
-    assert.equal(marker, false);
-  });
-
-  it("in group mode passes a SIGTERM sent to the wrapper on to the group", async () => {
-    const { spawn } = await import("node:child_process");
-    const { mkdtempSync, existsSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const path = await import("node:path");
-    const { fileURLToPath } = await import("node:url");
-    const cli = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "..",
-      "lib",
-      "run-with-timeout.mjs",
-    );
-    const dir = mkdtempSync(path.join(tmpdir(), "rwt-forward-"));
-    const marker = path.join(dir, "marker");
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const alive = (pgid) => {
     try {
-      // The grandchild doesn't ignore TERM here: forwarding is enough.
-      const wrapper = spawn(
-        process.execPath,
-        [cli, "60", "bash", "-c", '( sleep 1.2; echo late > "$MARKER" ) & sleep 30'],
-        { env: { ...process.env, MARKER: marker, CLAUDE_CALL_KILL_GROUP: "1" }, stdio: "ignore" },
+      process.kill(-pgid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const readPid = async (file) => {
+    const { readFileSync } = await import("node:fs");
+    for (let i = 0; i < 50; i++) {
+      try {
+        const n = Number(readFileSync(file, "utf8").trim());
+        if (n > 0) return n;
+      } catch {
+        /* not yet */
+      }
+      await sleep(20);
+    }
+    throw new Error(`no pid in ${file}`);
+  };
+
+  it("by default signals the direct child only: a descendant outlives the cap", async () => {
+    await withDir(async (dir, path) => {
+      const { existsSync } = await import("node:fs");
+      const result = await lib.runWithTimeout({
+        command: "bash",
+        args: ["-c", LEADER],
+        timeoutMs: 300,
+        killGraceMs: 300,
+        label: "test",
+        killGroup: false,
+      });
+      assert.equal(result.exitCode, 124);
+      await sleep(1800);
+      assert.equal(existsSync(path.join(dir, "marker")), true, "every other caller is unchanged");
+    });
+  });
+
+  it("keeps a background subshell in the leader's process group", async () => {
+    await withDir(async (dir, path) => {
+      const { spawnSync } = await import("node:child_process");
+      const run = lib.runWithTimeout({
+        command: "bash",
+        args: ["-c", LEADER],
+        timeoutMs: 400,
+        killGraceMs: 300,
+        label: "test",
+        killGroup: true,
+      });
+      const leader = await readPid(path.join(dir, "leader.pid"));
+      const desc = await readPid(path.join(dir, "desc.pid"));
+      const pgid = Number(
+        spawnSync("ps", ["-o", "pgid=", "-p", String(desc)], { encoding: "utf8" }).stdout.trim(),
       );
-      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(pgid, leader, "nested `( … ) &` stays in the group the wrapper signals");
+      await run;
+    });
+  });
+
+  it("on the cap, SIGKILLs the group after the grace window even though the leader already exited, and returns only once the group is gone", async () => {
+    await withDir(async (dir, path) => {
+      const { existsSync } = await import("node:fs");
+      const started = Date.now();
+      const run = lib.runWithTimeout({
+        command: "bash",
+        args: ["-c", LEADER],
+        timeoutMs: 300,
+        killGraceMs: 600,
+        label: "test",
+        killGroup: true,
+      });
+      const leader = await readPid(path.join(dir, "leader.pid"));
+      const result = await run;
+      const elapsed = Date.now() - started;
+      assert.equal(result.exitCode, 124);
+      assert.equal(result.timedOut, true);
+      // The leader exits on SIGTERM at ~300 ms; the wrapper still waits for
+      // the SIGKILL at ~900 ms and the group's end.
+      assert.ok(elapsed >= 850, `returned after ${elapsed} ms, before the escalation`);
+      assert.equal(alive(leader), false, "no member of the group is left when it returns");
+      await sleep(1500);
+      assert.equal(existsSync(path.join(dir, "marker")), false);
+    });
+  });
+
+  it("cleans up the group of a leader killed from outside before returning", async () => {
+    await withDir(async (dir, path) => {
+      const { existsSync } = await import("node:fs");
+      const run = lib.runWithTimeout({
+        command: "bash",
+        args: ["-c", LEADER],
+        timeoutMs: 60_000,
+        killGraceMs: 300,
+        label: "test",
+        killGroup: true,
+      });
+      const leader = await readPid(path.join(dir, "leader.pid"));
+      await readPid(path.join(dir, "desc.pid"));
+      process.kill(leader, "SIGKILL");
+      const result = await run;
+      assert.equal(result.exitCode, 137);
+      assert.equal(result.timedOut, false);
+      assert.equal(alive(leader), false);
+      await sleep(1500);
+      assert.equal(existsSync(path.join(dir, "marker")), false);
+    });
+  });
+
+  it("passes a SIGTERM sent to the wrapper on to the group, with the same escalation", async () => {
+    await withDir(async (dir, path) => {
+      const { spawn } = await import("node:child_process");
+      const { existsSync } = await import("node:fs");
+      const { fileURLToPath } = await import("node:url");
+      const cli = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "lib",
+        "run-with-timeout.mjs",
+      );
+      const wrapper = spawn(process.execPath, [cli, "60", "bash", "-c", LEADER], {
+        env: {
+          ...process.env,
+          DIR: dir,
+          CLAUDE_CALL_KILL_GROUP: "1",
+          CLAUDE_CALL_KILL_GRACE_SEC: "1",
+        },
+        stdio: "ignore",
+      });
+      const leader = await readPid(path.join(dir, "leader.pid"));
+      await readPid(path.join(dir, "desc.pid"));
+      const sent = Date.now();
       wrapper.kill("SIGTERM");
       const code = await new Promise((r) => wrapper.once("exit", (c) => r(c)));
-      await new Promise((r) => setTimeout(r, 1500));
-      assert.equal(code, 143, "the child's death by SIGTERM, as a shell reports it");
-      assert.equal(existsSync(marker), false);
+      assert.ok(Date.now() - sent >= 900, "it waited for the grace window and the group");
+      assert.equal(alive(leader), false);
+      // The leader's own `exit 0` on TERM is its exit code.
+      assert.equal(code, 0);
+      await sleep(1500);
+      assert.equal(existsSync(path.join(dir, "marker")), false);
+    });
+  });
+
+  it("resolves at once on a normal exit, with no group signals", async () => {
+    const result = await lib.runWithTimeout({
+      command: "bash",
+      args: ["-c", "exit 3"],
+      timeoutMs: 5000,
+      killGraceMs: 5000,
+      label: "test",
+      killGroup: true,
+    });
+    assert.deepEqual(result, { exitCode: 3, timedOut: false, signal: null });
+  });
+
+  it("returns anyway, and says so, when the group outlives the bounded wait", async () => {
+    // A fake group that never dies: kill -0 always succeeds.
+    const scenario = { spawnCalls: [], children: [] };
+    const sent = [];
+    const fakeProcess = {
+      kill: (pid, sig) => {
+        sent.push([pid, sig]);
+      },
+      on() {},
+      off() {},
+    };
+    const writes = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      writes.push(String(chunk));
+      return true;
+    };
+    try {
+      const promise = lib.runWithTimeout({
+        command: "claude",
+        timeoutMs: 20,
+        killGraceMs: 30,
+        label: "t",
+        spawn: (cmd, args, opts) => {
+          const c = makeSpawn(scenario)(cmd, args, opts);
+          c.pid = 4242;
+          c.unref = () => {};
+          return c;
+        },
+        killGroup: true,
+        signalProcess: fakeProcess,
+        groupSettleMs: 80,
+        pollMs: 10,
+      });
+      setTimeout(() => scenario.children[0].emit("exit", null, "SIGTERM"), 40);
+      const result = await promise;
+      assert.equal(result.exitCode, 124);
+      assert.deepEqual(scenario.spawnCalls[0].opts, { stdio: "inherit", detached: true });
+      assert.ok(sent.some(([p, s]) => p === -4242 && s === "SIGTERM"));
+      assert.ok(sent.some(([p, s]) => p === -4242 && s === "SIGKILL"));
+      assert.ok(
+        writes.some((w) => /process group 4242 survived SIGKILL; returning anyway/.test(w)),
+      );
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      process.stderr.write = origWrite;
     }
   });
 });

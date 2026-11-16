@@ -1352,7 +1352,18 @@ describe("housekeeping", () => {
       }) + "\n",
     );
     const { deps } = makeDeps();
+    // #842 review: detectLimit finds the transcript through the moved
+    // findTranscriptById, under the deps' HOME and with the deps' fs.
+    const looked = [];
+    deps.fs = {
+      ...deps.fs,
+      readdirSync: (...a) => {
+        looked.push(a[0]);
+        return nodeFs.readdirSync(...a);
+      },
+    };
     const r = await hk(deps);
+    assert.ok(looked.includes(path.join(home, ".claude", "projects")), looked.join(", "));
     assert.equal(r.outcome, "session-limit");
     assert.match(r.sessionLimit.resetAt, /^2026-10-21T15:02:00/);
     assert.match(r.sessionLimit.reason, /session limit/);
