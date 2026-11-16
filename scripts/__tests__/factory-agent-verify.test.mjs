@@ -90,6 +90,11 @@ const REAL_HELPERS = [
   "issue_marker_check",
   "migration_approval_vouch",
   "migration_approval_vouch_view",
+  "intest_reused_json",
+  "intest_reused_builds",
+  "intest_reused_valid",
+  "intest_reuse_fresh",
+  "lane_attempt_of",
 ];
 
 const STUBS = `
@@ -1820,6 +1825,79 @@ describe("verify_compose_report with a shell run (real composer, lane module stu
       assert.match(body, /\*\*Verdict: PASS\*\*/);
       assert.match(r.calls, /^lane gaps --run-dir .*\/run$/m);
     });
+  });
+
+  // A reuse record for this head: <reused> kept from <built>, which finished <daysAgo> days ago.
+  const reuse = (reused, built, daysAgo) => ({
+    intestBetaSha: HEAD,
+    intestBetaReused: reused,
+    intestBetaBuilt: built,
+    intestBetaBuiltAt: `${built.split(":")[0]}:${Math.floor(Date.now() / 1000 - daysAgo * 86400)}`,
+  });
+
+  it("names a beta reused from an earlier commit, with its build numbers (ADR-0081)", () => {
+    const notice = {
+      id: 6,
+      body: `🏭 **iOS beta build 147 uploaded** — TestFlight, built from PR #70 @ \`${OLD.slice(0, 12)}\` (pre-merge).\n\n<!-- drafto-factory-intest-build:ios:147 -->`,
+      createdAt: "t",
+      authorAssociation: "OWNER",
+    };
+    withBash(
+      promote,
+      {
+        env: { HEAD, DIFF_STUB: "apps/web/a.ts\napps/mobile/b.ts" },
+        state: { ...state, ...reuse(`mobile:${OLD}`, `mobile:${OLD}`, 1) },
+        comments: [...comments, notice],
+      },
+      (r) => {
+        const body = r.comments.at(-1).body;
+        assert.match(
+          body,
+          /\| iOS \/ Android \| manual \| — \| No mobile change since iOS build 147 \(`bbbbbbbbbbbb`\); keep testing that build\. Android: Play's internal track serves only its newest upload, so check that the installed build number is the one an earlier comment gives\. If Play shows a newer build, this card's Android build is no longer installable from Play; test iOS from TestFlight and ask in a comment for the Android build\. \|/,
+        );
+      },
+    );
+    // Reuse recorded for another head is not this commit's.
+    withBash(
+      promote,
+      {
+        env: { HEAD, DIFF_STUB: "apps/web/a.ts\napps/mobile/b.ts" },
+        state: { ...state, ...reuse(`mobile:${OLD}`, `mobile:${OLD}`, 1), intestBetaSha: OLD },
+        comments: [...comments, notice],
+      },
+      (r) => assert.doesNotMatch(r.comments.at(-1).body, /No mobile change since/),
+    );
+  });
+
+  it("never reports a stale reuse record, e.g. with beta dispatch off (ADR-0081)", () => {
+    // With FACTORY_INTEST_BETA=0 nothing re-checks intestBetaReused before the
+    // report reads it, so the report filters it itself: an expired build, one
+    // of unknown age, or one that is no longer the lane's last build.
+    for (const [why, rec] of [
+      ["61 days old", reuse(`mobile:${OLD}`, `mobile:${OLD}`, 61)],
+      ["over a 7-day limit", reuse(`mobile:${OLD}`, `mobile:${OLD}`, 8)],
+      ["unknown age", { ...reuse(`mobile:${OLD}`, `mobile:${OLD}`, 1), intestBetaBuiltAt: null }],
+      ["a newer build since", reuse(`mobile:${OLD}`, `mobile:${HEAD}`, 1)],
+    ]) {
+      withBash(
+        promote,
+        {
+          env: {
+            HEAD,
+            DIFF_STUB: "apps/web/a.ts\napps/mobile/b.ts",
+            FACTORY_INTEST_BETA: "0",
+            FACTORY_INTEST_BETA_REUSE_MAX_DAYS: why === "over a 7-day limit" ? "7" : "60",
+          },
+          state: { ...state, ...rec },
+          comments,
+        },
+        (r) => {
+          const body = r.comments.at(-1).body;
+          assert.doesNotMatch(body, /No mobile change since/, why);
+          assert.match(body, /\| iOS \/ Android \| manual \| — \| no beta was dispatched/, why);
+        },
+      );
+    }
   });
 
   it("scans for the bypass secret the run held even after its file is gone (fails closed)", () => {

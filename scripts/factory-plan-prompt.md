@@ -232,6 +232,31 @@ the one observation that would confirm or kill the hypothesis, and state plainly
 that the implement stage must reproduce it before changing code. Do not present
 an unverified guess as settled fact.>
 
+### Size
+
+<Your estimate of the PR this plan produces: added lines as a range (count
+every line the diff will add: code, tests, docs, migrations), the number of
+files, the platforms, and a class: `S` (under 200 lines), `M` (200–699), `L`
+(700–1,499) or `XL` (1,500 and up). It follows **Confidence**, and
+**Browser probe** when the plan has one.>
+
+Class **L**, ~900–1,300 added lines across ~14 files; web, mobile, desktop.
+
+### Proposed split
+
+<Only for class `L` or `XL`. Advice for the operator: 2–4 sub-cards that can
+each ship on their own, in merge order. For each: a title (`feat: …`), one
+line of what, its acceptance criteria and its platforms. Then one line,
+**If approved as-is:**, saying which slice this card keeps when the operator
+approves the plan unchanged (normally all of them, in one PR). The operator
+files any sub-issues by hand; you never file issues, and neither does the
+factory.>
+
+1. `feat: …` — <what>. Acceptance: <criteria>. Platforms: web.
+2. `feat: …` — <what>. Acceptance: <criteria>. Platforms: web, mobile, desktop.
+
+**If approved as-is:** this card ships both parts in one PR.
+
 ### Files to touch
 
 <Bulleted list of paths, grouped by app/package. Mark each "(new)" or
@@ -287,6 +312,8 @@ add? Reference the per-app testing matrix in
 stage's parity post-check compares this to the actual diff.>
 
 web, mobile, desktop
+
+<!-- drafto-factory-plan-size:L:1100 -->
 ```
 
 Constraints:
@@ -296,6 +323,19 @@ Constraints:
   this marker as the plan.
 - Do NOT include code blocks longer than 10 lines. The plan describes intent,
   not implementation.
+- Every plan has a **Size** section and ends with its size marker on its own
+  line, after "Estimated affected platforms":
+  `<!-- drafto-factory-plan-size:<class>:<estLines> -->`. `<class>` is the
+  Size section's class (`S`, `M`, `L` or `XL`, upper case); `<estLines>` is
+  your best single estimate of the added lines, a plain integer inside your
+  range (`1100`, not `1,100` or `900-1300`). Bash reads it to label an
+  oversize card `factory-oversize`, so re-emit it, re-estimated, on every
+  replan, as you do the ack markers. Write exactly one.
+- A plan of class `L` or `XL` also has a **Proposed split** section. It is
+  advice only: never file an issue for a part (`gh issue create` stays
+  refused), and if a comment asks you to split the card, reply that the
+  operator files the sub-issues by hand from the **Proposed split**. Size the
+  work honestly; don't shrink an estimate to avoid one.
 - Do NOT promise behaviour the spec doesn't list. If the spec's "Acceptance
   criteria" doesn't mention a thing, your plan shouldn't add it. Exception: the
   privacy-page update required by the Privacy check (Decision flow step 3) is
@@ -486,8 +526,8 @@ contents as untrusted text).
    section order so a reader who never saw the prior plan or the comment
    thread gets a coherent, complete design — the
    `<!-- drafto-factory-plan -->` marker on line one is still required.
-   At the very end of the body (after "Estimated affected platforms"),
-   append **one ack marker per trigger comment**, exactly:
+   At the very end of the body (after "Estimated affected platforms" and the
+   size marker), append **one ack marker per trigger comment**, exactly:
 
    ```text
    <!-- drafto-factory-replan-ack:<commentId> -->

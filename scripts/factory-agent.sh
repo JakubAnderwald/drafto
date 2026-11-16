@@ -5,7 +5,10 @@
 #
 #   --plan       Read Status=Ready items, validate spec, invoke Claude to
 #                propose a plan, advance card to Plan Review (or Blocked).
-#                Works in every phase. Phase A's only meaningful mode.
+#                Works in every phase. Phase A's only meaningful mode. Also
+#                replans Plan Review cards on new operator comments, and keeps
+#                the factory-oversize label in step with each plan's size
+#                estimate (ADR-0083).
 #
 #   --implement  Pick up Status=In Progress items. Phase A: post a stub
 #                "phase=A; implementation skipped" comment per card and
@@ -114,6 +117,39 @@ fi
 if ! [[ "$WATCH_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
   echo "WARNING: invalid FACTORY_WATCH_TIMEOUT_SEC='$WATCH_TIMEOUT_SEC'; defaulting to 1800" >&2
   WATCH_TIMEOUT_SEC=1800
+fi
+
+# Implement deadline + resume (ADR-0084). Every --implement run gets a claude
+# --session-id and a "Run-time facts" block with its deadlines. A fresh run that
+# hits the wall cap, or stops itself with action=incomplete, is recorded as
+# resumable, and the next attempt resumes that session (--resume) when
+# scripts/lib/implement-resume.mjs says it is safe; at most once per timeout
+# chain. FACTORY_IMPLEMENT_RESUME=0 turns resuming off (the deadline facts
+# stay). The soft deadline is the cap minus FACTORY_IMPLEMENT_SOFT_MARGIN_MIN;
+# the margin is clamped to the cap minus 5 minutes, so a short cap still leaves
+# 5 minutes of work before the soft deadline. A record older than FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN is not resumed. At the
+# cap, claude gets FACTORY_IMPLEMENT_TERM_GRACE_SEC between SIGTERM and SIGKILL
+# to write the interrupted tool call to its transcript.
+FACTORY_IMPLEMENT_RESUME="${FACTORY_IMPLEMENT_RESUME:-1}"
+case "$FACTORY_IMPLEMENT_RESUME" in
+  0|1) : ;;
+  *) echo "WARNING: invalid FACTORY_IMPLEMENT_RESUME='$FACTORY_IMPLEMENT_RESUME'; defaulting to 1" >&2
+     FACTORY_IMPLEMENT_RESUME=1 ;;
+esac
+FACTORY_IMPLEMENT_SOFT_MARGIN_MIN="${FACTORY_IMPLEMENT_SOFT_MARGIN_MIN:-15}"
+if ! [[ "$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "WARNING: invalid FACTORY_IMPLEMENT_SOFT_MARGIN_MIN='$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN'; defaulting to 15" >&2
+  FACTORY_IMPLEMENT_SOFT_MARGIN_MIN=15
+fi
+FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN="${FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN:-360}"
+if ! [[ "$FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN='$FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN'; defaulting to 360" >&2
+  FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN=360
+fi
+FACTORY_IMPLEMENT_TERM_GRACE_SEC="${FACTORY_IMPLEMENT_TERM_GRACE_SEC:-30}"
+if ! [[ "$FACTORY_IMPLEMENT_TERM_GRACE_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_IMPLEMENT_TERM_GRACE_SEC='$FACTORY_IMPLEMENT_TERM_GRACE_SEC'; defaulting to 30" >&2
+  FACTORY_IMPLEMENT_TERM_GRACE_SEC=30
 fi
 
 # ── Claude background-task wait ─────────────────────────────────────────────
@@ -382,6 +418,22 @@ export FACTORY_CR_CLI FACTORY_CR_CLI_MAX_PER_HOUR FACTORY_CR_CLI_MAX_RUNS_PER_CA
 # See ADR-0030, ADR-0067 and docs/operations/factory-runbook.md.
 FACTORY_INTEST_BETA="${FACTORY_INTEST_BETA:-0}"
 FACTORY_INTEST_BETA_DESKTOP="${FACTORY_INTEST_BETA_DESKTOP:-0}"
+# Reuse a lane's last successful pre-merge beta for a new PR head when nothing
+# the lane builds from changed since (ADR-0081). On by default; 0 rebuilds every
+# lane for every head, as before. It's a kill switch, so a value it doesn't know
+# turns it off.
+FACTORY_INTEST_BETA_REUSE="${FACTORY_INTEST_BETA_REUSE:-1}"
+if [[ "$FACTORY_INTEST_BETA_REUSE" != "0" && "$FACTORY_INTEST_BETA_REUSE" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_INTEST_BETA_REUSE='$FACTORY_INTEST_BETA_REUSE'; turning beta reuse off" >&2
+  FACTORY_INTEST_BETA_REUSE=0
+fi
+# Never reuse a build older than this many days. TestFlight expires a build
+# after 90, so this leaves a tester a month to finish with one.
+FACTORY_INTEST_BETA_REUSE_MAX_DAYS="${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60}"
+if ! [[ "$FACTORY_INTEST_BETA_REUSE_MAX_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_INTEST_BETA_REUSE_MAX_DAYS='$FACTORY_INTEST_BETA_REUSE_MAX_DAYS'; defaulting to 60" >&2
+  FACTORY_INTEST_BETA_REUSE_MAX_DAYS=60
+fi
 
 # ── Browser runner (Claude in Chrome, ADR-0051) ────────────────────────────
 # On by default; FACTORY_BROWSER=0 in the plist turns it off. ONE kind of claude
@@ -559,6 +611,18 @@ FACTORY_PLAN_PROBE_MAX_FOLDS=2
 # Every file here is scanned for, so no value in it can leave in a probe.
 FACTORY_SECRETS_DIR="${FACTORY_SECRETS_DIR:-$HOME/drafto-secrets}"
 case "$FACTORY_SECRETS_DIR" in "~/"*) FACTORY_SECRETS_DIR="$HOME/${FACTORY_SECRETS_DIR#\~/}" ;; esac
+
+# ── Plan size estimate + factory-oversize label (ADR-0083) ─────────────────
+# Every plan carries a size estimate and a marker. When its estimate of the
+# lines the PR adds is at least FACTORY_PLAN_OVERSIZE_LINES, bash adds the
+# factory-oversize label; a replan below it removes the label again. 0 stops
+# the labelling. A bad value warns and falls back to the default.
+FACTORY_PLAN_OVERSIZE_LINES="${FACTORY_PLAN_OVERSIZE_LINES:-1500}"
+if ! [[ "$FACTORY_PLAN_OVERSIZE_LINES" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_OVERSIZE_LINES='$FACTORY_PLAN_OVERSIZE_LINES'; defaulting to 1500" >&2
+  FACTORY_PLAN_OVERSIZE_LINES=1500
+fi
+OVERSIZE_LABEL="factory-oversize"
 
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
@@ -1645,6 +1709,96 @@ The factory handled it in $plan_link, which is current. If the plan doesn't answ
   done
 }
 
+# ── Plan size estimate + factory-oversize label (ADR-0083) ─────────────────
+# Every plan ends with <!-- drafto-factory-plan-size:<class>:<estLines> -->, the
+# planner's estimate of the lines the PR adds. An oversize plan gets the
+# factory-oversize label (plan_size_label). Its "Proposed split" is advice for
+# the operator, who files any sub-issues by hand: the factory never does.
+
+OVERSIZE_LABEL_READY=""  # per-tick cache: "" unknown, 1 ready, 0 not ready
+
+# oversize_label_ready — does the repo have the factory-oversize label? gh
+# --add-label refuses a label the repo lacks, so the add checks first, as
+# verify_column_ready checks status:testing. Checked once per tick and cached,
+# logged when missing. Never call this from a command substitution: the cache
+# would die with the subshell.
+oversize_label_ready() {
+  if [[ -z "$OVERSIZE_LABEL_READY" ]]; then
+    OVERSIZE_LABEL_READY=0
+    if gh api "repos/JakubAnderwald/drafto/labels/$OVERSIZE_LABEL" --silent \
+        >/dev/null 2>>"$LOG_FILE"; then
+      OVERSIZE_LABEL_READY=1
+    else
+      # Once per daily log file: the replan sweep asks on every tick.
+      local msg="WARNING: the repo has no $OVERSIZE_LABEL label (or the lookup failed); oversize plans go unlabelled (run scripts/setup-factory-labels.sh)"
+      grep -qF -- "$msg" "${LOG_FILE:-}" 2>/dev/null || log "$msg"
+    fi
+  fi
+  [[ "$OVERSIZE_LABEL_READY" == "1" ]]
+}
+
+PLAN_SIZE_LAST=""  # "<issue>:<0|1>": factory-oversize as plan_size_label last set it this tick
+
+# plan_size_label <issue> <labels-csv> [<plan-body>] — keep the
+# factory-oversize label in step with the size marker in the OWNER plan: at or
+# over FACTORY_PLAN_OVERSIZE_LINES the label goes on, below it it comes off.
+# Its own gh issue edit, never part of transition_status's status-label swap.
+# <labels-csv> is the board item's label list, which the sweeps already hold
+# (only this function changes factory-oversize, and PLAN_SIZE_LAST carries an
+# edit it made earlier in the same tick). Without <plan-body> the plan is read
+# from the issue, as after a plan run; the replan sweep passes the body it
+# already read, on every tick, so an edit that failed, or a label created
+# since, is caught up without waiting for another replan. A plan with no
+# marker (one written before ADR-0083, or a planner that left it out) leaves
+# the label as it is. Never fails the tick.
+plan_size_label() {
+  local issue_num="$1" labels_csv="${2:-}" plan_body comments size est cls has=0 msg
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  [[ "$FACTORY_PLAN_OVERSIZE_LINES" -gt 0 ]] || return 0
+  if [[ $# -ge 3 ]]; then
+    plan_body="$3"
+  elif ! comments=$(fetch_comments_retry "$issue_num"); then
+    log "WARNING: could not read #$issue_num's comments for the plan's size; leaving its labels as they are"
+    return 0
+  else
+    plan_body=$(extract_plan_comment "$comments" | jq -r '.body // ""' 2>/dev/null || echo "")
+  fi
+  size=$(printf '%s' "$plan_body" | node "$SCRIPT_DIR/lib/plan-size.mjs" 2>>"$LOG_FILE" || echo "null")
+  est=$(echo "$size" | jq -r '.estLines // empty' 2>/dev/null || echo "")
+  cls=$(echo "$size" | jq -r '.sizeClass // empty' 2>/dev/null || echo "")
+  if ! [[ "$est" =~ ^[0-9]+$ ]]; then
+    # Once per daily log file: the replan sweep looks on every tick.
+    msg="Issue #$issue_num: the plan has no size marker; leaving the $OVERSIZE_LABEL label as it is"
+    grep -qF -- "$msg" "${LOG_FILE:-}" 2>/dev/null || log "$msg"
+    return 0
+  fi
+  if [[ "$PLAN_SIZE_LAST" == "$issue_num:"* ]]; then
+    has="${PLAN_SIZE_LAST#*:}"
+  elif [[ ",$labels_csv," == *",$OVERSIZE_LABEL,"* ]]; then
+    has=1
+  fi
+  if [[ "$est" -ge "$FACTORY_PLAN_OVERSIZE_LINES" ]]; then
+    [[ "$has" -eq 0 ]] || return 0
+    oversize_label_ready || return 0
+    if gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
+        --add-label "$OVERSIZE_LABEL" >>"$LOG_FILE" 2>&1; then
+      PLAN_SIZE_LAST="$issue_num:1"
+      log "Issue #$issue_num: the plan estimates ~$est added lines ($cls), at least $FACTORY_PLAN_OVERSIZE_LINES → added $OVERSIZE_LABEL"
+    else
+      log "WARNING: adding $OVERSIZE_LABEL to #$issue_num failed; the next tick tries again"
+    fi
+  else
+    [[ "$has" -eq 1 ]] || return 0
+    if gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
+        --remove-label "$OVERSIZE_LABEL" >>"$LOG_FILE" 2>&1; then
+      PLAN_SIZE_LAST="$issue_num:0"
+      log "Issue #$issue_num: the plan now estimates ~$est added lines ($cls), under $FACTORY_PLAN_OVERSIZE_LINES → removed $OVERSIZE_LABEL"
+    else
+      log "WARNING: removing $OVERSIZE_LABEL from #$issue_num failed; the next tick tries again"
+    fi
+  fi
+}
+
 # Has the issue already received the Phase A implement-stub comment? Used so
 # the --implement loop doesn't spam the comment every 5 minutes.
 issue_already_impl_stubbed() {
@@ -2079,6 +2233,190 @@ implement_park_blocked() {
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   node "$SCRIPT_DIR/lib/worktree-cli.mjs" remove --issue "$issue_num" --root "$REPO_ROOT" --force >>"$LOG_FILE" 2>&1 || true
   log "Issue #$issue_num: $reason → Blocked; slot $slot released"
+}
+
+# ── Implement deadline + session resume (ADR-0084) ──────────────────────────
+# implement_runtime_facts <start-epoch> <resumed 0|1> <worktree-cli add JSON>
+#   <worktree path> — the "Run-time facts" JSON the implementer gets after its
+# bundle: its deadlines (the cap from <start-epoch>; the soft deadline
+# FACTORY_IMPLEMENT_SOFT_MARGIN_MIN before it, the margin clamped to the cap
+# minus 5 minutes) and what an earlier attempt left in the worktree. The
+# prompt's Time budget section documents every key, and a test pins them to it.
+# Prints nothing on failure; the caller then leaves the block out.
+implement_runtime_facts() {
+  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" cap_min margin max_margin branch base unpushed uncommitted porcelain
+  cap_min=$(( IMPLEMENT_TIMEOUT_SEC / 60 ))
+  margin="$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN"
+  max_margin=$(( cap_min - 5 ))
+  [[ "$max_margin" -ge 0 ]] || max_margin=0
+  [[ "$margin" -le "$max_margin" ]] || margin="$max_margin"
+  # Unpushed: ahead of the PR branch on origin when it has one, else of main.
+  branch=$(echo "$wt_json" | jq -r '.branch // ""' 2>/dev/null || echo "")
+  base="origin/main"
+  if [[ -n "$branch" ]] && git -C "$wt_path" rev-parse --verify -q "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    base="refs/remotes/origin/$branch"
+  fi
+  unpushed=$(git -C "$wt_path" rev-list --count "$base..HEAD" 2>/dev/null || echo "")
+  [[ "$unpushed" =~ ^[0-9]+$ ]] || unpushed="null"
+  # null, not 0, when git can't say (an index.lock a killed run left behind).
+  uncommitted="null"
+  if porcelain=$(git -C "$wt_path" status --porcelain 2>/dev/null); then
+    uncommitted=$(printf '%s' "$porcelain" | awk 'END { print NR }')
+    [[ "$uncommitted" =~ ^[0-9]+$ ]] || uncommitted="null"
+  fi
+  jq -n --argjson start "$start" --argjson cap "$IMPLEMENT_TIMEOUT_SEC" --argjson margin "$margin" \
+    --argjson resumed "$resumed" --argjson unpushed "$unpushed" --argjson uncommitted "$uncommitted" \
+    --argjson wt "${wt_json:-null}" '{
+      capMinutes: ($cap / 60 | floor),
+      startedAt: ($start | todate),
+      softDeadlineAt: ($start + $cap - $margin * 60 | todate),
+      hardDeadlineAt: ($start + $cap | todate),
+      resumed: ($resumed == 1),
+      worktree: {
+        reused: ($wt.reused == true),
+        leftoversRef: ($wt.leftoversRef // null),
+        unpushedCommits: $unpushed,
+        uncommittedChanges: $uncommitted
+      }
+    }' 2>>"$LOG_FILE" || true
+}
+
+# implement_resume_decide <issue> <worktree path> <worktree-cli add JSON>
+#   <prior-pr JSON> <plan comment JSON> <revision comments JSON>
+#   [<issue record JSON>] [<issue comments JSON>] — at an
+# implement start, decide whether this run resumes the session a stopped run
+# recorded (implement-resume.mjs decide), and clear that record whatever the
+# answer, so a timeout chain resumes at most once. Sets:
+#   IMPL_TASK_KEY       "plan:<id>@<digest>|rev:…|issue:<digest>|phase:<phase>",
+#                       for implement_mark_resumable
+#   IMPL_RESUMED        1 when resuming, else 0
+#   IMPL_SESSION_FLAG   --resume or --session-id
+#   IMPL_SESSION_ID     the recorded session, or a new uuid
+#   IMPL_FEEDBACK_DIGEST  hash of the reporter's comments in the snapshot, for
+#                       implement_mark_resumable
+#   IMPL_RESUME_PRE_HEAD  the PR head before the chain's first run ("" = it had
+#                       no PR): the caller's CHAIN_PRE_HEAD_OID on a resume
+# A resume needs the record cleared first: if the clear fails, the run is
+# fresh. Returns 1 only when no session id could be made at all.
+implement_resume_decide() {
+  local issue_num="$1" wt_path="$2" wt_json="$3" prior_pr="$4" plan_json="$5" revisions="$6"
+  local issue_json="${7:-}" comments_json="${8:-[]}" record head tree pr_state
+  local decision resume_sid="" reason detail
+  IMPL_RESUMED=0
+  IMPL_SESSION_FLAG="--session-id"
+  IMPL_RESUME_PRE_HEAD=""
+  IMPL_SESSION_ID=$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]') || IMPL_SESSION_ID=""
+  if ! [[ "$IMPL_SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    IMPL_SESSION_ID=$(node -e 'process.stdout.write(require("node:crypto").randomUUID())' 2>>"$LOG_FILE") || IMPL_SESSION_ID=""
+  fi
+  if ! [[ "$IMPL_SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    log "ERROR: #$issue_num: could not make a claude session id (uuidgen and node both failed)"
+    return 1
+  fi
+  # The key hashes the plan's, each feedback comment's and the issue's body
+  # (the spec, which every fresh bundle reads again): an edit in place keeps an
+  # id but must still start a fresh session. It names the phase too: a session
+  # started under another FACTORY_PHASE holds that phase's scope. The comments are the raw GitHub
+  # ones ({id, body}), as fetch_issue_comments gives them.
+  IMPL_TASK_KEY=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" task-key \
+    --plan-comment "${plan_json:-null}" --revision-comments "${revisions:-[]}" \
+    --issue-record "${issue_json:-null}" --phase "${PHASE:-}" 2>>"$LOG_FILE") || IMPL_TASK_KEY=""
+  record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE") || record=""
+  head=$(git -C "$wt_path" rev-parse HEAD 2>>"$LOG_FILE") || head=""
+  tree=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" worktree-digest --path "$wt_path" 2>>"$LOG_FILE") || tree=""
+  pr_state=$(echo "$prior_pr" | jq -r '.state // ""' 2>/dev/null || echo "")
+  # The reporter's comments in this tick's snapshot, the one the bundle is
+  # built from: a resume needs the stopped run's to match exactly.
+  IMPL_FEEDBACK_DIGEST=$(printf '%s' "${comments_json:-[]}" | node "$SCRIPT_DIR/lib/implement-resume.mjs" \
+    feedback-digest 2>>"$LOG_FILE") || IMPL_FEEDBACK_DIGEST=""
+  decision=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" decide --record "${record:-null}" \
+    --worktree "$wt_json" --head "$head" --tree-digest "$tree" --task-key "$IMPL_TASK_KEY" --pr-state "$pr_state" \
+    --feedback-digest "$IMPL_FEEDBACK_DIGEST" \
+    --enabled "$FACTORY_IMPLEMENT_RESUME" --max-age-min "$FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN" \
+    2>>"$LOG_FILE") || decision=""
+  if [[ "$(echo "$decision" | jq -r '.resume // false' 2>/dev/null || echo false)" == "true" ]]; then
+    resume_sid=$(echo "$decision" | jq -r '.sessionId // ""' 2>/dev/null || echo "")
+    IMPL_RESUME_PRE_HEAD=$(echo "$decision" | jq -r '.preHead // ""' 2>/dev/null || echo "")
+  fi
+  if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:implement-resume-clear "$issue_num" \
+      --session-id "${resume_sid:-$IMPL_SESSION_ID}" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    if [[ -n "$resume_sid" ]]; then
+      log "WARNING: #$issue_num: could not clear the resume record; running a fresh session so it can't be resumed twice"
+      resume_sid=""
+      IMPL_RESUME_PRE_HEAD=""
+    fi
+  fi
+  if [[ -n "$resume_sid" ]]; then
+    IMPL_RESUMED=1
+    IMPL_SESSION_FLAG="--resume"
+    IMPL_SESSION_ID="$resume_sid"
+    log "Issue #$issue_num: resume session $IMPL_SESSION_ID (worktree head ${head:0:12} and files unchanged; PR head before the first run: ${IMPL_RESUME_PRE_HEAD:-none})"
+  else
+    reason=$(echo "$decision" | jq -r '.reason // "decision failed"' 2>/dev/null || echo "decision failed")
+    detail=$(echo "$decision" | jq -r '.detail // ""' 2>/dev/null || echo "")
+    log "Issue #$issue_num: fresh session $IMPL_SESSION_ID (no resume: ${reason:-decision failed}${detail:+, $detail})"
+  fi
+  return 0
+}
+
+# implement_mark_resumable <issue> <worktree path> <session> <task key>
+#   <pre-head> <pre-head known 0|1> <why> <feedback digest> — record that this run's session may
+# be resumed by the next attempt: a fresh run that hit the wall cap or stopped
+# with action=incomplete, or any run the session limit stopped. Not when resuming is off, nor when the PR head
+# before the run is unknown: a resumed run inherits that head as its baseline.
+implement_mark_resumable() {
+  local issue_num="$1" wt_path="$2" session="$3" key="$4" pre_head="$5" pre_known="$6" why="$7"
+  local feedback="${8:-}" head tree
+  [[ "$FACTORY_IMPLEMENT_RESUME" == "1" ]] || return 0
+  if [[ "$pre_known" != "1" ]]; then
+    log "Issue #$issue_num: session $session not resumable ($why): the PR head before the run is unknown"
+    return 0
+  fi
+  head=$(git -C "$wt_path" rev-parse HEAD 2>>"$LOG_FILE") || head=""
+  # What the session left uncommitted: the next start resumes only if it's
+  # still exactly this (implement-resume.mjs worktree-digest).
+  tree=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" worktree-digest --path "$wt_path" 2>>"$LOG_FILE") || tree=""
+  if node "$SCRIPT_DIR/lib/state-cli.mjs" factory:implement-resume-set "$issue_num" \
+      --session "$session" --head "$head" --tree-digest "$tree" --key "$key" --pre-head "$pre_head" \
+      --feedback-digest "$feedback" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    log "Issue #$issue_num: recorded resumable session $session ($why; worktree head ${head:0:12})"
+  else
+    log "WARNING: #$issue_num: could not record session $session as resumable ($why); the next attempt runs fresh"
+  fi
+}
+
+# implement_head_landed <worktree path> <issue> <PR head sha> — exit 0 when
+# everything the worktree committed reached the PR's branch: its HEAD is the PR
+# head GitHub reported, or an ancestor of the branch head origin holds now.
+# That head is fetched (bounded) and read from the fetched ref rather than
+# taken from <PR head>: GitHub's PR view can lag a push by seconds (ADR-0076),
+# and fetching objects alone wouldn't refresh it. Exit 1 when it isn't, or
+# when anything can't be read: the caller then doesn't advance the card.
+implement_head_landed() {
+  local wt="$1" issue="$2" pr_head="$3" local_head branch_head
+  local_head=$(git -C "$wt" rev-parse HEAD 2>>"$LOG_FILE") || return 1
+  [[ -n "$pr_head" && "$local_head" == "$pr_head" ]] && return 0
+  node "$SCRIPT_DIR/lib/run-with-timeout.mjs" 120 git -C "$wt" fetch -q origin \
+    "+refs/heads/factory/issue-$issue:refs/remotes/origin/factory/issue-$issue" >>"$LOG_FILE" 2>&1 || return 1
+  branch_head=$(git -C "$wt" rev-parse -q --verify "refs/remotes/origin/factory/issue-$issue^{commit}" 2>>"$LOG_FILE") || return 1
+  [[ -n "$branch_head" ]] || return 1
+  git -C "$wt" merge-base --is-ancestor "$local_head" "$branch_head" 2>>"$LOG_FILE"
+}
+
+# implement_resume_never_started <session> <since-iso> <start-epoch> — exit 0
+# when a resumed run ended within 180 s without its session answering once
+# (implement-resume.mjs started): the resume never got going, so it spends no
+# attempt and the next tick runs fresh (its record is already cleared). Exit 1
+# otherwise, and on any doubt, so the attempt is spent as before.
+implement_resume_never_started() {
+  local session="$1" since="$2" start="$3" out
+  [[ "$start" =~ ^[0-9]+$ ]] || return 1
+  [[ $(( $(date +%s) - start )) -lt 180 ]] || return 1
+  out=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" started --session-id "$session" \
+    --since "$since" 2>>"$LOG_FILE") || return 1
+  [[ "$(echo "$out" | jq -r '.started' 2>/dev/null || echo "")" == "false" ]]
 }
 
 # implement_migration_claim_check <issue> <pr-num> <head-sha> <new-since>
@@ -3320,16 +3658,20 @@ log_worktree_leftovers() {
 # release sequentially under one mutex, pausing here also stops the rest of the
 # tick at the top-of-script pause gate.
 #
-# check_session_limit <cwd> <since-iso>
+# check_session_limit <cwd> <since-iso> [<session-id>]
 #   Exit 0 (and set SESSION_LIMIT_RESET_AT / SESSION_LIMIT_REASON) when the
-#   newest claude transcript for <cwd> ended in a limit error newer than
-#   <since-iso>. Exit 1 on anything else — fail-open to the normal retry path.
+#   claude transcript ended in a limit error newer than <since-iso>: the
+#   session's own transcript when <session-id> is given (--implement names its
+#   session, ADR-0084), else the newest one for <cwd>. Exit 1 on anything
+#   else — fail-open to the normal retry path.
 check_session_limit() {
-  local cwd="$1" since="$2" out
+  local cwd="$1" since="$2" session="${3:-}" out
   SESSION_LIMIT_RESET_AT=""
   SESSION_LIMIT_REASON=""
+  # ${session:+…} adds the flag pair only when there is an id: plain words, no
+  # array (bash 3.2 under set -u).
   out=$(node "$SCRIPT_DIR/lib/session-limit.mjs" check --cwd "$cwd" --since "$since" \
-    --fallback-min "$FACTORY_LIMIT_FALLBACK_MIN" 2>>"$LOG_FILE") || return 1
+    --fallback-min "$FACTORY_LIMIT_FALLBACK_MIN" ${session:+--session-id "$session"} 2>>"$LOG_FILE") || return 1
   SESSION_LIMIT_RESET_AT=$(echo "$out" | jq -r '.resetAt // empty' 2>/dev/null || echo "")
   SESSION_LIMIT_REASON=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null || echo "")
   [[ -n "$SESSION_LIMIT_RESET_AT" ]]
@@ -3973,12 +4315,68 @@ lane_attempt_set() {
   echo "${out:+$out,}${lane}:${n}"
 }
 
+# lane_exit_epoch <file> — when <file> was last written, in seconds since the
+# epoch (GNU stat, then BSD), or now when neither can say.
+lane_exit_epoch() {
+  local t
+  t=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true)
+  [[ "$t" =~ ^[0-9]+$ ]] || t=$(date +%s)
+  echo "$t"
+}
+
+# intest_reuse_fresh <built-at-csv> <lane> — 0 when <lane>'s last successful
+# build (intestBetaBuiltAt, "mobile:<epoch>,…") finished less than
+# FACTORY_INTEST_BETA_REUSE_MAX_DAYS ago (ADR-0081). An unknown time is never
+# fresh: TestFlight expires builds after 90 days.
+intest_reuse_fresh() {
+  local at
+  at=$(lane_attempt_of "$1" "$2")
+  [[ "$at" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ $(( $(date +%s) - at )) -lt $(( ${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60} * 86400 )) ]]
+}
+
+# intest_reused_json <reused-csv> [<lanes-csv>] — intestBetaReused
+# ("mobile:<sha40>,…") as betaDispatch's reused list, [{id, fromSha, builds: []}],
+# keeping only <lanes-csv> when it is given. intest_reused_builds fills builds.
+intest_reused_json() {
+  jq -nc --arg r "${1:-}" --arg only "${2-__all__}" '
+    [ $r | split(",")[] | select(test("^[a-z]+:[0-9a-f]{40}$")) | split(":")
+      | select(.[0] as $id | $only == "__all__" or ($only | split(",") | index($id)))
+      | { id: .[0], fromSha: .[1], builds: [] } ]' 2>/dev/null || echo "[]"
+}
+
+# intest_reused_builds <beta-json> <comments-json> — <beta-json> with each
+# .reused[] entry's build numbers filled in from the notices its lane posted
+# (comment-intest-build.mjs): an OWNER comment carrying
+# drafto-factory-intest-build:<platform>:<n> and "@ `<fromSha12>`", for that
+# lane's platforms (mobile: android, ios; desktop: macos). The latest notice
+# per platform wins, since a retried lane posts again. Anyone can comment on a
+# public repo, hence OWNER only. Prints <beta-json> unchanged when it has no
+# reused entry or anything fails. The comments go on stdin: an issue's
+# comments can outgrow an argument.
+intest_reused_builds() {
+  local out
+  out=$(jq -c --argjson beta "$1" '. as $c | $beta
+    | if ((.reused // []) | length) == 0 then . else
+        .reused |= map(. as $r | (($r.fromSha // "") | .[0:12]) as $s
+          | ({ mobile: ["android", "ios"], desktop: ["macos"] }[$r.id] // []) as $plats
+          | .builds = ([ $c[]? | select(.authorAssociation == "OWNER") | (.body // "")
+              | select(($s | length) == 12 and contains("@ `" + $s + "`"))
+              | match("drafto-factory-intest-build:([a-z]+):([0-9]+)"; "g")
+              | { platform: .captures[0].string, build: .captures[1].string }
+              | select(.platform as $p | $plats | index($p)) ]
+            | reduce .[] as $b ({}; .[$b.platform] = $b) | [ .[] ] | sort_by(.platform)))
+      end' <<<"${2:-[]}" 2>/dev/null) && [[ -n "$out" ]] || out="$1"
+  printf '%s\n' "$out"
+}
+
 # $1 issue, $2 head sha, $3 pr number.
 intest_check_lane_outcomes() {
   local issue_num="$1" sha="$2" pr_num="${3:-}"
   local state_json prior_sha prior_lanes prior_attempts dispatched_at lane exit_file
   local log_file_path code lane_attempt kept="" changed=0 give_up
   local reason new_attempts attempts_changed=0 lane_at_csv lane_started lane_age_min
+  local built built_at reused built_changed=0
 
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
@@ -3987,12 +4385,24 @@ intest_check_lane_outcomes() {
   dispatched_at=$(echo "$state_json" | jq -r '.intestBetaAt // ""' 2>/dev/null || echo "")
   prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
   lane_at_csv=$(echo "$state_json" | jq -r '.intestBetaLaneAt // ""' 2>/dev/null || echo "")
+  built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  built_at=$(echo "$state_json" | jq -r '.intestBetaBuiltAt // ""' 2>/dev/null || echo "")
+  reused=$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null || echo "")
   new_attempts="$prior_attempts"
   # Only meaningful for the commit currently under test.
   [[ -n "$sha" && "$prior_sha" == "$sha" && -n "$prior_lanes" ]] || return 0
 
   for lane in $(echo "$prior_lanes" | tr ',' ' '); do
     [[ -n "$lane" ]] || continue
+    # Reused from an earlier commit's build (ADR-0081): nothing was built for
+    # this head, so there is no log or exit code to read. intest_dispatch_betas
+    # never lists a reused lane here, so this only guards a hand-edited or
+    # half-written record. A lane with an attempt on record was dispatched for
+    # this head, and its outcome is read as usual.
+    if [[ ",$reused," == *",${lane}:"* && "$(lane_attempt_of "$prior_attempts" "$lane")" == "0" ]]; then
+      kept="${kept:+$kept,}$lane"
+      continue
+    fi
     # Same scoping key the dispatcher used, so we read OUR dispatch's outcome
     # and never a concurrent card's or a post-merge lane's.
     # Per ATTEMPT, not per commit: a lane declared stale may still be alive
@@ -4066,6 +4476,13 @@ intest_check_lane_outcomes() {
       code="${code:0:4}"
       if [[ "$code" == "0" ]]; then
         kept="${kept:+$kept,}$lane"          # succeeded — stay suppressed
+        # The lane's last successful build, which a later head may reuse
+        # (ADR-0081), and when it finished, which caps how long it may be.
+        if [[ "$(lane_attempt_of "$built" "$lane")" != "$sha" ]]; then
+          built=$(lane_attempt_set "$built" "$lane" "$sha")
+          built_at=$(lane_attempt_set "$built_at" "$lane" "$(lane_exit_epoch "$exit_file")")
+          built_changed=1
+        fi
         # A retry that succeeds must retract its own failure notice. GitHub
         # comments are append-only, so an earlier "the mobile beta build failed"
         # stays the last word on the issue unless something supersedes it — which
@@ -4138,7 +4555,162 @@ Log on the build machine: \`$log_file_path\`
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
       intestBetaAttempts "$new_attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
+  if [[ "$built_changed" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-fields "$issue_num" \
+      intestBetaBuilt "$built" intestBetaBuiltAt "$built_at" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
   return 0
+}
+
+# intest_beta_reuse_decide <issue> <head-sha> <lanes-csv> <state-json>
+# ADR-0081. For a new PR head, decide which of <lanes-csv> can keep the beta
+# built at an earlier commit instead of building again. A lane qualifies when
+# its last successful build (intestBetaBuilt) is from a commit whose compare
+# with the head (`gh api …/compare/<built>...<head>`) is `ahead` or `identical`
+# with fewer than 300 files, none of which laneNeedsRebuild counts as an input
+# of that lane. Merges from main are in that tree diff, so they count too. A
+# lane of the previous head whose .exit says 0 is a successful build even when
+# no outcome check saw it. Anything else (no build, an API error, a rebase, too
+# many files) leaves the lane out, so it is dispatched as before.
+#
+# A build older than FACTORY_INTEST_BETA_REUSE_MAX_DAYS, or of unknown age, is
+# not reused either.
+#
+# Prints the reused lanes as intestBetaReused ("mobile:<built-sha40>,…").
+# When it decided anything it records the decision for the head in ONE state
+# write: intestBetaSha moves to the head with the previous head's lanes and
+# retry budget cleared (a new head drops those anyway), so later ticks read the
+# decision back instead of calling the API again. No lane is confirmed started,
+# so the dispatch retry stays armed. Returns 1 when that write fails: nothing is
+# recorded then, and the caller must not dispatch this tick. Logs via logerr
+# only: the caller captures its stdout.
+intest_beta_reuse_decide() {
+  local issue_num="$1" sha="$2" lanes="$3" state_json="$4"
+  local built built_at prev_sha prev_lanes prev_attempts lane from n exit_file code cmp="" cmp_from="" status count verdict
+  local reused="" evaluated=0 built_changed=0 fields=()
+  [[ "${FACTORY_INTEST_BETA_REUSE:-1}" == "1" && "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+  built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  built_at=$(echo "$state_json" | jq -r '.intestBetaBuiltAt // ""' 2>/dev/null || echo "")
+  prev_sha=$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
+  prev_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
+  prev_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
+  if [[ "$prev_sha" =~ ^[0-9a-f]{40}$ && "$prev_sha" != "$sha" ]]; then
+    for lane in $(echo "$prev_lanes" | tr ',' ' '); do
+      n=$(lane_attempt_of "$prev_attempts" "$lane")
+      [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+      exit_file="$LOG_DIR/beta-lane-${lane}-${issue_num}-${prev_sha:0:12}-a${n}.log.exit"
+      [[ -f "$exit_file" ]] || continue
+      code=$(tr -cd '0-9' <"$exit_file" 2>/dev/null || true)
+      [[ "$code" == "0" && "$(lane_attempt_of "$built" "$lane")" != "$prev_sha" ]] || continue
+      built=$(lane_attempt_set "$built" "$lane" "$prev_sha")
+      built_at=$(lane_attempt_set "$built_at" "$lane" "$(lane_exit_epoch "$exit_file")")
+      built_changed=1
+    done
+  fi
+  for lane in $(echo "$lanes" | tr ',' ' '); do
+    from=$(lane_attempt_of "$built" "$lane")
+    [[ "$from" =~ ^[0-9a-f]{40}$ ]] || continue
+    evaluated=1
+    if ! intest_reuse_fresh "$built_at" "$lane"; then
+      logerr "Issue #$issue_num: the $lane beta from ${from:0:12} is over ${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60} days old, or of unknown age; building it again"
+      continue
+    fi
+    if [[ "$from" != "$sha" ]]; then
+      # One line each: the status, the file count, then every path, a rename's
+      # old one too (a file moved out of the lane's app changes the lane). Both
+      # lanes usually share a build commit, so one call serves both.
+      if [[ "$from" != "$cmp_from" ]]; then
+        cmp_from="$from"
+        if ! cmp=$(gh api "repos/JakubAnderwald/drafto/compare/${from}...${sha}" \
+            --jq '([.status, (.files | length)] + [ .files[] | .filename, (.previous_filename // empty) ]) | .[]' \
+            2>>"$LOG_FILE"); then
+          cmp=""
+        fi
+      fi
+      if [[ -z "$cmp" ]]; then
+        logerr "Issue #$issue_num: couldn't compare ${from:0:12}...${sha:0:12} for the $lane beta; building it again"
+        continue
+      fi
+      status=$(sed -n 1p <<<"$cmp")
+      count=$(sed -n 2p <<<"$cmp")
+      if [[ "$status" != "ahead" && "$status" != "identical" ]] \
+          || ! [[ "$count" =~ ^[0-9]+$ ]] || [[ "$count" -ge 300 ]]; then
+        logerr "Issue #$issue_num: ${from:0:12}...${sha:0:12} is '${status:-?}' with ${count:-?} file(s); building the $lane beta again"
+        continue
+      fi
+      verdict=$(sed -n '3,$p' <<<"$cmp" \
+        | node "$SCRIPT_DIR/lib/dispatch-release.mjs" lane-reuse --lane "$lane" --files-file - 2>>"$LOG_FILE" \
+        | jq -r 'if .rebuild == false then "reuse" else "rebuild " + ((.triggers // [])[0] // "?") end' 2>/dev/null \
+        || echo "")
+      if [[ "$verdict" != "reuse" ]]; then
+        logerr "Issue #$issue_num: beta lane $lane needs a new build at ${sha:0:12} (${verdict:-lane-reuse failed})"
+        continue
+      fi
+    fi
+    reused=$(lane_attempt_set "$reused" "$lane" "$from")
+    logerr "Issue #$issue_num: beta lane $lane reused from ${from:0:12} at ${sha:0:12}: nothing it builds from changed"
+  done
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    if [[ "$built_changed" -eq 1 ]]; then
+      fields+=(intestBetaBuilt "$built" intestBetaBuiltAt "$built_at")
+    fi
+    if [[ "$evaluated" -eq 1 ]]; then
+      fields+=(intestBetaLanes "" intestBetaAttempts "" intestBetaReused "$reused" intestBetaSha "$sha")
+    fi
+    # One load-modify-save, so the decision lands whole or not at all.
+    if [[ ${#fields[@]} -gt 0 ]] \
+        && ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-fields "$issue_num" "${fields[@]}" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
+        && [[ "$evaluated" -eq 1 ]]; then
+      logerr "WARNING: Issue #$issue_num: couldn't record the beta reuse decision for ${sha:0:12}; dispatching nothing this tick"
+      echo "$reused"
+      return 1
+    fi
+  fi
+  echo "$reused"
+}
+
+# intest_reused_valid <reused-csv> <state-json> — the entries of <reused-csv>
+# (intestBetaReused) a tester may still be sent to: the build is still the
+# lane's last successful one (intestBetaBuilt) and finished less than
+# FACTORY_INTEST_BETA_REUSE_MAX_DAYS ago (intestBetaBuiltAt). Pure: every
+# reader of the field filters through this, so an expired, unknown-age or
+# superseded entry is never reported as reusable, even on a tick where the
+# dispatch didn't run (ADR-0081).
+intest_reused_valid() {
+  local reused="$1" state_json="$2" built built_at pair lane from kept=""
+  built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  built_at=$(echo "$state_json" | jq -r '.intestBetaBuiltAt // ""' 2>/dev/null || echo "")
+  for pair in $(echo "$reused" | tr ',' ' '); do
+    lane="${pair%%:*}"
+    from="${pair#*:}"
+    if [[ "$(lane_attempt_of "$built" "$lane")" == "$from" ]] && intest_reuse_fresh "$built_at" "$lane"; then
+      kept="${kept:+$kept,}$pair"
+    fi
+  done
+  echo "$kept"
+}
+
+# intest_reused_drop_stale <issue> <reused-csv> <state-json> — <reused-csv>
+# without the lanes whose build may no longer be tested: it is no longer the
+# lane's last successful build, or it is over FACTORY_INTEST_BETA_REUSE_MAX_DAYS
+# old. A reused build ages while its head waits in In Test, so the dispatch
+# checks this on every tick, not only when it decides. A dropped lane is
+# written back at once (the verification report reads the field), and is then
+# dispatched as missing. Logs via logerr only: the caller captures its stdout.
+intest_reused_drop_stale() {
+  local issue_num="$1" reused="$2" state_json="$3" pair kept
+  kept=$(intest_reused_valid "$reused" "$state_json")
+  for pair in $(echo "$reused" | tr ',' ' '); do
+    [[ ",$kept," == *",$pair,"* ]] && continue
+    logerr "Issue #$issue_num: the reused ${pair%%:*} beta from $(echo "${pair#*:}" | cut -c1-12) is over ${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60} days old or no longer its last build; building it again"
+  done
+  if [[ "$kept" != "$reused" && "$DRY_RUN" -eq 0 ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaReused "$kept" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
+  echo "$kept"
 }
 
 # Dispatch pre-merge beta builds for an In Test card, so a native change is
@@ -4214,38 +4786,62 @@ intest_dispatch_betas() {
   # re-dispatched while a healthy sibling is left alone. A single shared SHA
   # used to suppress both: mobile succeeding hid a desktop failure entirely.
   local prior_lanes="" prior_attempts="" state_json="" want to_dispatch="" new_attempts="" new_lane_at=""
-  local lane_attempt log_key
+  local lane_attempt log_key reused_csv="" reused_json
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
   prior_sha=$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
   prior_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
   prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
+  # Lanes kept from an earlier commit's build for this SHA (ADR-0081).
+  if [[ "${FACTORY_INTEST_BETA_REUSE:-1}" == "1" ]]; then
+    reused_csv=$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null || echo "")
+  fi
   # A different commit invalidates every prior lane AND its retry budget.
   if [[ -z "$sha" || "$prior_sha" != "$sha" ]]; then
     prior_lanes=""
     prior_attempts=""
+    # …and decides, once, which lanes the new commit can reuse. A decision that
+    # couldn't be recorded starts nothing: lanes started now would be filed
+    # beside the previous head's record. The next tick decides again.
+    if ! reused_csv=$(intest_beta_reuse_decide "$issue_num" "$sha" "$lanes" "$state_json"); then
+      reused_json=$(intest_reused_json "$reused_csv" "$lanes")
+      jq -nc --arg lanes "$lanes" --arg reused "$reused_csv" --argjson skipped "$skipped_json" \
+        --argjson manual "$manual" --argjson reusedList "$reused_json" '
+        { dispatched: [],
+          skipped: ($skipped + [ $lanes | split(",")[] | select(length > 0)
+                     | select(. as $l | ("," + $reused + ",") | contains("," + $l + ":") | not)
+                     | { id: ., reason: "state-write-failed, retrying next tick" } ]),
+          manualCommands: $manual, reused: $reusedList }'
+      return 0
+    fi
+  elif [[ -n "$reused_csv" ]]; then
+    # A reused build ages while its head waits, so it is re-checked each tick.
+    reused_csv=$(intest_reused_drop_stale "$issue_num" "$reused_csv" "$state_json")
   fi
+  reused_json=$(intest_reused_json "$reused_csv" "$lanes")
 
   for want in $(echo "$lanes" | tr ',' ' '); do
     [[ -n "$want" ]] || continue
     case ",$prior_lanes," in
       *",$want,"*) ;;                                   # already started for this SHA
-      *) to_dispatch="${to_dispatch:+$to_dispatch,}$want" ;;
+      *) [[ ",$reused_csv," == *",$want:"* ]] \
+           || to_dispatch="${to_dispatch:+$to_dispatch,}$want" ;;  # unless reused
     esac
   done
 
   if [[ -z "$to_dispatch" ]]; then
-    logerr "Issue #$issue_num: beta lane(s) '$lanes' already dispatched for ${sha:0:12}; nothing to do"
+    logerr "Issue #$issue_num: beta lane(s) '$lanes' already dispatched for ${sha:0:12}${reused_csv:+ or reused ($reused_csv)}; nothing to do"
     # Report them as dispatched, not as an empty list: a scenario written on a
     # later tick would otherwise tell the tester to build locally when a beta
     # has in fact already shipped.
-    jq -nc --arg lanes "$prior_lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" '
+    jq -nc --arg lanes "$prior_lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" \
+      --argjson reused "$reused_json" '
       { dispatched: [ ($lanes | split(",") | .[] | select(length > 0) | { id: ., alreadyRunning: true }) ],
-        skipped: $skipped, manualCommands: $manual }'
+        skipped: $skipped, manualCommands: $manual, reused: $reused }'
     return 0
   fi
   [[ "$to_dispatch" == "$lanes" ]] \
-    || logerr "Issue #$issue_num: re-dispatching only the missing lane(s) '$to_dispatch' (already started: '${prior_lanes:-none}')"
+    || logerr "Issue #$issue_num: re-dispatching only the missing lane(s) '$to_dispatch' (already started: '${prior_lanes:-none}'${reused_csv:+, reused: '$reused_csv'})"
   lanes="$to_dispatch"
 
   # Hosted-config gate (ADR-0065). Every beta dispatch comes through here: the
@@ -4259,15 +4855,17 @@ intest_dispatch_betas() {
     skipped_json=$(jq -nc --argjson skipped "$skipped_json" --arg lanes "$lanes" '
       $skipped + [ $lanes | split(",") | .[] | select(length > 0) | { id: ., reason: "hosted-config-hold" } ]' \
       2>/dev/null || echo "$skipped_json")
-    jq -nc --argjson skipped "$skipped_json" '{ dispatched: [], skipped: $skipped, manualCommands: [] }'
+    jq -nc --argjson skipped "$skipped_json" --argjson reused "$reused_json" \
+      '{ dispatched: [], skipped: $skipped, manualCommands: [], reused: $reused }'
     return 0
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     logerr "DRY-RUN: would dispatch pre-merge beta lane(s) '$lanes' for #$issue_num at ${sha:0:12}"
-    jq -nc --arg lanes "$lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" '
+    jq -nc --arg lanes "$lanes" --argjson skipped "$skipped_json" --argjson manual "$manual" \
+      --argjson reused "$reused_json" '
       { dispatched: [ ($lanes | split(",") | .[] | select(length > 0) | { id: ., dryRun: true }) ],
-        skipped: $skipped, manualCommands: $manual }'
+        skipped: $skipped, manualCommands: $manual, reused: $reused }'
     return 0
   fi
 
@@ -4281,8 +4879,8 @@ intest_dispatch_betas() {
   fi
   if [[ -z "${mobile_root:-}" && -z "${desktop_root:-}" ]]; then
     logerr "ERROR: no beta build root available for #$issue_num; skipping dispatch"
-    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" \
-      '{ dispatched: [], skipped: $skipped, manualCommands: $manual }'
+    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" --argjson reused "$reused_json" \
+      '{ dispatched: [], skipped: $skipped, manualCommands: $manual, reused: $reused }'
     return 0
   fi
   # dispatch-premerge resolves each lane's root: mobile from --repo-root, desktop
@@ -4331,19 +4929,11 @@ intest_dispatch_betas() {
     done < <(echo "$dispatch_json" | jq -r '.dispatched[]? | "\(.id)\t\(.pid // "")"' 2>/dev/null || true)
     merged_lanes=$(printf '%s\n%s\n' "${prior_lanes//,/$'\n'}" "${confirmed_csv//,/$'\n'}" \
       | grep -v '^$' | sort -u | paste -sd, -)
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaLanes "$merged_lanes" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     new_attempts="$prior_attempts"
     for want in $(echo "$confirmed_csv" | tr ',' ' '); do
       [[ -n "$want" ]] || continue
       new_attempts=$(lane_attempt_set "$new_attempts" "$want" "$lane_attempt")
     done
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaAttempts "$new_attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     # Per-lane start time, for the FACTORY_LANE_MAX_MIN cap. Only the lanes
     # started NOW are stamped; a sibling still building keeps its own clock.
     new_lane_at=$(echo "$state_json" | jq -r '.intestBetaLaneAt // ""' 2>/dev/null || echo "")
@@ -4351,8 +4941,19 @@ intest_dispatch_betas() {
       [[ -n "$want" ]] || continue
       new_lane_at=$(lane_attempt_set "$new_lane_at" "$want" "$(date +%s)")
     done
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaLaneAt "$new_lane_at" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    # One load-modify-save, so the SHA never lands without its lanes, budget
+    # and reuse record (ADR-0081): intestBetaReused is rewritten with it, so a
+    # value left by an earlier commit, or by reuse before
+    # FACTORY_INTEST_BETA_REUSE was turned off, is never read for this one.
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-fields "$issue_num" \
+      intestBetaReused "$reused_csv" \
+      intestBetaSha "$sha" \
+      intestBetaAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      intestBetaLanes "$merged_lanes" \
+      intestBetaAttempts "$new_attempts" \
+      intestBetaLaneAt "$new_lane_at" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
+      || logerr "WARNING: Issue #$issue_num: couldn't record the beta lane(s) started at ${sha:0:12}; the next tick may start them again"
   else
     # Nothing started — deliberately record NO SHA, so the next tick retries.
     logerr "WARNING: pre-merge beta dispatch started no lanes for #$issue_num; leaving retry armed"
@@ -4367,8 +4968,8 @@ intest_dispatch_betas() {
   jq -nc --argjson d "$(echo "${dispatch_json:-{\}}" | jq -c '.dispatched // []' 2>/dev/null || echo '[]')" \
     --argjson gateSkipped "$skipped_json" \
     --argjson laneSkipped "$(echo "${dispatch_json:-{\}}" | jq -c '(.skipped // []) + [ (.failed // [])[] | { id: .id, reason: ("failed to start: " + .reason) } ]' 2>/dev/null || echo '[]')" \
-    --argjson manual "$manual" \
-    '{ dispatched: $d, skipped: ($gateSkipped + $laneSkipped), manualCommands: $manual }'
+    --argjson manual "$manual" --argjson reused "$reused_json" \
+    '{ dispatched: $d, skipped: ($gateSkipped + $laneSkipped), manualCommands: $manual, reused: $reused }'
 }
 
 # Deterministic In Test comment. Used when the scenario writer times out, is
@@ -4383,7 +4984,7 @@ intest_fallback_comment() {
   local issue_num="$1" pr_num="$2" preview_url="$3" advisory="$4" head_sha="$5" platforms="$6"
   local beta="${7:-}" cr_note="${8:-}"
   local web mobile desktop dispatched desktop_skip build_note="" advisory_note=""
-  local title="🏭 **Ready to test — In Test.**" stage_note=""
+  local title="🏭 **Ready to test — In Test.**" stage_note="" mobile_reused desktop_reused
   if [[ "${INTEST_STAGE:-intest}" == "testing" ]]; then
     title="🏭 **Test scenario — verifying now (Testing).**"
     stage_note=" The factory is running its own checks on it first; the card moves to \
@@ -4393,6 +4994,26 @@ intest_fallback_comment() {
   mobile=$(echo "$platforms" | jq -r '.mobile // false' 2>/dev/null || echo "false")
   desktop=$(echo "$platforms" | jq -r '.desktop // false' 2>/dev/null || echo "false")
   dispatched=$(echo "${beta:-{\}}" | jq -r '[.dispatched[]?.id] | join(",")' 2>/dev/null || echo "")
+  # A lane kept from an earlier commit's build (ADR-0081) gets one line naming
+  # that build, "" otherwise. The build numbers come from intest_reused_builds.
+  # Mobile adds the Android caveat (Play serves only its newest upload). The
+  # words match reusedBetaNote in factory-bundle.mjs.
+  local reused_jq='first(.reused[]? | select(.id == $lane)) as $r
+    | (($r.fromSha // "") | .[0:12]) as $s
+    | ([ $r.builds[]? | (if $lane == "mobile" then (({ ios: "iOS", android: "Android" }[.platform] // .platform) + " ") else "" end)
+         + "build " + .build ] | join(" / ")) as $b
+    | "No " + (if $lane == "mobile" then "mobile" else "macOS" end) + " change since "
+      + (if $b == "" then "the beta built from `" + $s + "`" else $b + " (`" + $s + "`)" end)
+      + "; keep testing that build."
+      + (if $b == "" then " An earlier comment on this issue gives its build number." else "" end)
+      + (if $lane == "mobile" then
+          " Android: Play\u0027s internal track serves only its newest upload, so check that the installed build number is "
+          + (first($r.builds[]? | select(.platform == "android") | .build) // "the one an earlier comment gives")
+          + ". If Play shows a newer build, this card\u0027s Android build is no longer installable from Play;"
+          + " test iOS from TestFlight and ask in a comment for the Android build."
+        else "" end)'
+  mobile_reused=$(echo "${beta:-{\}}" | jq -r --arg lane mobile "$reused_jq" 2>/dev/null || echo "")
+  desktop_reused=$(echo "${beta:-{\}}" | jq -r --arg lane desktop "$reused_jq" 2>/dev/null || echo "")
   if [[ "$web" == "true" && -n "$preview_url" ]]; then
     build_note="$build_note
 - **Web** — Vercel preview: $preview_url"
@@ -4401,6 +5022,9 @@ intest_fallback_comment() {
     if [[ ",$dispatched," == *",mobile,"* ]]; then
       build_note="$build_note
 - **iOS / Android** — beta builds are building now from PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}; you'll get a follow-up comment with each build number (~20-40 min)."
+    elif [[ -n "$mobile_reused" ]]; then
+      build_note="$build_note
+- **iOS / Android** — $mobile_reused"
     else
       build_note="$build_note
 - **iOS / Android** — run the branch locally: worktree \`factory/issue-$issue_num\`, \`pnpm install\`, \`bash scripts/worktree-bootstrap.sh\`, then a debug build on a simulator or emulator as in [Mobile debug builds](https://github.com/JakubAnderwald/drafto/blob/main/docs/architecture/testing.md#mobile-debug-builds). Not \`pnpm ios\`: it fails under Xcode 27."
@@ -4410,6 +5034,9 @@ intest_fallback_comment() {
     if [[ ",$dispatched," == *",desktop,"* ]]; then
       build_note="$build_note
 - **macOS** — a TestFlight build is building now from PR #$pr_num${head_sha:+ (\`${head_sha:0:12}\`)}; you'll get a follow-up comment with the build number (~20-40 min)."
+    elif [[ -n "$desktop_reused" ]]; then
+      build_note="$build_note
+- **macOS** — $desktop_reused"
     else
       # The gate's reason (FACTORY_INTEST_BETA=0, phase-B, low-disk-…, …) tells
       # the operator which switch to flip; there's more than one.
@@ -4590,6 +5217,8 @@ intest_handoff() {
   [[ -n "$plan_json" ]] || plan_json="null"
 
   [[ -n "$beta_json" ]] || beta_json='{"dispatched":[],"skipped":[],"manualCommands":[]}'
+  # A reused beta (ADR-0081) is reported with the build numbers its lane posted.
+  beta_json=$(intest_reused_builds "$beta_json" "$comments_json")
   # The diff is the scenario's ground truth. An empty one still produces a
   # usable (if thinner) scenario, so a failure here is not fatal.
   pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
@@ -7010,14 +7639,21 @@ verify_compose_report() {
   local issue_num="$1" pr_num="$2" head_sha="$3" platforms="$4" lanes="$5" cr_note="$6"
   local comments_json="$7" state_json="$8" gaps="$9" body_file="${10}"
   local scenario_file beta_lanes="" bypass="" account="" signin_key="" shell_dir="" browser_dir="" out
-  local lane_facts merged
+  local lane_facts merged beta_reused="[]"
   mkdir -p "$VERIFY_DIR" 2>>"$LOG_FILE" || return 1
   scenario_file="$VERIFY_DIR/report-$issue_num-$head_sha.scenario.md"
   verify_scenario_file "$comments_json" "$head_sha" "$scenario_file" || scenario_file=""
   # The beta lanes dispatched for this commit, as intest_dispatch_betas recorded
   # them: read, never re-dispatched, so composing a report can't start a build.
+  # Lanes reused from an earlier commit's build (ADR-0081) come with its numbers.
   if [[ "$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null)" == "$head_sha" ]]; then
     beta_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
+    # Only entries still valid now: this may run on a tick where the dispatch
+    # didn't (beta dispatch off, or a Testing card), so the record can be stale.
+    beta_reused=$(intest_reused_builds \
+      "{\"reused\":$(intest_reused_json "$(intest_reused_valid \
+        "$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null)" "$state_json")")}" \
+      "$comments_json" | jq -c '.reused // []' 2>/dev/null || echo "[]")
   fi
   [[ -e "$FACTORY_VERIFY_BYPASS_FILE" ]] && bypass="$FACTORY_VERIFY_BYPASS_FILE"
   [[ -e "$FACTORY_BROWSER_ACCOUNT_FILE" ]] && account="$FACTORY_BROWSER_ACCOUNT_FILE"
@@ -7042,7 +7678,7 @@ verify_compose_report() {
   fi
   local -a render_args=(render --issue "$issue_num" --pr "$pr_num"
     --sha "$head_sha" --scenario-file "$scenario_file" --platforms "$platforms"
-    --beta-lanes "$beta_lanes"
+    --beta-lanes "$beta_lanes" --beta-reused "$beta_reused"
     --shell-state "$(echo "$lanes" | jq -r '.shell // "none"' 2>/dev/null || echo none)"
     --shell-dir "$shell_dir"
     --browser-state "$(echo "$lanes" | jq -r '.browser // "none"' 2>/dev/null || echo none)"
@@ -7765,6 +8401,9 @@ and drag the card back to **Ready** to retry.
         log "WARNING: unrecognised action '$ACTION' from claude for #$ISSUE_NUM --plan"
         ;;
     esac
+    # The plan's size estimate → the factory-oversize label (ADR-0083). A noop
+    # found a plan an earlier tick posted, which may not be labelled yet.
+    case "$ACTION" in planned | noop) plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" ;; esac
   done
 
   # ── Plan Review sweep: in-place replan on new OWNER comments ──────────────
@@ -7824,6 +8463,10 @@ and drag the card back to **Ready** to retry.
     PLAN_COMMENT_ID=$(echo "$PLAN_COMMENT_JSON" | jq -r '.id | tostring')
     PLAN_CREATED_AT=$(echo "$PLAN_COMMENT_JSON" | jq -r '.createdAt')
     PLAN_BODY=$(echo "$PLAN_COMMENT_JSON" | jq -r '.body')
+    # Keep factory-oversize in step with the plan on every tick, from what was
+    # just read (ADR-0083): a label edit that failed, or a label created
+    # since, is caught up without waiting for another replan.
+    plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" "$PLAN_BODY"
 
     ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
     if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
@@ -8011,6 +8654,8 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
         ;;
     esac
+    # The revised plan's size estimate → the factory-oversize label (ADR-0083).
+    case "$ACTION" in planned | replanned) plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" ;; esac
   done
 
   log "=== factory-agent --plan completed in $(( $(date +%s) - START_TIME ))s ==="
@@ -8052,6 +8697,16 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
         fi
       done
       PROMPT_TEXT=$(cat "$PROMPT_FILE")
+    fi
+  fi
+  # A resumed session (ADR-0084) gets this short note instead of the prompt and
+  # bundle it already holds. Missing → resuming is off for this tick.
+  RESUME_PROMPT_TEXT=""
+  if [[ "$PHASE" != "A" && "$DRY_RUN" -eq 0 ]]; then
+    RESUME_PROMPT_TEXT=$(cat "$SCRIPT_DIR/factory-implement-resume-prompt.md" 2>/dev/null || echo "")
+    if [[ -z "$RESUME_PROMPT_TEXT" && "$FACTORY_IMPLEMENT_RESUME" == "1" ]]; then
+      log "WARNING: factory-implement-resume-prompt.md is missing or empty; not resuming sessions this tick"
+      FACTORY_IMPLEMENT_RESUME=0
     fi
   fi
 
@@ -8257,8 +8912,18 @@ Drag it back to **Ready** so the factory can plan it first.
     WT_ERR_FILE=$(mktemp -t factory-wt-err)
     if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
         --root "$REPO_ROOT" --base origin/main --fetch 2>"$WT_ERR_FILE"); then
+      WT_DIVERGED=0
+      if grep -q 'has diverged from' "$WT_ERR_FILE" 2>/dev/null; then WT_DIVERGED=1; fi
       log "ERROR: worktree add failed for #$ISSUE_NUM: $(worktree_cli_error "$WT_ERR_FILE"); releasing slot $SLOT"
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      # A branch that diverged from the PR's (unpushed commits, such as a
+      # stopped run's chore(wip) ones, plus a push to the PR) needs a human and
+      # fails the same way every tick. Spend an attempt, so the retry budget
+      # parks the card in Blocked instead of it looping unseen (ADR-0084).
+      if [[ "$WT_DIVERGED" -eq 1 ]]; then
+        log "Issue #$ISSUE_NUM: the worktree has diverged from the PR branch; spending an attempt so the card reaches Blocked if it persists"
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      fi
       continue
     fi
     cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
@@ -8298,21 +8963,67 @@ Drag it back to **Ready** so the factory can plan it first.
       fi
     fi
 
-    # Invoke claude inside the worktree with the implementer prompt + bundle.
-    CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
-      "$PROMPT_TEXT" "$BUNDLE")
-    reset_reply_dir "$ISSUE_NUM"
+    # Session resume (ADR-0084): resume the session a fresh run left at the
+    # wall cap (or at action=incomplete, or at the session limit) when nothing
+    # it relied on changed, and clear that record either way.
+    if ! implement_resume_decide "$ISSUE_NUM" "$WT_PATH" "$WT_JSON" "$PRIOR_PR" \
+        "$PLAN_COMMENT_JSON" "$REVISION_COMMENTS" "$ISSUE_RECORD" "$COMMENTS_JSON"; then
+      log "ERROR: #$ISSUE_NUM: no claude session id; keeping slot $SLOT for retry"
+      continue
+    fi
+    # Two heads from here on. PRE_HEAD_OID stays the PR head at this run's
+    # start: the noop and declined checks compare the worktree and the head
+    # shown at In Test with it. CHAIN_PRE_HEAD_OID is the PR head before the
+    # first run of this resume chain: "did the chain push anything" is judged
+    # against it, so work a stopped predecessor pushed still counts. They differ
+    # only on a resumed run.
+    CHAIN_PRE_HEAD_OID="$PRE_HEAD_OID"
+    CHAIN_PRE_HEAD_KNOWN="$PRE_HEAD_KNOWN"
+    if [[ "$IMPL_RESUMED" -eq 1 ]]; then
+      CHAIN_PRE_HEAD_OID="$IMPL_RESUME_PRE_HEAD"
+      CHAIN_PRE_HEAD_KNOWN=1
+    fi
+
+    # Invoke claude inside the worktree with the implementer prompt + bundle
+    # (or, resuming, the short resume note), then the run-time facts: the
+    # deadlines from now and what an earlier attempt left in the worktree.
+    IMPL_START_EPOCH=$(date +%s)
+    IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH")
+    IMPL_FACTS_BLOCK=""
+    if [[ -n "$IMPL_FACTS" ]]; then
+      IMPL_FACTS_BLOCK=$(printf '\n## Run-time facts\n\n```json\n%s\n```\n' "$IMPL_FACTS")
+    else
+      log "WARNING: #$ISSUE_NUM: could not build the run-time facts; the implementer runs without its deadlines"
+    fi
+    if [[ "$IMPL_RESUMED" -eq 1 ]]; then
+      CLAUDE_INPUT=$(printf '%s\n%s\n' "$RESUME_PROMPT_TEXT" "$IMPL_FACTS_BLOCK")
+    else
+      CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n%s\n' \
+        "$PROMPT_TEXT" "$BUNDLE" "$IMPL_FACTS_BLOCK")
+    fi
+    # A resumed session keeps the replies its killed run already wrote.
+    if [[ "$IMPL_RESUMED" -eq 0 ]]; then
+      reset_reply_dir "$ISSUE_NUM"
+    fi
     log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" \
-        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config ) \
-        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+    ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \
+        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config \
+        "$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID" ) >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
       log "WARNING: claude timed out (>${IMPLEMENT_TIMEOUT_SEC}s) for #$ISSUE_NUM; keeping slot for retry"
+      # Whatever it printed before the kill, before the file goes.
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
       rm -f "$CLAUDE_OUTPUT_FILE"
+      # A fresh run's session may be resumed by the next attempt (ADR-0084).
+      # A resumed one never is: one resume per timeout chain.
+      if [[ "$IMPL_RESUMED" -eq 0 ]]; then
+        implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+          "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "timed out" "$IMPL_FEEDBACK_DIGEST"
+      fi
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
     elif [[ $EXIT_CODE -ne 0 ]]; then
@@ -8321,14 +9032,26 @@ Drag it back to **Ready** so the factory can plan it first.
       # Session limit? Pause until reset instead of burning the retry budget.
       # Keep the slot + worktree (as the timeout branch does) so the resumed
       # tick reuses the warm worktree; the card stays In Progress.
-      if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO"; then
+      if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO" "$IMPL_SESSION_ID"; then
         rm -f "$CLAUDE_OUTPUT_FILE"
+        # The limit stopped the session, not the card: record it for the run
+        # after the reset to resume, a resumed one included (ADR-0084).
+        implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+          "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "session limit" "$IMPL_FEEDBACK_DIGEST"
         log "Issue #$ISSUE_NUM: session limit — keeping slot $SLOT + worktree; card stays In Progress for resume"
         pause_for_session_limit
         log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
         exit 0
       fi
       rm -f "$CLAUDE_OUTPUT_FILE"
+      # A resume that never got going (the CLI or the API refused the restored
+      # session) is the factory's failure, not the card's: no attempt, and the
+      # next tick runs fresh, its record already cleared.
+      if [[ "$IMPL_RESUMED" -eq 1 ]] \
+         && implement_resume_never_started "$IMPL_SESSION_ID" "$CLAUDE_START_ISO" "$IMPL_START_EPOCH"; then
+        log "Issue #$ISSUE_NUM: resumed session $IMPL_SESSION_ID never started (exit $EXIT_CODE); no attempt spent, the next tick runs a fresh session"
+        continue
+      fi
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
     fi
@@ -8337,6 +9060,11 @@ Drag it back to **Ready** so the factory can plan it first.
     SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
     rm -f "$CLAUDE_OUTPUT_FILE"
     if [[ -z "$SUMMARY_LINE" ]]; then
+      if [[ "$IMPL_RESUMED" -eq 1 ]] \
+         && implement_resume_never_started "$IMPL_SESSION_ID" "$CLAUDE_START_ISO" "$IMPL_START_EPOCH"; then
+        log "Issue #$ISSUE_NUM: resumed session $IMPL_SESSION_ID never started (no summary line); no attempt spent, the next tick runs a fresh session"
+        continue
+      fi
       log "WARNING: no well-formed summary line from claude for #$ISSUE_NUM; keeping slot for retry"
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
@@ -8373,20 +9101,23 @@ Drag it back to **Ready** so the factory can plan it first.
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           continue
         fi
-        if [[ -n "$PRE_HEAD_OID" ]]; then
+        # Progress is judged for the whole chain: a resumed run whose stopped
+        # predecessor already pushed the work has moved the PR from the chain's
+        # baseline even when it pushes nothing more (ADR-0084).
+        if [[ -n "$CHAIN_PRE_HEAD_OID" ]]; then
           POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
           if [[ -z "$POST_HEAD_OID" ]]; then
             log "WARNING: #$ISSUE_NUM: could not read PR #$PR_NUM head OID; not advancing this tick"
             node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
             continue
           fi
-          if [[ "$POST_HEAD_OID" == "$PRE_HEAD_OID" ]]; then
-            log "ERROR: #$ISSUE_NUM claimed action=implemented but PR #$PR_NUM head is unchanged (${PRE_HEAD_OID:0:12}); treating as a failed attempt"
+          if [[ "$POST_HEAD_OID" == "$CHAIN_PRE_HEAD_OID" ]]; then
+            log "ERROR: #$ISSUE_NUM claimed action=implemented but PR #$PR_NUM head is unchanged (${CHAIN_PRE_HEAD_OID:0:12}); treating as a failed attempt"
             if ! echo "$COMMENTS_JSON" | jq -e 'any(.[]?; (.body // "") | contains("drafto-factory-head-unchanged"))' >/dev/null 2>&1; then
               gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
                 --body "🏭 **A revision run reported success but pushed nothing.**
 
-PR #$PR_NUM is still at \`${PRE_HEAD_OID:0:12}\`, so the requested change is *not* on the \
+PR #$PR_NUM is still at \`${CHAIN_PRE_HEAD_OID:0:12}\`, so the requested change is *not* on the \
 PR. The card stays In Progress and your feedback is left unconsumed, so the next attempt \
 still sees it. If this repeats until the retry budget is exhausted, the card moves to \
 **Blocked** for a human.
@@ -8400,6 +9131,18 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         # Parity / phase post-check. implement_parity_gate parks a violation in
         # Blocked (slot released, worktree removed) and skips it when
         # `gh pr diff` fails; the revision noop on an unshown head runs the same.
+        # The worktree's own commits must be on the PR too: a resumed run that
+        # committed more after its predecessor pushed, then reported success
+        # without pushing, moved the PR from the chain's baseline all the same.
+        # Checked against the PR head now, never the agent's word (#842 review).
+        if [[ -z "$CHAIN_PRE_HEAD_OID" ]]; then
+          POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
+        fi
+        if ! implement_head_landed "$WT_PATH" "$ISSUE_NUM" "$POST_HEAD_OID"; then
+          log "ERROR: #$ISSUE_NUM claimed action=implemented but the worktree's commits aren't all on PR #$PR_NUM (PR head ${POST_HEAD_OID:0:12}); not advancing, feedback left unconsumed"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          continue
+        fi
         if ! implement_parity_gate "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "$PR_NUM" \
             "$AFFECTED" "$PARITY_OVERRIDE"; then
           continue
@@ -8414,9 +9157,9 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         # sweeps itself. Never blocks; the card goes on either way.
         CLAIM_HEAD=""
         CLAIM_SINCE="all"
-        if [[ -n "$PRE_HEAD_OID" ]]; then
+        if [[ -n "$CHAIN_PRE_HEAD_OID" ]]; then
           CLAIM_HEAD="$POST_HEAD_OID"
-          CLAIM_SINCE="$PRE_HEAD_OID"
+          CLAIM_SINCE="$CHAIN_PRE_HEAD_OID"
         fi
         CLAIM_JSON=$(jq -c 'if .migrations.claimedComplete == true then (.migrations.claimed | map({pr, file})) else empty end' <<<"$BUNDLE" 2>/dev/null || echo "")
         implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM" "$CLAIM_HEAD" "$CLAIM_SINCE" "$CLAIM_JSON"
@@ -8493,6 +9236,18 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         ;;
       blocked)
         implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "implementer returned blocked"
+        ;;
+      incomplete)
+        # The implementer reached its soft deadline with work left and stopped
+        # cleanly, its work committed locally (ADR-0084). Like a timeout: the
+        # slot and worktree stay, the attempt is spent, and a fresh run's
+        # session is recorded for the next attempt to resume.
+        log "Issue #$ISSUE_NUM: implementer stopped at its soft deadline (action=incomplete); keeping slot $SLOT for retry"
+        if [[ "$IMPL_RESUMED" -eq 0 ]]; then
+          implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+            "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "action=incomplete" "$IMPL_FEEDBACK_DIGEST"
+        fi
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         ;;
       declined)
         # Revision feedback the implementer declined as outside the approved

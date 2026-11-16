@@ -350,6 +350,66 @@ describe("lane table", () => {
     const r = compose({ browser: { state: "unavailable:a|b", text: null } });
     assert.equal(tableRow(r.body, "Web (browser)").split(/(?<!\\)\|/).length, 6);
   });
+
+  // ADR-0081: a lane reused from an earlier commit's beta names that build.
+  const FROM = "9248da9a0c630a0836ff781b224dc1d2a34faff7";
+  const REUSED = [
+    {
+      id: "mobile",
+      fromSha: FROM,
+      builds: [
+        { platform: "android", build: "152" },
+        { platform: "ios", build: "147" },
+      ],
+    },
+    { id: "desktop", fromSha: FROM, builds: [] },
+  ];
+
+  it("names a reused beta's build instead of saying none was dispatched", () => {
+    const r = compose({ betaLanes: "", betaReused: REUSED });
+    assert.ok(
+      tableRow(r.body, "iOS / Android").includes(
+        "| manual | — | No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build. " +
+          "Android: Play's internal track serves only its newest upload, so check that the installed build number is 152. " +
+          "If Play shows a newer build, this card's Android build is no longer installable from Play; " +
+          "test iOS from TestFlight and ask in a comment for the Android build. |",
+      ),
+      tableRow(r.body, "iOS / Android"),
+    );
+    assert.match(
+      tableRow(r.body, "macOS"),
+      /No macOS change since the beta built from `9248da9a0c63`; keep testing that build\. An earlier comment on this issue gives its build number\./,
+    );
+    assert.doesNotMatch(r.body, /no beta was dispatched/);
+    const lines = manualLines(r.body);
+    assert.ok(
+      lines.includes(
+        "Run the **iOS / Android** steps in the test scenario on the iOS / Android beta built from `9248da9a0c63` (Android build 152 / iOS build 147), which nothing since has changed.",
+      ),
+      lines.join("\n"),
+    );
+    assert.ok(
+      lines.includes(
+        "Run the **macOS** steps in the test scenario on the macOS beta built from `9248da9a0c63`, which nothing since has changed.",
+      ),
+      lines.join("\n"),
+    );
+  });
+
+  it("lets a beta dispatched for this commit win over a reused one", () => {
+    const r = compose({ betaLanes: "mobile", betaReused: REUSED });
+    assert.match(tableRow(r.body, "iOS / Android"), /beta dispatched for this commit/);
+    assert.match(tableRow(r.body, "macOS"), /No macOS change since/);
+  });
+
+  it("ignores a malformed reused entry", () => {
+    const r = compose({
+      betaLanes: "",
+      betaReused: [{ id: "mobile", fromSha: "short" }, { id: "web", fromSha: FROM }, "x"],
+    });
+    assert.match(tableRow(r.body, "iOS / Android"), /no beta was dispatched/);
+    assert.doesNotMatch(r.body, /No mobile change since|No macOS change since/);
+  });
 });
 
 describe("web reached only through packages/shared/ (webViaShared, ADR-0053 5C)", () => {
@@ -1888,8 +1948,31 @@ describe("verify-report CLI", () => {
     assert.match(body, /its output is missing or empty/);
   });
 
+  it("takes the reused betas as --beta-reused JSON (ADR-0081)", () => {
+    const reused = [
+      { id: "mobile", fromSha: "9248da9a0c630a0836ff781b224dc1d2a34faff7", builds: [] },
+    ];
+    const r = run(args({ "beta-lanes": "", "beta-reused": JSON.stringify(reused) }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(
+      tableRow(readFileSync(files.out, "utf8"), "iOS / Android"),
+      /No mobile change since the beta built from `9248da9a0c63`/,
+    );
+    // Left out or empty, it is no reuse at all, as before.
+    for (const value of [undefined, ""]) {
+      const again = run(args({ "beta-lanes": "", "beta-reused": value }));
+      assert.equal(again.status, 0, again.stderr);
+      assert.match(
+        tableRow(readFileSync(files.out, "utf8"), "iOS / Android"),
+        /no beta was dispatched/,
+      );
+    }
+  });
+
   it("rejects usage errors with exit 2 and writes nothing", () => {
     for (const bad of [
+      { "beta-reused": "{not json" },
+      { "beta-reused": '{"id":"mobile"}' },
       { sha: SHA.slice(0, 12) },
       { issue: "0" },
       { pr: "abc" },

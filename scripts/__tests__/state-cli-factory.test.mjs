@@ -390,6 +390,78 @@ describe("factory:set-issue-field / get-issue", () => {
     }
   });
 
+  it("accepts the beta-reuse fields (ADR-0081), which bash writes under `|| true`", () => {
+    // A rejected intestBetaBuilt would lose every successful build, so nothing
+    // is ever reused; a rejected intestBetaReused would re-call the compare API
+    // every tick and rebuild what was meant to be reused.
+    const sha = "a".repeat(40);
+    for (const [field, value] of [
+      ["intestBetaBuilt", `mobile:${sha},desktop:${sha}`],
+      ["intestBetaBuiltAt", "mobile:1700000000,desktop:1700000000"],
+      ["intestBetaReused", `mobile:${sha}`],
+    ]) {
+      let r = run(["factory:set-issue-field", "42", field, value, "--state-file", stateFile]);
+      assert.equal(r.status, 0, `${field}: ${r.stderr}`);
+      assert.equal(readState().issues["42"][field], value);
+      r = run(["factory:set-issue-field", "42", field, "", "--state-file", stateFile]);
+      assert.equal(r.status, 0, `${field}: ${r.stderr}`);
+      assert.equal(readState().issues["42"][field], null);
+    }
+    const fresh = JSON.parse(run(["factory:get-issue", "999", "--state-file", stateFile]).stdout);
+    assert.equal(fresh.intestBetaBuilt, null);
+    assert.equal(fresh.intestBetaBuiltAt, null);
+    assert.equal(fresh.intestBetaReused, null);
+  });
+
+  it("factory:set-issue-fields writes several fields in one save, all or none", () => {
+    // The beta reuse decision (ADR-0081) moves intestBetaSha with the fields it
+    // keys; a partial write would file one head's record under another.
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ issues: { 42: { intestBetaSha: "old", intestBetaLanes: "mobile" } } }),
+    );
+    let r = run([
+      "factory:set-issue-fields",
+      "42",
+      "intestBetaLanes",
+      "",
+      "intestBetaReused",
+      "mobile:x",
+      "intestBetaSha",
+      "new",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    let issue = readState().issues["42"];
+    assert.deepEqual(
+      [issue.intestBetaSha, issue.intestBetaLanes, issue.intestBetaReused],
+      ["new", null, "mobile:x"],
+    );
+    // One unknown field rejects the whole call before anything is written.
+    r = run([
+      "factory:set-issue-fields",
+      "42",
+      "intestBetaSha",
+      "newer",
+      "intestBetaBogus",
+      "1",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /unknown field intestBetaBogus/);
+    assert.equal(readState().issues["42"].intestBetaSha, "new");
+    // A field without a value, or no field at all, is a usage error.
+    for (const args of [["42", "intestBetaSha"], ["42"], []]) {
+      r = run(["factory:set-issue-fields", ...args, "--state-file", stateFile]);
+      assert.notEqual(r.status, 0, JSON.stringify(args));
+      assert.match(r.stderr, /requires <issue> <field> <value>/);
+    }
+    issue = readState().issues["42"];
+    assert.equal(issue.intestBetaSha, "new");
+  });
+
   it("accepts and resets the behind-main update budget (ADR-0070)", () => {
     // --watch writes it under `|| true`: a rejected write would read back as 0
     // on every tick and lift FACTORY_MAX_BRANCH_UPDATES entirely.
@@ -1614,5 +1686,134 @@ describe("factory:* writes to logs/factory-state.json by default", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+// ADR-0084: factory-agent.sh records a resumable implement session and clears
+// the record at every implement start.
+describe("factory:implement-resume-set / -clear", () => {
+  const SESSION = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  const NEXT = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
+  const HEAD = "a".repeat(40);
+  const PRE = "b".repeat(40);
+  const TREE = "d".repeat(64);
+  const FEEDBACK = "f".repeat(64);
+
+  function set(extra = []) {
+    return run([
+      "factory:implement-resume-set",
+      "42",
+      "--session",
+      SESSION,
+      "--head",
+      HEAD,
+      "--tree-digest",
+      TREE,
+      "--key",
+      "plan:7|rev:1,2",
+      "--feedback-digest",
+      FEEDBACK,
+      ...extra,
+      "--state-file",
+      stateFile,
+      "--now",
+      "2026-11-16T12:00:00Z",
+    ]);
+  }
+
+  it("records the session, head, key, pre-head and time", () => {
+    const r = set(["--pre-head", PRE]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      issueNumber: "42",
+      implementResumeSession: SESSION,
+      implementResumeHead: HEAD,
+      implementResumeTreeDigest: TREE,
+      implementResumeKey: "plan:7|rev:1,2",
+      implementResumePreHead: PRE,
+      implementResumeFeedbackDigest: FEEDBACK,
+      implementResumeAt: "2026-11-16T12:00:00.000Z",
+    });
+    const issue = readState().issues["42"];
+    assert.equal(issue.implementResumeSession, SESSION);
+    assert.equal(issue.implementResumePreHead, PRE);
+    // factory:get-issue hands the record to implement-resume.mjs decide.
+    const got = JSON.parse(run(["factory:get-issue", "42", "--state-file", stateFile]).stdout);
+    assert.equal(got.implementResumeKey, "plan:7|rev:1,2");
+  });
+
+  it("takes an empty or missing --pre-head as a run with no PR", () => {
+    assert.equal(JSON.parse(set(["--pre-head", ""]).stdout).implementResumePreHead, null);
+    assert.equal(JSON.parse(set().stdout).implementResumePreHead, null);
+  });
+
+  it("refuses a bad record or issue number, writing nothing", () => {
+    const bad = run([
+      "factory:implement-resume-set",
+      "42",
+      "--session",
+      "nope",
+      "--head",
+      HEAD,
+      "--tree-digest",
+      TREE,
+      "--key",
+      "k",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /invalid session id/);
+    assert.equal(existsSync(stateFile), false);
+    const hash = run(["factory:implement-resume-set", "#42", "--state-file", stateFile]);
+    assert.equal(hash.status, 1);
+    assert.match(hash.stderr, /invalid issue number/);
+  });
+
+  it("clear forgets the record and notes the new run's session", () => {
+    set(["--pre-head", PRE]);
+    const r = run([
+      "factory:implement-resume-clear",
+      "42",
+      "--session-id",
+      NEXT,
+      "--state-file",
+      stateFile,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.equal(out.cleared.length, 7);
+    assert.equal(out.implementSessionId, NEXT);
+    const issue = readState().issues["42"];
+    assert.equal(issue.implementResumeSession, null);
+    assert.equal(issue.implementResumeAt, null);
+    assert.equal(issue.implementSessionId, NEXT);
+  });
+
+  it("clear with nothing to clear and no session writes nothing", () => {
+    const r = run(["factory:implement-resume-clear", "42", "--state-file", stateFile]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      issueNumber: "42",
+      cleared: [],
+      implementSessionId: null,
+    });
+    assert.equal(existsSync(stateFile), false);
+  });
+
+  it("clear refuses a malformed session id", () => {
+    const r = run([
+      "factory:implement-resume-clear",
+      "42",
+      "--session-id",
+      "nope",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /invalid session id/);
   });
 });
