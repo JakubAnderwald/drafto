@@ -294,6 +294,11 @@ describe("In Test prompt — machine contract", () => {
       specs.map((x) => x.kind),
       ["jpg", "enex", "sample"],
     );
+    // The .enex size rule, with its two examples on the right sides of it.
+    assert.match(flat, /keep notes × image under 7 MB/);
+    assert.equal(parseFixtureSpecs("- q.enex notes=3 image=2MB").length, 1);
+    assert.throws(() => parseFixtureSpecs("- q.enex notes=3 image=2.5MB"), /one upload takes/);
+    assert.match(flat, /`notes=3 image=2MB` fits, `notes=3 image=2\.5MB` doesn't/);
     assert.match(flat, /start the step with `\(admin\)`/);
     assert.match(flat, /Each of these comes back SKIP on a run that doesn't have it/);
   });
