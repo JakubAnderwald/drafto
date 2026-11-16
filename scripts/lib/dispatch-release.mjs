@@ -190,38 +190,14 @@ export function platformsToLanes(platforms) {
 }
 
 // ── Reusing a pre-merge beta across PR heads (ADR-0081) ─────────────────────
-// Every root scripts/ file a beta lane depends on, with what each imports or
-// sources. A change to any of them rebuilds the lane; the rest of scripts/ is
-// factory-only. Three sources:
-//   - what apps/mobile and apps/desktop reference: the Fastfiles'
-//     File.join(repo_root, "scripts", …) hooks (comment-intest-build.mjs posts
-//     the build-number notice a reused build is reported with), and the store
-//     screenshot scripts' $REPO_ROOT/scripts/lib/app-review-account.sh;
-//   - the lane's launcher, this module (the lane's shell, its umask and env);
-//   - its build root's preparation, beta-build-root.sh (reset, seed, install,
-//     env files), and what that runs.
-// A static scan in the tests recomputes this list from those files, so a new
-// reference fails CI until it is listed here.
-export const LANE_SCRIPT_INPUTS = Object.freeze([
-  "scripts/comment-intest-build.mjs",
-  "scripts/comment-released-issues.mjs",
-  "scripts/lib/app-review-account.sh",
-  "scripts/lib/beta-build-root.sh",
-  "scripts/lib/dispatch-release.mjs",
-  "scripts/lib/github-sync.mjs",
-  "scripts/lib/is-main.mjs",
-  "scripts/lib/now-live.mjs",
-  "scripts/lib/parse-flags.mjs",
-  "scripts/lib/parse-issue-footer.mjs",
-  "scripts/lib/route-value.mjs",
-  "scripts/lib/run-with-timeout.mjs",
-  "scripts/lib/state.mjs",
-]);
-
 // Paths that never reach a native binary. Everything else, including every
 // root file (pnpm-lock.yaml, package.json, pnpm-workspace.yaml, .npmrc,
 // patches/, app.json, index.js), packages/shared/ and the lane's own app,
 // rebuilds: derivePlatforms ignores the root files, but they change binaries.
+// So does all of scripts/, *.md files included: a lane runs root scripts (the
+// Fastfiles' hooks, the build-root preparation) whose closure can only be read
+// from the factory's own checkout, not from the head being built, so a helper
+// the PR adds or changes there could be missed.
 const NEVER_NATIVE = [
   /^docs\//,
   /\.md$/,
@@ -237,9 +213,8 @@ const ALWAYS_REBUILD = ["supabase/config.toml"];
 const LANE_APP_DIRS = Object.freeze({ mobile: "apps/mobile/", desktop: "apps/desktop/" });
 
 function outsideLane(file, laneId) {
-  if (ALWAYS_REBUILD.includes(file)) return false;
+  if (ALWAYS_REBUILD.includes(file) || file.startsWith("scripts/")) return false;
   if (NEVER_NATIVE.some((re) => re.test(file))) return true;
-  if (file.startsWith("scripts/")) return !LANE_SCRIPT_INPUTS.includes(file);
   // The other lane's app: each app builds only from its own directory, the
   // root and packages/shared/.
   return Object.entries(LANE_APP_DIRS).some(([id, dir]) => id !== laneId && file.startsWith(dir));
