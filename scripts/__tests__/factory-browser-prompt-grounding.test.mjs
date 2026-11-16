@@ -56,6 +56,21 @@ describe("browser runner prompt — browser rules", () => {
     assert.match(flat, /stop with `browser=auth-expired`/);
   });
 
+  it("stops as unavailable when the browser isn't drawing, instead of skipping every step", () => {
+    // #794's verify run, 2026-11-13: every screenshot timed out ("renderer may
+    // be frozen or unresponsive") and clicks did nothing, while page reads and
+    // scripts worked. The runner skipped steps 4–11 one by one and reported
+    // browser=ok verdict=pass. browser=unavailable is refunded and retried, and
+    // the health tracker tells the operator.
+    assert.match(flat, /The browser must draw/);
+    assert.match(flat, /wait 5 seconds and take one more/);
+    assert.match(
+      flat,
+      /Don't go on marking steps SKIP one by one: stop with `browser=unavailable`/,
+    );
+    assert.match(flat, /`unavailable` — .* or the browser wasn't drawing \(rule 14\)/);
+  });
+
   it("keeps screenshots and secrets out of the report", () => {
     assert.match(flat, /never by path, and never paste one into the report/);
     assert.match(

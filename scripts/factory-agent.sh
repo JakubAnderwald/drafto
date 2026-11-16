@@ -63,8 +63,12 @@
 #
 # Claude effort: --implement runs at ultracode (FACTORY_EFFORT — xhigh reasoning
 # + dynamic multi-agent workflows); --watch fix passes run at xhigh
-# (FACTORY_WATCH_EFFORT, ADR-0076); the read-only planning stages (--plan/
-# replan) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below.
+# (FACTORY_WATCH_EFFORT, ADR-0076); the read-only stages (--plan/replan, the
+# code review, the scenario writer, the browser runner, the verification shell
+# lane) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below. The
+# browser runner and the scenario writer can also run on another model
+# (FACTORY_BROWSER_MODEL / FACTORY_INTEST_MODEL, ADR-0080); see the model
+# block after it.
 
 set -euo pipefail
 
@@ -254,12 +258,35 @@ case "$FACTORY_WATCH_EFFORT" in
   *) echo "WARNING: invalid FACTORY_WATCH_EFFORT='$FACTORY_WATCH_EFFORT'; defaulting to xhigh" >&2
      FACTORY_WATCH_EFFORT="xhigh" ;;
 esac
-FACTORY_PLAN_EFFORT="${FACTORY_PLAN_EFFORT:-xhigh}"    # --plan / replan
+FACTORY_PLAN_EFFORT="${FACTORY_PLAN_EFFORT:-xhigh}"    # every read-only stage
 case "$FACTORY_PLAN_EFFORT" in
   ultracode|max|xhigh|high|medium|low) : ;;
   *) echo "WARNING: invalid FACTORY_PLAN_EFFORT='$FACTORY_PLAN_EFFORT'; defaulting to xhigh" >&2
      FACTORY_PLAN_EFFORT="xhigh" ;;
 esac
+
+# ── Claude model knobs (ADR-0080) ───────────────────────────────────────────
+# Two read-only stages can run on another model than the CLI's default:
+# FACTORY_BROWSER_MODEL for the browser runner (all of its kinds: intest,
+# verify and plan) and FACTORY_INTEST_MODEL for the scenario writer (In Test
+# and Testing). Empty, the default, passes no --model at all, so the call runs
+# exactly as it did before these knobs. A value must be a model alias (opus,
+# sonnet, haiku, fable) or a full claude-… name, optionally with the [1m]
+# suffix; anything else warns and falls back to empty. The pattern also keeps
+# the value one safe argv token (no spaces, no leading dash). Each call site
+# builds its own optional array and expands it as ${arr[@]+"${arr[@]}"}, the
+# form bash 3.2 accepts for an empty array under `set -u`.
+MODEL_KNOB_RE='^(claude-[a-z0-9-]+|opus|sonnet|haiku|fable)(\[1m\])?$'
+FACTORY_BROWSER_MODEL="${FACTORY_BROWSER_MODEL:-}"  # browser runner, every kind
+if [[ -n "$FACTORY_BROWSER_MODEL" && ! "$FACTORY_BROWSER_MODEL" =~ $MODEL_KNOB_RE ]]; then
+  echo "WARNING: invalid FACTORY_BROWSER_MODEL='$FACTORY_BROWSER_MODEL'; using the CLI's default model" >&2
+  FACTORY_BROWSER_MODEL=""
+fi
+FACTORY_INTEST_MODEL="${FACTORY_INTEST_MODEL:-}"    # scenario writer (In Test, Testing)
+if [[ -n "$FACTORY_INTEST_MODEL" && ! "$FACTORY_INTEST_MODEL" =~ $MODEL_KNOB_RE ]]; then
+  echo "WARNING: invalid FACTORY_INTEST_MODEL='$FACTORY_INTEST_MODEL'; using the CLI's default model" >&2
+  FACTORY_INTEST_MODEL=""
+fi
 
 # pnpm install in a fresh worktree. node_modules is seeded from the main
 # checkout by clonefile first (seed_worktree_node_modules), so this is a near-
@@ -4626,12 +4653,15 @@ intest_handoff() {
 
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$INTEST_PROMPT_FILE")" "$bundle")
-  log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
+  # --model only when FACTORY_INTEST_MODEL is set (ADR-0080).
+  local model_args=()
+  if [[ -n "${FACTORY_INTEST_MODEL:-}" ]]; then model_args=(--model "$FACTORY_INTEST_MODEL"); fi
+  log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_INTEST_MODEL:-default})"
   out_file=$(mktemp -t factory-agent-intest.XXXXXX)
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
   ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$INTEST_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config ) \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config ${model_args[@]+"${model_args[@]}"} ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -4877,7 +4907,7 @@ run_browser_task() {
   input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$BROWSER_PROMPT_FILE")" "$bundle")
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
+  log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_BROWSER_MODEL:-default})"
   # Nothing but this prompt and the guard's settings reach the runner. cwd is
   # an empty directory OUTSIDE the repo (Claude Code walks up from its cwd for
   # CLAUDE.md files and project settings); --setting-sources "" drops the user,
@@ -4899,10 +4929,13 @@ run_browser_task() {
   # account's password, and argv is visible to `ps`.
   # --tools is "" (Chrome only) unless the run has dev-inspect, which adds Bash;
   # the guard's Bash hook allows that one command and nothing else (ADR-0073).
+  # --model only when FACTORY_BROWSER_MODEL is set (ADR-0080).
+  local model_args=()
+  if [[ -n "${FACTORY_BROWSER_MODEL:-}" ]]; then model_args=(--model "$FACTORY_BROWSER_MODEL"); fi
   ( cd "$cwd" && printf '%s' "$input" | PATH="$path_prefix$PATH" CLAUDE_CALL_TIMEOUT_SEC="$FACTORY_BROWSER_TIMEOUT_SEC" \
       node "$SCRIPT_DIR/lib/run-claude.mjs" -p --chrome --permission-mode dontAsk --tools "$tools" \
       --allowedTools "$allowed" --setting-sources "" --strict-mcp-config --settings "$settings" \
-      --session-id "$uuid" --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
+      --session-id "$uuid" ${model_args[@]+"${model_args[@]}"} --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
   browser_capabilities_cleanup "$run_dir"
   # The runner's output becomes a comment: the accounts' emails come out of it
   # here, once, before the report is rendered or read by the verification
