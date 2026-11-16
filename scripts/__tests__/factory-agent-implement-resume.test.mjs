@@ -177,6 +177,10 @@ function makeWorktree(dir) {
   mkdirSync(wt);
   git(wt, "init", "-q", "-b", "factory/issue-7");
   git(wt, "config", "commit.gpgsign", "false");
+  // The harness commits too (the "HEAD moved" case), without the env above:
+  // CI runners have no global identity.
+  git(wt, "config", "user.name", "t");
+  git(wt, "config", "user.email", "t@example.com");
   writeFileSync(join(wt, "a.txt"), "a\n");
   git(wt, "add", "a.txt");
   git(wt, "commit", "-q", "-m", "chore: base");
