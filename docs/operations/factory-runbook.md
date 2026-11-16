@@ -1091,7 +1091,7 @@ If a published image shows something it shouldn't:
 
 3. **Edit the comment** on the issue and remove its `<img>` tags.
 
-To stop all publishing at once, set `FACTORY_EVIDENCE_UPLOAD=0` in the plist and reload.
+To stop the factory's own uploads, set `FACTORY_EVIDENCE_UPLOAD=0` in the plist and reload. That doesn't stop `node scripts/lib/evidence-post.mjs macos --yes`: it reads the switch from the shell that runs it, and a Terminal doesn't inherit the plist's environment. To stop every upload at once, the macOS command included, move `logs/factory/evidence-selftest.json` aside, so each one refuses with `selftest-missing`. Or `export FACTORY_EVIDENCE_UPLOAD=0` in the shell before running the macOS command.
 
 **Storage.** A run adds about 2–5 MB to the repo's object store. Normal clones, CI and Vercel never fetch evidence refs, but `git clone --mirror` fetches every ref, and so every image. Nothing prunes old refs yet. Delete them by hand as above if they pile up.
 
