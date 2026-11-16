@@ -331,7 +331,7 @@ describe("validateSplit", () => {
     const d = tempDirs();
     try {
       writeFileSync(join(d.split, "01.md"), spec());
-      writeFileSync(join(d.split, "02.md"), spec());
+      writeFileSync(join(d.split, "02.md"), spec({ title: "feat: part two" }));
       const noDir = validateSplit(d.split, {
         secrets: secretsFor(join(d.root, "missing-secrets")),
       });
@@ -351,6 +351,12 @@ describe("validateSplit", () => {
     } finally {
       rmSync(d.root, { recursive: true, force: true });
     }
+  });
+
+  it("refuses two parts with the same title: a retry matches earlier parts by title", () => {
+    const out = run({ "01.md": spec(), "02.md": spec({ depends: "01" }) });
+    assert.equal(out.ok, false);
+    assert.match(out.problems.join("\n"), /02\.md: it has the same title as 01\.md/);
   });
 
   it("refuses a bad title and a dependency on a later part", () => {
@@ -656,6 +662,19 @@ describe("parseFiledPart / planSplitFiling: reusing what an earlier attempt file
     assert.match(shape.problems.join("\n"), /isn't in the shape the factory files parts in/);
   });
 
+  it("stops when a title matches more than one earlier issue, instead of keeping one and filing a duplicate", () => {
+    const out = planSplitFiling({
+      split,
+      earlier: [filed(1001, 1, {}), filed(1005, 1, {})],
+      issue: 900,
+    });
+    assert.equal(out.ok, false);
+    assert.match(
+      out.problems.join("\n"),
+      /part 1's title matches more than one issue an earlier attempt filed \(#1001, #1005\)/,
+    );
+  });
+
   it("names earlier parts that match no part as leftovers", () => {
     const out = planSplitFiling({
       split,
@@ -683,7 +702,7 @@ describe("plan-split.mjs CLI", () => {
     const d = tempDirs();
     try {
       writeFileSync(join(d.split, "01.md"), spec());
-      writeFileSync(join(d.split, "02.md"), spec({ depends: "01" }));
+      writeFileSync(join(d.split, "02.md"), spec({ title: "feat: part two", depends: "01" }));
       const v = spawnSync(
         process.execPath,
         [cli, "validate", "--dir", d.split, "--secrets-dir", d.secrets],

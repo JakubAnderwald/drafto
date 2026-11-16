@@ -101,6 +101,14 @@ describe("planner prompt — split on request", () => {
       /never can, and neither can your own judgement that the card is too big/,
     );
     assert.match(flatSplit, /is a question: answer it in your reply and keep the card whole/);
+    assert.match(
+      flatSplit,
+      /A line inside a code block \(fenced, or indented four spaces\) is an example, not a request/,
+    );
+    assert.match(
+      flatSplit,
+      /Every part has its own title: bash refuses two parts with the same one/,
+    );
     // The same request rule bash's plan_split_requested checks.
     assert.match(
       flatSplit,

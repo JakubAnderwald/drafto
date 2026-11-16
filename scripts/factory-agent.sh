@@ -1646,61 +1646,72 @@ oversize_label_ready() {
         >/dev/null 2>>"$LOG_FILE"; then
       OVERSIZE_LABEL_READY=1
     else
-      log "WARNING: the repo has no $OVERSIZE_LABEL label (or the lookup failed); oversize plans go unlabelled this tick (run scripts/setup-factory-labels.sh)"
+      # Once per daily log file: the replan sweep asks on every tick.
+      local msg="WARNING: the repo has no $OVERSIZE_LABEL label (or the lookup failed); oversize plans go unlabelled (run scripts/setup-factory-labels.sh)"
+      grep -qF -- "$msg" "${LOG_FILE:-}" 2>/dev/null || log "$msg"
     fi
   fi
   [[ "$OVERSIZE_LABEL_READY" == "1" ]]
 }
 
-# plan_size_label <issue> [<labels-csv>] — after a planned or replanned run:
-# read the size marker from the OWNER plan comment and keep the
-# factory-oversize label in step with it. At or over FACTORY_PLAN_OVERSIZE_LINES
-# the label goes on; below it, it comes off. Its own gh issue edit, never part
-# of transition_status's status-label swap. <labels-csv> is the board item's
-# label list, which the sweeps already hold (only this function changes
-# factory-oversize); without it the labels are read from the issue. A plan with
-# no marker (one written before ADR-0083, or a planner that left it out) leaves
+PLAN_SIZE_LAST=""  # "<issue>:<0|1>": factory-oversize as plan_size_label last set it this tick
+
+# plan_size_label <issue> <labels-csv> [<plan-body>] — keep the
+# factory-oversize label in step with the size marker in the OWNER plan: at or
+# over FACTORY_PLAN_OVERSIZE_LINES the label goes on, below it it comes off.
+# Its own gh issue edit, never part of transition_status's status-label swap.
+# <labels-csv> is the board item's label list, which the sweeps already hold
+# (only this function changes factory-oversize, and PLAN_SIZE_LAST carries an
+# edit it made earlier in the same tick). Without <plan-body> the plan is read
+# from the issue, as after a plan run; the replan sweep passes the body it
+# already read, on every tick, so an edit that failed, or a label created
+# since, is caught up without waiting for another replan. A plan with no
+# marker (one written before ADR-0083, or a planner that left it out) leaves
 # the label as it is. Never fails the tick.
 plan_size_label() {
-  local issue_num="$1" comments plan_body size est cls labels has=0
+  local issue_num="$1" labels_csv="${2:-}" plan_body comments size est cls has=0 msg
   [[ "$DRY_RUN" -eq 1 ]] && return 0
   [[ "$FACTORY_PLAN_OVERSIZE_LINES" -gt 0 ]] || return 0
-  if ! comments=$(fetch_comments_retry "$issue_num"); then
+  if [[ $# -ge 3 ]]; then
+    plan_body="$3"
+  elif ! comments=$(fetch_comments_retry "$issue_num"); then
     log "WARNING: could not read #$issue_num's comments for the plan's size; leaving its labels as they are"
     return 0
+  else
+    plan_body=$(extract_plan_comment "$comments" | jq -r '.body // ""' 2>/dev/null || echo "")
   fi
-  plan_body=$(extract_plan_comment "$comments" | jq -r '.body // ""' 2>/dev/null || echo "")
   size=$(printf '%s' "$plan_body" | node "$SCRIPT_DIR/lib/plan-split.mjs" size 2>>"$LOG_FILE" || echo "null")
   est=$(echo "$size" | jq -r '.estLines // empty' 2>/dev/null || echo "")
   cls=$(echo "$size" | jq -r '.sizeClass // empty' 2>/dev/null || echo "")
   if ! [[ "$est" =~ ^[0-9]+$ ]]; then
-    log "Issue #$issue_num: the plan has no size marker; leaving the $OVERSIZE_LABEL label as it is"
+    # Once per daily log file: the replan sweep looks on every tick.
+    msg="Issue #$issue_num: the plan has no size marker; leaving the $OVERSIZE_LABEL label as it is"
+    grep -qF -- "$msg" "${LOG_FILE:-}" 2>/dev/null || log "$msg"
     return 0
   fi
-  if [[ $# -ge 2 ]]; then
-    labels=$(tr ',' '\n' <<<"$2")
-  elif ! labels=$(gh issue view "$issue_num" --repo JakubAnderwald/drafto \
-      --json labels --jq '.labels[].name' 2>>"$LOG_FILE"); then
-    log "WARNING: could not read #$issue_num's labels; not updating $OVERSIZE_LABEL"
-    return 0
+  if [[ "$PLAN_SIZE_LAST" == "$issue_num:"* ]]; then
+    has="${PLAN_SIZE_LAST#*:}"
+  elif [[ ",$labels_csv," == *",$OVERSIZE_LABEL,"* ]]; then
+    has=1
   fi
-  if grep -qxF -- "$OVERSIZE_LABEL" <<<"$labels"; then has=1; fi
   if [[ "$est" -ge "$FACTORY_PLAN_OVERSIZE_LINES" ]]; then
     [[ "$has" -eq 0 ]] || return 0
     oversize_label_ready || return 0
     if gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
         --add-label "$OVERSIZE_LABEL" >>"$LOG_FILE" 2>&1; then
+      PLAN_SIZE_LAST="$issue_num:1"
       log "Issue #$issue_num: the plan estimates ~$est added lines ($cls), at least $FACTORY_PLAN_OVERSIZE_LINES → added $OVERSIZE_LABEL"
     else
-      log "WARNING: adding $OVERSIZE_LABEL to #$issue_num failed"
+      log "WARNING: adding $OVERSIZE_LABEL to #$issue_num failed; the next tick tries again"
     fi
   else
     [[ "$has" -eq 1 ]] || return 0
     if gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
         --remove-label "$OVERSIZE_LABEL" >>"$LOG_FILE" 2>&1; then
+      PLAN_SIZE_LAST="$issue_num:0"
       log "Issue #$issue_num: the plan now estimates ~$est added lines ($cls), under $FACTORY_PLAN_OVERSIZE_LINES → removed $OVERSIZE_LABEL"
     else
-      log "WARNING: removing $OVERSIZE_LABEL from #$issue_num failed"
+      log "WARNING: removing $OVERSIZE_LABEL from #$issue_num failed; the next tick tries again"
     fi
   fi
 }
@@ -1715,16 +1726,29 @@ plan_size_label() {
 # allowlisted forward: the trigger ids already went through the ADR-0066
 # gate). A forward `> `-quotes the reporter's text, so one quote level is
 # ignored there, and only one: a deeper level is someone the reporter quoted.
-# In any other comment a quoted line is someone else's words.
+# In any other comment a quoted line is someone else's words. Code never asks:
+# a line inside a ``` or ~~~ fence, or indented four spaces or a tab (an
+# indented code block), doesn't count.
 plan_split_requested() {
   echo "$1" | jq -e --argjson t "${2:-[]}" '
+    def asks_split($fwd):
+      reduce (split("\n")[] | rtrimstr("\r") | if $fwd then sub("^\\s*> ?"; "") else . end) as $l
+        ({fence: null, hit: false};
+          . as $s
+          | if $s.hit then $s
+            elif $s.fence != null then
+              (if ($l | test("^ {0,3}" + $s.fence)) then $s | .fence = null else $s end)
+            elif ($l | test("^ {0,3}(```|~~~)")) then
+              $s | .fence = ($l | capture("^ {0,3}(?<f>```|~~~)").f)
+            elif ($l | test("^ {0,3}(please\\s+)?split\\s+this\\s+card\\b[^?]*$"; "i")) then
+              $s | .hit = true
+            else $s end)
+      | .hit;
     any(.[];
       ((.id | tostring) as $i | $t | map(tostring) | index($i)) != null
       and ((.body // "") as $b
         | ($b | test("drafto-support-forward"; "i")) as $fwd
-        | any($b | split("\n")[] | rtrimstr("\r")
-              | if $fwd then sub("^\\s*> ?"; "") else . end;
-            test("^\\s*(please\\s+)?split\\s+this\\s+card\\b[^?]*$"; "i"))))' >/dev/null 2>&1
+        | $b | asks_split($fwd)))' >/dev/null 2>&1
 }
 
 # plan_split_request_link <issue> — " ([your request](…))" for the first trigger
@@ -1770,7 +1794,8 @@ ${made_text}This card is back in **Plan Review**. To try again, comment \"Split 
 # can't be known, so the caller files nothing rather than risk a duplicate.
 # Every part's body names <issue>, so GitHub lists each one on <issue>'s
 # timeline (a cross-reference) whether or not the attempt that filed it ever
-# saw gh's reply. A candidate counts only if the factory's own gh identity
+# saw gh's reply. Only this repo's issues are read: another repo's issue that
+# mentions this one has a number that means nothing here. A candidate counts only if the factory's own gh identity
 # opened it, it is open, and its body carries this issue's part marker
 # (plan-split.mjs splitPartMarker): anyone can open an issue that mentions
 # this one.
@@ -1780,7 +1805,10 @@ plan_split_earlier() {
   [[ -n "$login" ]] || return 1
   nums=$(gh api --paginate "repos/JakubAnderwald/drafto/issues/$issue_num/timeline" \
     --jq '.[] | select(.event == "cross-referenced" and .source.type == "issue"
-            and (.source.issue.pull_request == null)) | .source.issue.number' 2>>"$LOG_FILE") || return 1
+            and (.source.issue.pull_request == null)
+            and ((.source.issue.repository_url // "") | ascii_downcase)
+                == "https://api.github.com/repos/jakubanderwald/drafto")
+          | .source.issue.number' 2>>"$LOG_FILE") || return 1
   for n in $(printf '%s\n' "$nums" | sort -un); do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
     info=$(gh issue view "$n" --repo JakubAnderwald/drafto --json number,state,title,body,author \
@@ -1833,7 +1861,7 @@ plan_split_backlog() {
 plan_split() {
   local item_id="$1" issue_num="$2" triggers="${3:-[]}"
   local comments acked unacked dir out scan problems="" n i part spec missing title body
-  local create_out num created="{}" made="" lines="" note="" earlier filing reused="" left
+  local create_out num created="{}" made="" lines="" note="" earlier filing reused="" left item offboard=""
   PLAN_SPLIT_TRIGGERS="$triggers"
   PLAN_SPLIT_RESULT="back"
   if [[ "$FACTORY_PLAN_SPLIT" != "1" ]]; then
@@ -1907,6 +1935,27 @@ $problems"
       || [[ "$(echo "$filing" | jq -r '.ok | type' 2>/dev/null)" != "boolean" ]]; then
     plan_split_fail "$item_id" "$issue_num" "The factory couldn't match this split against the parts an earlier attempt filed (the factory log on the Mac mini says why), so it filed nothing."
     return 0
+  fi
+  # A part to reuse must be on the board: gh issue create --project can file
+  # the issue and then fail to add it, and a part off the board would be
+  # lost when the original closes.
+  if [[ "$(echo "$filing" | jq -r '.ok')" == "true" ]]; then
+    for num in $(echo "$filing" | jq -r '.actions[] | select(.action == "reuse") | .number'); do
+      item=$(node "$SCRIPT_DIR/lib/factory-project.mjs" item-for-issue --issue "$num" 2>>"$LOG_FILE" || true)
+      # "unknown" when the lookup printed nothing usable: never read as on it.
+      item=$(echo "$item" | jq -r 'if type == "object" and has("itemId") then (.itemId // "null") else "unknown" end' 2>/dev/null || true)
+      case "${item:-unknown}" in
+        null) offboard+="- #$num, filed by an earlier attempt, isn't on the **Drafto Factory** board"$'\n' ;;
+        unknown) offboard+="- the factory couldn't check whether #$num, filed by an earlier attempt, is on the board"$'\n' ;;
+      esac
+    done
+    if [[ -n "$offboard" ]]; then
+      plan_split_fail "$item_id" "$issue_num" "Parts an earlier attempt filed aren't all on the board, so the factory filed nothing and left this card open:
+
+$offboard
+Add each to the **Drafto Factory** board in **Backlog**, or close it to have its part filed again, then comment \"Split this card\" again."
+      return 0
+    fi
   fi
   if [[ "$(echo "$filing" | jq -r '.ok')" != "true" ]]; then
     problems=$(echo "$filing" | jq -r '.problems[] | "- " + .')
@@ -7853,6 +7902,10 @@ and drag the card back to **Ready** to retry.
     PLAN_COMMENT_ID=$(echo "$PLAN_COMMENT_JSON" | jq -r '.id | tostring')
     PLAN_CREATED_AT=$(echo "$PLAN_COMMENT_JSON" | jq -r '.createdAt')
     PLAN_BODY=$(echo "$PLAN_COMMENT_JSON" | jq -r '.body')
+    # Keep factory-oversize in step with the plan on every tick, from what was
+    # just read (ADR-0083): a label edit that failed, or a label created
+    # since, is caught up without waiting for another replan.
+    plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" "$PLAN_BODY"
 
     ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
     if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi

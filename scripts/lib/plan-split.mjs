@@ -292,6 +292,15 @@ export function validateSplit(dir, { secrets, fs = nodeFs } = {}) {
       body,
     });
   }
+  // Titles name the parts: on a retry an earlier part is matched by its title.
+  const firstWith = new Map();
+  for (const p of parts) {
+    if (firstWith.has(p.title)) {
+      problems.push(`${p.file}: it has the same title as ${firstWith.get(p.title)}`);
+    } else {
+      firstWith.set(p.title, p.file);
+    }
+  }
   if (problems.length > 0) return fail();
   return { ok: true, problems: [], scanProblems: [], parts };
 }
@@ -360,7 +369,9 @@ export function parseFiledPart(body, issue) {
 /**
  * Decide, before anything is filed, which parts reuse an issue an earlier
  * attempt filed and which are filed now. <earlier> holds the open issues that
- * attempt filed for <issue> (bash checks they are the factory's own). A part
+ * attempt filed for <issue> (bash checks they are the factory's own). Titles
+ * are unique within a split (validateSplit), and a title more than one earlier
+ * issue carries is ambiguous, so it stops the split. A part
  * reuses the earlier issue with its title only when that issue's spec is the
  * part's spec and its "Depends on" names exactly the issues this split
  * resolves the part's dependencies to. Anything else is a conflict, and
@@ -373,22 +384,30 @@ export function planSplitFiling({ split, earlier = [], issue }) {
   const parts = Array.isArray(split?.parts) ? split.parts : [];
   const byTitle = new Map();
   for (const e of Array.isArray(earlier) ? earlier : []) {
-    if (Number.isInteger(e?.number) && typeof e?.title === "string" && !byTitle.has(e.title)) {
-      byTitle.set(e.title, e);
-    }
+    if (!Number.isInteger(e?.number) || typeof e?.title !== "string") continue;
+    byTitle.set(e.title, [...(byTitle.get(e.title) ?? []), e]);
   }
   const resolved = {};
   const actions = [];
   const problems = [];
   for (const p of parts) {
-    const e = byTitle.get(p.title);
+    const matches = byTitle.get(p.title) ?? [];
     const planned = (p.dependsOn ?? []).map((d) => resolved[d]);
-    if (!e) {
+    if (matches.length === 0) {
       resolved[p.part] = null;
       actions.push({ part: p.part, action: "file" });
       continue;
     }
     byTitle.delete(p.title);
+    if (matches.length > 1) {
+      const nums = matches.map((m) => `#${m.number}`).join(", ");
+      problems.push(
+        `part ${p.part}'s title matches more than one issue an earlier attempt filed (${nums})`,
+      );
+      resolved[p.part] = null;
+      continue;
+    }
+    const [e] = matches;
     resolved[p.part] = e.number;
     const filed = parseFiledPart(e.body, issue);
     if (!filed) {
@@ -416,7 +435,10 @@ export function planSplitFiling({ split, earlier = [], issue }) {
     }
     actions.push({ part: p.part, action: "reuse", number: e.number });
   }
-  const leftovers = [...byTitle.values()].map((e) => e.number).sort((a, b) => a - b);
+  const leftovers = [...byTitle.values()]
+    .flat()
+    .map((e) => e.number)
+    .sort((a, b) => a - b);
   if (problems.length > 0) return { ok: false, problems, actions: [], leftovers };
   return { ok: true, problems: [], actions, leftovers };
 }

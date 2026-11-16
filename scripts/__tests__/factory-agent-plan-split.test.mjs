@@ -120,7 +120,10 @@ describe("plan_split (extracted, real bash, gh stubbed)", () => {
     closeFail = false,
     views = {},
     timeline = [],
+    timelineEvents = [],
     timelineFail = false,
+    offboard = [],
+    lookupBroken = [],
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "plan-split-bash-"));
     const replies = join(dir, "replies");
@@ -144,6 +147,21 @@ describe("plan_split (extracted, real bash, gh stubbed)", () => {
       ]),
     );
     writeFileSync(viewsFile, JSON.stringify(shaped));
+    // The timeline as GitHub returns it; the stub runs the real --jq filter.
+    const timelineFile = join(dir, "timeline.json");
+    writeFileSync(
+      timelineFile,
+      JSON.stringify([
+        ...timeline.map((number) => ({
+          event: "cross-referenced",
+          source: {
+            type: "issue",
+            issue: { number, repository_url: "https://api.github.com/repos/JakubAnderwald/drafto" },
+          },
+        })),
+        ...timelineEvents,
+      ]),
+    );
     try {
       const snippet = `
 set -euo pipefail
@@ -167,7 +185,10 @@ node() {
     *factory-project.mjs)
       echo "[factory-project] \${*:2}" >>${JSON.stringify(calls)}
       case "\${2:-}" in
-        item-for-issue) ${backlogFail === "lookup" ? "return 1" : 'printf \'{"itemId":"PVTI_%s"}\' "$4"'} ;;
+        item-for-issue)
+          if [[ " ${offboard.join(" ")} " == *" $4 "* ]]; then printf '{"issueNumber":%s,"itemId":null}' "$4"; return 1; fi
+          if [[ " ${lookupBroken.join(" ")} " == *" $4 "* ]]; then return 1; fi
+          ${backlogFail === "lookup" ? "return 1" : 'printf \'{"itemId":"PVTI_%s"}\' "$4"'} ;;
         set-status) ${backlogFail === "set" ? "return 1" : ":"} ;;
       esac
       return 0 ;;
@@ -180,7 +201,13 @@ gh() {
   case "\${1:-} \${2:-}" in
     "api user") echo ${JSON.stringify(FACTORY)} ;;
     "api --paginate")
-      ${timelineFail ? 'echo "HTTP 502" >&2; return 1' : `printf '%s\\n' ${timeline.join(" ") || '""'}`} ;;
+      ${
+        timelineFail
+          ? 'echo "HTTP 502" >&2; return 1'
+          : `local q="" a prev=""
+      for a in "$@"; do [[ "$prev" == "--jq" ]] && q="$a"; prev="$a"; done
+      jq -r "$q" ${JSON.stringify(timelineFile)}`
+      } ;;
     "issue create")
       local n
       n=$(( $(cat ${JSON.stringify(counter)} 2>/dev/null || echo 0) + 1 ))
@@ -378,6 +405,26 @@ echo "[result] $PLAN_SPLIT_RESULT"
     }
   });
 
+  it("never reads a request out of code: a fenced or indented line doesn't count", () => {
+    for (const body of [
+      "To ask, comment:\n\n```\nSplit this card\n```",
+      "Like this:\n\n~~~text\nPlease split this card.\n~~~",
+      "Example:\n\n    Split this card",
+      "\tSplit this card",
+      `${FORWARD}> \`\`\`\n> Split this card\n> \`\`\``,
+    ]) {
+      refused(
+        runSplit({ comments: [plan("10"), ask(10, body)] }),
+        /has a line that starts with "Split this card"/,
+      );
+    }
+    // A request after a closed fence still counts.
+    const after = runSplit({
+      comments: [plan("10"), ask(10, "```\nSplit this card\n```\n\nSplit this card, please.")],
+    });
+    assert.equal(after.creates, 2);
+  });
+
   it("refuses with splitting switched off", () => {
     refused(runSplit({ split: "0" }), /FACTORY_PLAN_SPLIT=0/);
   });
@@ -426,6 +473,51 @@ echo "[result] $PLAN_SPLIT_RESULT"
     assert.equal(out.creates, 0);
     assert.equal(out.result, "done");
     assert.match(out.posted, /1\. #1001\n2\. #1002\n/);
+  });
+
+  it("reads only this repo's issue cross-references from the timeline", () => {
+    const out = runSplit({
+      timeline: [1001],
+      timelineEvents: [
+        // Another repo's issue that mentions #900: its number means nothing here.
+        {
+          event: "cross-referenced",
+          source: {
+            type: "issue",
+            issue: { number: 5, repository_url: "https://api.github.com/repos/someone/else" },
+          },
+        },
+        // A PR that mentions it, and an event of another kind.
+        {
+          event: "cross-referenced",
+          source: {
+            type: "issue",
+            issue: {
+              number: 6,
+              pull_request: {},
+              repository_url: "https://api.github.com/repos/JakubAnderwald/drafto",
+            },
+          },
+        },
+        { event: "labeled", label: { name: "x" } },
+      ],
+      views: { 1001: earlierPart(1) },
+    });
+    assert.equal(out.result, "done");
+    assert.match(out.calls, /issue view 1001/);
+    assert.doesNotMatch(out.calls, /issue view (5|6) /);
+  });
+
+  it("stops before filing anything when a part to reuse isn't on the board, or that can't be checked", () => {
+    const off = runSplit({ timeline: [1001], views: { 1001: earlierPart(1) }, offboard: [1001] });
+    refused(off, /#1001, filed by an earlier attempt, isn't on the \*\*Drafto Factory\*\* board/);
+    assert.match(off.posted, /Add each to the \*\*Drafto Factory\*\* board in \*\*Backlog\*\*/);
+    const broken = runSplit({
+      timeline: [1001],
+      views: { 1001: earlierPart(1) },
+      lookupBroken: [1001],
+    });
+    refused(broken, /couldn't check whether #1001, filed by an earlier attempt, is on the board/);
   });
 
   it("only reuses the factory's own open parts of this card", () => {
@@ -496,14 +588,10 @@ echo "[result] $PLAN_SPLIT_RESULT"
 });
 
 describe("plan_size_label (extracted, real bash, gh stubbed)", () => {
-  function runLabel({
-    body,
-    labels = [],
-    labelExists = true,
-    threshold = 1500,
-    issues = [900],
-    passLabels,
-  }) {
+  // invocations: [[issue, labelsCsv, body?]]; body given = the replan sweep's
+  // every-tick call with the plan it already read, omitted = read the plan
+  // from the issue (after a plan run).
+  function runLabel({ body, labelExists = true, threshold = 1500, invocations }) {
     const dir = mkdtempSync(join(tmpdir(), "plan-size-bash-"));
     const calls = join(dir, "calls");
     const comments = [
@@ -522,13 +610,12 @@ ${extract("extract_plan_comment")}
 ${extract("fetch_comments_retry")}
 ${extract("oversize_label_ready")}
 ${extract("plan_size_label")}
-log() { echo "[log] $*"; }
+log() { echo "[log] $*"; echo "[log] $*" >>"$LOG_FILE"; }
 sleep() { :; }
-fetch_issue_comments() { printf '%s' ${JSON.stringify(JSON.stringify(comments))}; }
+fetch_issue_comments() { echo "[fetch] $1" >>${JSON.stringify(calls)}; printf '%s' ${JSON.stringify(JSON.stringify(comments))}; }
 gh() {
   echo "[gh] $*" >>${JSON.stringify(calls)}
   case "\${1:-} \${2:-}" in
-    "issue view") ${labels.length ? `printf '%s\\n' ${labels.map((l) => JSON.stringify(l)).join(" ")}` : ":"} ;;
     "api repos/JakubAnderwald/drafto/labels/factory-oversize") ${labelExists ? ":" : "return 1"} ;;
   esac
   return 0
@@ -539,7 +626,14 @@ DRY_RUN=0
 FACTORY_PLAN_OVERSIZE_LINES=${threshold}
 OVERSIZE_LABEL=factory-oversize
 OVERSIZE_LABEL_READY=""
-${issues.map((n) => `plan_size_label ${n}${passLabels === undefined ? "" : ` ${JSON.stringify(passLabels)}`}`).join("\n")}
+PLAN_SIZE_LAST=""
+${invocations
+  .map(([n, csv, b]) =>
+    b === undefined
+      ? `plan_size_label ${n} ${JSON.stringify(csv)}`
+      : `plan_size_label ${n} ${JSON.stringify(csv)} ${JSON.stringify(`<!-- drafto-factory-plan -->\n${b}`)}`,
+  )
+  .join("\n")}
 `;
       const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
       assert.equal(r.status, 0, `bash failed: ${r.stderr}`);
@@ -555,8 +649,9 @@ ${issues.map((n) => `plan_size_label ${n}${passLabels === undefined ? "" : ` ${J
   const xl = "<!-- drafto-factory-plan-size:XL:1800 -->";
   const m = "<!-- drafto-factory-plan-size:M:400 -->";
 
-  it("adds the label, in its own edit, once the repo is known to have it", () => {
-    const out = runLabel({ body: xl });
+  it("adds the label after a plan run, in its own edit, once the repo is known to have it", () => {
+    const out = runLabel({ body: xl, invocations: [[900, "status:plan-review"]] });
+    assert.match(out.calls, /\[fetch\] 900/);
     assert.match(
       out.calls,
       /\[gh\] api repos\/JakubAnderwald\/drafto\/labels\/factory-oversize --silent/,
@@ -565,58 +660,89 @@ ${issues.map((n) => `plan_size_label ${n}${passLabels === undefined ? "" : ` ${J
       out.calls,
       /\[gh\] issue edit 900 --repo JakubAnderwald\/drafto --add-label factory-oversize\n/,
     );
+    assert.doesNotMatch(out.calls, /issue view/, "labels come from the board item");
     assert.match(
       out.log,
       /estimates ~1800 added lines \(XL\), at least 1500 → added factory-oversize/,
     );
   });
 
-  it("checks the label once per tick", () => {
-    const out = runLabel({ body: xl, issues: [900, 901] });
+  it("checks the repo label once per tick", () => {
+    const out = runLabel({
+      body: xl,
+      invocations: [
+        [900, ""],
+        [901, ""],
+      ],
+    });
     assert.equal((out.calls.match(/labels\/factory-oversize/g) || []).length, 1);
     assert.equal((out.calls.match(/--add-label factory-oversize/g) || []).length, 2);
   });
 
-  it("uses the board item's labels when the sweep passes them, instead of reading the issue", () => {
-    const out = runLabel({ body: xl, passLabels: "status:planning,factory-oversize" });
-    assert.doesNotMatch(out.calls, /issue view|issue edit/);
-    const add = runLabel({ body: xl, passLabels: "status:planning" });
-    assert.doesNotMatch(add.calls, /issue view/);
-    assert.match(add.calls, /--add-label factory-oversize/);
-    const none = runLabel({ body: m, passLabels: "" });
-    assert.equal(none.calls, "");
-  });
-
   it("leaves a card that already has it alone", () => {
-    const out = runLabel({ body: xl, labels: ["status:planning", "factory-oversize"] });
+    const out = runLabel({ body: xl, invocations: [[900, "status:planning,factory-oversize"]] });
     assert.doesNotMatch(out.calls, /issue edit|labels\/factory-oversize/);
   });
 
   it("removes it when a replan's estimate drops below the threshold", () => {
-    const out = runLabel({ body: m, labels: ["factory-oversize"] });
+    const out = runLabel({ body: m, invocations: [[900, "factory-oversize"]] });
     assert.match(
       out.calls,
       /\[gh\] issue edit 900 --repo JakubAnderwald\/drafto --remove-label factory-oversize\n/,
     );
-    const none = runLabel({ body: m });
-    assert.doesNotMatch(none.calls, /issue edit/);
+    assert.doesNotMatch(runLabel({ body: m, invocations: [[900, ""]] }).calls, /issue edit/);
+  });
+
+  it("syncs on every tick from the plan body it is handed, without reading the issue again", () => {
+    const out = runLabel({ body: "unused", invocations: [[900, "", `## Plan\n${xl}`]] });
+    assert.doesNotMatch(out.calls, /\[fetch\]/);
+    assert.match(out.calls, /--add-label factory-oversize/);
+  });
+
+  it("remembers its own edit within the tick, so a later call with stale board labels still acts", () => {
+    // The every-tick sync adds the label (XL); the replan then drops the
+    // estimate (M), and the after-run call still holds the board's old labels.
+    const out = runLabel({
+      body: m,
+      invocations: [
+        [900, "", `## Plan\n${xl}`],
+        [900, ""],
+      ],
+    });
+    assert.match(out.calls, /--add-label factory-oversize[\s\S]*--remove-label factory-oversize/);
   });
 
   it("uses the threshold knob, and 0 turns the label off", () => {
-    assert.match(runLabel({ body: m, threshold: 300 }).calls, /--add-label factory-oversize/);
-    assert.equal(runLabel({ body: xl, threshold: 0 }).calls, "");
+    assert.match(
+      runLabel({ body: m, threshold: 300, invocations: [[900, ""]] }).calls,
+      /--add-label factory-oversize/,
+    );
+    assert.equal(runLabel({ body: xl, threshold: 0, invocations: [[900, ""]] }).calls, "");
   });
 
-  it("adds nothing when the repo lacks the label, and says how to create it", () => {
-    const out = runLabel({ body: xl, labelExists: false });
+  it("adds nothing when the repo lacks the label, says how to create it, and logs that once", () => {
+    const out = runLabel({
+      body: xl,
+      labelExists: false,
+      invocations: [
+        [900, ""],
+        [901, ""],
+      ],
+    });
     assert.doesNotMatch(out.calls, /issue edit/);
-    assert.match(out.log, /run scripts\/setup-factory-labels\.sh/);
+    assert.equal((out.log.match(/run scripts\/setup-factory-labels\.sh/g) || []).length, 1);
   });
 
-  it("leaves the label alone when the plan has no size marker", () => {
-    const out = runLabel({ body: "no marker", labels: ["factory-oversize"] });
+  it("leaves the label alone when the plan has no size marker, and logs that once", () => {
+    const out = runLabel({
+      body: "no marker",
+      invocations: [
+        [900, "factory-oversize"],
+        [900, "factory-oversize", "## Plan without a marker"],
+      ],
+    });
     assert.doesNotMatch(out.calls, /issue edit/);
-    assert.match(out.log, /the plan has no size marker/);
+    assert.equal((out.log.match(/the plan has no size marker/g) || []).length, 1);
   });
 });
 
@@ -680,6 +806,15 @@ describe("factory-agent.sh plan size + split: --plan wiring", () => {
     const ts = script.match(/^transition_status\(\) \{[\s\S]*?\n\}/m);
     assert.ok(ts);
     assert.doesNotMatch(ts[0], /oversize|plan_size/i);
+  });
+
+  it("re-syncs the label on every replan-sweep tick, before a card with no new feedback is skipped", () => {
+    const sync = REPLAN.indexOf('plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" "$PLAN_BODY"');
+    const skip = REPLAN.indexOf(
+      'if [[ "$UNACKED_COUNT" -eq 0 && "$PROBE_FOLD_JSON" == "null" ]]; then',
+    );
+    assert.ok(sync !== -1 && skip !== -1 && sync < skip);
+    assert.ok(sync > REPLAN.indexOf("PLAN_BODY=$(echo"));
   });
 
   it("hands action=split to plan_split with the trigger ids", () => {
