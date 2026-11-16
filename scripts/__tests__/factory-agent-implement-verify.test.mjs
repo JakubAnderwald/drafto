@@ -86,7 +86,9 @@ describe("factory-agent.sh --implement verification", () => {
 
   it("treats an unchanged head as a failed attempt, not a success", () => {
     const mismatch = sliceBetween(
-      'if [[ "$POST_HEAD_OID" == "$PRE_HEAD_OID" ]]; then',
+      // The chain's baseline (ADR-0084): a resumed run's predecessor may have
+      // pushed already; equal to PRE_HEAD_OID on every run that isn't resumed.
+      'if [[ "$POST_HEAD_OID" == "$CHAIN_PRE_HEAD_OID" ]]; then',
       "        # Parity / phase post-check",
       "the head-unchanged arm",
     );
@@ -108,7 +110,9 @@ describe("factory-agent.sh --implement verification", () => {
   it("fails closed when the head OID cannot be read", () => {
     const unknown = sliceBetween(
       'if [[ -z "$POST_HEAD_OID" ]]; then',
-      'if [[ "$POST_HEAD_OID" == "$PRE_HEAD_OID" ]]; then',
+      // The chain's baseline (ADR-0084): a resumed run's predecessor may have
+      // pushed already; equal to PRE_HEAD_OID on every run that isn't resumed.
+      'if [[ "$POST_HEAD_OID" == "$CHAIN_PRE_HEAD_OID" ]]; then',
       "the unreadable-OID arm",
     );
     assert.match(unknown, /factory:bump-attempts/);

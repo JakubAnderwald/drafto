@@ -34,6 +34,7 @@ import {
   UNATTENDED_ENV,
   assertSafeClaudeArgs,
   buildClaudeArgs,
+  checkGuard,
   CURL_CFG,
   SIGNED_OUT_CURL_CFG,
   buildPreviewCurlArgs,
@@ -42,7 +43,6 @@ import {
   classifyRun,
   countToolUses,
   curlConfigText,
-  findTranscript,
   laneEnv,
   main,
   makeRunId,
@@ -57,6 +57,8 @@ import {
   worktreePathFor,
   writeCurlConfigs,
 } from "../lib/verify-lane.mjs";
+// verify-lane reads transcripts through session-limit.mjs since ADR-0084.
+import { findTranscriptById } from "../lib/session-limit.mjs";
 import {
   attachVerifyRun,
   emptyFactoryState,
@@ -1350,7 +1352,18 @@ describe("housekeeping", () => {
       }) + "\n",
     );
     const { deps } = makeDeps();
+    // #842 review: detectLimit finds the transcript through the moved
+    // findTranscriptById, under the deps' HOME and with the deps' fs.
+    const looked = [];
+    deps.fs = {
+      ...deps.fs,
+      readdirSync: (...a) => {
+        looked.push(a[0]);
+        return nodeFs.readdirSync(...a);
+      },
+    };
     const r = await hk(deps);
+    assert.ok(looked.includes(path.join(home, ".claude", "projects")), looked.join(", "));
     assert.equal(r.outcome, "session-limit");
     assert.match(r.sessionLimit.resetAt, /^2026-10-21T15:02:00/);
     assert.match(r.sessionLimit.reason, /session limit/);
@@ -1642,6 +1655,55 @@ describe("gaps", () => {
 });
 
 describe("transcripts", () => {
+  // #842 review: findTranscriptById moved to session-limit.mjs. It must stay
+  // synchronous and use the env and fs checkGuard hands it, or the guard check
+  // would miss a session that ran tools unguarded.
+  it("checkGuard finds the transcript through the moved lookup: one tool call, no pre record → not ok", async () => {
+    const runDir = path.join(tmp, "guard-run");
+    const worktree = path.join(repoRoot, "worktrees", "guard-wt");
+    mkdirSync(runDir, { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    const guard = writeGuardFiles({ runDir, worktree, repoRoot, home });
+    mkdirSync(path.join(runDir, "guard"), { recursive: true });
+    writeFileSync(
+      path.join(runDir, "guard", `${SESSION}.jsonl`),
+      JSON.stringify({ event: "session-start" }) + "\n",
+    );
+    const dir = path.join(home, ".claude", "projects", "-guard-wt");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "tool_use", name: "Bash" }] },
+      }) + "\n",
+    );
+    const calls = [];
+    const fsSpy = {
+      ...nodeFs,
+      readdirSync: (...a) => {
+        calls.push(a[0]);
+        return nodeFs.readdirSync(...a);
+      },
+    };
+    const r = await checkGuard(
+      { sessionId: SESSION, paths: { guardConfig: guard.configPath } },
+      { env: { HOME: home }, fs: fsSpy },
+    );
+    assert.deepEqual(r, {
+      sessionStart: true,
+      pre: 0,
+      denied: 0,
+      transcript: true,
+      toolUses: 1,
+      ok: false,
+    });
+    // The lookup used the env's HOME and the fs it was given.
+    assert.deepEqual(calls, [path.join(home, ".claude", "projects")]);
+    // And it is synchronous: a path, not a promise.
+    assert.equal(typeof findTranscriptById(SESSION, { env: { HOME: home } }), "string");
+  });
+
   it("finds a session's transcript by id and counts its tool calls", () => {
     const dir = path.join(home, ".claude", "projects", "-some-cwd");
     mkdirSync(dir, { recursive: true });
@@ -1662,10 +1724,10 @@ describe("transcripts", () => {
       path.join(dir, `${SESSION}.jsonl`),
       lines.map((l) => JSON.stringify(l)).join("\n") + "\nnot json\n",
     );
-    const p = findTranscript(SESSION, { env: { HOME: home } });
+    const p = findTranscriptById(SESSION, { env: { HOME: home } });
     assert.equal(p, path.join(dir, `${SESSION}.jsonl`));
     assert.equal(countToolUses(readFileSync(p, "utf8")), 2);
-    assert.equal(findTranscript("not-a-uuid", { env: { HOME: home } }), null);
+    assert.equal(findTranscriptById("not-a-uuid", { env: { HOME: home } }), null);
   });
 });
 

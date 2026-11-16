@@ -241,6 +241,27 @@
 //                                    cancels it and deletes the branch) or let
 //                                    the round end, then reset.
 //
+// --implement session resume (ADR-0084). factory-agent.sh records a session the
+// next run may resume, and clears the record at every implement start.
+//
+//   factory:implement-resume-set <issue> --session <uuid> --head <sha>
+//        --tree-digest <sha256> --key <task-key> --feedback-digest <sha256>
+//        [--pre-head <sha>]
+//                                    Record that <issue>'s run in session <uuid>
+//                                    stopped (wall cap, action=incomplete or the
+//                                    session limit) with the worktree at <sha>
+//                                    and its uncommitted files hashing to
+//                                    --tree-digest, for the task <task-key>
+//                                    ("plan:<id>@<digest>|rev:…"), and the
+//                                    PR head before that run (--pre-head; omit
+//                                    or "" when it had no PR). Stamped with now.
+//   factory:implement-resume-clear <issue> [--session-id <uuid>]
+//                                    Forget the record ({cleared:[…keys]}). With
+//                                    --session-id, also store it as
+//                                    implementSessionId, the session of the run
+//                                    now starting. Clearing by hand stops the
+//                                    next run from resuming.
+//
 // Nightly beta-release retry counters (ADR-0042). These live in
 // logs/support-release-state.json — written only by nightly-support.sh, so they
 // never race support-agent.sh's every-minute writes to support-state.json — and
@@ -312,6 +333,8 @@ import {
   verifyIssueRecords,
   resetIssueVerify,
   resetIssuePlanProbe,
+  setImplementResume,
+  clearImplementResume,
 } from "./factory-state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
 import { isManualReviewCommand } from "./coderabbit-review.mjs";
@@ -994,6 +1017,41 @@ async function main(argv) {
       if (result.ok && result.cleared.length > 0) await saveFactoryState(state, file);
       return { ...result, issueNumber };
     }
+    case "factory:implement-resume-set": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("factory:implement-resume-set requires <issue>");
+      if (!/^[1-9][0-9]*$/.test(issueNumber)) {
+        throw new Error(
+          `factory:implement-resume-set: invalid issue number ${JSON.stringify(issueNumber)}`,
+        );
+      }
+      const state = await loadFactoryState(file);
+      const record = setImplementResume(state, issueNumber, {
+        session: flags.session,
+        head: flags.head,
+        treeDigest: flags["tree-digest"],
+        key: flags.key,
+        preHead: flags["pre-head"] ?? "",
+        feedbackDigest: flags["feedback-digest"],
+        now,
+      });
+      await saveFactoryState(state, file);
+      return { ok: true, issueNumber, ...record };
+    }
+    case "factory:implement-resume-clear": {
+      const issueNumber = positional[0];
+      if (!issueNumber) throw new Error("factory:implement-resume-clear requires <issue>");
+      if (!/^[1-9][0-9]*$/.test(issueNumber)) {
+        throw new Error(
+          `factory:implement-resume-clear: invalid issue number ${JSON.stringify(issueNumber)}`,
+        );
+      }
+      const state = await loadFactoryState(file);
+      const sessionId = flags["session-id"] || null;
+      const cleared = clearImplementResume(state, issueNumber, { sessionId });
+      if (cleared.length > 0 || sessionId != null) await saveFactoryState(state, file);
+      return { ok: true, issueNumber, cleared, implementSessionId: sessionId };
+    }
     case "record-release-attempt": {
       const issueNumber = positional[0];
       const platform = positional[1];
@@ -1082,7 +1140,9 @@ async function main(argv) {
           "factory:verify-pause-until <until-iso> [<reason>]|" +
           "factory:verify-resume|" +
           "factory:verify-reset <issue>|" +
-          "factory:plan-probe-reset <issue>> " +
+          "factory:plan-probe-reset <issue>|" +
+          "factory:implement-resume-set <issue> --session <uuid> --head <sha> --tree-digest <sha256> --key <key> --feedback-digest <sha256> [--pre-head <sha>]|" +
+          "factory:implement-resume-clear <issue> [--session-id <uuid>]> " +
           "[--state-file <path>] [--now <iso>]\n",
       );
       return null;
