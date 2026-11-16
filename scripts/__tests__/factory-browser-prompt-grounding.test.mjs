@@ -93,6 +93,10 @@ describe("browser runner prompt — browser rules", () => {
       G.alwaysDeny({ capabilities: ["uploads", "js", "inspect"] }).includes("upload_image"),
     );
     assert.match(flat, /Run it with Bash, exactly as `dev-inspect <command> \[options\]`/);
+    // Read is in an uploads session only for file_upload's own check.
+    assert.equal(G.sessionToolsArg({ capabilities: ["uploads"] }), "Read");
+    assert.match(flat, /the session also has the Read tool, only because `file_upload` needs it/);
+    assert.match(flat, /the guard refuses every Read call/);
     assert.match(flat, /Each sign-in link works once, so there is no way back to the test account/);
     assert.match(flat, /report only method, path and status code/);
   });

@@ -63,7 +63,9 @@ Only Claude in Chrome tools: `list_connected_browsers`, `select_browser`,
 `read_network_requests`, `resize_window`. With `capabilities.uploads` also
 `file_upload`, with `capabilities.js` also `javascript_tool`, and with
 `capabilities.inspect` the **Bash** tool for exactly one command, `dev-inspect`
-(rules 10 to 13). Everything else is denied, and a guard hook checks each call. When the guard denies a call, the reason comes back as
+(rules 10 to 13). With `capabilities.uploads` the session also has the Read
+tool, only because `file_upload` needs it: don't call it, the guard refuses
+every Read call. Everything else is denied, and a guard hook checks each call. When the guard denies a call, the reason comes back as
 the tool's error. Don't try to get around it: record the step as SKIP with that
 reason and move on.
 
