@@ -133,6 +133,62 @@ describe("AdminStorageList", () => {
     expect(input).toHaveValue(50);
   });
 
+  it("unticking Unlimited after saving it offers the default, not the last number saved", async () => {
+    const user = userEvent.setup();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(200, { userId: ALICE.id, quotaBytes: megabytesToBytes(60) }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { userId: ALICE.id, quotaBytes: null }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, { userId: ALICE.id, quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES }),
+      );
+    render(<AdminStorageList users={[ALICE]} />);
+
+    const row = within(rowFor(ALICE.email));
+    const input = row.getByLabelText(`Quota in MB for ${ALICE.email}`);
+    const unlimited = row.getByLabelText(`Unlimited storage for ${ALICE.email}`);
+    const save = row.getByRole("button", { name: `Save quota for ${ALICE.email}` });
+
+    await user.clear(input);
+    await user.type(input, "60");
+    await user.click(save);
+    expect(await row.findByText("Current: 60 MB")).toBeInTheDocument();
+
+    await user.click(unlimited);
+    await user.click(save);
+    expect(await row.findByText("Current: Unlimited")).toBeInTheDocument();
+
+    await user.click(unlimited);
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue(50);
+
+    await user.click(save);
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({
+      userId: ALICE.id,
+      quotaMb: 50,
+    });
+    expect(await row.findByText("Current: 50 MB")).toBeInTheDocument();
+  });
+
+  it("unticking Unlimited before saving it goes back to the row's current quota", async () => {
+    const user = userEvent.setup();
+    render(<AdminStorageList users={[{ ...ALICE, quotaBytes: megabytesToBytes(200) }]} />);
+
+    const row = within(rowFor(ALICE.email));
+    const input = row.getByLabelText(`Quota in MB for ${ALICE.email}`);
+    const unlimited = row.getByLabelText(`Unlimited storage for ${ALICE.email}`);
+
+    await user.clear(input);
+    await user.type(input, "70");
+    await user.click(unlimited);
+    await user.click(unlimited);
+
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("refuses a quota that isn't a positive whole number without calling the API", async () => {
     const user = userEvent.setup();
     render(<AdminStorageList users={[ALICE]} />);

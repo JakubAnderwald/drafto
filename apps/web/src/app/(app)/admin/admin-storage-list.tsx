@@ -146,7 +146,11 @@ function StorageQuotaRow({ user }: { user: UserStorage }) {
                 disabled={saving}
                 aria-label={`Unlimited storage for ${user.email}`}
                 onChange={(event) => {
-                  setUnlimited(event.target.checked);
+                  const checked = event.target.checked;
+                  setUnlimited(checked);
+                  // Unticking offers the row's current quota, or the default when it is
+                  // Unlimited, never a stale number typed before an earlier save.
+                  if (!checked) setMegabytes(initialMegabytes(quotaBytes));
                   setStatus({ kind: "idle" });
                 }}
               />
