@@ -1,7 +1,15 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  readFileSync,
+  existsSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +27,7 @@ import {
   parseReleaseIssues,
   laneNeedsRebuild,
   laneRebuildTriggers,
-  FASTLANE_SCRIPT_INPUTS,
+  LANE_SCRIPT_INPUTS,
   _setSpawnForTests,
 } from "../lib/dispatch-release.mjs";
 
@@ -836,8 +844,8 @@ describe("laneNeedsRebuild (beta reuse across heads)", () => {
         ".github/workflows/ci.yml",
         ".claude/settings.json",
         "scripts/factory-agent.sh",
-        "scripts/lib/dispatch-release.mjs",
-        "scripts/lib/beta-build-root.sh",
+        "scripts/lib/verify-report.mjs",
+        "scripts/__tests__/dispatch-release.test.mjs",
       ]) {
         assert.equal(laneNeedsRebuild([file], lane), false, `${lane}: ${file}`);
       }
@@ -886,8 +894,8 @@ describe("laneNeedsRebuild (beta reuse across heads)", () => {
     }
   });
 
-  it("rebuilds when a script a Fastfile runs changes", () => {
-    for (const file of FASTLANE_SCRIPT_INPUTS) {
+  it("rebuilds when a script a lane runs, or is launched or prepared with, changes", () => {
+    for (const file of LANE_SCRIPT_INPUTS) {
       assert.equal(laneNeedsRebuild([file], "mobile"), true, file);
       assert.equal(laneNeedsRebuild([file], "desktop"), true, file);
     }
@@ -910,29 +918,77 @@ describe("laneNeedsRebuild (beta reuse across heads)", () => {
     assert.throws(() => laneNeedsRebuild(["docs/a.md"], undefined), /unknown lane/);
   });
 
-  it("lists every root script the Fastfiles run, with what they import", () => {
-    // A Fastfile names its root scripts as File.join(repo_root, "scripts", …).
-    // Walk their relative imports, so a new import can't slip past the list.
+  it("lists every root script a lane depends on (static scan of the apps and the launcher)", () => {
+    // Every tracked file under apps/mobile and apps/desktop (Fastfiles,
+    // package.json scripts, Podfile, metro/babel/app config, the apps' own
+    // scripts) is scanned for a root scripts/ path, in each form they use:
+    //   File.join(repo_root, "scripts", …)         (Fastfile hooks)
+    //   $REPO_ROOT/scripts/… or ${REPO_ROOT}/…      (shell)
+    //   ../../scripts/…                             (any relative climb)
+    //   scripts/… in a file that cd's to the toplevel (git rev-parse)
+    // Only paths that exist at the root count, so app-relative scripts/ stay
+    // out. Then the launcher and the build-root preparation are added, and the
+    // whole set closed over relative imports and $SCRIPT_DIR / $REPO_ROOT refs.
     const repo = fileURLToPath(new URL("../../", import.meta.url));
+    const atRoot = (p) => existsSync(join(repo, p));
+    const ls = spawnSync("git", ["-C", repo, "ls-files", "apps/mobile", "apps/desktop"], {
+      encoding: "utf8",
+    });
+    assert.equal(ls.status, 0, ls.stderr);
+    const appFiles = ls.stdout
+      .split("\n")
+      .filter(Boolean)
+      .filter((f) => !/(^|\/)(__tests__|e2e)\//.test(f) && !/\.md$/.test(f));
     const queue = [];
-    for (const app of ["mobile", "desktop"]) {
-      const fastfile = readFileSync(join(repo, "apps", app, "fastlane", "Fastfile"), "utf8");
-      for (const m of fastfile.matchAll(/File\.join\(repo_root, "scripts", "([^"]+)"\)/g)) {
-        queue.push(`scripts/${m[1]}`);
+    const scan = (src, { bare = false, scriptDir = false } = {}) => {
+      for (const m of src.matchAll(
+        /File\.join\(\s*repo_root\s*,\s*"scripts"((?:\s*,\s*"[^"]+")+)\s*\)/g,
+      )) {
+        queue.push(["scripts", ...[...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1])].join("/"));
       }
+      for (const m of src.matchAll(/\$\{?REPO_ROOT\}?\/(scripts\/[\w./-]+)/g)) queue.push(m[1]);
+      // $SCRIPT_DIR means the root scripts/ only in the root scripts; the
+      // apps' own shell scripts point it at their own directory.
+      if (scriptDir) {
+        for (const m of src.matchAll(/\$\{?SCRIPT_DIR\}?\/([\w./-]+)/g)) {
+          queue.push(`scripts/${m[1]}`);
+        }
+      }
+      for (const m of src.matchAll(/(?:\.\.\/)+(scripts\/[\w./-]+)/g)) {
+        if (atRoot(m[1])) queue.push(m[1]);
+      }
+      if (bare) {
+        for (const m of src.matchAll(/(?<![\w./-])(scripts\/[\w./-]+)/g)) {
+          if (atRoot(m[1])) queue.push(m[1]);
+        }
+      }
+    };
+    let scanned = 0;
+    for (const f of appFiles) {
+      const path = join(repo, f);
+      if (!existsSync(path)) continue;
+      const src = readFileSync(path, "utf8");
+      scanned++;
+      scan(src, { bare: src.includes("show-toplevel") });
     }
+    assert.ok(scanned > 50, `scanned only ${scanned} app files`);
     assert.ok(queue.includes("scripts/comment-intest-build.mjs"), "the build-number notice");
+    // Run from the factory checkout for every pre-merge lane.
+    queue.push("scripts/lib/dispatch-release.mjs", "scripts/lib/beta-build-root.sh");
     const seen = new Set();
     while (queue.length) {
-      const file = queue.shift();
-      if (seen.has(file)) continue;
+      const file = normalize(queue.shift());
+      if (seen.has(file) || !file.startsWith("scripts/")) continue;
+      assert.ok(atRoot(file), `referenced but missing: ${file}`);
+      if (statSync(join(repo, file)).isDirectory()) continue;
       seen.add(file);
       const src = readFileSync(join(repo, file), "utf8");
       for (const m of src.matchAll(/(?:import|export)[^"';]*?from\s+["'](\.[^"']+)["']/g)) {
-        queue.push(normalize(join(dirname(file), m[1])));
+        queue.push(join(dirname(file), m[1]));
       }
+      if (file.endsWith(".sh")) scan(src, { scriptDir: true });
     }
-    assert.deepEqual([...FASTLANE_SCRIPT_INPUTS].sort(), [...seen].sort());
+    assert.deepEqual([...LANE_SCRIPT_INPUTS].sort(), [...seen].sort());
   });
 });
 

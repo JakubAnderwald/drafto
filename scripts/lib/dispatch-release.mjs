@@ -190,19 +190,31 @@ export function platformsToLanes(platforms) {
 }
 
 // ── Reusing a pre-merge beta across PR heads (ADR-0081) ─────────────────────
-// The root scripts a beta lane's Fastfile runs, and everything they import.
-// comment-intest-build.mjs posts the build-number notice the factory reads
-// back to report a reused build, so a change to any of these changes what the
-// lane does and rebuilds it. The test recomputes this list from the Fastfiles.
-export const FASTLANE_SCRIPT_INPUTS = Object.freeze([
+// Every root scripts/ file a beta lane depends on, with what each imports or
+// sources. A change to any of them rebuilds the lane; the rest of scripts/ is
+// factory-only. Three sources:
+//   - what apps/mobile and apps/desktop reference: the Fastfiles'
+//     File.join(repo_root, "scripts", …) hooks (comment-intest-build.mjs posts
+//     the build-number notice a reused build is reported with), and the store
+//     screenshot scripts' $REPO_ROOT/scripts/lib/app-review-account.sh;
+//   - the lane's launcher, this module (the lane's shell, its umask and env);
+//   - its build root's preparation, beta-build-root.sh (reset, seed, install,
+//     env files), and what that runs.
+// A static scan in the tests recomputes this list from those files, so a new
+// reference fails CI until it is listed here.
+export const LANE_SCRIPT_INPUTS = Object.freeze([
   "scripts/comment-intest-build.mjs",
   "scripts/comment-released-issues.mjs",
+  "scripts/lib/app-review-account.sh",
+  "scripts/lib/beta-build-root.sh",
+  "scripts/lib/dispatch-release.mjs",
   "scripts/lib/github-sync.mjs",
   "scripts/lib/is-main.mjs",
   "scripts/lib/now-live.mjs",
   "scripts/lib/parse-flags.mjs",
   "scripts/lib/parse-issue-footer.mjs",
   "scripts/lib/route-value.mjs",
+  "scripts/lib/run-with-timeout.mjs",
   "scripts/lib/state.mjs",
 ]);
 
@@ -227,7 +239,7 @@ const LANE_APP_DIRS = Object.freeze({ mobile: "apps/mobile/", desktop: "apps/des
 function outsideLane(file, laneId) {
   if (ALWAYS_REBUILD.includes(file)) return false;
   if (NEVER_NATIVE.some((re) => re.test(file))) return true;
-  if (file.startsWith("scripts/")) return !FASTLANE_SCRIPT_INPUTS.includes(file);
+  if (file.startsWith("scripts/")) return !LANE_SCRIPT_INPUTS.includes(file);
   // The other lane's app: each app builds only from its own directory, the
   // root and packages/shared/.
   return Object.entries(LANE_APP_DIRS).some(([id, dir]) => id !== laneId && file.startsWith(dir));
