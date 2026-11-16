@@ -9,9 +9,11 @@ import { fileURLToPath } from "node:url";
 import {
   DEFAULT_MAX_AGE_MIN,
   NO_RESUME_REASONS,
+  bodyDigest,
   decideResume,
   resumeStarted,
   taskKey,
+  worktreeDigest,
 } from "../lib/implement-resume.mjs";
 
 // ADR-0084: a fresh --implement run that hit the wall cap (or stopped with
@@ -28,7 +30,8 @@ const CLI = path.resolve(
 const SESSION = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 const HEAD = "a".repeat(40);
 const PRE = "b".repeat(40);
-const KEY = "plan:111|rev:5,40";
+const KEY = "plan:111@aaaa|rev:5@bbbb,40@cccc";
+const TREE = "d".repeat(64);
 const NOW = new Date("2026-11-16T12:00:00Z");
 
 function record(over = {}) {
@@ -36,6 +39,7 @@ function record(over = {}) {
     attempts: 1,
     implementResumeSession: SESSION,
     implementResumeHead: HEAD,
+    implementResumeTreeDigest: TREE,
     implementResumeKey: KEY,
     implementResumePreHead: PRE,
     implementResumeAt: "2026-11-16T11:00:00.000Z",
@@ -50,6 +54,7 @@ function safe(over = {}) {
     record: record(),
     worktree: { path: "/wt", branch: "factory/issue-7", reused: true, fastForwarded: false },
     head: HEAD,
+    treeDigest: TREE,
     taskKey: KEY,
     prState: "OPEN",
     transcript: `/projects/-wt/${SESSION}.jsonl`,
@@ -60,31 +65,128 @@ function safe(over = {}) {
 }
 
 describe("taskKey", () => {
-  it("joins the plan comment id with the sorted, de-duplicated revision ids", () => {
-    assert.equal(
-      taskKey({ planCommentId: 111, revisionCommentIds: ["40", "5", "40"] }),
-      "plan:111|rev:5,40",
-    );
+  const plan = { id: 111, body: "<!-- drafto-factory-plan -->\n## Approach\nDo it." };
+  const d = (body) => bodyDigest(body);
+
+  it("pairs each comment id with a digest of its body, revisions sorted and de-duplicated", () => {
+    const key = taskKey({
+      plan,
+      revisions: [
+        { id: 40, body: "b" },
+        { id: "5", body: "a" },
+        { id: 40, body: "b" },
+      ],
+    });
+    assert.equal(key, `plan:111@${d(plan.body)}|rev:5@${d("a")},40@${d("b")}`);
+    assert.match(d("x"), /^[0-9a-f]{16}$/);
   });
 
   it("sorts ids numerically, not as strings", () => {
+    const key = taskKey({
+      plan: { id: "1", body: "" },
+      revisions: [
+        { id: "3000000001", body: "" },
+        { id: "999999999", body: "" },
+      ],
+    });
+    assert.match(key, /\|rev:999999999@[0-9a-f]{16},3000000001@[0-9a-f]{16}$/);
+  });
+
+  // An approved plan edited in place keeps its comment id (#842 review).
+  it("changes when the plan or a feedback comment is edited in place, same ids", () => {
+    const base = taskKey({ plan, revisions: [{ id: 5, body: "make it blue" }] });
+    assert.notEqual(
+      taskKey({
+        plan: { ...plan, body: plan.body + " Also X." },
+        revisions: [{ id: 5, body: "make it blue" }],
+      }),
+      base,
+    );
+    assert.notEqual(taskKey({ plan, revisions: [{ id: 5, body: "make it red" }] }), base);
+    // Line endings alone don't count as an edit.
     assert.equal(
-      taskKey({ planCommentId: "1", revisionCommentIds: ["3000000001", "999999999"] }),
-      "plan:1|rev:999999999,3000000001",
+      taskKey({
+        plan: { ...plan, body: plan.body.replace(/\n/g, "\r\n") },
+        revisions: [{ id: 5, body: "make it blue" }],
+      }),
+      base,
     );
   });
 
-  it("takes the comma-separated form the CLI passes, and an empty one", () => {
-    assert.equal(taskKey({ planCommentId: "9", revisionCommentIds: "7, 3,,7" }), "plan:9|rev:3,7");
-    assert.equal(taskKey({ planCommentId: "9", revisionCommentIds: "" }), "plan:9|rev:");
-    assert.equal(taskKey({ planCommentId: "9" }), "plan:9|rev:");
+  it("has an empty revision list on a first implementation", () => {
+    assert.equal(taskKey({ plan }), `plan:111@${d(plan.body)}|rev:`);
+    assert.equal(taskKey({ plan, revisions: null }), `plan:111@${d(plan.body)}|rev:`);
   });
 
   it("is empty without a plan id", () => {
-    assert.equal(taskKey({ planCommentId: "" }), "");
-    assert.equal(taskKey({ planCommentId: null }), "");
-    assert.equal(taskKey({ planCommentId: "null" }), "");
+    assert.equal(taskKey({ plan: { id: "", body: "x" } }), "");
+    assert.equal(taskKey({ plan: { id: null } }), "");
+    assert.equal(taskKey({ plan: { id: "null" } }), "");
+    assert.equal(taskKey({ plan: null }), "");
     assert.equal(taskKey(), "");
+  });
+});
+
+function gitRepo() {
+  const dir = mkdtempSync(path.join(tmpdir(), "implement-resume-wt-"));
+  const g = (...args) => {
+    const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  g("init", "-q");
+  g("config", "user.name", "t");
+  g("config", "user.email", "t@example.com");
+  g("config", "commit.gpgsign", "false");
+  writeFileSync(path.join(dir, ".gitignore"), "ignored.txt\n");
+  writeFileSync(path.join(dir, "a.txt"), "a\n");
+  g("add", ".");
+  g("commit", "-q", "-m", "base");
+  return dir;
+}
+
+describe("worktreeDigest", () => {
+  it("is stable while nothing changes, and moves with tracked, staged and untracked edits", () => {
+    const dir = gitRepo();
+    try {
+      const clean = worktreeDigest(dir);
+      assert.match(clean, /^[0-9a-f]{64}$/);
+      assert.equal(worktreeDigest(dir), clean);
+      writeFileSync(path.join(dir, "a.txt"), "a2\n");
+      const edited = worktreeDigest(dir);
+      assert.notEqual(edited, clean);
+      // Same path, different content: the diff tells them apart.
+      writeFileSync(path.join(dir, "a.txt"), "a3\n");
+      assert.notEqual(worktreeDigest(dir), edited);
+      writeFileSync(path.join(dir, "a.txt"), "a\n");
+      assert.equal(worktreeDigest(dir), clean, "back to HEAD is back to the clean digest");
+      writeFileSync(path.join(dir, "new.txt"), "one\n");
+      const untracked = worktreeDigest(dir);
+      assert.notEqual(untracked, clean);
+      // An untracked file's content counts, not only its name.
+      writeFileSync(path.join(dir, "new.txt"), "two\n");
+      assert.notEqual(worktreeDigest(dir), untracked);
+      spawnSync("git", ["-C", dir, "add", "new.txt"]);
+      assert.notEqual(worktreeDigest(dir), untracked, "staging changes the status");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores ignored files, and is null outside a git worktree", () => {
+    const dir = gitRepo();
+    try {
+      const clean = worktreeDigest(dir);
+      writeFileSync(path.join(dir, "ignored.txt"), "build output\n");
+      assert.equal(worktreeDigest(dir), clean);
+      const plain = mkdtempSync(path.join(tmpdir(), "implement-resume-plain-"));
+      try {
+        assert.equal(worktreeDigest(plain), null);
+      } finally {
+        rmSync(plain, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -122,8 +224,11 @@ describe("decideResume", () => {
     ],
     ["head-moved", { head: "c".repeat(40) }],
     ["head-moved", { head: "" }],
-    ["task-changed", { taskKey: "plan:111|rev:5,40,41" }],
-    ["task-changed", { taskKey: "plan:112|rev:5,40" }],
+    ["worktree-dirty-changed", { treeDigest: "e".repeat(64) }],
+    ["worktree-dirty-changed", { treeDigest: null }],
+    ["worktree-dirty-changed", { record: record({ implementResumeTreeDigest: null }) }],
+    ["task-changed", { taskKey: "plan:111@aaaa|rev:5@bbbb,40@cccc,41@dddd" }],
+    ["task-changed", { taskKey: "plan:111@ffff|rev:5@bbbb,40@cccc" }],
     ["task-changed", { taskKey: "" }],
     ["pr-closed", { prState: "CLOSED" }],
     ["pr-closed", { prState: "MERGED" }],
@@ -250,10 +355,38 @@ describe("CLI", () => {
     writeFileSync(path.join(dir, `${SESSION}.jsonl`), lines.join("\n") + "\n");
   }
 
-  it("task-key prints the key bare", () => {
-    const r = run(["task-key", "--plan-id", "111", "--rev-ids", "40,5"]);
+  it("task-key prints the key bare, from the comments' JSON", () => {
+    const r = run([
+      "task-key",
+      "--plan-comment",
+      JSON.stringify({ id: 111, body: "plan", user: { login: "x" } }),
+      "--revision-comments",
+      JSON.stringify([
+        { id: 40, body: "b" },
+        { id: 5, body: "a" },
+      ]),
+    ]);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.stdout, "plan:111|rev:5,40");
+    assert.equal(
+      r.stdout,
+      `plan:111@${bodyDigest("plan")}|rev:5@${bodyDigest("a")},40@${bodyDigest("b")}`,
+    );
+    const none = run(["task-key", "--plan-comment", JSON.stringify({ id: 1, body: "" })]);
+    assert.equal(none.stdout, `plan:1@${bodyDigest("")}|rev:`);
+  });
+
+  it("worktree-digest prints the digest, and fails outside git", () => {
+    const dir = gitRepo();
+    try {
+      const r = run(["worktree-digest", "--path", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, worktreeDigest(dir));
+      const bad = run(["worktree-digest", "--path", path.join(dir, "nope")]);
+      assert.equal(bad.status, 1);
+      assert.match(bad.stderr, /could not read the worktree/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   const decideArgs = (over = {}) => {
@@ -261,6 +394,7 @@ describe("CLI", () => {
       record: JSON.stringify(record()),
       worktree: JSON.stringify({ reused: true, fastForwarded: false }),
       head: HEAD,
+      "tree-digest": TREE,
       "task-key": KEY,
       "pr-state": "OPEN",
       enabled: "1",

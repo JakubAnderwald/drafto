@@ -15,12 +15,16 @@
 // so a timeout chain resumes at most once.
 //
 // CLI (all output on stdout; errors as one JSON line on stderr, exit 1):
-//   task-key --plan-id <id> [--rev-ids <id,id,…>]
-//       The task key, bare: "plan:<plan comment id>|rev:<sorted revision ids>".
+//   task-key --plan-comment <comment JSON> [--revision-comments <JSON array>]
+//       The task key, bare: "plan:<id>@<digest>|rev:<id>@<digest>,…", each
+//       digest a hash of that comment's body, so an edit changes the key.
+//   worktree-digest --path <worktree>
+//       A hash of the worktree's uncommitted state (status, diff against HEAD,
+//       untracked files' contents), bare. Exit 1 when git can't say.
 //   decide --record <issue JSON> --worktree <worktree-cli add JSON>
-//          --head <sha> --task-key <key> [--pr-state OPEN|CLOSED|MERGED|""]
-//          [--enabled 0|1] [--max-age-min <n>] [--now <iso>]
-//          [--projects-dir <dir>]
+//          --head <sha> --tree-digest <digest> --task-key <key>
+//          [--pr-state OPEN|CLOSED|MERGED|""] [--enabled 0|1]
+//          [--max-age-min <n>] [--now <iso>] [--projects-dir <dir>]
 //       One JSON line: {"resume":true,"sessionId":…,"preHead":…} or
 //       {"resume":false,"reason":…,"detail":…}.
 //   started --session-id <uuid> --since <iso> [--projects-dir <dir>]
@@ -28,6 +32,8 @@
 //       the session's transcript has a real assistant record stamped at or
 //       after <since>: a resume that wrote none never got going.
 
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import { parseFlags } from "./parse-flags.mjs";
 import { isMainModule } from "./is-main.mjs";
@@ -43,7 +49,8 @@ export const NO_RESUME_REASONS = Object.freeze([
   "worktree-new", // the worktree was created for this run, not reused
   "worktree-moved", // reused, but fast-forwarded or its leftovers set aside
   "head-moved", // the worktree HEAD isn't the one the stopped run left
-  "task-changed", // a different approved plan, or different feedback
+  "worktree-dirty-changed", // same HEAD, but its uncommitted files changed
+  "task-changed", // a different or edited approved plan, or different feedback
   "pr-closed", // the card's PR was closed or merged since
   "no-transcript", // claude has no <session>.jsonl to resume
 ]);
@@ -55,20 +62,69 @@ function byIdString(a, b) {
   return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
 }
 
-function idList(ids) {
-  const raw = Array.isArray(ids) ? ids : String(ids ?? "").split(",");
-  return raw.map((id) => String(id ?? "").trim()).filter((id) => id !== "");
+// A short, stable hash of a comment body. Line endings are normalised so the
+// same text always hashes the same; any other edit changes it.
+export function bodyDigest(body) {
+  return createHash("sha256")
+    .update(String(body ?? "").replace(/\r\n/g, "\n"))
+    .digest("hex")
+    .slice(0, 16);
 }
 
-// "plan:<plan comment id>|rev:<revision comment ids, sorted, de-duplicated>".
-// It names what the run was asked to do: a resumed session carries the plan and
-// the feedback it was started with, so a new plan comment or a new feedback
-// comment must start a fresh one. "" when there is no plan id.
-export function taskKey({ planCommentId, revisionCommentIds = [] } = {}) {
-  const plan = String(planCommentId ?? "").trim();
-  if (plan === "" || plan === "null") return "";
-  const revs = [...new Set(idList(revisionCommentIds))].sort(byIdString);
-  return `plan:${plan}|rev:${revs.join(",")}`;
+function commentId(c) {
+  const id = String(c?.id ?? "").trim();
+  return id === "null" ? "" : id;
+}
+
+// "plan:<id>@<digest>|rev:<id>@<digest>,…" (revisions sorted by id, one entry
+// per id). It names what the run was asked to do: a resumed session carries the
+// plan and the feedback it was started with, so a new or edited plan comment
+// (an in-place edit keeps the id) or a new or edited feedback comment must
+// start a fresh one. "" when there is no plan id.
+export function taskKey({ plan = null, revisions = [] } = {}) {
+  const planId = commentId(plan);
+  if (planId === "") return "";
+  const byId = new Map();
+  for (const c of Array.isArray(revisions) ? revisions : []) {
+    const id = commentId(c);
+    if (id !== "") byId.set(id, bodyDigest(c.body));
+  }
+  const revs = [...byId.keys()].sort(byIdString).map((id) => `${id}@${byId.get(id)}`);
+  return `plan:${planId}@${bodyDigest(plan.body)}|rev:${revs.join(",")}`;
+}
+
+function gitOut(cwd, args, spawn) {
+  const r = spawn("git", ["-C", cwd, ...args], {
+    encoding: "buffer",
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (r.error || r.status !== 0) return null;
+  return r.stdout;
+}
+
+// A hash of everything uncommitted in <wtPath>: `git status` (staged,
+// unstaged, untracked paths), the diff of tracked files against HEAD, and the
+// contents of untracked files that aren't ignored. A stopped run's edits that
+// never reached a commit are part of what its session remembers, so a change
+// to them between the stop and the next start must start a fresh session.
+// null when git can't say (not a repo, a broken index).
+export function worktreeDigest(wtPath, { spawn = spawnSync } = {}) {
+  const status = gitOut(wtPath, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], spawn);
+  const diff = gitOut(
+    wtPath,
+    ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv"],
+    spawn,
+  );
+  const untracked = gitOut(wtPath, ["ls-files", "--others", "--exclude-standard", "-z"], spawn);
+  if (status == null || diff == null || untracked == null) return null;
+  const hash = createHash("sha256");
+  hash.update("status\0").update(status).update("\0diff\0").update(diff).update("\0untracked\0");
+  for (const file of untracked.toString("utf8").split("\0").filter(Boolean).sort()) {
+    const blob = gitOut(wtPath, ["hash-object", "--", file], spawn);
+    if (blob == null) return null;
+    hash.update(file).update("\0").update(blob);
+  }
+  return hash.digest("hex");
 }
 
 function no(reason, detail = null) {
@@ -80,6 +136,7 @@ function no(reason, detail = null) {
 //   record     the issue's factory-state record (factory:get-issue)
 //   worktree   worktree-cli add's JSON for this run
 //   head       the worktree's HEAD now
+//   treeDigest the worktree's uncommitted state now (worktreeDigest())
 //   taskKey    this run's task key (taskKey())
 //   prState    the card's PR state (OPEN, CLOSED, MERGED), "" or null for none
 //   transcript the recorded session's transcript path, or null
@@ -90,6 +147,7 @@ export function decideResume({
   record = null,
   worktree = null,
   head = "",
+  treeDigest = null,
   taskKey: key = "",
   prState = null,
   transcript = null,
@@ -113,6 +171,9 @@ export function decideResume({
   const recordedHead = String(record.implementResumeHead ?? "");
   if (!head || head !== recordedHead) {
     return no("head-moved", `${recordedHead.slice(0, 12) || "?"} → ${head.slice(0, 12) || "?"}`);
+  }
+  if (!treeDigest || treeDigest !== record.implementResumeTreeDigest) {
+    return no("worktree-dirty-changed");
   }
   if (!key || key !== record.implementResumeKey) return no("task-changed");
   if (prState && prState !== "OPEN") return no("pr-closed", prState);
@@ -170,7 +231,16 @@ export function main(argv, { fs = nodeFs } = {}) {
   const projectsDir = flags["projects-dir"] ?? null;
   switch (sub) {
     case "task-key":
-      return taskKey({ planCommentId: flags["plan-id"], revisionCommentIds: flags["rev-ids"] });
+      return taskKey({
+        plan: parseJsonFlag(flags["plan-comment"], "plan-comment"),
+        revisions: parseJsonFlag(flags["revision-comments"], "revision-comments") ?? [],
+      });
+    case "worktree-digest": {
+      if (!flags.path) throw new Error("worktree-digest requires --path <worktree>");
+      const digest = worktreeDigest(flags.path);
+      if (digest == null) throw new Error(`git could not read the worktree at ${flags.path}`);
+      return digest;
+    }
     case "decide": {
       const now = flags.now == null ? new Date() : new Date(flags.now);
       if (Number.isNaN(now.getTime())) throw new Error(`invalid --now: ${flags.now}`);
@@ -181,6 +251,7 @@ export function main(argv, { fs = nodeFs } = {}) {
         record,
         worktree: parseJsonFlag(flags.worktree, "worktree"),
         head: flags.head ?? "",
+        treeDigest: flags["tree-digest"] || null,
         taskKey: flags["task-key"] ?? "",
         prState: flags["pr-state"] || null,
         transcript: SESSION_ID_RE.test(String(session ?? ""))
@@ -207,7 +278,7 @@ export function main(argv, { fs = nodeFs } = {}) {
     }
     default:
       throw new Error(
-        `unknown subcommand: ${sub ?? "(none)"} (task-key | decide | started; see the header)`,
+        `unknown subcommand: ${sub ?? "(none)"} (task-key | worktree-digest | decide | started; see the header)`,
       );
   }
 }

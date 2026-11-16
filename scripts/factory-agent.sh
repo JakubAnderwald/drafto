@@ -2116,16 +2116,18 @@ implement_runtime_facts() {
 # implement start, decide whether this run resumes the session a stopped run
 # recorded (implement-resume.mjs decide), and clear that record whatever the
 # answer, so a timeout chain resumes at most once. Sets:
-#   IMPL_TASK_KEY       "plan:<id>|rev:<ids>", for implement_mark_resumable
+#   IMPL_TASK_KEY       "plan:<id>@<digest>|rev:<id>@<digest>,…", for
+#                       implement_mark_resumable
 #   IMPL_RESUMED        1 when resuming, else 0
 #   IMPL_SESSION_FLAG   --resume or --session-id
 #   IMPL_SESSION_ID     the recorded session, or a new uuid
-#   IMPL_RESUME_PRE_HEAD  the stopped run's PR head before it ("" = it had no PR)
+#   IMPL_RESUME_PRE_HEAD  the PR head before the chain's first run ("" = it had
+#                       no PR): the caller's CHAIN_PRE_HEAD_OID on a resume
 # A resume needs the record cleared first: if the clear fails, the run is
 # fresh. Returns 1 only when no session id could be made at all.
 implement_resume_decide() {
   local issue_num="$1" wt_path="$2" wt_json="$3" prior_pr="$4" plan_json="$5" revisions="$6"
-  local record head pr_state decision resume_sid="" reason detail
+  local record head tree pr_state decision resume_sid="" reason detail
   IMPL_RESUMED=0
   IMPL_SESSION_FLAG="--session-id"
   IMPL_RESUME_PRE_HEAD=""
@@ -2137,16 +2139,18 @@ implement_resume_decide() {
     log "ERROR: #$issue_num: could not make a claude session id (uuidgen and node both failed)"
     return 1
   fi
+  # The key hashes the plan's and each feedback comment's body: an edit in
+  # place keeps a comment's id but must still start a fresh session.
   IMPL_TASK_KEY=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" task-key \
-    --plan-id "$(echo "$plan_json" | jq -r '.id // ""' 2>/dev/null || echo "")" \
-    --rev-ids "$(echo "$revisions" | jq -r '[.[]?.id | tostring] | join(",")' 2>/dev/null || echo "")" \
+    --plan-comment "${plan_json:-null}" --revision-comments "${revisions:-[]}" \
     2>>"$LOG_FILE") || IMPL_TASK_KEY=""
   record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE") || record=""
   head=$(git -C "$wt_path" rev-parse HEAD 2>>"$LOG_FILE") || head=""
+  tree=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" worktree-digest --path "$wt_path" 2>>"$LOG_FILE") || tree=""
   pr_state=$(echo "$prior_pr" | jq -r '.state // ""' 2>/dev/null || echo "")
   decision=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" decide --record "${record:-null}" \
-    --worktree "$wt_json" --head "$head" --task-key "$IMPL_TASK_KEY" --pr-state "$pr_state" \
+    --worktree "$wt_json" --head "$head" --tree-digest "$tree" --task-key "$IMPL_TASK_KEY" --pr-state "$pr_state" \
     --enabled "$FACTORY_IMPLEMENT_RESUME" --max-age-min "$FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN" \
     2>>"$LOG_FILE") || decision=""
   if [[ "$(echo "$decision" | jq -r '.resume // false' 2>/dev/null || echo false)" == "true" ]]; then
@@ -2165,7 +2169,7 @@ implement_resume_decide() {
     IMPL_RESUMED=1
     IMPL_SESSION_FLAG="--resume"
     IMPL_SESSION_ID="$resume_sid"
-    log "Issue #$issue_num: resume session $IMPL_SESSION_ID (worktree head ${head:0:12} unchanged; PR head before the first run: ${IMPL_RESUME_PRE_HEAD:-none})"
+    log "Issue #$issue_num: resume session $IMPL_SESSION_ID (worktree head ${head:0:12} and files unchanged; PR head before the first run: ${IMPL_RESUME_PRE_HEAD:-none})"
   else
     reason=$(echo "$decision" | jq -r '.reason // "decision failed"' 2>/dev/null || echo "decision failed")
     detail=$(echo "$decision" | jq -r '.detail // ""' 2>/dev/null || echo "")
@@ -2180,15 +2184,18 @@ implement_resume_decide() {
 # with action=incomplete, or any run the session limit stopped. Not when resuming is off, nor when the PR head
 # before the run is unknown: a resumed run inherits that head as its baseline.
 implement_mark_resumable() {
-  local issue_num="$1" wt_path="$2" session="$3" key="$4" pre_head="$5" pre_known="$6" why="$7" head
+  local issue_num="$1" wt_path="$2" session="$3" key="$4" pre_head="$5" pre_known="$6" why="$7" head tree
   [[ "$FACTORY_IMPLEMENT_RESUME" == "1" ]] || return 0
   if [[ "$pre_known" != "1" ]]; then
     log "Issue #$issue_num: session $session not resumable ($why): the PR head before the run is unknown"
     return 0
   fi
   head=$(git -C "$wt_path" rev-parse HEAD 2>>"$LOG_FILE") || head=""
+  # What the session left uncommitted: the next start resumes only if it's
+  # still exactly this (implement-resume.mjs worktree-digest).
+  tree=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" worktree-digest --path "$wt_path" 2>>"$LOG_FILE") || tree=""
   if node "$SCRIPT_DIR/lib/state-cli.mjs" factory:implement-resume-set "$issue_num" \
-      --session "$session" --head "$head" --key "$key" --pre-head "$pre_head" \
+      --session "$session" --head "$head" --tree-digest "$tree" --key "$key" --pre-head "$pre_head" \
       --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
     log "Issue #$issue_num: recorded resumable session $session ($why; worktree head ${head:0:12})"
   else
@@ -8136,18 +8143,24 @@ Drag it back to **Ready** so the factory can plan it first.
     fi
 
     # Session resume (ADR-0084): resume the session a fresh run left at the
-    # wall cap (or at action=incomplete) when nothing it relied on changed, and
-    # clear that record either way. A resumed run keeps the stopped run's PR
-    # head as its baseline, so work it pushed before the cap still counts as
-    # this run's when the post-checks compare heads.
+    # wall cap (or at action=incomplete, or at the session limit) when nothing
+    # it relied on changed, and clear that record either way.
     if ! implement_resume_decide "$ISSUE_NUM" "$WT_PATH" "$WT_JSON" "$PRIOR_PR" \
         "$PLAN_COMMENT_JSON" "$REVISION_COMMENTS"; then
       log "ERROR: #$ISSUE_NUM: no claude session id; keeping slot $SLOT for retry"
       continue
     fi
+    # Two heads from here on. PRE_HEAD_OID stays the PR head at this run's
+    # start: the noop and declined checks compare the worktree and the head
+    # shown at In Test with it. CHAIN_PRE_HEAD_OID is the PR head before the
+    # first run of this resume chain: "did the chain push anything" is judged
+    # against it, so work a stopped predecessor pushed still counts. They differ
+    # only on a resumed run.
+    CHAIN_PRE_HEAD_OID="$PRE_HEAD_OID"
+    CHAIN_PRE_HEAD_KNOWN="$PRE_HEAD_KNOWN"
     if [[ "$IMPL_RESUMED" -eq 1 ]]; then
-      PRE_HEAD_OID="$IMPL_RESUME_PRE_HEAD"
-      PRE_HEAD_KNOWN=1
+      CHAIN_PRE_HEAD_OID="$IMPL_RESUME_PRE_HEAD"
+      CHAIN_PRE_HEAD_KNOWN=1
     fi
 
     # Invoke claude inside the worktree with the implementer prompt + bundle
@@ -8188,7 +8201,7 @@ Drag it back to **Ready** so the factory can plan it first.
       # A resumed one never is: one resume per timeout chain.
       if [[ "$IMPL_RESUMED" -eq 0 ]]; then
         implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
-          "$PRE_HEAD_OID" "$PRE_HEAD_KNOWN" "timed out"
+          "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "timed out"
       fi
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
@@ -8203,7 +8216,7 @@ Drag it back to **Ready** so the factory can plan it first.
         # The limit stopped the session, not the card: record it for the run
         # after the reset to resume, a resumed one included (ADR-0084).
         implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
-          "$PRE_HEAD_OID" "$PRE_HEAD_KNOWN" "session limit"
+          "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "session limit"
         log "Issue #$ISSUE_NUM: session limit — keeping slot $SLOT + worktree; card stays In Progress for resume"
         pause_for_session_limit
         log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
@@ -8267,20 +8280,23 @@ Drag it back to **Ready** so the factory can plan it first.
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           continue
         fi
-        if [[ -n "$PRE_HEAD_OID" ]]; then
+        # Progress is judged for the whole chain: a resumed run whose stopped
+        # predecessor already pushed the work has moved the PR from the chain's
+        # baseline even when it pushes nothing more (ADR-0084).
+        if [[ -n "$CHAIN_PRE_HEAD_OID" ]]; then
           POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
           if [[ -z "$POST_HEAD_OID" ]]; then
             log "WARNING: #$ISSUE_NUM: could not read PR #$PR_NUM head OID; not advancing this tick"
             node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
             continue
           fi
-          if [[ "$POST_HEAD_OID" == "$PRE_HEAD_OID" ]]; then
-            log "ERROR: #$ISSUE_NUM claimed action=implemented but PR #$PR_NUM head is unchanged (${PRE_HEAD_OID:0:12}); treating as a failed attempt"
+          if [[ "$POST_HEAD_OID" == "$CHAIN_PRE_HEAD_OID" ]]; then
+            log "ERROR: #$ISSUE_NUM claimed action=implemented but PR #$PR_NUM head is unchanged (${CHAIN_PRE_HEAD_OID:0:12}); treating as a failed attempt"
             if ! echo "$COMMENTS_JSON" | jq -e 'any(.[]?; (.body // "") | contains("drafto-factory-head-unchanged"))' >/dev/null 2>&1; then
               gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
                 --body "🏭 **A revision run reported success but pushed nothing.**
 
-PR #$PR_NUM is still at \`${PRE_HEAD_OID:0:12}\`, so the requested change is *not* on the \
+PR #$PR_NUM is still at \`${CHAIN_PRE_HEAD_OID:0:12}\`, so the requested change is *not* on the \
 PR. The card stays In Progress and your feedback is left unconsumed, so the next attempt \
 still sees it. If this repeats until the retry budget is exhausted, the card moves to \
 **Blocked** for a human.
@@ -8308,9 +8324,9 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         # sweeps itself. Never blocks; the card goes on either way.
         CLAIM_HEAD=""
         CLAIM_SINCE="all"
-        if [[ -n "$PRE_HEAD_OID" ]]; then
+        if [[ -n "$CHAIN_PRE_HEAD_OID" ]]; then
           CLAIM_HEAD="$POST_HEAD_OID"
-          CLAIM_SINCE="$PRE_HEAD_OID"
+          CLAIM_SINCE="$CHAIN_PRE_HEAD_OID"
         fi
         CLAIM_JSON=$(jq -c 'if .migrations.claimedComplete == true then (.migrations.claimed | map({pr, file})) else empty end' <<<"$BUNDLE" 2>/dev/null || echo "")
         implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM" "$CLAIM_HEAD" "$CLAIM_SINCE" "$CLAIM_JSON"
@@ -8396,7 +8412,7 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         log "Issue #$ISSUE_NUM: implementer stopped at its soft deadline (action=incomplete); keeping slot $SLOT for retry"
         if [[ "$IMPL_RESUMED" -eq 0 ]]; then
           implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
-            "$PRE_HEAD_OID" "$PRE_HEAD_KNOWN" "action=incomplete"
+            "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "action=incomplete"
         fi
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         ;;

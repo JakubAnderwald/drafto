@@ -254,7 +254,8 @@ function emptyIssue() {
     implementSessionId: null, // claude session id of the latest --implement run
     implementResumeSession: null, // session id the next run may resume
     implementResumeHead: null, // worktree HEAD when that run stopped
-    implementResumeKey: null, // "plan:<commentId>|rev:<sorted revision comment ids>"
+    implementResumeTreeDigest: null, // hash of its uncommitted files then (implement-resume.mjs worktreeDigest)
+    implementResumeKey: null, // "plan:<id>@<body digest>|rev:<id>@<body digest>,…"
     implementResumePreHead: null, // the PR head before that run (null: it had no PR)
     implementResumeAt: null, // when the record was made (ISO): FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN counts from it
   };
@@ -618,6 +619,7 @@ export const PLAN_PROBE_ISSUE_FIELDS = Object.freeze([
 export const IMPLEMENT_RESUME_RECORD_FIELDS = Object.freeze([
   "implementResumeSession",
   "implementResumeHead",
+  "implementResumeTreeDigest",
   "implementResumeKey",
   "implementResumePreHead",
   "implementResumeAt",
@@ -739,12 +741,19 @@ export function setIssueField(state, issueNumber, field, value) {
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 
-export function setImplementResume(state, issueNumber, { session, head, key, preHead, now }) {
+export function setImplementResume(
+  state,
+  issueNumber,
+  { session, head, treeDigest, key, preHead, now },
+) {
   if (!SESSION_ID_RE.test(String(session ?? ""))) {
     throw new Error(`setImplementResume: invalid session id ${JSON.stringify(session)}`);
   }
   if (!SHA_RE.test(String(head ?? ""))) {
     throw new Error(`setImplementResume: invalid head ${JSON.stringify(head)}`);
+  }
+  if (!/^[0-9a-f]{64}$/.test(String(treeDigest ?? ""))) {
+    throw new Error(`setImplementResume: invalid tree digest ${JSON.stringify(treeDigest)}`);
   }
   if (typeof key !== "string" || key.trim() === "") {
     throw new Error("setImplementResume: empty task key");
@@ -759,6 +768,7 @@ export function setImplementResume(state, issueNumber, { session, head, key, pre
   const issue = getIssue(state, issueNumber);
   issue.implementResumeSession = String(session);
   issue.implementResumeHead = String(head);
+  issue.implementResumeTreeDigest = String(treeDigest);
   issue.implementResumeKey = key;
   issue.implementResumePreHead = pre === "" ? null : pre;
   issue.implementResumeAt = new Date(Date.parse(now)).toISOString();

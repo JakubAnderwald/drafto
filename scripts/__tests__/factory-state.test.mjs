@@ -927,14 +927,16 @@ describe("implement resume record", () => {
   const HEAD = "a".repeat(40);
   const PRE = "b".repeat(40);
   const NOW = "2026-11-16T12:00:00Z";
+  const TREE = "d".repeat(64);
 
-  it("has the six documented fields, frozen, null on a fresh issue and settable", () => {
+  it("has the seven documented fields, frozen, null on a fresh issue and settable", () => {
     assert.deepEqual(
       [...IMPLEMENT_RESUME_ISSUE_FIELDS],
       [
         "implementSessionId",
         "implementResumeSession",
         "implementResumeHead",
+        "implementResumeTreeDigest",
         "implementResumeKey",
         "implementResumePreHead",
         "implementResumeAt",
@@ -962,6 +964,7 @@ describe("implement resume record", () => {
     const rec = setImplementResume(s, 7, {
       session: SESSION,
       head: HEAD,
+      treeDigest: TREE,
       key: "plan:1|rev:",
       preHead: PRE,
       now: NOW,
@@ -969,6 +972,7 @@ describe("implement resume record", () => {
     assert.deepEqual(rec, {
       implementResumeSession: SESSION,
       implementResumeHead: HEAD,
+      implementResumeTreeDigest: TREE,
       implementResumeKey: "plan:1|rev:",
       implementResumePreHead: PRE,
       implementResumeAt: "2026-11-16T12:00:00.000Z",
@@ -982,6 +986,7 @@ describe("implement resume record", () => {
       const rec = setImplementResume(s, 7, {
         session: SESSION,
         head: HEAD,
+        treeDigest: TREE,
         key: "k",
         preHead,
         now: NOW,
@@ -991,11 +996,13 @@ describe("implement resume record", () => {
   });
 
   it("refuses a half-usable record, leaving the state untouched", () => {
-    const ok = { session: SESSION, head: HEAD, key: "k", preHead: "", now: NOW };
+    const ok = { session: SESSION, head: HEAD, treeDigest: TREE, key: "k", preHead: "", now: NOW };
     const bad = [
       [{ session: "nope" }, /session id/],
       [{ head: "" }, /head/],
       [{ head: "abc" }, /head/],
+      [{ treeDigest: "" }, /tree digest/],
+      [{ treeDigest: "abc" }, /tree digest/],
       [{ key: "" }, /task key/],
       [{ key: "  " }, /task key/],
       [{ preHead: "xyz" }, /pre-head/],
@@ -1010,12 +1017,20 @@ describe("implement resume record", () => {
 
   it("clearImplementResume nulls the record, keeps the rest, and notes the new session", () => {
     const s = emptyFactoryState();
-    setImplementResume(s, 7, { session: SESSION, head: HEAD, key: "k", preHead: PRE, now: NOW });
+    setImplementResume(s, 7, {
+      session: SESSION,
+      head: HEAD,
+      treeDigest: TREE,
+      key: "k",
+      preHead: PRE,
+      now: NOW,
+    });
     bumpIssueAttempts(s, 7);
     const cleared = clearImplementResume(s, 7, { sessionId: NEXT });
     assert.deepEqual(cleared, [
       "implementResumeSession",
       "implementResumeHead",
+      "implementResumeTreeDigest",
       "implementResumeKey",
       "implementResumePreHead",
       "implementResumeAt",

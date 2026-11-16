@@ -24,7 +24,7 @@ The CLI (2.1.323 on the Mac mini) can continue a session: `claude -p --resume <i
 
    A fresh run starts with `git status` and `git log origin/main..HEAD`, because an earlier attempt may have left work in the worktree.
 
-3. **A fresh run that stops early is recorded as resumable.** That covers a wall-cap timeout (exit 124) and `action=incomplete`. The record holds the session id, the worktree HEAD, the task key (`plan:<plan comment id>|rev:<sorted revision comment ids>`), the PR head before the run and the time (`factory:implement-resume-set`). The attempt is still spent. A run the session limit stops is recorded too, resumed or not: the limit stopped it, not the card, and it spends no attempt (as before). Claude gets `FACTORY_IMPLEMENT_TERM_GRACE_SEC` (30 s) between SIGTERM and SIGKILL to write the interrupted tool call to its transcript. `run-with-timeout.mjs` reads it as `CLAUDE_CALL_KILL_GRACE_SEC`, default 5 s.
+3. **A fresh run that stops early is recorded as resumable.** That covers a wall-cap timeout (exit 124) and `action=incomplete`. The record holds the session id, the worktree HEAD, a digest of the worktree's uncommitted state, the task key, the PR head before the run and the time (`factory:implement-resume-set`). The task key is `plan:<id>@<digest>|rev:<id>@<digest>,…`, with each digest a hash of that comment's body, so an approved plan or a feedback comment edited in place (same comment id) changes it. The worktree digest hashes `git status --porcelain=v1 -z`, `git diff HEAD --binary` and the contents of untracked, non-ignored files. The attempt is still spent. A run the session limit stops is recorded too, resumed or not: the limit stopped it, not the card, and it spends no attempt (as before). Claude gets `FACTORY_IMPLEMENT_TERM_GRACE_SEC` (30 s) between SIGTERM and SIGKILL to write the interrupted tool call to its transcript. `run-with-timeout.mjs` reads it as `CLAUDE_CALL_KILL_GRACE_SEC`, default 5 s.
 4. **The next run resumes only when it is safe.** The pure `decideResume` in `scripts/lib/implement-resume.mjs` refuses, in this order, when:
    - resuming is off (`off`);
    - there is no record (`no-record`);
@@ -32,11 +32,12 @@ The CLI (2.1.323 on the Mac mini) can continue a session: `claude -p --resume <i
    - the worktree was created for this run (`worktree-new`);
    - it was fast-forwarded or had its leftovers set aside (`worktree-moved`);
    - HEAD moved (`head-moved`);
-   - the task key changed (`task-changed`);
+   - HEAD is the same but the uncommitted files changed (`worktree-dirty-changed`). That includes a lockfile the next start's `pnpm install` rewrote: the run is then fresh, as before this ADR;
+   - the task key changed (`task-changed`), including an edit to the plan or to a feedback comment;
    - the PR was closed or merged (`pr-closed`);
    - claude has no transcript for the session (`no-transcript`).
 
-   Every start clears the record, whatever the answer, so a timeout chain resumes at most once. A resumed run gets the short `scripts/factory-implement-resume-prompt.md` and fresh run-time facts, not the prompt and bundle the session already holds. It keeps the stopped run's PR head as its baseline, so work pushed before the cap still counts, and it keeps the reply directory.
+   Every start clears the record, whatever the answer, so a timeout chain resumes at most once. A resumed run gets the short `scripts/factory-implement-resume-prompt.md` and fresh run-time facts, not the prompt and bundle the session already holds. It keeps the reply directory. Bash keeps two PR heads for it. `PRE_HEAD_OID` is the PR head at this run's start: the noop check (is the worktree's work on the PR?) and the noop and declined routing (is this the head shown at In Test?) use it. `CHAIN_PRE_HEAD_OID` is the PR head before the chain's first run: `action=implemented`'s "did the PR move" check and the migration post-check use it, so work a stopped predecessor pushed still counts.
 
 5. **A resume that never started is free.** When a resumed run ends within 180 s and its transcript has no real assistant record after its start, no attempt is spent, and the next tick runs fresh. Examples are a CLI that refuses the session, or an API error on the restored conversation.
 

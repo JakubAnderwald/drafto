@@ -63,13 +63,16 @@ describe("implement resume: wiring in the --implement block", () => {
   it("decides after the PR head capture and before the run, and inherits the first run's head", () => {
     const capture = IMPLEMENT.indexOf('PRE_HEAD_OID=$(pr_head_oid "$(echo "$PRIOR_PR"');
     const decide = IMPLEMENT.indexOf("if ! implement_resume_decide ");
-    const inherit = IMPLEMENT.indexOf('PRE_HEAD_OID="$IMPL_RESUME_PRE_HEAD"');
+    const inherit = IMPLEMENT.indexOf('CHAIN_PRE_HEAD_OID="$IMPL_RESUME_PRE_HEAD"');
     const run = IMPLEMENT.indexOf("Invoking claude for #$ISSUE_NUM (--implement");
     assert.ok(capture !== -1 && capture < decide && decide < inherit && inherit < run);
     assert.match(
       IMPLEMENT,
-      /if \[\[ "\$IMPL_RESUMED" -eq 1 \]\]; then\n\s*PRE_HEAD_OID="\$IMPL_RESUME_PRE_HEAD"\n\s*PRE_HEAD_KNOWN=1\n/,
+      /CHAIN_PRE_HEAD_OID="\$PRE_HEAD_OID"\n\s*CHAIN_PRE_HEAD_KNOWN="\$PRE_HEAD_KNOWN"\n\s*if \[\[ "\$IMPL_RESUMED" -eq 1 \]\]; then\n\s*CHAIN_PRE_HEAD_OID="\$IMPL_RESUME_PRE_HEAD"\n\s*CHAIN_PRE_HEAD_KNOWN=1\n/,
     );
+    // The current head is never overwritten: the noop and declined checks
+    // compare with the PR head at this run's start (#842 review).
+    assert.doesNotMatch(IMPLEMENT, /\n\s*PRE_HEAD_OID="\$IMPL_RESUME_PRE_HEAD"/);
   });
 
   it("sends a resumed session the resume note and the facts, not the prompt and bundle again", () => {
@@ -92,7 +95,7 @@ describe("implement resume: wiring in the --implement block", () => {
     assert.ok(cat !== -1 && cat < rm, "stdout is logged before the file is deleted");
     assert.match(
       branch,
-      /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable "\$ISSUE_NUM" "\$WT_PATH" "\$IMPL_SESSION_ID" "\$IMPL_TASK_KEY" \\\n\s*"\$PRE_HEAD_OID" "\$PRE_HEAD_KNOWN" "timed out"\n\s*fi/,
+      /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable "\$ISSUE_NUM" "\$WT_PATH" "\$IMPL_SESSION_ID" "\$IMPL_TASK_KEY" \\\n\s*"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "timed out"\n\s*fi/,
     );
     assert.match(branch, /factory:bump-attempts "\$ISSUE_NUM"/);
     assert.match(branch, /continue\n$/);
@@ -122,7 +125,7 @@ describe("implement resume: wiring in the --implement block", () => {
     );
     const mark = branch.indexOf("implement_mark_resumable ");
     assert.ok(mark !== -1 && mark < branch.indexOf("pause_for_session_limit"));
-    assert.match(branch, /"\$PRE_HEAD_OID" "\$PRE_HEAD_KNOWN" "session limit"\n/);
+    assert.match(branch, /"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "session limit"\n/);
     assert.doesNotMatch(branch, /IMPL_RESUMED/, "a resumed run is recorded again after a limit");
     assert.doesNotMatch(branch, /bump-attempts/);
   });
@@ -321,11 +324,18 @@ describe("implement_runtime_facts (real helper)", () => {
 
 describe("implement_mark_resumable → implement_resume_decide (real helpers)", () => {
   const PLAN = JSON.stringify({ id: 111, body: "<!-- drafto-factory-plan -->" });
-  const REVS = JSON.stringify([{ id: 40 }, { id: 5 }]);
+  const REVS = JSON.stringify([
+    { id: 40, body: "make it blue" },
+    { id: 5, body: "and faster" },
+  ]);
   const PRIOR = JSON.stringify({ number: 9, state: "OPEN" });
 
   // Run 1 (fresh) decides, then times out and records itself; run 2 decides.
-  function chain(dir, wt, { wt2 = { reused: true, fastForwarded: false }, between = "" } = {}) {
+  function chain(
+    dir,
+    wt,
+    { wt2 = { reused: true, fastForwarded: false }, between = "", plan2 = PLAN, revs2 = REVS } = {},
+  ) {
     const wt1 = JSON.stringify({
       path: wt,
       branch: "factory/issue-7",
@@ -343,7 +353,7 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
         'printf "{}\\n" >"$HOME/.claude/projects/-wt/$IMPL_SESSION_ID.jsonl"',
         "FIRST=$IMPL_SESSION_ID",
         between,
-        `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${PLAN}' '${REVS}'`,
+        `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${plan2}' '${revs2}'`,
         'echo "run2 $IMPL_RESUMED $IMPL_SESSION_FLAG $IMPL_SESSION_ID $FIRST $IMPL_RESUME_PRE_HEAD"',
         // A third start finds the record already spent.
         `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${PLAN}' '${REVS}'`,
@@ -362,7 +372,7 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       assert.equal(resumed1, "0");
       assert.equal(flag1, "--session-id");
       assert.match(sid1, /^[0-9a-f-]{36}$/);
-      assert.equal(key1, "plan:111|rev:5,40");
+      assert.match(key1, /^plan:111@[0-9a-f]{16}\|rev:5@[0-9a-f]{16},40@[0-9a-f]{16}$/);
       const [, resumed2, flag2, sid2, first, preHead] = run2.split(" ");
       assert.equal(resumed2, "1");
       assert.equal(flag2, "--resume");
@@ -376,7 +386,7 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       );
       assert.match(
         r.log,
-        /resume session [0-9a-f-]{36} \(worktree head [0-9a-f]{12} unchanged; PR head before the first run: b{40}\)/,
+        /resume session [0-9a-f-]{36} \(worktree head [0-9a-f]{12} and files unchanged; PR head before the first run: b{40}\)/,
       );
       const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
       assert.equal(state.issues["7"].implementResumeSession, null);
@@ -403,6 +413,57 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       assert.equal(r.status, 0, r.stderr + r.log);
       assert.match(r.stdout, /^run2 0 --session-id /m);
       assert.match(r.log, /no resume: head-moved/);
+    });
+  });
+
+  // #842 review: an approved plan edited in place keeps its comment id.
+  it("runs fresh when the approved plan was edited in place since the stop", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const edited = JSON.stringify({ id: 111, body: "<!-- drafto-factory-plan -->\nNow also X." });
+      const r = chain(dir, wt, { plan2: edited });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.stdout, /^run2 0 --session-id /m);
+      assert.match(r.log, /no resume: task-changed/);
+    });
+  });
+
+  it("runs fresh when a feedback comment was edited in place since the stop", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const edited = JSON.stringify([
+        { id: 40, body: "make it green" },
+        { id: 5, body: "and faster" },
+      ]);
+      const r = chain(dir, wt, { revs2: edited });
+      assert.match(r.stdout, /^run2 0 --session-id /m);
+      assert.match(r.log, /no resume: task-changed/);
+    });
+  });
+
+  // #842 review: uncommitted edits that don't move HEAD.
+  it("runs fresh when an uncommitted file changed but HEAD didn't", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const r = chain(dir, wt, { between: `printf 'edited\\n' >"${wt}/d.txt"` });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.stdout, /^run2 0 --session-id /m);
+      assert.match(r.log, /no resume: worktree-dirty-changed/);
+    });
+  });
+
+  it("runs fresh when a new untracked file appeared, and resumes past an ignored one", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const added = chain(dir, wt, { between: `printf 'x\\n' >"${wt}/e.txt"` });
+      assert.match(added.log, /no resume: worktree-dirty-changed/);
+    });
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const ignored = chain(dir, wt, {
+        between: `printf 'e.txt\\n' >>"${wt}/.git/info/exclude"; printf 'x\\n' >"${wt}/e.txt"`,
+      });
+      assert.match(ignored.stdout, /^run2 1 --resume /m);
     });
   });
 
@@ -486,4 +547,226 @@ it("every new helper uses plain strings, no arrays (bash 3.2 under set -u)", () 
     // No arrays: an empty one under set -u throws on the Mac mini's bash 3.2.
     assert.doesNotMatch(m[0], /\w+=\(|"\$\{\w+\[@\]\}"/, `${fn} must not use arrays`);
   }
+});
+
+// #842 review: a resumed run keeps two PR heads. PRE_HEAD_OID is the head at
+// its own start (the noop and declined checks); CHAIN_PRE_HEAD_OID is the head
+// before the chain's first run (implemented's "did the PR move" and the
+// migration post-check). These run the real `case "$ACTION"` arms with the
+// board, gh and the follow-on helpers stubbed, for a resumed revision run whose
+// stopped predecessor had already pushed.
+describe("result handler on a resumed run whose predecessor already pushed (real arms)", () => {
+  const caseStart = script.indexOf('    case "$ACTION" in\n      implemented)');
+  const caseEnd = script.indexOf("\n    esac\n", caseStart) + "\n    esac\n".length;
+  const CASE = script.slice(caseStart, caseEnd);
+
+  // B0: the head shown at In Test (the chain's baseline). B1: what the stopped
+  // predecessor pushed. B2: an unpushed chore(wip) commit on top of B1.
+  function repo(dir) {
+    const wt = join(dir, "wt");
+    mkdirSync(wt);
+    git(wt, "init", "-q");
+    git(wt, "config", "user.name", "t");
+    git(wt, "config", "user.email", "t@example.com");
+    git(wt, "config", "commit.gpgsign", "false");
+    const shas = [];
+    for (const name of ["B0", "B1", "B2"]) {
+      git(wt, "commit", "-q", "--allow-empty", "-m", name);
+      shas.push(git(wt, "rev-parse", "HEAD"));
+    }
+    return { wt, b0: shas[0], b1: shas[1], b2: shas[2] };
+  }
+
+  function run(dir, vars) {
+    const calls = join(dir, "calls");
+    const v = {
+      ISSUE_NUM: "7",
+      ITEM_ID: "item-7",
+      SLOT: "0",
+      IS_REVISION: "1",
+      PRE_HEAD_KNOWN: "1",
+      CHAIN_PRE_HEAD_KNOWN: "1",
+      PR_URL: "https://github.com/JakubAnderwald/drafto/pull/9",
+      PRIOR_PR: JSON.stringify({ number: 9, state: "OPEN" }),
+      COMMENTS_JSON: "[]",
+      NOW_ISO: "2026-11-16T12:00:00Z",
+      FEEDBACK_MARK: "2026-11-16T11:00:00Z",
+      REPLY_MARKERS: "[]",
+      AFFECTED: "web",
+      PARITY_OVERRIDE: "",
+      BUNDLE: "{}",
+      ITEM_LABELS: "status:in-progress",
+      IMPL_RESUMED: "1",
+      IMPL_SESSION_ID: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+      IMPL_TASK_KEY: "plan:1@x|rev:",
+      ...vars,
+    };
+    const snippet = [
+      "set -euo pipefail",
+      `SCRIPT_DIR=/stub; STATE_FILE="${join(dir, "state.json")}"; LOG_FILE="${join(dir, "log")}"; CALLS="${calls}"`,
+      ...Object.entries(v).map(([k, val]) => `${k}='${val}'`),
+      'log() { printf "%s\\n" "$*" >>"$LOG_FILE"; }',
+      'find_prior_pr() { printf \'{"number":9,"url":"%s","state":"OPEN"}\' "$PR_URL"; }',
+      'pr_head_oid() { printf "%s" "$FAKE_POST_HEAD"; }',
+      'transition_status() { echo "transition $3" >>"$CALLS"; }',
+      'implement_parity_gate() { echo "parity" >>"$CALLS"; }',
+      'implement_migration_claim_check() { echo "claim head=$3 since=$4" >>"$CALLS"; }',
+      'revise_replies_check() { echo "replies $4" >>"$CALLS"; }',
+      'revision_noop_route() { echo "noop-route head=$4" >>"$CALLS"; }',
+      'revision_return_to_test() { echo "return-to-test head=$3" >>"$CALLS"; }',
+      'implement_park_blocked() { echo "blocked: $4" >>"$CALLS"; }',
+      'implement_mark_resumable() { echo "mark-resumable $5 $6 $7" >>"$CALLS"; }',
+      "worktree_untouched() { return 0; }",
+      'gh() { echo "gh $1 $2" >>"$CALLS"; }',
+      'node() { echo "node $2 $3 $4" >>"$CALLS"; case "$*" in *factory:get-issue*) printf \'{"intestCommentSha":"%s"}\' "$FAKE_SHOWN" ;; esac; }',
+      "for _once in 1; do",
+      CASE,
+      "done",
+      'echo "exit-ok"',
+    ].join("\n");
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const read = (f) => {
+      try {
+        return readFileSync(f, "utf8");
+      } catch {
+        return "";
+      }
+    };
+    return { ...r, calls: read(calls), log: read(join(dir, "log")) };
+  }
+
+  it("implemented with nothing more to push: the predecessor's push counts, no false 'head unchanged'", () => {
+    withDir((dir) => {
+      const { wt, b0, b1 } = repo(dir);
+      git(wt, "checkout", "-q", b1);
+      const r = run(dir, {
+        ACTION: "implemented",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b1,
+        CHAIN_PRE_HEAD_OID: b0,
+        FAKE_POST_HEAD: b1,
+      });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.stdout, /exit-ok/);
+      assert.doesNotMatch(r.log, /head is unchanged/);
+      assert.match(r.calls, /^transition In Review$/m);
+      // Migrations: everything the chain added since its baseline is this card's.
+      assert.match(r.calls, new RegExp(`^claim head=${b1} since=${b0}$`, "m"));
+      assert.doesNotMatch(r.calls, /bump-attempts/);
+      assert.match(r.calls, /factory:reset-attempts/);
+    });
+  });
+
+  it("implemented that moved nothing since the chain's baseline is still a failed attempt", () => {
+    withDir((dir) => {
+      const { wt, b0 } = repo(dir);
+      const r = run(dir, {
+        ACTION: "implemented",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b0,
+        CHAIN_PRE_HEAD_OID: b0,
+        FAKE_POST_HEAD: b0,
+      });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.log, /claimed action=implemented but PR #9 head is unchanged/);
+      assert.match(r.calls, /factory:bump-attempts/);
+      assert.doesNotMatch(r.calls, /transition In Review/);
+    });
+  });
+
+  it("implemented on a chain whose first run had no PR: the whole PR is the chain's", () => {
+    withDir((dir) => {
+      const { wt, b1 } = repo(dir);
+      git(wt, "checkout", "-q", b1);
+      const r = run(dir, {
+        ACTION: "implemented",
+        IS_REVISION: "0",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b1,
+        CHAIN_PRE_HEAD_OID: "",
+        FAKE_POST_HEAD: b1,
+      });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.calls, /^claim head= since=all$/m);
+      assert.match(r.calls, /^transition In Review$/m);
+    });
+  });
+
+  it("noop with the worktree on the pushed head: routed on the current head, not the stale baseline", () => {
+    withDir((dir) => {
+      const { wt, b0, b1 } = repo(dir);
+      git(wt, "checkout", "-q", b1);
+      const r = run(dir, {
+        ACTION: "noop",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b1,
+        CHAIN_PRE_HEAD_OID: b0,
+        FAKE_SHOWN: b0,
+      });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      // revision_noop_route compares this with the head shown at In Test (B0),
+      // so B1 goes through In Review instead of re-presenting a moved PR.
+      assert.match(r.calls, new RegExp(`^noop-route head=${b1}$`, "m"));
+      assert.doesNotMatch(r.calls, /bump-attempts/);
+    });
+  });
+
+  it("noop with an unpushed wip commit on top: work not landed, attempt spent", () => {
+    withDir((dir) => {
+      const { wt, b0, b1, b2 } = repo(dir);
+      git(wt, "checkout", "-q", b2);
+      const r = run(dir, {
+        ACTION: "noop",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b1,
+        CHAIN_PRE_HEAD_OID: b0,
+      });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.log, /work was committed and not landed/);
+      assert.match(r.calls, /factory:bump-attempts/);
+      assert.doesNotMatch(r.calls, /noop-route/);
+    });
+  });
+
+  it("declined after the predecessor pushed: the PR isn't the one shown at In Test, so Blocked", () => {
+    withDir((dir) => {
+      const { wt, b0, b1 } = repo(dir);
+      git(wt, "checkout", "-q", b1);
+      const r = run(dir, {
+        ACTION: "declined",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b1,
+        CHAIN_PRE_HEAD_OID: b0,
+        FAKE_SHOWN: b0,
+        FAKE_POST_HEAD: b1,
+      });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.calls, /^blocked: implementer declined/m);
+      assert.doesNotMatch(r.calls, /return-to-test/);
+    });
+  });
+
+  it("incomplete on a resumed run spends the attempt and records nothing new", () => {
+    withDir((dir) => {
+      const { wt, b0, b1 } = repo(dir);
+      const r = run(dir, {
+        ACTION: "incomplete",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b1,
+        CHAIN_PRE_HEAD_OID: b0,
+      });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.calls, /factory:bump-attempts/);
+      assert.doesNotMatch(r.calls, /mark-resumable/);
+      // A fresh run's incomplete records the chain baseline.
+      const fresh = run(dir, {
+        ACTION: "incomplete",
+        IMPL_RESUMED: "0",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b0,
+        CHAIN_PRE_HEAD_OID: b0,
+      });
+      assert.match(fresh.calls, new RegExp(`^mark-resumable ${b0} 1 action=incomplete$`, "m"));
+    });
+  });
 });

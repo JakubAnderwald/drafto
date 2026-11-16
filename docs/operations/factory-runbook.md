@@ -1232,17 +1232,17 @@ The factory runs `--implement` at **ultracode** effort (xhigh reasoning + dynami
 An `--implement` run gets a Claude session id and a **Run-time facts** block with its deadlines (`softDeadlineAt` = cap − `FACTORY_IMPLEMENT_SOFT_MARGIN_MIN`, `hardDeadlineAt` = cap). When a fresh run hits the cap, or stops itself with `action=incomplete` at the soft deadline, the factory records the session (`recorded resumable session <id>` in the implement log). The attempt is spent, and the slot and worktree stay. The next tick resumes that session with `claude --resume <id>` and `scripts/factory-implement-resume-prompt.md`, or logs `fresh session <id> (no resume: <reason>)`. It resumes only if:
 
 - the worktree was reused as it was: not recreated, fast-forwarded or snapshotted;
-- its HEAD hasn't moved;
-- the approved plan and the feedback being answered are the same;
+- its HEAD hasn't moved, and its uncommitted files are exactly as the stopped run left them (a digest of `git status`, `git diff HEAD` and the untracked files);
+- the approved plan and the feedback being answered are the same, text included: an edit to either starts fresh;
 - the PR isn't closed or merged;
 - the transcript exists;
 - the record is younger than `FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN`.
 
-A run the session limit stops is recorded too, resumed or not, and spends no attempt; the run after the reset resumes it. Every implement start clears the record, so a timeout chain resumes at most once. A resumed run keeps the first run's PR head as its baseline, so what it pushed before the cap counts. A resume that ends within 3 minutes without the model answering spends no attempt, and the next tick runs fresh.
+A run the session limit stops is recorded too, resumed or not, and spends no attempt; the run after the reset resumes it. Every implement start clears the record, so a timeout chain resumes at most once. A resumed run's `action=implemented` is checked against the PR head before the chain's first run, so what the predecessor pushed before the cap counts; its noop and declined checks use the PR head at its own start. A resume that ends within 3 minutes without the model answering spends no attempt, and the next tick runs fresh.
 
 ```bash
 # The record and the latest session id for a card:
-node scripts/lib/state-cli.mjs factory:get-issue <n> | jq '{implementSessionId, implementResumeSession, implementResumeHead, implementResumeKey, implementResumeAt}'
+node scripts/lib/state-cli.mjs factory:get-issue <n> | jq '{implementSessionId, implementResumeSession, implementResumeHead, implementResumeTreeDigest, implementResumeKey, implementResumeAt}'
 # Stop the next run from resuming (it runs fresh):
 node scripts/lib/state-cli.mjs factory:implement-resume-clear <n>
 # Read a session's transcript:

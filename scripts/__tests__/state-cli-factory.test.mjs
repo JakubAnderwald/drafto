@@ -1601,6 +1601,7 @@ describe("factory:implement-resume-set / -clear", () => {
   const NEXT = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
   const HEAD = "a".repeat(40);
   const PRE = "b".repeat(40);
+  const TREE = "d".repeat(64);
 
   function set(extra = []) {
     return run([
@@ -1610,6 +1611,8 @@ describe("factory:implement-resume-set / -clear", () => {
       SESSION,
       "--head",
       HEAD,
+      "--tree-digest",
+      TREE,
       "--key",
       "plan:7|rev:1,2",
       ...extra,
@@ -1628,6 +1631,7 @@ describe("factory:implement-resume-set / -clear", () => {
       issueNumber: "42",
       implementResumeSession: SESSION,
       implementResumeHead: HEAD,
+      implementResumeTreeDigest: TREE,
       implementResumeKey: "plan:7|rev:1,2",
       implementResumePreHead: PRE,
       implementResumeAt: "2026-11-16T12:00:00.000Z",
@@ -1653,6 +1657,8 @@ describe("factory:implement-resume-set / -clear", () => {
       "nope",
       "--head",
       HEAD,
+      "--tree-digest",
+      TREE,
       "--key",
       "k",
       "--state-file",
@@ -1679,7 +1685,7 @@ describe("factory:implement-resume-set / -clear", () => {
     assert.equal(r.status, 0, r.stderr);
     const out = JSON.parse(r.stdout);
     assert.equal(out.ok, true);
-    assert.equal(out.cleared.length, 5);
+    assert.equal(out.cleared.length, 6);
     assert.equal(out.implementSessionId, NEXT);
     const issue = readState().issues["42"];
     assert.equal(issue.implementResumeSession, null);
