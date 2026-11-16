@@ -1697,6 +1697,7 @@ describe("factory:implement-resume-set / -clear", () => {
   const HEAD = "a".repeat(40);
   const PRE = "b".repeat(40);
   const TREE = "d".repeat(64);
+  const FEEDBACK = "f".repeat(64);
 
   function set(extra = []) {
     return run([
@@ -1710,8 +1711,8 @@ describe("factory:implement-resume-set / -clear", () => {
       TREE,
       "--key",
       "plan:7|rev:1,2",
-      "--run-started-at",
-      "2026-11-16T11:30:00Z",
+      "--feedback-digest",
+      FEEDBACK,
       ...extra,
       "--state-file",
       stateFile,
@@ -1731,7 +1732,7 @@ describe("factory:implement-resume-set / -clear", () => {
       implementResumeTreeDigest: TREE,
       implementResumeKey: "plan:7|rev:1,2",
       implementResumePreHead: PRE,
-      implementResumeRunStartedAt: "2026-11-16T11:30:00.000Z",
+      implementResumeFeedbackDigest: FEEDBACK,
       implementResumeAt: "2026-11-16T12:00:00.000Z",
     });
     const issue = readState().issues["42"];

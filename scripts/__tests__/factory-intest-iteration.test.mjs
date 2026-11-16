@@ -650,6 +650,7 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
 
   it("advances the feedback high-water mark only after consuming comments", () => {
     // lastFeedbackAt is set in --implement (consume), not in the sweep (detect).
-    assert.match(script, /lastFeedbackAt "\$NOW_ISO"/);
+    // Up to the run's own snapshot (FEEDBACK_MARK), never past it (ADR-0084).
+    assert.match(script, /lastFeedbackAt "\$FEEDBACK_MARK"/);
   });
 });

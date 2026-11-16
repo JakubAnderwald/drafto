@@ -11,6 +11,7 @@ import {
   NO_RESUME_REASONS,
   bodyDigest,
   decideResume,
+  feedbackDigest,
   resumeStarted,
   taskKey,
   worktreeDigest,
@@ -32,6 +33,7 @@ const HEAD = "a".repeat(40);
 const PRE = "b".repeat(40);
 const KEY = "plan:111@aaaa|rev:5@bbbb,40@cccc";
 const TREE = "d".repeat(64);
+const FEEDBACK = "f".repeat(64);
 const NOW = new Date("2026-11-16T12:00:00Z");
 
 function record(over = {}) {
@@ -42,7 +44,7 @@ function record(over = {}) {
     implementResumeTreeDigest: TREE,
     implementResumeKey: KEY,
     implementResumePreHead: PRE,
-    implementResumeRunStartedAt: "2026-11-16T10:15:00.000Z",
+    implementResumeFeedbackDigest: FEEDBACK,
     implementResumeAt: "2026-11-16T11:00:00.000Z",
     ...over,
   };
@@ -56,6 +58,7 @@ function safe(over = {}) {
     worktree: { path: "/wt", branch: "factory/issue-7", reused: true, fastForwarded: false },
     head: HEAD,
     treeDigest: TREE,
+    feedbackDigest: FEEDBACK,
     taskKey: KEY,
     prState: "OPEN",
     transcript: `/projects/-wt/${SESSION}.jsonl`,
@@ -185,6 +188,68 @@ function gitRepo() {
   return dir;
 }
 
+// #842 review: the resume compares the reporter's comments in the stopped run's
+// snapshot with this start's, not timestamps.
+describe("feedbackDigest", () => {
+  const plan = {
+    id: 100,
+    authorAssociation: "OWNER",
+    body: "<!-- drafto-factory-plan -->\nPlan",
+    createdAt: "2026-11-16T09:00:00Z",
+  };
+  const ask = {
+    id: 200,
+    authorAssociation: "OWNER",
+    body: "please also handle X",
+    createdAt: "2026-11-16T09:30:00Z",
+  };
+  const base = feedbackDigest([plan, ask]);
+
+  it("changes when a reporter comment is added, whatever its timestamp", () => {
+    // Its createdAt is older than everything else: clocks don't matter.
+    const late = {
+      id: 300,
+      authorAssociation: "OWNER",
+      body: "one more",
+      createdAt: "2026-11-16T08:00:00Z",
+    };
+    assert.notEqual(feedbackDigest([plan, ask, late]), base);
+    assert.match(base, /^[0-9a-f]{64}$/);
+  });
+
+  it("changes when a reporter comment is edited or deleted", () => {
+    assert.notEqual(feedbackDigest([plan, { ...ask, body: "please handle Y" }]), base);
+    assert.notEqual(feedbackDigest([plan]), base);
+  });
+
+  it("ignores the factory's own marker comments and other people's comments", () => {
+    const factory = {
+      id: 301,
+      authorAssociation: "OWNER",
+      body: "🏭 reply\n<!-- drafto-factory-revise-reply-200 -->",
+    };
+    const stranger = { id: 302, authorAssociation: "NONE", body: "+1" };
+    const plan2 = { ...plan, body: plan.body + " (edited by replan)" };
+    assert.equal(feedbackDigest([plan2, ask, factory, stranger]), base);
+  });
+
+  // ADR-0066: a support forward is an OWNER comment with its own marker, and
+  // it counts: the fresh run's bundle applies the provenance gate to it.
+  it("counts a support-agent forward as the reporter's", () => {
+    const fwd = {
+      id: 303,
+      authorAssociation: "OWNER",
+      body: "**Customer replied via support@drafto.eu:**\n> hi\n<!-- drafto-support-forward sender:a@b.c -->",
+    };
+    assert.notEqual(feedbackDigest([plan, ask, fwd]), base);
+  });
+
+  it("doesn't depend on the order the API returns", () => {
+    assert.equal(feedbackDigest([ask, plan]), base);
+    assert.equal(feedbackDigest([]), feedbackDigest(null));
+  });
+});
+
 describe("worktreeDigest", () => {
   it("is stable while nothing changes, and moves with tracked, staged and untracked edits", () => {
     const dir = gitRepo();
@@ -272,20 +337,6 @@ describe("decideResume", () => {
     assert.deepEqual(d, { resume: true, sessionId: SESSION, preHead: "" });
   });
 
-  // #842 review: on a first implementation the key names no feedback, so a
-  // reporter comment posted after the stopped run started must refuse.
-  it("resumes past owner comments from before the stopped run started, not after", () => {
-    assert.equal(decideResume(safe({ newestOwnerCommentAt: "2026-11-16T10:14:59Z" })).resume, true);
-    assert.equal(decideResume(safe({ newestOwnerCommentAt: "2026-11-16T10:15:00Z" })).resume, true);
-    assert.equal(decideResume(safe({ newestOwnerCommentAt: "" })).resume, true);
-    const d = decideResume(safe({ newestOwnerCommentAt: "2026-11-16T10:15:01Z" }));
-    assert.deepEqual(d, {
-      resume: false,
-      reason: "new-feedback",
-      detail: "owner comment at 2026-11-16T10:15:01Z",
-    });
-  });
-
   it("resumes with no PR state (the PR isn't open yet) and with an open one", () => {
     assert.equal(decideResume(safe({ prState: "" })).resume, true);
     assert.equal(decideResume(safe({ prState: "OPEN" })).resume, true);
@@ -314,8 +365,9 @@ describe("decideResume", () => {
     ["task-changed", { taskKey: "plan:111@aaaa|rev:5@bbbb,40@cccc,41@dddd" }],
     ["task-changed", { taskKey: "plan:111@ffff|rev:5@bbbb,40@cccc" }],
     ["task-changed", { taskKey: "" }],
-    ["new-feedback", { newestOwnerCommentAt: "2026-11-16T10:20:00Z" }],
-    ["new-feedback", { record: record({ implementResumeRunStartedAt: null }) }],
+    ["new-feedback", { feedbackDigest: "0".repeat(64) }],
+    ["new-feedback", { feedbackDigest: null }],
+    ["new-feedback", { record: record({ implementResumeFeedbackDigest: null }) }],
     ["pr-closed", { prState: "CLOSED" }],
     ["pr-closed", { prState: "MERGED" }],
     ["no-transcript", { transcript: null }],
@@ -477,6 +529,18 @@ describe("CLI", () => {
     assert.ok(phased.stdout.endsWith("|phase:C"));
   });
 
+  it("feedback-digest reads the comments on stdin", () => {
+    const comments = [{ id: 1, authorAssociation: "OWNER", body: "x" }];
+    const r = spawnSync("node", [CLI, "feedback-digest"], {
+      input: JSON.stringify(comments),
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, feedbackDigest(comments));
+    const bad = spawnSync("node", [CLI, "feedback-digest"], { input: "{", encoding: "utf8" });
+    assert.equal(bad.status, 1);
+  });
+
   it("worktree-digest prints the digest, and fails outside git", () => {
     const dir = gitRepo();
     try {
@@ -497,6 +561,7 @@ describe("CLI", () => {
       worktree: JSON.stringify({ reused: true, fastForwarded: false }),
       head: HEAD,
       "tree-digest": TREE,
+      "feedback-digest": FEEDBACK,
       "task-key": KEY,
       "pr-state": "OPEN",
       enabled: "1",

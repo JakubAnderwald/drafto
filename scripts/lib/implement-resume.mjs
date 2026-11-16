@@ -21,12 +21,15 @@
 //       "plan:<id>@<digest>|rev:<id>@<digest>,…|issue:<digest>|phase:<phase>",
 //       each digest a hash of a body (the issue's is the spec), so an edit to
 //       any of them changes the key.
+//   feedback-digest < <issue comments JSON on stdin>
+//       A hash of the reporter's comments in that snapshot (feedbackDigest),
+//       bare. Stdin, because an issue's comments can be large.
 //   worktree-digest --path <worktree>
 //       A hash of the worktree's uncommitted state (status, diff against HEAD,
 //       untracked files' contents), bare. Exit 1 when git can't say.
 //   decide --record <issue JSON> --worktree <worktree-cli add JSON>
 //          --head <sha> --tree-digest <digest> --task-key <key>
-//          [--newest-owner-comment-at <iso>]
+//          [--feedback-digest <digest>]
 //          [--pr-state OPEN|CLOSED|MERGED|""] [--enabled 0|1]
 //          [--max-age-min <n>] [--now <iso>] [--projects-dir <dir>]
 //       One JSON line: {"resume":true,"sessionId":…,"preHead":…} or
@@ -55,7 +58,7 @@ export const NO_RESUME_REASONS = Object.freeze([
   "head-moved", // the worktree HEAD isn't the one the stopped run left
   "worktree-dirty-changed", // same HEAD, but its uncommitted files changed
   "task-changed", // a different or edited approved plan, or different feedback
-  "new-feedback", // an OWNER comment arrived after the stopped run started
+  "new-feedback", // the reporter's comments changed since the stopped run's snapshot
   "pr-closed", // the card's PR was closed or merged since
   "no-transcript", // claude has no <session>.jsonl to resume
 ]);
@@ -111,6 +114,26 @@ export function taskKey({ plan = null, revisions = [], issue = null, phase = "" 
   );
 }
 
+// Whose comments are the reporter's: OWNER (the owner, and the support
+// agent's forwards of an allowlisted reporter's email, ADR-0066), minus the
+// factory's own (every one carries a "<!-- drafto-factory" marker).
+const FACTORY_MARKER = "<!-- drafto-factory";
+
+// A hash of the reporter's comments in an issue-comment snapshot
+// (fetch_issue_comments' {id, body, authorAssociation, …} objects): each one's
+// id and body digest, sorted by id. A comment added, edited or deleted changes
+// it; the factory's own marker comments and anyone else's don't. Pure GitHub
+// data: no timestamps, so no clock to disagree with.
+export function feedbackDigest(comments) {
+  const entries = (Array.isArray(comments) ? comments : [])
+    .filter((c) => c?.authorAssociation === "OWNER")
+    .filter((c) => !String(c.body ?? "").includes(FACTORY_MARKER))
+    .map((c) => [commentId(c), bodyDigest(commentBody(c))])
+    .filter(([id]) => id !== "")
+    .sort((a, b) => byIdString(a[0], b[0]));
+  return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+}
+
 function gitOut(cwd, args, spawn) {
   const r = spawn("git", ["-C", cwd, ...args], {
     encoding: "buffer",
@@ -163,8 +186,7 @@ function no(reason, detail = null) {
 //   head       the worktree's HEAD now
 //   treeDigest the worktree's uncommitted state now (worktreeDigest())
 //   taskKey    this run's task key (taskKey())
-//   newestOwnerCommentAt  createdAt of the newest OWNER comment that isn't the
-//              factory's own (no "<!-- drafto-factory" marker), or null
+//   feedbackDigest  feedbackDigest() of this start's comment snapshot
 //   prState    the card's PR state (OPEN, CLOSED, MERGED), "" or null for none
 //   transcript the recorded session's transcript path, or null
 // Returns {resume:true, sessionId, preHead} — preHead is the PR head before
@@ -176,7 +198,7 @@ export function decideResume({
   head = "",
   treeDigest = null,
   taskKey: key = "",
-  newestOwnerCommentAt = null,
+  feedbackDigest: feedback = null,
   prState = null,
   transcript = null,
   now = new Date(),
@@ -205,14 +227,16 @@ export function decideResume({
   }
   if (!key || key !== record.implementResumeKey) return no("task-changed");
   // The key only names the feedback a run was given. On a first
-  // implementation there is none (no lastFeedbackAt yet), so a comment the
-  // reporter posts meanwhile must still start a fresh session, whose bundle
-  // carries it (#842 review).
-  const startedMs = Date.parse(String(record.implementResumeRunStartedAt ?? ""));
-  if (Number.isNaN(startedMs)) return no("new-feedback", "no run start recorded");
-  const newestMs = Date.parse(String(newestOwnerCommentAt ?? ""));
-  if (!Number.isNaN(newestMs) && newestMs > startedMs) {
-    return no("new-feedback", `owner comment at ${newestOwnerCommentAt}`);
+  // implementation there is none (no lastFeedbackAt yet), so any change to the
+  // reporter's comments since the stopped run's snapshot (one added, edited or
+  // deleted, even one that landed between that snapshot and claude's start)
+  // must start a fresh session built from the current comments (#842 review).
+  // Comparing snapshots, not timestamps, leaves the two clocks out of it.
+  if (!feedback || feedback !== record.implementResumeFeedbackDigest) {
+    return no(
+      "new-feedback",
+      record.implementResumeFeedbackDigest ? "the comments changed" : "no snapshot recorded",
+    );
   }
   if (prState && prState !== "OPEN") return no("pr-closed", prState);
   if (!transcript) return no("no-transcript");
@@ -275,6 +299,17 @@ export function main(argv, { fs = nodeFs } = {}) {
         issue: parseJsonFlag(flags["issue-record"], "issue-record"),
         phase: flags.phase ?? "",
       });
+    case "feedback-digest": {
+      const text = fs.readFileSync(0, "utf8");
+      let comments;
+      try {
+        comments = JSON.parse(text || "[]");
+      } catch {
+        throw new Error("feedback-digest: stdin is not valid JSON");
+      }
+      if (!Array.isArray(comments)) throw new Error("feedback-digest: stdin is not a JSON array");
+      return feedbackDigest(comments);
+    }
     case "worktree-digest": {
       if (!flags.path) throw new Error("worktree-digest requires --path <worktree>");
       const digest = worktreeDigest(flags.path);
@@ -293,7 +328,7 @@ export function main(argv, { fs = nodeFs } = {}) {
         head: flags.head ?? "",
         treeDigest: flags["tree-digest"] || null,
         taskKey: flags["task-key"] ?? "",
-        newestOwnerCommentAt: flags["newest-owner-comment-at"] || null,
+        feedbackDigest: flags["feedback-digest"] || null,
         prState: flags["pr-state"] || null,
         transcript: SESSION_ID_RE.test(String(session ?? ""))
           ? findTranscriptById(session, { projectsDir, fs })
@@ -319,7 +354,7 @@ export function main(argv, { fs = nodeFs } = {}) {
     }
     default:
       throw new Error(
-        `unknown subcommand: ${sub ?? "(none)"} (task-key | worktree-digest | decide | started; see the header)`,
+        `unknown subcommand: ${sub ?? "(none)"} (task-key | feedback-digest | worktree-digest | decide | started; see the header)`,
       );
   }
 }

@@ -939,6 +939,7 @@ describe("implement resume record", () => {
   const PRE = "b".repeat(40);
   const NOW = "2026-11-16T12:00:00Z";
   const TREE = "d".repeat(64);
+  const FEEDBACK = "f".repeat(64);
 
   it("has the eight documented fields, frozen, null on a fresh issue and settable", () => {
     assert.deepEqual(
@@ -950,7 +951,7 @@ describe("implement resume record", () => {
         "implementResumeTreeDigest",
         "implementResumeKey",
         "implementResumePreHead",
-        "implementResumeRunStartedAt",
+        "implementResumeFeedbackDigest",
         "implementResumeAt",
       ],
     );
@@ -979,7 +980,7 @@ describe("implement resume record", () => {
       treeDigest: TREE,
       key: "plan:1|rev:",
       preHead: PRE,
-      runStartedAt: "2026-11-16T11:30:00Z",
+      feedbackDigest: FEEDBACK,
       now: NOW,
     });
     assert.deepEqual(rec, {
@@ -988,7 +989,7 @@ describe("implement resume record", () => {
       implementResumeTreeDigest: TREE,
       implementResumeKey: "plan:1|rev:",
       implementResumePreHead: PRE,
-      implementResumeRunStartedAt: "2026-11-16T11:30:00.000Z",
+      implementResumeFeedbackDigest: FEEDBACK,
       implementResumeAt: "2026-11-16T12:00:00.000Z",
     });
     assert.equal(s.issues["7"].implementResumeSession, SESSION);
@@ -1003,7 +1004,7 @@ describe("implement resume record", () => {
         treeDigest: TREE,
         key: "k",
         preHead,
-        runStartedAt: "2026-11-16T11:30:00Z",
+        feedbackDigest: FEEDBACK,
         now: NOW,
       });
       assert.equal(rec.implementResumePreHead, null);
@@ -1017,7 +1018,7 @@ describe("implement resume record", () => {
       treeDigest: TREE,
       key: "k",
       preHead: "",
-      runStartedAt: "2026-11-16T11:30:00Z",
+      feedbackDigest: FEEDBACK,
       now: NOW,
     };
     const bad = [
@@ -1029,7 +1030,7 @@ describe("implement resume record", () => {
       [{ key: "" }, /task key/],
       [{ key: "  " }, /task key/],
       [{ preHead: "xyz" }, /pre-head/],
-      [{ runStartedAt: "" }, /run start/],
+      [{ feedbackDigest: "" }, /feedback digest/],
       [{ now: "garbage" }, /now/],
     ];
     for (const [over, re] of bad) {
@@ -1047,7 +1048,7 @@ describe("implement resume record", () => {
       treeDigest: TREE,
       key: "k",
       preHead: PRE,
-      runStartedAt: "2026-11-16T11:30:00Z",
+      feedbackDigest: FEEDBACK,
       now: NOW,
     });
     bumpIssueAttempts(s, 7);
@@ -1058,7 +1059,7 @@ describe("implement resume record", () => {
       "implementResumeTreeDigest",
       "implementResumeKey",
       "implementResumePreHead",
-      "implementResumeRunStartedAt",
+      "implementResumeFeedbackDigest",
       "implementResumeAt",
     ]);
     const issue = s.issues["7"];

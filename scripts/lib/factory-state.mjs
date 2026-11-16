@@ -274,7 +274,7 @@ function emptyIssue() {
     implementResumeTreeDigest: null, // hash of its uncommitted files then (implement-resume.mjs worktreeDigest)
     implementResumeKey: null, // "plan:<id>@<body digest>|rev:<id>@<body digest>,…"
     implementResumePreHead: null, // the PR head before that run (null: it had no PR)
-    implementResumeRunStartedAt: null, // when that run started (ISO): later OWNER comments refuse the resume
+    implementResumeFeedbackDigest: null, // hash of the reporter's comments in that run's snapshot (implement-resume.mjs feedbackDigest)
     implementResumeAt: null, // when the record was made (ISO): FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN counts from it
   };
 }
@@ -640,7 +640,7 @@ export const IMPLEMENT_RESUME_RECORD_FIELDS = Object.freeze([
   "implementResumeTreeDigest",
   "implementResumeKey",
   "implementResumePreHead",
-  "implementResumeRunStartedAt",
+  "implementResumeFeedbackDigest",
   "implementResumeAt",
 ]);
 
@@ -786,7 +786,7 @@ const SHA_RE = /^[0-9a-f]{40}$/;
 export function setImplementResume(
   state,
   issueNumber,
-  { session, head, treeDigest, key, preHead, runStartedAt, now },
+  { session, head, treeDigest, key, preHead, feedbackDigest, now },
 ) {
   if (!SESSION_ID_RE.test(String(session ?? ""))) {
     throw new Error(`setImplementResume: invalid session id ${JSON.stringify(session)}`);
@@ -804,8 +804,10 @@ export function setImplementResume(
   if (pre !== "" && !SHA_RE.test(pre)) {
     throw new Error(`setImplementResume: invalid pre-head ${JSON.stringify(preHead)}`);
   }
-  if (Number.isNaN(Date.parse(String(runStartedAt ?? "")))) {
-    throw new Error(`setImplementResume: invalid run start ${JSON.stringify(runStartedAt)}`);
+  if (!/^[0-9a-f]{64}$/.test(String(feedbackDigest ?? ""))) {
+    throw new Error(
+      `setImplementResume: invalid feedback digest ${JSON.stringify(feedbackDigest)}`,
+    );
   }
   if (Number.isNaN(Date.parse(String(now ?? "")))) {
     throw new Error(`setImplementResume: invalid now ${JSON.stringify(now)}`);
@@ -816,7 +818,7 @@ export function setImplementResume(
   issue.implementResumeTreeDigest = String(treeDigest);
   issue.implementResumeKey = key;
   issue.implementResumePreHead = pre === "" ? null : pre;
-  issue.implementResumeRunStartedAt = new Date(Date.parse(runStartedAt)).toISOString();
+  issue.implementResumeFeedbackDigest = String(feedbackDigest);
   issue.implementResumeAt = new Date(Date.parse(now)).toISOString();
   return Object.fromEntries(IMPLEMENT_RESUME_RECORD_FIELDS.map((f) => [f, issue[f]]));
 }

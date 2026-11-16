@@ -98,7 +98,7 @@ describe("implement resume: wiring in the --implement block", () => {
     assert.ok(cat !== -1 && cat < rm, "stdout is logged before the file is deleted");
     assert.match(
       branch,
-      /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable "\$ISSUE_NUM" "\$WT_PATH" "\$IMPL_SESSION_ID" "\$IMPL_TASK_KEY" \\\n\s*"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "timed out" "\$CLAUDE_START_ISO"\n\s*fi/,
+      /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable "\$ISSUE_NUM" "\$WT_PATH" "\$IMPL_SESSION_ID" "\$IMPL_TASK_KEY" \\\n\s*"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "timed out" "\$IMPL_FEEDBACK_DIGEST"\n\s*fi/,
     );
     assert.match(branch, /factory:bump-attempts "\$ISSUE_NUM"/);
     assert.match(branch, /continue\n$/);
@@ -130,7 +130,7 @@ describe("implement resume: wiring in the --implement block", () => {
     assert.ok(mark !== -1 && mark < branch.indexOf("pause_for_session_limit"));
     assert.match(
       branch,
-      /"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "session limit" "\$CLAUDE_START_ISO"\n/,
+      /"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "session limit" "\$IMPL_FEEDBACK_DIGEST"\n/,
     );
     assert.doesNotMatch(branch, /IMPL_RESUMED/, "a resumed run is recorded again after a limit");
     assert.doesNotMatch(branch, /bump-attempts/);
@@ -155,7 +155,7 @@ describe("implement resume: wiring in the --implement block", () => {
     const arm = slice("      incomplete)\n", "        ;;\n");
     assert.match(arm, /action=incomplete\); keeping slot \$SLOT for retry/);
     assert.match(arm, /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable /);
-    assert.match(arm, /"action=incomplete" "\$CLAUDE_START_ISO"\n/);
+    assert.match(arm, /"action=incomplete" "\$IMPL_FEEDBACK_DIGEST"\n/);
     assert.match(arm, /factory:bump-attempts "\$ISSUE_NUM"/);
     assert.doesNotMatch(arm, /transition_status|slot-release/);
   });
@@ -347,7 +347,8 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       plan2 = PLAN,
       revs2 = REVS,
       issue2 = ISSUE,
-      comments2 = "[]",
+      comments1 = "[]",
+      comments2 = comments1,
       env = { PHASE: "C" },
     } = {},
   ) {
@@ -361,9 +362,9 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
     return harness(
       dir,
       [
-        `implement_resume_decide 7 "${wt}" '${wt1}' '${PRIOR}' '${PLAN}' '${REVS}' '${ISSUE}'`,
+        `implement_resume_decide 7 "${wt}" '${wt1}' '${PRIOR}' '${PLAN}' '${REVS}' '${ISSUE}' '${comments1}'`,
         'echo "run1 $IMPL_RESUMED $IMPL_SESSION_FLAG $IMPL_SESSION_ID $IMPL_TASK_KEY"',
-        `implement_mark_resumable 7 "${wt}" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" "${pre}" 1 "timed out" "2026-11-16T10:00:00Z"`,
+        `implement_mark_resumable 7 "${wt}" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" "${pre}" 1 "timed out" "$IMPL_FEEDBACK_DIGEST"`,
         'mkdir -p "$HOME/.claude/projects/-wt"',
         'printf "{}\\n" >"$HOME/.claude/projects/-wt/$IMPL_SESSION_ID.jsonl"',
         "FIRST=$IMPL_SESSION_ID",
@@ -461,31 +462,67 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
 
   // #842 review: a session started under another FACTORY_PHASE holds that
   // phase's scope.
-  // #842 review (CodeRabbit bot): a first implementation has no feedback in
-  // its key, so a reporter comment posted after the stopped run started must
-  // start a fresh session whose bundle carries it. The factory's own marker
-  // comments, and anything older than the run, don't count.
-  it("runs fresh on an initial chain when an owner comment arrived after the stopped run started", () => {
-    withDir((dir) => {
+  // #842 review: a first implementation's key names no feedback, so the
+  // resume compares the reporter's comments in the stopped run's snapshot
+  // (the one its bundle was built from) with this start's. GitHub data only.
+  describe("the comment snapshot", () => {
+    const c = (id, body, createdAt = "2026-11-16T09:00:00Z", who = "OWNER") => ({
+      id,
+      authorAssociation: who,
+      body,
+      createdAt,
+    });
+    const planC = c(1, "<!-- drafto-factory-plan -->\nPlan");
+    const snap = [planC, c(2, "an early question")];
+    const S = (list) => JSON.stringify(list);
+    const second = (dir, comments2) => {
       const wt = makeWorktree(dir);
-      const comments = (createdAt, body = "please also handle X") =>
-        JSON.stringify([
-          {
-            id: 1,
-            authorAssociation: "OWNER",
-            body: "<!-- drafto-factory-plan -->",
-            createdAt: "2026-11-16T11:00:00Z",
-          },
-          { id: 2, authorAssociation: "OWNER", body, createdAt },
-          { id: 3, authorAssociation: "NONE", body: "drive-by", createdAt: "2026-11-16T12:00:00Z" },
+      return chain(dir, wt, { comments1: S(snap), comments2: S(comments2) });
+    };
+
+    it("runs fresh for a comment that landed after the snapshot but before claude started", () => {
+      withDir((dir) => {
+        // Stamped before the stopped run's start (and before the snapshot's
+        // newest): only the snapshot can tell it wasn't in the bundle.
+        const r = second(dir, [...snap, c(3, "please also handle X", "2026-11-16T08:59:00Z")]);
+        assert.equal(r.status, 0, r.stderr + r.log);
+        assert.match(r.stdout, /^run2 0 --session-id /m);
+        assert.match(r.log, /no resume: new-feedback, the comments changed/);
+      });
+    });
+
+    it("runs fresh when a reporter comment was edited or deleted", () => {
+      withDir((dir) => {
+        assert.match(
+          second(dir, [planC, c(2, "an edited question")]).log,
+          /no resume: new-feedback/,
+        );
+      });
+      withDir((dir) => {
+        assert.match(second(dir, [planC]).log, /no resume: new-feedback/);
+      });
+    });
+
+    it("runs fresh for a support-agent forward (ADR-0066)", () => {
+      withDir((dir) => {
+        const fwd = c(
+          4,
+          "**Customer replied via support@drafto.eu:**\n> hi\n<!-- drafto-support-forward sender:a@b.c -->",
+        );
+        assert.match(second(dir, [...snap, fwd]).log, /no resume: new-feedback/);
+      });
+    });
+
+    it("resumes past the factory's own marker comments and other people's", () => {
+      withDir((dir) => {
+        const r = second(dir, [
+          ...snap,
+          c(5, "🏭 fixed\n<!-- drafto-factory-revise-reply-2 -->"),
+          c(6, "drive-by", "2026-11-16T10:00:00Z", "NONE"),
         ]);
-      const after = chain(dir, wt, { comments2: comments("2026-11-16T10:05:00Z") });
-      assert.match(after.stdout, /^run2 0 --session-id /m);
-      assert.match(after.log, /no resume: new-feedback, owner comment at 2026-11-16T10:05:00Z/);
-      // Older than the run, or the factory's own marker comment (11:00), or
-      // not from the owner: resumed.
-      const before = chain(dir, wt, { comments2: comments("2026-11-16T09:55:00Z") });
-      assert.match(before.stdout, /^run2 1 --resume /m);
+        assert.equal(r.status, 0, r.stderr + r.log);
+        assert.match(r.stdout, /^run2 1 --resume /m);
+      });
     });
   });
 
@@ -670,7 +707,7 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       IMPL_RESUMED: "1",
       IMPL_SESSION_ID: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
       IMPL_TASK_KEY: "plan:1@x|rev:",
-      CLAUDE_START_ISO: "2026-11-16T10:00:00Z",
+      IMPL_FEEDBACK_DIGEST: "f".repeat(64),
       ...vars,
     };
     const snippet = [
@@ -863,7 +900,7 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       });
       assert.match(
         fresh.calls,
-        new RegExp(`^mark-resumable ${b0} 1 action=incomplete 2026-11-16T10:00:00Z$`, "m"),
+        new RegExp(`^mark-resumable ${b0} 1 action=incomplete ${"f".repeat(64)}$`, "m"),
       );
     });
   });
