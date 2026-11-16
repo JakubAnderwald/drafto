@@ -128,6 +128,22 @@ export function parseSplitFile(text) {
   return { title, dependsOn: dependsOn ?? [], body, problems };
 }
 
+/**
+ * Whether <text> has an HTML comment opener with no closer. sanitiseSplitText
+ * (sanitizeVendorText) drops everything from such an opener to the end, which
+ * would silently cut a spec short; GitHub would hide the same text. So a file
+ * with one is refused, with a reason, instead of being filed truncated.
+ */
+export function hasUnclosedComment(text) {
+  let t = String(text ?? "");
+  let prev;
+  do {
+    prev = t;
+    t = t.replace(/<!--[\s\S]*?-->/g, "");
+  } while (t !== prev);
+  return t.includes("<!--");
+}
+
 function isTitleOk(title) {
   return (
     typeof title === "string" &&
@@ -240,6 +256,9 @@ export function validateSplit(dir, { secrets, fs = nodeFs } = {}) {
     }
     const parsed = parseSplitFile(raw);
     for (const p of parsed.problems) problems.push(`${name}: ${p}`);
+    if (hasUnclosedComment(parsed.body)) {
+      problems.push(`${name}: it has an unclosed HTML comment (\`<!--\` with no \`-->\`)`);
+    }
     if (parsed.title && !isTitleOk(parsed.title)) {
       problems.push(
         `${name}: the title isn't a conventional-commit subject (\`feat: …\`) of at most ${SPLIT_TITLE_MAX} characters, with no \`<\` or \`>\``,

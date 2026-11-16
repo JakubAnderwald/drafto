@@ -10,6 +10,7 @@ import { buildFactoryPlanBundle, parsePlanSize } from "../lib/factory-bundle.mjs
 import {
   SPLIT_FILE_MAX_BYTES,
   composeSplitBody,
+  hasUnclosedComment,
   loadSplitSecrets,
   parseDependsOn,
   parseSplitFile,
@@ -371,6 +372,157 @@ describe("validateSplit", () => {
       "02.md": spec(),
     });
     assert.equal(code.ok, true, JSON.stringify(code.problems));
+  });
+});
+
+// The sanitising contract (CodeRabbit CLI finding on #841): sanitiseSplitText,
+// through sanitizeVendorText, keeps a spec's structure and every line of its
+// text, and removes only what must not reach a public issue body.
+describe("sanitisation contract on a realistic spec near the size cap", () => {
+  const FENCE = "```";
+  const head = [
+    "# feat: keep the note list sorted after a sync",
+    "",
+    "Depends on: none",
+    "",
+    "### What",
+    "",
+    "Keep the note list sorted by `updated_at` after a sync, cc @octocat. <!-- planner note: hidden --> The list reads from `useNotes()`.",
+    "",
+    "### Acceptance criteria",
+    "",
+    "- The list stays sorted (see `apps/web/src/components/notes/note-list.tsx`).",
+  ];
+  const tail = [
+    "- The factory marker drafto-factory-plan never appears verbatim.",
+    "",
+    "### Affected platforms",
+    "",
+    "- [x] web (`apps/web`)",
+    "- [x] iOS / Android (`apps/mobile`)",
+    "- [ ] macOS (`apps/desktop`)",
+    "- [ ] None — factory internals / docs / CI (no app platform)",
+    "",
+    "### Schema changes?",
+    "",
+    "no",
+    "",
+    "### UI design (if applicable)",
+    "",
+    "_No response_",
+    "",
+    "### Out of scope",
+    "",
+    `${FENCE}ts`,
+    "// unchanged: @scope/pkg stays where it is",
+    "export function sortNotes(a: Note, b: Note) {",
+    "  return b.updatedAt - a.updatedAt;",
+    "}",
+    FENCE,
+    "",
+    "- Sorting by title. END-OF-SPEC",
+    "",
+  ];
+  const pad = [];
+  let raw = "";
+  for (let k = 0; ; k++) {
+    raw = [...head, ...pad, ...tail].join("\n");
+    if (Buffer.byteLength(raw) >= 19_400) break;
+    pad.push(
+      `- Row ${k} keeps its place in \`note-list\` after a reload, and its checkbox stays ticked.`,
+    );
+  }
+  const bodyStart = raw.indexOf("### What");
+  const expected = raw
+    .slice(bodyStart)
+    .replace("<!-- planner note: hidden -->", "")
+    .replace("drafto-factory-plan", `drafto-factory${ZWSP}-plan`)
+    .replace("@octocat", `@${ZWSP}octocat`)
+    .replace("@scope/pkg", `@${ZWSP}scope/pkg`)
+    .trim();
+
+  function validate() {
+    const d = tempDirs();
+    try {
+      writeFileSync(join(d.split, "01.md"), raw);
+      writeFileSync(join(d.split, "02.md"), spec({ depends: "01" }));
+      return validateSplit(d.split, { secrets: secretsFor(d.secrets) });
+    } finally {
+      rmSync(d.root, { recursive: true, force: true });
+    }
+  }
+
+  it("is a realistic spec just under the cap", () => {
+    const bytes = Buffer.byteLength(raw);
+    assert.ok(bytes >= 19_400 && bytes <= SPLIT_FILE_MAX_BYTES, String(bytes));
+  });
+
+  it("keeps every line, heading, checkbox and backtick, removing only the comment, marker token and mention", () => {
+    const out = validate();
+    assert.equal(out.ok, true, JSON.stringify(out.problems));
+    const body = out.parts[0].body;
+    assert.equal(body, expected);
+    assert.equal(body.split("\n").length, expected.split("\n").length);
+    assert.ok(body.endsWith("- Sorting by title. END-OF-SPEC"), "not truncated");
+    for (const line of [
+      "### What",
+      "### Acceptance criteria",
+      "### Affected platforms",
+      "### Schema changes?",
+      "### UI design (if applicable)",
+      "### Out of scope",
+      "- [x] web (`apps/web`)",
+      "- [ ] None — factory internals / docs / CI (no app platform)",
+      `${FENCE}ts`,
+      "  return b.updatedAt - a.updatedAt;",
+    ]) {
+      assert.ok(body.split("\n").includes(line), line);
+    }
+    assert.doesNotMatch(body, /<!--|-->|planner note/);
+    assert.doesNotMatch(body, /drafto-factory-/);
+    assert.doesNotMatch(body, /(^|\W)@(?!​)[A-Za-z0-9]/);
+  });
+
+  it("parses into the spec the gate checks, with every section intact", () => {
+    const { spec: parsed } = validate().parts[0];
+    assert.match(parsed.what, /`updated_at`.*`useNotes\(\)`/);
+    assert.match(parsed.acceptance, /never appears verbatim\.$/);
+    assert.equal(parsed.acceptance.split("\n").length, pad.length + 2);
+    assert.deepEqual(parsed.affectedPlatforms, ["mobile", "web"]);
+    assert.equal(parsed.infraOnly, false);
+    assert.equal(parsed.schemaChanges, false);
+    assert.equal(parsed.ui, "_No response_");
+    assert.match(parsed.outOfScope, /^```ts\n[\s\S]*\n```\n\n- Sorting by title\. END-OF-SPEC$/);
+  });
+
+  it("composes a public issue body that carries the whole sanitised spec and nothing hidden", () => {
+    const out = validate();
+    const issue = composeSplitBody({ split: out, part: 2, issue: 900, created: { 1: 1001 } });
+    const first = composeSplitBody({ split: out, part: 1, issue: 900 });
+    assert.ok(first.endsWith(`${expected}\n`));
+    assert.match(issue, /\*\*Depends on:\*\* #1001\n/);
+    for (const text of [first, issue]) {
+      assert.doesNotMatch(text, /<!--|drafto-factory-/);
+    }
+  });
+
+  it("refuses an unclosed HTML comment instead of filing the spec cut short", () => {
+    const unclosed = raw.replace("see `apps/web/src", "see `<!--` in `apps/web/src");
+    assert.ok(hasUnclosedComment(unclosed));
+    const d = tempDirs();
+    try {
+      writeFileSync(join(d.split, "01.md"), unclosed);
+      writeFileSync(join(d.split, "02.md"), spec({ depends: "01" }));
+      const out = validateSplit(d.split, { secrets: secretsFor(d.secrets) });
+      assert.equal(out.ok, false);
+      assert.match(out.problems.join("\n"), /01\.md: it has an unclosed HTML comment/);
+    } finally {
+      rmSync(d.root, { recursive: true, force: true });
+    }
+    assert.equal(hasUnclosedComment("a <!-- x --> b"), false);
+    assert.equal(hasUnclosedComment("a <!-- x <!-- y --> b"), false);
+    assert.equal(hasUnclosedComment("a <!-- x --> b <!-- c"), true);
+    assert.equal(hasUnclosedComment("no comment"), false);
   });
 });
 
