@@ -1023,16 +1023,33 @@ export function reusedBuildsText(entry) {
     .join(" / ");
 }
 
-// Pure: the one line a tester reads for a reused lane. The bash fallback
-// comment (intest_fallback_comment) renders the same words.
+// Pure: the Android caveat for a reused mobile lane, "" for desktop. Google
+// Play's internal track installs only its newest upload, so another card's
+// later upload makes this one uninstallable from Play. TestFlight keeps older
+// builds, so iOS and macOS need no caveat.
+export function reusedAndroidCaveat(entry) {
+  if (entry.id !== "mobile") return "";
+  const android = entry.builds.find((b) => b.platform === "android");
+  return (
+    "Android: Play's internal track serves only its newest upload, so check that the " +
+    `installed build number is ${android ? android.build : "the one an earlier comment gives"}. ` +
+    "If Play shows a newer build, this card's Android build is no longer installable from " +
+    "Play; test iOS from TestFlight and ask in a comment for the Android build."
+  );
+}
+
+// Pure: what a tester reads for a reused lane, the Android caveat included.
+// The bash fallback comment (intest_fallback_comment) renders the same words.
 export function reusedBetaNote(entry) {
   const sha12 = entry.fromSha.slice(0, 12);
   const what = entry.id === "mobile" ? "mobile" : "macOS";
   const builds = reusedBuildsText(entry);
-  return builds
+  const note = builds
     ? `No ${what} change since ${builds} (\`${sha12}\`); keep testing that build.`
     : `No ${what} change since the beta built from \`${sha12}\`; keep testing that build. ` +
-        "An earlier comment on this issue gives its build number.";
+      "An earlier comment on this issue gives its build number.";
+  const caveat = reusedAndroidCaveat(entry);
+  return caveat ? `${note} ${caveat}` : note;
 }
 
 export function buildFactoryInTestBundle({

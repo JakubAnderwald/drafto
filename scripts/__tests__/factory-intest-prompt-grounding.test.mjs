@@ -107,6 +107,14 @@ describe("In Test prompt — reused betas (ADR-0081)", () => {
     assert.match(flat, /earlier comment on this issue gives its build number/);
   });
 
+  it("keeps the Android caveat on a reused mobile beta, and none on macOS", () => {
+    // Play's internal track installs only its newest upload; TestFlight keeps
+    // older builds.
+    assert.match(flat, /For mobile, always keep the second part, the Android caveat/);
+    assert.match(flat, /check that the installed build number is the one an earlier comment gives/);
+    assert.match(flat, /with no caveat: TestFlight keeps older builds/);
+  });
+
   it("forbids inventing a reused build's number", () => {
     assert.match(flat, /Only `builds` holds build numbers: never compute or guess one/);
   });

@@ -317,7 +317,10 @@ describe("lane table", () => {
     const r = compose({ betaLanes: "", betaReused: REUSED });
     assert.ok(
       tableRow(r.body, "iOS / Android").includes(
-        "| manual | — | No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build. |",
+        "| manual | — | No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build. " +
+          "Android: Play's internal track serves only its newest upload, so check that the installed build number is 152. " +
+          "If Play shows a newer build, this card's Android build is no longer installable from Play; " +
+          "test iOS from TestFlight and ask in a comment for the Android build. |",
       ),
       tableRow(r.body, "iOS / Android"),
     );

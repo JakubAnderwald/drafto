@@ -267,14 +267,18 @@ Compose it in Markdown from the bundle's facts. Structure:
     first 12 chars of `fromSha`:
 
     ```text
-    No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build.
+    No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build. Android: Play's internal track serves only its newest upload, so check that the installed build number is 152. If Play shows a newer build, this card's Android build is no longer installable from Play; test iOS from TestFlight and ask in a comment for the Android build.
     ```
 
-    For `desktop` it reads "No macOS change since build 80 (`<sha12>`); keep
-    testing that build." With `builds` empty, write "No mobile change since
-    the beta built from `<sha12>`; keep testing that build." and add that an
-    earlier comment on this issue gives its build number. Only `builds` holds
-    build numbers: never compute or guess one.
+    For mobile, always keep the second part, the Android caveat, with the
+    `android` entry's number. With no `android` entry, write "check that the
+    installed build number is the one an earlier comment gives" instead. For
+    `desktop` it reads "No macOS change since build 80 (`<sha12>`); keep
+    testing that build." with no caveat: TestFlight keeps older builds. With
+    `builds` empty, write "No mobile change since the beta built from
+    `<sha12>`; keep testing that build." and add that an earlier comment on
+    this issue gives its build number. Only `builds` holds build numbers:
+    never compute or guess one.
 
   - each entry in `betaDispatch.skipped` → say that platform was **not**
     auto-built, give the reason, and include the command from the

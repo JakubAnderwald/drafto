@@ -1804,7 +1804,7 @@ describe("verify_compose_report with a shell run (real composer, lane module stu
         const body = r.comments.at(-1).body;
         assert.match(
           body,
-          /\| iOS \/ Android \| manual \| — \| No mobile change since iOS build 147 \(`bbbbbbbbbbbb`\); keep testing that build\. \|/,
+          /\| iOS \/ Android \| manual \| — \| No mobile change since iOS build 147 \(`bbbbbbbbbbbb`\); keep testing that build\. Android: Play's internal track serves only its newest upload, so check that the installed build number is the one an earlier comment gives\. If Play shows a newer build, this card's Android build is no longer installable from Play; test iOS from TestFlight and ask in a comment for the Android build\. \|/,
         );
       },
     );

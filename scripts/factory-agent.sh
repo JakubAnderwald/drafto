@@ -4517,6 +4517,8 @@ intest_fallback_comment() {
   dispatched=$(echo "${beta:-{\}}" | jq -r '[.dispatched[]?.id] | join(",")' 2>/dev/null || echo "")
   # A lane kept from an earlier commit's build (ADR-0081) gets one line naming
   # that build, "" otherwise. The build numbers come from intest_reused_builds.
+  # Mobile adds the Android caveat (Play serves only its newest upload). The
+  # words match reusedBetaNote in factory-bundle.mjs.
   local reused_jq='first(.reused[]? | select(.id == $lane)) as $r
     | (($r.fromSha // "") | .[0:12]) as $s
     | ([ $r.builds[]? | (if $lane == "mobile" then (({ ios: "iOS", android: "Android" }[.platform] // .platform) + " ") else "" end)
@@ -4524,7 +4526,13 @@ intest_fallback_comment() {
     | "No " + (if $lane == "mobile" then "mobile" else "macOS" end) + " change since "
       + (if $b == "" then "the beta built from `" + $s + "`" else $b + " (`" + $s + "`)" end)
       + "; keep testing that build."
-      + (if $b == "" then " An earlier comment on this issue gives its build number." else "" end)'
+      + (if $b == "" then " An earlier comment on this issue gives its build number." else "" end)
+      + (if $lane == "mobile" then
+          " Android: Play\u0027s internal track serves only its newest upload, so check that the installed build number is "
+          + (first($r.builds[]? | select(.platform == "android") | .build) // "the one an earlier comment gives")
+          + ". If Play shows a newer build, this card\u0027s Android build is no longer installable from Play;"
+          + " test iOS from TestFlight and ask in a comment for the Android build."
+        else "" end)'
   mobile_reused=$(echo "${beta:-{\}}" | jq -r --arg lane mobile "$reused_jq" 2>/dev/null || echo "")
   desktop_reused=$(echo "${beta:-{\}}" | jq -r --arg lane desktop "$reused_jq" 2>/dev/null || echo "")
   if [[ "$web" == "true" && -n "$preview_url" ]]; then

@@ -2250,6 +2250,37 @@ intest_handoff 794 802 '{"number":802,"url":"u","headRef":"h","state":"OPEN"}' "
 
   it("renders the same line as the scenario bundle and the verification report", async () => {
     const { reusedBetaNote } = await import("../lib/factory-bundle.mjs");
+    // Every shape of build list, so the jq and JS sentences, the Android caveat
+    // included, can't drift apart.
+    for (const builds of [
+      [
+        { platform: "android", build: "152" },
+        { platform: "ios", build: "147" },
+      ],
+      [{ platform: "ios", build: "147" }],
+      [{ platform: "android", build: "152" }],
+      [],
+    ]) {
+      const variants = [
+        { id: "mobile", fromSha: FROM, builds },
+        {
+          id: "desktop",
+          fromSha: FROM,
+          builds: builds.length ? [{ platform: "macos", build: "80" }] : [],
+        },
+      ];
+      const out = bash(
+        `intest_fallback_comment 794 802 "" "" ${"c".repeat(40)} '{"web":false,"mobile":true,"desktop":true}' "$BETA"`,
+        { BETA: JSON.stringify({ dispatched: [], reused: variants }) },
+      );
+      assert.ok(out.includes(`- **iOS / Android** — ${reusedBetaNote(variants[0])}\n`), out);
+      assert.ok(out.includes(`- **macOS** — ${reusedBetaNote(variants[1])}\n`), out);
+      assert.match(
+        out,
+        /\*\*iOS \/ Android\*\* — .*Play's internal track serves only its newest upload/,
+      );
+      assert.doesNotMatch(out.split("- **macOS** — ")[1], /Play/);
+    }
     const reused = [
       {
         id: "mobile",

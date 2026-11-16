@@ -20,6 +20,7 @@ import {
   extractScreenshots,
   shapeReusedBetas,
   reusedBetaNote,
+  reusedAndroidCaveat,
 } from "../lib/factory-bundle.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1644,7 +1645,10 @@ describe("shapeReusedBetas / reusedBetaNote (ADR-0081)", () => {
           { platform: "ios", build: "147" },
         ],
       }),
-      "No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build.",
+      "No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build. " +
+        "Android: Play's internal track serves only its newest upload, so check that the installed build " +
+        "number is 152. If Play shows a newer build, this card's Android build is no longer installable " +
+        "from Play; test iOS from TestFlight and ask in a comment for the Android build.",
     );
     assert.equal(
       reusedBetaNote({
@@ -1656,10 +1660,28 @@ describe("shapeReusedBetas / reusedBetaNote (ADR-0081)", () => {
     );
   });
 
+  it("warns about Play's newest-upload-only track for mobile, never for macOS", () => {
+    // TestFlight keeps older builds; Play's internal track does not.
+    const caveat = reusedAndroidCaveat({
+      id: "mobile",
+      fromSha: from,
+      builds: [{ platform: "ios", build: "147" }],
+    });
+    assert.match(caveat, /^Android: Play's internal track serves only its newest upload/);
+    assert.match(caveat, /installed build number is the one an earlier comment gives\./);
+    assert.match(caveat, /test iOS from TestFlight and ask in a comment for the Android build\.$/);
+    assert.equal(reusedAndroidCaveat({ id: "desktop", fromSha: from, builds: [] }), "");
+    assert.ok(
+      reusedBetaNote({ id: "mobile", fromSha: from, builds: [] }).endsWith(
+        ` gives its build number. ${reusedAndroidCaveat({ id: "mobile", fromSha: from, builds: [] })}`,
+      ),
+    );
+  });
+
   it("points at the earlier comment when no build number was found", () => {
     assert.equal(
-      reusedBetaNote({ id: "mobile", fromSha: from, builds: [] }),
-      "No mobile change since the beta built from `9248da9a0c63`; keep testing that build. " +
+      reusedBetaNote({ id: "desktop", fromSha: from, builds: [] }),
+      "No macOS change since the beta built from `9248da9a0c63`; keep testing that build. " +
         "An earlier comment on this issue gives its build number.",
     );
   });

@@ -767,7 +767,8 @@ function laneTable(shell, browser, platforms, betaLanes, betaReused = []) {
   return [
     "| Lane | Status | Verdict | Note |",
     "|---|---|---|---|",
-    ...rows.map(([a, b, c, d]) => `| ${a} | ${b} | ${c} | ${cell(d, 400)} |`),
+    // Room for a reused mobile beta's note with its Android caveat (ADR-0081).
+    ...rows.map(([a, b, c, d]) => `| ${a} | ${b} | ${c} | ${cell(d, 600)} |`),
   ];
 }
 
