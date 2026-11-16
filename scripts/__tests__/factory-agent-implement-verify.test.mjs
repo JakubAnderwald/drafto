@@ -195,10 +195,8 @@ describe("factory-agent.sh --implement verification", () => {
     );
     assert.match(back, /transition_status "\$item_id" "\$issue_num" "In Test"/);
     assert.match(back, /lastFeedbackAt "\$mark"/);
-    // Fresh idempotency noop: no feedback was given, so the baseline is the
-    // run's comment snapshot (ADR-0084), not "now": a comment posted while it
-    // ran stays unconsumed for the In Test sweep.
-    assert.match(noopArm, /lastFeedbackAt "\$FEEDBACK_MARK"/);
+    // Fresh idempotency noop: there is no feedback, so "now" is the baseline.
+    assert.match(noopArm, /lastFeedbackAt "\$NOW_ISO"/);
   });
 
   it("marks only the feedback a revision run was given as consumed", () => {
@@ -212,21 +210,6 @@ describe("factory-agent.sh --implement verification", () => {
     assert.match(
       script,
       /if \[\[ "\$IS_REVISION" -eq 1 && -n "\$FEEDBACK_CONSUMED_AT" \]\]; then\n\s*FEEDBACK_MARK="\$FEEDBACK_CONSUMED_AT"/,
-    );
-    // A first implementation marks up to its comment snapshot, in GitHub's
-    // clock, so a comment posted after it isn't consumed unread (ADR-0084).
-    assert.match(
-      script,
-      /elif \[\[ "\$IS_REVISION" -eq 0 && -n "\$COMMENTS_SNAPSHOT_AT" \]\]; then\n(?:\s*#[^\n]*\n)*\s*FEEDBACK_MARK="\$COMMENTS_SNAPSHOT_AT"/,
-    );
-    assert.match(
-      script,
-      /COMMENTS_SNAPSHOT_AT=\$\(echo "\$COMMENTS_JSON" \| jq -r '\[\.\[\]\?\.createdAt \/\/ empty\] \| max \/\/ ""'/,
-    );
-    assert.doesNotMatch(
-      script,
-      /lastFeedbackAt "\$NOW_ISO"/,
-      "every implement mark goes through FEEDBACK_MARK",
     );
     assert.match(implementedArm, /lastFeedbackAt "\$FEEDBACK_MARK"/);
     assert.doesNotMatch(implementedArm, /lastFeedbackAt "\$NOW_ISO"/);

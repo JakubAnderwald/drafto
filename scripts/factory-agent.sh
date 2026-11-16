@@ -1501,23 +1501,6 @@ unacked_owner_comments() {
   echo "$kept" | jq -c 'map(.id | tostring)'
 }
 
-# initial_feedback_comments <comments-json> <plan-comment-json> [<issue>] — the
-# reporter's comments a first implementation must treat as feedback (ADR-0084):
-# OWNER comments newer than the approved plan that the planner hasn't answered
-# (acked) in a replan, minus the factory's own marker comments, through the
-# support-forward gate (unacked_owner_comments). Full comment objects, oldest
-# first, "[]" when there are none.
-initial_feedback_comments() {
-  local comments_json="$1" plan_json="$2" issue="${3:-}" plan_at acked ids
-  plan_at=$(echo "$plan_json" | jq -r '.createdAt // ""' 2>/dev/null || echo "")
-  [[ -n "$plan_at" ]] || { echo "[]"; return 0; }
-  acked=$(extract_acked_comment_ids "$(echo "$plan_json" | jq -r '.body // ""' 2>/dev/null)") || acked="[]"
-  [[ -n "$acked" ]] || acked="[]"
-  ids=$(unacked_owner_comments "$comments_json" "$plan_at" "$acked" "$issue") || return 1
-  echo "$comments_json" | jq -c --argjson ids "${ids:-[]}" \
-    '[.[] | select((.id | tostring) as $i | $ids | index($i))] | sort_by(.createdAt)'
-}
-
 # ── Replies to operator comments (Plan Review + In Test) ───────────────────
 # Every operator comment gets its own reply on the issue. The model (planner or
 # implementer) writes each one to <reply-dir>/<commentId>.md and never posts it:
@@ -8625,12 +8608,6 @@ the card back to **In Progress** to retry.
     if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
       log "ERROR: fetch_issue_comments failed for #$ISSUE_NUM"; continue
     fi
-    # The newest comment in the snapshot this run's bundle is built from, in
-    # GitHub's clock. A first implementation marks feedback consumed up to it,
-    # not up to the local "now": a comment posted after the snapshot is one
-    # the run never saw, and the In Test sweep takes it up as feedback
-    # (ADR-0084).
-    COMMENTS_SNAPSHOT_AT=$(echo "$COMMENTS_JSON" | jq -r '[.[]?.createdAt // empty] | max // ""' 2>/dev/null || echo "")
 
     # Free-disk guard — don't start disk-heavy implementation we can't finish.
     # The clonefile seed adds ~0 bytes, but the build/test phase needs headroom;
@@ -8697,7 +8674,6 @@ Drag it back to **Ready** so the factory can plan it first.
     IS_REVISION=0
     REPLY_MARKERS="[]"
     FEEDBACK_CONSUMED_AT=""
-    FEEDBACK_HWM=""
     if [[ "$PRIOR_PR" != "null" ]]; then
       FEEDBACK_HWM=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
         --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.lastFeedbackAt // ""' 2>/dev/null || echo "")
@@ -8713,28 +8689,6 @@ Drag it back to **Ready** so the factory can plan it first.
         # ("thanks", "lgtm") needs no answer.
         REPLY_MARKERS=$(reply_markers_for "$REVISION_COMMENTS" "drafto-factory-revise-reply-")
         FEEDBACK_CONSUMED_AT=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].createdAt // ""' 2>/dev/null || echo "")
-      fi
-    fi
-    # Feedback on a first implementation (ADR-0084). With no In Test round yet
-    # there's no lastFeedbackAt, so the sweep above finds nothing; the
-    # reporter's comments since the plan that the planner didn't already answer
-    # in a replan are this run's feedback, through the same bundle field,
-    # prompt section and per-comment reply markers as a revision. Before, such a
-    # comment reached the run only as context and was marked consumed when it
-    # succeeded. IS_REVISION stays 0: there may be no PR yet, and the noop and
-    # declined arms' revision checks need one.
-    INITIAL_FEEDBACK=0
-    if [[ "$IS_REVISION" -eq 0 && -z "$FEEDBACK_HWM" ]]; then
-      INITIAL_COMMENTS=$(initial_feedback_comments "$COMMENTS_JSON" "$PLAN_COMMENT_JSON" "$ISSUE_NUM") \
-        || INITIAL_COMMENTS="[]"
-      INITIAL_COUNT=$(echo "$INITIAL_COMMENTS" | jq 'length' 2>/dev/null || echo "0")
-      [[ "$INITIAL_COUNT" =~ ^[0-9]+$ ]] || INITIAL_COUNT=0
-      if [[ "$INITIAL_COUNT" -gt 0 ]]; then
-        INITIAL_FEEDBACK=1
-        REVISION_COMMENTS="$INITIAL_COMMENTS"
-        REPLY_MARKERS=$(reply_markers_for "$REVISION_COMMENTS" "drafto-factory-revise-reply-")
-        FEEDBACK_CONSUMED_AT=$(echo "$REVISION_COMMENTS" | jq -r 'map(.createdAt) | max // ""' 2>/dev/null || echo "")
-        log "Issue #$ISSUE_NUM: first implementation with $INITIAL_COUNT feedback comment(s) posted since the plan"
       fi
     fi
 
@@ -8940,12 +8894,6 @@ Drag it back to **Ready** so the factory can plan it first.
     FEEDBACK_MARK="$NOW_ISO"
     if [[ "$IS_REVISION" -eq 1 && -n "$FEEDBACK_CONSUMED_AT" ]]; then
       FEEDBACK_MARK="$FEEDBACK_CONSUMED_AT"
-    elif [[ "$INITIAL_FEEDBACK" -eq 1 && -n "$FEEDBACK_CONSUMED_AT" ]]; then
-      # A first implementation that was given feedback consumes exactly that.
-      FEEDBACK_MARK="$FEEDBACK_CONSUMED_AT"
-    elif [[ "$IS_REVISION" -eq 0 && -n "$COMMENTS_SNAPSHOT_AT" ]]; then
-      # A first implementation, the same rule: up to its comment snapshot.
-      FEEDBACK_MARK="$COMMENTS_SNAPSHOT_AT"
     fi
     case "$ACTION" in
       implemented)
@@ -9047,11 +8995,6 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
             "$REPLY_MARKERS" implemented
         else
           log "Issue #$ISSUE_NUM: advanced to In Review (PR $PR_URL; slot $SLOT retained for --watch)"
-          # Feedback given to a first implementation is answered like a
-          # revision's, one reply per comment (ADR-0084).
-          if [[ "$INITIAL_FEEDBACK" -eq 1 ]]; then
-            revise_replies_check "$ISSUE_NUM" "$PR_NUM" "$REPLY_MARKERS" implemented
-          fi
         fi
         ;;
       noop)
@@ -9098,13 +9041,10 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
           # so every migration it adds counts as this card's run's ("all").
           implement_migration_claim_check "$ISSUE_NUM" "$(echo "$PR_OBJ" | jq -r '.number')" "" "all" ""
           transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$FEEDBACK_MARK" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
           log "Issue #$ISSUE_NUM: noop (PR $PR_URL already open); advanced to In Review"
-          if [[ "$INITIAL_FEEDBACK" -eq 1 ]]; then
-            revise_replies_check "$ISSUE_NUM" "$(echo "$PR_OBJ" | jq -r '.number')" "$REPLY_MARKERS" noop
-          fi
         fi
         ;;
       blocked)
