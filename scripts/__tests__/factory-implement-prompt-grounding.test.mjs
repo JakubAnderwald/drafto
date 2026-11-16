@@ -436,3 +436,21 @@ describe("resume prompt (ADR-0084)", () => {
     assert.match(rflat, /check that `git log -1 --format=%H` equals the PR's `headRefOid`/);
   });
 });
+
+// #842 review: a first implementation gets the reporter's comments since the
+// plan as feedback (revisionComments + replyMarkers), not only as context.
+describe("implementer prompt — feedback on a first implementation (ADR-0084)", () => {
+  it("handles revisionComments on a first implementation through the revision rules", () => {
+    assert.match(prompt, /^### Feedback on a first implementation$/m);
+    assert.match(flat, /`revisionComments` can be non-empty on a first implementation too/);
+    assert.match(
+      flat,
+      /Answer every entry in `bundle\.replyMarkers` exactly as \*\*Reply on the issue\*\* says/,
+    );
+    assert.match(flat, /`action=declined` is only for a revision run/);
+    assert.doesNotMatch(
+      flat,
+      /For a first implementation, `revisionComments` is empty; ignore this section/,
+    );
+  });
+});

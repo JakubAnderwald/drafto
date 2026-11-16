@@ -685,7 +685,13 @@ describe("result handler on a resumed run whose predecessor already pushed (real
     return { wt, b0: shas[0], b1: shas[1], b2: shas[2] };
   }
 
-  function run(dir, vars) {
+  // The feedback-mark block that runs between the summary line and the arms.
+  const MARK = script.slice(
+    script.indexOf('    FEEDBACK_MARK="$NOW_ISO"\n'),
+    script.indexOf('    case "$ACTION" in\n      implemented)'),
+  );
+
+  function run(dir, vars, { withMark = false } = {}) {
     const calls = join(dir, "calls");
     const v = {
       ISSUE_NUM: "7",
@@ -708,6 +714,9 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       IMPL_SESSION_ID: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
       IMPL_TASK_KEY: "plan:1@x|rev:",
       IMPL_FEEDBACK_DIGEST: "f".repeat(64),
+      INITIAL_FEEDBACK: "0",
+      FEEDBACK_CONSUMED_AT: "",
+      COMMENTS_SNAPSHOT_AT: "",
       ...vars,
     };
     const snippet = [
@@ -728,8 +737,9 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       "worktree_untouched() { return 0; }",
       'implement_head_landed() { echo "landed? $3" >>"$CALLS"; [[ "${FAKE_LANDED:-1}" == "1" ]]; }',
       'gh() { echo "gh $1 $2" >>"$CALLS"; }',
-      'node() { echo "node $2 $3 $4" >>"$CALLS"; case "$*" in *factory:get-issue*) printf \'{"intestCommentSha":"%s"}\' "$FAKE_SHOWN" ;; esac; }',
+      'node() { echo "node $2 $3 $4 $5" >>"$CALLS"; case "$*" in *factory:get-issue*) printf \'{"intestCommentSha":"%s"}\' "$FAKE_SHOWN" ;; esac; }',
       "for _once in 1; do",
+      withMark ? MARK : "",
       CASE,
       "done",
       'echo "exit-ok"',
@@ -904,6 +914,56 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       );
     });
   });
+  const ask = { createdAt: "2026-11-16T10:05:00Z" };
+  const factoryNote = { createdAt: "2026-11-16T10:06:00Z" };
+  // First-implementation feedback (#842 review). The mark: consumed up to that comment on success, untouched otherwise.
+  for (const [action, consumed] of [
+    ["implemented", true],
+    ["incomplete", false],
+    ["blocked", false],
+  ]) {
+    it(`${action}: lastFeedbackAt ${consumed ? "advances to the feedback it was given" : "stays put"}`, () => {
+      withDir((dir) => {
+        const { wt, b1 } = (() => {
+          const w = join(dir, "wt");
+          mkdirSync(w);
+          git(w, "init", "-q");
+          git(w, "config", "user.name", "t");
+          git(w, "config", "user.email", "t@example.com");
+          git(w, "config", "commit.gpgsign", "false");
+          git(w, "commit", "-q", "--allow-empty", "-m", "B1");
+          return { wt: w, b1: git(w, "rev-parse", "HEAD") };
+        })();
+        const r = run(
+          dir,
+          {
+            ACTION: action,
+            IS_REVISION: "0",
+            INITIAL_FEEDBACK: "1",
+            FEEDBACK_CONSUMED_AT: ask.createdAt,
+            COMMENTS_SNAPSHOT_AT: factoryNote.createdAt,
+            REPLY_MARKERS: JSON.stringify([
+              { commentId: "200", marker: "drafto-factory-revise-reply-200" },
+            ]),
+            IMPL_RESUMED: "0",
+            WT_PATH: wt,
+            PRE_HEAD_OID: "",
+            CHAIN_PRE_HEAD_OID: "",
+            FAKE_POST_HEAD: b1,
+          },
+          { withMark: true },
+        );
+        assert.equal(r.status, 0, r.stderr + r.log);
+        if (consumed) {
+          assert.match(r.calls, new RegExp(`lastFeedbackAt ${ask.createdAt}$`, "m"));
+          assert.match(r.calls, /^replies implemented$/m);
+        } else {
+          assert.doesNotMatch(r.calls, /lastFeedbackAt/);
+          assert.doesNotMatch(r.calls, /^replies /m);
+        }
+      });
+    });
+  }
 });
 
 // #842 review: action=implemented only advances when the worktree's commits
@@ -1037,6 +1097,117 @@ describe("task key through the caller's real plan comment shape", () => {
       assert.match(k, /^plan:111@[0-9a-f]{16}\|rev:\|issue:/);
       const b = key(dir, "## Approach\nDo B.");
       assert.notEqual(b.stdout.trim().split("\n")[1], k);
+    });
+  });
+});
+
+// #842 review: a first implementation has no lastFeedbackAt, so a reporter
+// comment posted after the plan (here: after a run timed out) must reach the
+// next run as feedback, not only as context, and be marked consumed only once
+// a run that was given it succeeds. Real helpers end to end: the resume
+// decision, initial_feedback_comments, build_implement_bundle and the arms.
+describe("first-implementation feedback (initial chain → timeout → owner comment)", () => {
+  const plan = {
+    id: 100,
+    user: { login: "o" },
+    authorAssociation: "OWNER",
+    createdAt: "2026-11-16T09:00:00Z",
+    body: "<!-- drafto-factory-plan -->\n## Approach\nDo it.\n<!-- drafto-factory-replan-ack:150 -->",
+  };
+  const answered = {
+    id: 150,
+    user: { login: "o" },
+    authorAssociation: "OWNER",
+    createdAt: "2026-11-16T09:10:00Z",
+    body: "a Plan Review question the replan already answered",
+  };
+  const ask = {
+    id: 200,
+    user: { login: "o" },
+    authorAssociation: "OWNER",
+    createdAt: "2026-11-16T10:05:00Z",
+    body: "please also handle the empty state",
+  };
+  const factoryNote = {
+    id: 210,
+    user: { login: "o" },
+    authorAssociation: "OWNER",
+    createdAt: "2026-11-16T10:06:00Z",
+    body: "🏭 something\n<!-- drafto-factory-disk-low -->",
+  };
+  const before = [plan, answered];
+  const after = [plan, answered, ask, factoryNote];
+
+  it("starts fresh after the comment, hands it over as feedback with a reply marker, and consumes it only on success", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      // 1. The timed-out run's snapshot had no new comment; the next start's
+      //    does: the resume is refused.
+      const wt1 = JSON.stringify({
+        path: wt,
+        branch: "factory/issue-7",
+        reused: false,
+        created: true,
+      });
+      const wt2 = JSON.stringify({ reused: true, fastForwarded: false });
+      const issue = JSON.stringify({
+        number: 7,
+        title: "feat: x",
+        body: "### What\nA",
+        labels: [],
+      });
+      const prior = JSON.stringify({ number: 9, state: "OPEN" });
+      const P = JSON.stringify(plan);
+      const decide = harness(
+        dir,
+        [
+          `implement_resume_decide 7 "${wt}" '${wt1}' 'null' '${P}' '[]' '${issue}' '${JSON.stringify(before)}'`,
+          `implement_mark_resumable 7 "${wt}" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" "" 1 "timed out" "$IMPL_FEEDBACK_DIGEST"`,
+          'mkdir -p "$HOME/.claude/projects/-wt"; printf "{}\\n" >"$HOME/.claude/projects/-wt/$IMPL_SESSION_ID.jsonl"',
+          `implement_resume_decide 7 "${wt}" '${wt2}' '${prior}' '${P}' '[]' '${issue}' '${JSON.stringify(after)}'`,
+          'echo "resumed=$IMPL_RESUMED"',
+        ].join("\n"),
+        { PHASE: "C" },
+      );
+      assert.equal(decide.status, 0, decide.stderr + decide.log);
+      assert.match(decide.stdout, /resumed=0/);
+      assert.match(decide.log, /no resume: new-feedback/);
+
+      // 2. The fresh run's feedback: the new comment, not the answered one,
+      //    the plan or the factory's own note.
+      const fb = harness(
+        dir,
+        [
+          'gate_support_forwards() { echo "$1"; }',
+          extract("extract_acked_comment_ids"),
+          extract("unacked_owner_comments"),
+          extract("initial_feedback_comments"),
+          extract("is_noise_comment"),
+          extract("reply_markers_for"),
+          extract("build_implement_bundle"),
+          extract("implement_migration_versions"),
+          `REPO_ROOT="${wt}"; PHASE=C; SUPPORT_ALLOWLIST=""; OAUTH_USER_EMAIL=""`,
+          `RC=$(initial_feedback_comments '${JSON.stringify(after)}' '${P}' 7)`,
+          'echo "$RC" | jq -c "map(.id)"',
+          'RM=$(reply_markers_for "$RC" "drafto-factory-revise-reply-")',
+          `build_implement_bundle '${issue}' '${P}' null 1 "$RC" '${JSON.stringify(after)}' "$RM" "${dir}/replies"`,
+        ].join("\n"),
+      );
+      assert.equal(fb.status, 0, fb.stderr + fb.log);
+      const [ids, bundleText] = fb.stdout
+        .split("\n")
+        .filter(Boolean)
+        .reduce((acc, line, i) => (i === 0 ? [line, ""] : [acc[0], acc[1] + line]), ["", ""]);
+      assert.equal(ids, "[200]");
+      const bundle = JSON.parse(bundleText);
+      assert.equal(bundle.revisionComments.length, 1);
+      assert.match(
+        JSON.stringify(bundle.revisionComments[0]),
+        /please also handle the empty state/,
+      );
+      assert.deepEqual(bundle.replyMarkers, [
+        { commentId: "200", marker: "drafto-factory-revise-reply-200" },
+      ]);
     });
   });
 });
