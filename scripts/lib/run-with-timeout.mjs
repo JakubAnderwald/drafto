@@ -169,8 +169,9 @@ export const GROUP_POLL_MS = 100;
 //   - Once the leader has exited, the group is polled (kill -0) until it is
 //     gone, for at most killGraceMs + groupSettleMs after the cancel. A group
 //     still alive then is logged and the wrapper returns anyway.
-//   - A leader that exits on its own with a code is a normal exit: the result
-//     resolves at once, as in the default mode.
+//   - A leader that exits on its own (any code, a session-limit exit
+//     included) and leaves processes in its group gets the same cleanup
+//     before the result; one that leaves nothing resolves at once.
 // Descendants that leave the group (setsid, a daemon) are out of reach.
 function runWithTimeoutGroup({
   command,
@@ -273,10 +274,17 @@ function runWithTimeoutGroup({
       clearTimeout(wallTimer);
       exit = { code, signal };
       if (cancelledAt == null) {
-        // A normal exit resolves at once. A leader killed by a signal nobody
-        // here sent still gets its group cleaned up first.
-        if (signal == null) return finish(resultOf());
-        cancel("SIGTERM", `child killed by ${signal}`);
+        // Whatever ended the leader (its own exit, a session-limit exit, a
+        // signal nobody here sent), anything it left in its group is cleaned
+        // up before the result: SIGTERM, SIGKILL after the grace window. A
+        // leader that left nothing behind resolves at once.
+        if (!groupAlive()) return finish(resultOf());
+        cancel(
+          "SIGTERM",
+          signal
+            ? `child killed by ${signal}`
+            : `child exited (${code}) leaving processes in its group`,
+        );
       }
       awaitGroup();
     });

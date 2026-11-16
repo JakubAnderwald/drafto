@@ -16,8 +16,9 @@
 //
 // CLI (all output on stdout; errors as one JSON line on stderr, exit 1):
 //   task-key --plan-comment <comment JSON> [--revision-comments <JSON array>]
-//            [--issue-record <issue JSON>]
-//       The task key, bare: "plan:<id>@<digest>|rev:<id>@<digest>,…|issue:<digest>",
+//            [--issue-record <issue JSON>] [--phase <A|B|C|D>]
+//       The task key, bare:
+//       "plan:<id>@<digest>|rev:<id>@<digest>,…|issue:<digest>|phase:<phase>",
 //       each digest a hash of a body (the issue's is the spec), so an edit to
 //       any of them changes the key.
 //   worktree-digest --path <worktree>
@@ -90,9 +91,10 @@ function commentBody(c) {
 // session carries the plan, the feedback and the issue body (the spec) it was
 // started with, while a fresh run's bundle reads them again. So a new or edited
 // plan comment (an in-place edit keeps the id), a new or edited feedback
-// comment, or an edited issue body must start a fresh session. "" when there
-// is no plan id.
-export function taskKey({ plan = null, revisions = [], issue = null } = {}) {
+// comment, or an edited issue body must start a fresh session. So must a
+// change of FACTORY_PHASE: the phase decides what the run may touch, and a
+// session holds the phase scope it started with. "" when there is no plan id.
+export function taskKey({ plan = null, revisions = [], issue = null, phase = "" } = {}) {
   const planId = commentId(plan);
   if (planId === "") return "";
   const byId = new Map();
@@ -103,7 +105,7 @@ export function taskKey({ plan = null, revisions = [], issue = null } = {}) {
   const revs = [...byId.keys()].sort(byIdString).map((id) => `${id}@${byId.get(id)}`);
   return (
     `plan:${planId}@${bodyDigest(commentBody(plan))}|rev:${revs.join(",")}` +
-    `|issue:${bodyDigest(issue?.body)}`
+    `|issue:${bodyDigest(issue?.body)}|phase:${String(phase ?? "").trim()}`
   );
 }
 
@@ -256,6 +258,7 @@ export function main(argv, { fs = nodeFs } = {}) {
         plan: parseJsonFlag(flags["plan-comment"], "plan-comment"),
         revisions: parseJsonFlag(flags["revision-comments"], "revision-comments") ?? [],
         issue: parseJsonFlag(flags["issue-record"], "issue-record"),
+        phase: flags.phase ?? "",
       });
     case "worktree-digest": {
       if (!flags.path) throw new Error("worktree-digest requires --path <worktree>");

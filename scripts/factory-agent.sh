@@ -2265,7 +2265,7 @@ implement_runtime_facts() {
 # implement start, decide whether this run resumes the session a stopped run
 # recorded (implement-resume.mjs decide), and clear that record whatever the
 # answer, so a timeout chain resumes at most once. Sets:
-#   IMPL_TASK_KEY       "plan:<id>@<digest>|rev:<id>@<digest>,…|issue:<digest>",
+#   IMPL_TASK_KEY       "plan:<id>@<digest>|rev:…|issue:<digest>|phase:<phase>",
 #                       for implement_mark_resumable
 #   IMPL_RESUMED        1 when resuming, else 0
 #   IMPL_SESSION_FLAG   --resume or --session-id
@@ -2290,11 +2290,12 @@ implement_resume_decide() {
   fi
   # The key hashes the plan's, each feedback comment's and the issue's body
   # (the spec, which every fresh bundle reads again): an edit in place keeps an
-  # id but must still start a fresh session. The comments are the raw GitHub
+  # id but must still start a fresh session. It names the phase too: a session
+  # started under another FACTORY_PHASE holds that phase's scope. The comments are the raw GitHub
   # ones ({id, body}), as fetch_issue_comments gives them.
   IMPL_TASK_KEY=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" task-key \
     --plan-comment "${plan_json:-null}" --revision-comments "${revisions:-[]}" \
-    --issue-record "${issue_json:-null}" 2>>"$LOG_FILE") || IMPL_TASK_KEY=""
+    --issue-record "${issue_json:-null}" --phase "${PHASE:-}" 2>>"$LOG_FILE") || IMPL_TASK_KEY=""
   record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE") || record=""
   head=$(git -C "$wt_path" rev-parse HEAD 2>>"$LOG_FILE") || head=""

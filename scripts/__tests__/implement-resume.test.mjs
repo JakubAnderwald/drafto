@@ -77,7 +77,10 @@ describe("taskKey", () => {
         { id: 40, body: "b" },
       ],
     });
-    assert.equal(key, `plan:111@${d(plan.body)}|rev:5@${d("a")},40@${d("b")}|issue:${d("")}`);
+    assert.equal(
+      key,
+      `plan:111@${d(plan.body)}|rev:5@${d("a")},40@${d("b")}|issue:${d("")}|phase:`,
+    );
     assert.match(d("x"), /^[0-9a-f]{16}$/);
   });
 
@@ -114,7 +117,7 @@ describe("taskKey", () => {
   });
 
   it("has an empty revision list on a first implementation", () => {
-    const none = `plan:111@${d(plan.body)}|rev:|issue:${d("")}`;
+    const none = `plan:111@${d(plan.body)}|rev:|issue:${d("")}|phase:`;
     assert.equal(taskKey({ plan }), none);
     assert.equal(taskKey({ plan, revisions: null }), none);
   });
@@ -124,10 +127,19 @@ describe("taskKey", () => {
   it("changes when the issue body (the spec) is edited", () => {
     const issue = { number: 7, title: "feat: x", body: "### What\nA" };
     const base = taskKey({ plan, issue });
-    assert.ok(base.endsWith(`|issue:${d(issue.body)}`));
+    assert.ok(base.endsWith(`|issue:${d(issue.body)}|phase:`));
     assert.notEqual(taskKey({ plan, issue: { ...issue, body: "### What\nB" } }), base);
     // The title isn't part of the spec bash bundles from the body.
     assert.equal(taskKey({ plan, issue: { ...issue, title: "feat: y" } }), base);
+  });
+
+  // #842 review: the phase decides what a run may touch; a session started
+  // under another FACTORY_PHASE must not be resumed.
+  it("names the phase, so a phase change starts a fresh session", () => {
+    const b = taskKey({ plan, phase: "B" });
+    assert.ok(b.endsWith("|phase:B"));
+    assert.notEqual(taskKey({ plan, phase: "C" }), b);
+    assert.equal(taskKey({ plan, phase: " B " }), b);
   });
 
   // #842 review: the factory passes raw GitHub comments ({id, body}); the
@@ -426,10 +438,10 @@ describe("CLI", () => {
     assert.equal(r.status, 0, r.stderr);
     assert.equal(
       r.stdout,
-      `plan:111@${bodyDigest("plan")}|rev:5@${bodyDigest("a")},40@${bodyDigest("b")}|issue:${bodyDigest("")}`,
+      `plan:111@${bodyDigest("plan")}|rev:5@${bodyDigest("a")},40@${bodyDigest("b")}|issue:${bodyDigest("")}|phase:`,
     );
     const none = run(["task-key", "--plan-comment", JSON.stringify({ id: 1, body: "" })]);
-    assert.equal(none.stdout, `plan:1@${bodyDigest("")}|rev:|issue:${bodyDigest("")}`);
+    assert.equal(none.stdout, `plan:1@${bodyDigest("")}|rev:|issue:${bodyDigest("")}|phase:`);
     const issue = run([
       "task-key",
       "--plan-comment",
@@ -437,7 +449,15 @@ describe("CLI", () => {
       "--issue-record",
       JSON.stringify({ number: 7, body: "spec" }),
     ]);
-    assert.equal(issue.stdout, `plan:1@${bodyDigest("")}|rev:|issue:${bodyDigest("spec")}`);
+    assert.equal(issue.stdout, `plan:1@${bodyDigest("")}|rev:|issue:${bodyDigest("spec")}|phase:`);
+    const phased = run([
+      "task-key",
+      "--plan-comment",
+      JSON.stringify({ id: 1, body: "" }),
+      "--phase",
+      "C",
+    ]);
+    assert.ok(phased.stdout.endsWith("|phase:C"));
   });
 
   it("worktree-digest prints the digest, and fails outside git", () => {

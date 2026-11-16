@@ -344,6 +344,7 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       plan2 = PLAN,
       revs2 = REVS,
       issue2 = ISSUE,
+      env = { PHASE: "C" },
     } = {},
   ) {
     const wt1 = JSON.stringify({
@@ -369,6 +370,7 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
         `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${PLAN}' '${REVS}' '${ISSUE}'`,
         'echo "run3 $IMPL_RESUMED $IMPL_SESSION_FLAG"',
       ].join("\n"),
+      env,
     );
   }
 
@@ -384,7 +386,7 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       assert.match(sid1, /^[0-9a-f-]{36}$/);
       assert.match(
         key1,
-        /^plan:111@[0-9a-f]{16}\|rev:5@[0-9a-f]{16},40@[0-9a-f]{16}\|issue:[0-9a-f]{16}$/,
+        /^plan:111@[0-9a-f]{16}\|rev:5@[0-9a-f]{16},40@[0-9a-f]{16}\|issue:[0-9a-f]{16}\|phase:C$/,
       );
       const [, resumed2, flag2, sid2, first, preHead] = run2.split(" ");
       assert.equal(resumed2, "1");
@@ -447,6 +449,18 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       const wt = makeWorktree(dir);
       const edited = JSON.stringify({ number: 7, title: "feat: x", body: "### What\nB" });
       const r = chain(dir, wt, { issue2: edited });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.stdout, /^run2 0 --session-id /m);
+      assert.match(r.log, /no resume: task-changed/);
+    });
+  });
+
+  // #842 review: a session started under another FACTORY_PHASE holds that
+  // phase's scope.
+  it("runs fresh when FACTORY_PHASE changed since the stop", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const r = chain(dir, wt, { between: "PHASE=D" });
       assert.equal(r.status, 0, r.stderr + r.log);
       assert.match(r.stdout, /^run2 0 --session-id /m);
       assert.match(r.log, /no resume: task-changed/);

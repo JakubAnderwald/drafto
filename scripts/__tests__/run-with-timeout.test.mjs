@@ -379,7 +379,36 @@ describe("process-group mode (real processes)", () => {
     });
   });
 
-  it("resolves at once on a normal exit, with no group signals", async () => {
+  // #842 review: a leader that exits on its own (a session-limit exit, say)
+  // must not leave its descendants running either.
+  it("cleans up a group the leader left behind when it exits 0 on its own", async () => {
+    await withDir(async (dir, path) => {
+      const { existsSync } = await import("node:fs");
+      const started = Date.now();
+      const run = lib.runWithTimeout({
+        command: "bash",
+        args: [
+          "-c",
+          '( trap "" TERM; sleep 1.5; echo late > "$DIR/marker" ) & echo $$ > "$DIR/leader.pid"; sleep 0.3; exit 0',
+        ],
+        timeoutMs: 60_000,
+        killGraceMs: 400,
+        label: "test",
+        killGroup: true,
+      });
+      const leader = await readPid(path.join(dir, "leader.pid"));
+      const result = await run;
+      assert.deepEqual(result, { exitCode: 0, timedOut: false, signal: null });
+      // Leader gone at ~300 ms; the descendant ignores TERM, so the wrapper
+      // waits for the SIGKILL at ~700 ms and the group's end.
+      assert.ok(Date.now() - started >= 650);
+      assert.equal(alive(leader), false);
+      await sleep(1500);
+      assert.equal(existsSync(path.join(dir, "marker")), false);
+    });
+  });
+
+  it("resolves at once on a normal exit that leaves nothing behind", async () => {
     const result = await lib.runWithTimeout({
       command: "bash",
       args: ["-c", "exit 3"],
