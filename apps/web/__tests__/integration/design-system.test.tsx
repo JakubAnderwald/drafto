@@ -24,6 +24,7 @@ describe("DesignSystemPage", () => {
     expect(screen.getByText("Badge")).toBeInTheDocument();
     expect(screen.getByText("Card")).toBeInTheDocument();
     expect(screen.getByText("Skeleton")).toBeInTheDocument();
+    expect(screen.getByText("ProgressBar")).toBeInTheDocument();
     expect(screen.getByText("DropdownMenu")).toBeInTheDocument();
     expect(screen.getByText("ConfirmDialog")).toBeInTheDocument();
   });
@@ -67,6 +68,21 @@ describe("DesignSystemPage", () => {
 
     expect(screen.getByRole("button", { name: "Loading" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Disabled" })).toBeDisabled();
+  });
+
+  it("renders a progress bar in each tone", () => {
+    render(<DesignSystemPage />);
+
+    const fills = [
+      { name: "Default tone — 40%", value: "40", fill: "bg-primary-500" },
+      { name: "Warning tone — 95%", value: "95", fill: "bg-warning" },
+      { name: "Danger tone — 100%", value: "100", fill: "bg-error" },
+    ];
+    for (const { name, value, fill } of fills) {
+      const bar = screen.getByRole("progressbar", { name });
+      expect(bar).toHaveAttribute("aria-valuenow", value);
+      expect(bar.firstElementChild).toHaveClass(fill);
+    }
   });
 
   it("renders badge variants", () => {

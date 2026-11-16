@@ -28,6 +28,9 @@ const E2E_NAME_PREFIXES = [
   "Export Test Note",
   "SearchTest",
   "CSP NB",
+  "Quota NB",
+  "Quota paste",
+  "Quota panel",
   // Maestro flows (apps/mobile/e2e), which sign in as the same account. They rename NB2
   // to NB2R and SECOND to RENAMED; the old names stay for flows that fail before that.
   "NB",

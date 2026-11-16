@@ -1,9 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { act } from "react";
+import {
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  STORAGE_QUOTA_EXCEEDED_CODE,
+  STORAGE_QUOTA_EXCEEDED_MESSAGE,
+  storageFullMessage,
+} from "@drafto/shared";
 
 // Mock BlockNote dependencies — they require a real DOM canvas, which jsdom lacks
-let capturedUploadFile: ((file: File) => Promise<string>) | undefined;
+let capturedUploadFile: ((file: File, blockId?: string) => Promise<string>) | undefined;
+// The editor stub useCreateBlockNote returns: the storage-full path removes the
+// placeholder block through it. discardRefusedUploadBlock's own test covers what
+// that does to a real BlockNote document.
+const mockGetBlock = vi.fn();
+const mockRemoveBlocks = vi.fn();
+const mockUpdateBlock = vi.fn();
+/** A block as getBlock returns it: an empty placeholder unless `url` is given. */
+const fileBlock = (id: string, url = "") => ({
+  id,
+  type: "image",
+  props: { url, name: "photo.png" },
+  children: [],
+});
 let capturedResolveFileUrl: ((url: string) => Promise<string>) | undefined;
 
 // Mock the extracted hook — returns a resolver that delegates to fetch
@@ -29,11 +48,16 @@ vi.mock("@/components/editor/use-attachment-url-resolver", () => ({
 
 vi.mock("@blocknote/react", () => ({
   useCreateBlockNote: (opts?: {
-    uploadFile?: (file: File) => Promise<string>;
+    uploadFile?: (file: File, blockId?: string) => Promise<string>;
     resolveFileUrl?: (url: string) => Promise<string>;
   }) => {
     capturedUploadFile = opts?.uploadFile;
-    return { document: [] };
+    return {
+      document: [],
+      getBlock: mockGetBlock,
+      removeBlocks: mockRemoveBlocks,
+      updateBlock: mockUpdateBlock,
+    };
   },
   BlockNoteView: vi.fn(({ editor: _editor, theme: _theme }) => (
     <div data-testid="blocknote-editor">BlockNote Editor</div>
@@ -77,6 +101,9 @@ describe("NoteEditor", () => {
     mockFetch.mockReset();
     vi.stubGlobal("fetch", mockFetch);
     mockUploadToSignedUrl.mockReset();
+    mockGetBlock.mockReset();
+    mockRemoveBlocks.mockReset();
+    mockUpdateBlock.mockReset();
   });
 
   afterEach(() => {
@@ -300,6 +327,168 @@ describe("NoteEditor", () => {
 
     const file = new File(["test"], "file.bin", { type: "application/octet-stream" });
     await expect(capturedUploadFile!(file)).rejects.toThrow("Failed to save attachment record");
+  });
+
+  it("shows the storage-full message when upload-url refuses for the quota", async () => {
+    const usedBytes = DEFAULT_STORAGE_QUOTA_BYTES - 100;
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () =>
+        Promise.resolve({
+          error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+          code: STORAGE_QUOTA_EXCEEDED_CODE,
+          usedBytes,
+          quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+          status: 413,
+        }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const expected = storageFullMessage(usedBytes, DEFAULT_STORAGE_QUOTA_BYTES);
+    const file = new File(["test"], "photo.png", { type: "image/png" });
+    mockGetBlock.mockReturnValue(fileBlock("block-1"));
+    await act(async () => {
+      await expect(capturedUploadFile!(file, "block-1")).rejects.toThrow(expected);
+    });
+
+    expect(mockUploadToSignedUrl).not.toHaveBeenCalled();
+    expect(screen.getByTestId("note-editor-upload-error")).toHaveTextContent(expected);
+    // The placeholder image block goes, so BlockNote's own generic "Upload failed"
+    // has nowhere to show and no empty image block is left in the note.
+    expect(mockGetBlock).toHaveBeenCalledWith("block-1");
+    expect(mockRemoveBlocks).toHaveBeenCalledWith(["block-1"]);
+  });
+
+  it("leaves the editor alone on a storage-full refusal when the block is already gone", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () =>
+        Promise.resolve({
+          error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+          code: STORAGE_QUOTA_EXCEEDED_CODE,
+          usedBytes: 10,
+          quotaBytes: 10,
+          status: 413,
+        }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    mockGetBlock.mockReturnValue(undefined);
+    const file = new File(["test"], "photo.png", { type: "image/png" });
+    await act(async () => {
+      await expect(capturedUploadFile!(file, "block-1")).rejects.toThrow(
+        storageFullMessage(10, 10),
+      );
+    });
+
+    expect(mockRemoveBlocks).not.toHaveBeenCalled();
+  });
+
+  it("keeps an image that already has its file when Replace is refused for the quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () =>
+        Promise.resolve({
+          error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+          code: STORAGE_QUOTA_EXCEEDED_CODE,
+          usedBytes: 10,
+          quotaBytes: 10,
+          status: 413,
+        }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    // BlockNote's Replace button hands uploadFile the existing image's block.
+    mockGetBlock.mockReturnValue(fileBlock("block-3", "attachment://user-1/note-42/old.png"));
+    const file = new File(["test"], "new.png", { type: "image/png" });
+    await act(async () => {
+      await expect(capturedUploadFile!(file, "block-3")).rejects.toThrow(
+        storageFullMessage(10, 10),
+      );
+    });
+
+    expect(screen.getByTestId("note-editor-upload-error")).toHaveTextContent(
+      storageFullMessage(10, 10),
+    );
+    expect(mockRemoveBlocks).not.toHaveBeenCalled();
+    expect(mockUpdateBlock).not.toHaveBeenCalled();
+  });
+
+  it("shows the storage-full message when confirm refuses for the quota", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            signedUrl: "https://storage.supabase.co/upload",
+            token: "tok",
+            filePath: "user-1/note-42/photo.png",
+            fileName: "photo.png",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 413,
+        json: () =>
+          Promise.resolve({
+            error: STORAGE_QUOTA_EXCEEDED_MESSAGE,
+            code: STORAGE_QUOTA_EXCEEDED_CODE,
+            usedBytes: null,
+            quotaBytes: null,
+            status: 413,
+          }),
+      });
+    mockUploadToSignedUrl.mockResolvedValue({ error: null });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const expected = storageFullMessage(null, null);
+    const file = new File(["test"], "photo.png", { type: "image/png" });
+    mockGetBlock.mockReturnValue(fileBlock("block-7"));
+    await act(async () => {
+      await expect(capturedUploadFile!(file, "block-7")).rejects.toThrow(expected);
+    });
+
+    expect(screen.getByTestId("note-editor-upload-error")).toHaveTextContent(expected);
+    expect(mockRemoveBlocks).toHaveBeenCalledWith(["block-7"]);
+  });
+
+  it("keeps the per-file size message for a 413 without the quota code", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () => Promise.resolve({ error: "File size exceeds 50MB limit", status: 413 }),
+    });
+
+    await act(async () => {
+      render(<NoteEditor noteId="note-42" />);
+    });
+
+    const file = new File(["test"], "large.bin", { type: "application/octet-stream" });
+    mockGetBlock.mockReturnValue(fileBlock("block-1"));
+    await act(async () => {
+      await expect(capturedUploadFile!(file, "block-1")).rejects.toThrow(
+        "File size exceeds 50MB limit",
+      );
+    });
+
+    // Only a storage-full refusal removes the block; other failures keep
+    // BlockNote's panel so the user can pick another file.
+    expect(mockRemoveBlocks).not.toHaveBeenCalled();
   });
 
   it("throws when confirm succeeds but file_path is missing from response", async () => {

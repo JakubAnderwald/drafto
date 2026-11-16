@@ -19,14 +19,6 @@ const { mockAfter, mockCaptureException } = vi.hoisted(() => ({
   mockCaptureException: vi.fn(),
 }));
 
-// `after` only works inside a Next.js request scope. Capture its callbacks instead, so a test
-// can run them (or not) and check they never touch the response. The rest of next/server
-// stays real.
-vi.mock("next/server", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("next/server")>()),
-  after: mockAfter,
-}));
-
 vi.mock("@sentry/nextjs", () => ({
   captureException: mockCaptureException,
 }));
@@ -53,6 +45,31 @@ vi.mock("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js", () => (
     this.handleRequest = mockHandleRequest;
     this.close = mockTransportClose;
   }),
+}));
+
+// `after` only works inside a Next.js request scope, and runs its task once the response is
+// sent. Capture the tasks instead, so a test can run them (or not) and check they never touch
+// the response: `afterTasks` collects them and `mockAfter` records each call. The rest of
+// next/server stays real.
+const afterTasks: Array<() => unknown> = [];
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: (task: () => unknown) => {
+    afterTasks.push(task);
+    mockAfter(task);
+  },
+}));
+const runAfterTasks = () => Promise.all(afterTasks.splice(0).map((task) => task()));
+
+const mockDeleteNotebook = vi.fn();
+vi.mock("@/lib/api/mcp-tools", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api/mcp-tools")>()),
+  deleteNotebook: (...args: unknown[]) => mockDeleteNotebook(...args),
+}));
+
+const mockRemoveUserOrphanedAttachments = vi.fn();
+vi.mock("@/lib/storage/remove-orphaned-attachments", () => ({
+  removeUserOrphanedAttachments: (...args: unknown[]) => mockRemoveUserOrphanedAttachments(...args),
 }));
 
 const { authenticateMcpRequest } = await import("@/lib/api/mcp-auth");
@@ -151,6 +168,53 @@ describe("POST /api/mcp", () => {
     expect(toolNames).toContain("rename_notebook");
     expect(toolNames).toContain("delete_notebook");
     expect(toolNames).toHaveLength(11);
+  });
+
+  describe("delete_notebook", () => {
+    beforeEach(() => {
+      afterTasks.length = 0;
+    });
+
+    async function deleteNotebookHandler() {
+      vi.mocked(authenticateMcpRequest).mockResolvedValue({
+        userId: "user-1",
+        supabase: { from: vi.fn() } as never,
+      });
+      await POST(
+        new Request("http://localhost/api/mcp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer dk_test123" },
+          body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+        }),
+      );
+      // Drop the activity-day task every authenticated call schedules (ADR 0085), so only the
+      // tool's own tasks are left.
+      afterTasks.length = 0;
+      const call = mockTool.mock.calls.find((c: unknown[]) => c[0] === "delete_notebook");
+      if (!call) throw new Error("delete_notebook was not registered");
+      return call[3] as (args: { notebook_id: string }) => Promise<{ isError?: boolean }>;
+    }
+
+    it("sweeps the user's orphaned files after deleting the notebook", async () => {
+      const handler = await deleteNotebookHandler();
+      const deleted = { content: [{ type: "text", text: "Notebook deleted." }] };
+      mockDeleteNotebook.mockResolvedValue(deleted);
+
+      await expect(handler({ notebook_id: "nb-1" })).resolves.toBe(deleted);
+      expect(mockDeleteNotebook).toHaveBeenCalledWith(expect.anything(), "user-1", "nb-1");
+      expect(mockRemoveUserOrphanedAttachments).not.toHaveBeenCalled();
+      await runAfterTasks();
+      expect(mockRemoveUserOrphanedAttachments).toHaveBeenCalledWith("user-1", "web-mcp");
+    });
+
+    it("sweeps nothing when the delete is refused", async () => {
+      const handler = await deleteNotebookHandler();
+      const refused = { content: [{ type: "text", text: "Error" }], isError: true };
+      mockDeleteNotebook.mockResolvedValue(refused);
+
+      await expect(handler({ notebook_id: "nb-1" })).resolves.toBe(refused);
+      expect(afterTasks).toHaveLength(0);
+    });
   });
 
   it("calls close on server and transport after processing", async () => {

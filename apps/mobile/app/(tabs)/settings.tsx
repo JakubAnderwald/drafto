@@ -3,6 +3,7 @@ import { Text, View, StyleSheet, ScrollView, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import { DeleteAccountDialog } from "@/components/delete-account-dialog";
+import { StorageUsage } from "@/components/storage-usage";
 import { SyncStatus } from "@/components/sync-status";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme, type ThemePreference } from "@/providers/theme-provider";
@@ -75,6 +76,7 @@ export default function SettingsScreen() {
       <SyncStatus />
 
       <Text style={styles.sectionTitle}>Account</Text>
+      <StorageUsage />
       <Button
         title="Sign Out"
         onPress={signOut}

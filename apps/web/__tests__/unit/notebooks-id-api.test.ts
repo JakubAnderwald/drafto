@@ -25,6 +25,21 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
+// after() runs its task once the response is sent; collect the tasks to run them later.
+const afterTasks: Array<() => unknown> = [];
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: (task: () => unknown) => {
+    afterTasks.push(task);
+  },
+}));
+const runAfterTasks = () => Promise.all(afterTasks.splice(0).map((task) => task()));
+
+const mockRemoveUserOrphanedAttachments = vi.fn();
+vi.mock("@/lib/storage/remove-orphaned-attachments", () => ({
+  removeUserOrphanedAttachments: (...args: unknown[]) => mockRemoveUserOrphanedAttachments(...args),
+}));
+
 const { PATCH, DELETE } = await import("@/app/api/notebooks/[id]/route");
 
 const approvedProfile = {
@@ -111,6 +126,7 @@ describe("PATCH /api/notebooks/[id]", () => {
 describe("DELETE /api/notebooks/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    afterTasks.length = 0;
   });
 
   it("returns 401 when not authenticated", async () => {
@@ -145,6 +161,7 @@ describe("DELETE /api/notebooks/[id]", () => {
     });
     const response = await DELETE(request, { params });
     expect(response.status).toBe(409);
+    expect(mockRemoveUserOrphanedAttachments).not.toHaveBeenCalled();
   });
 
   it("deletes an empty notebook", async () => {
@@ -170,7 +187,54 @@ describe("DELETE /api/notebooks/[id]", () => {
       return {
         delete: () => ({
           eq: () => ({
-            eq: () => Promise.resolve({ error: null }),
+            eq: () => {
+              calls.push("delete-notebook");
+              return Promise.resolve({ error: null });
+            },
+          }),
+        }),
+      };
+    });
+    const calls: string[] = [];
+    mockRemoveUserOrphanedAttachments.mockImplementation(() => {
+      calls.push("remove-files");
+      return Promise.resolve();
+    });
+
+    const request = new NextRequest("http://localhost:3000/api/notebooks/nb-1", {
+      method: "DELETE",
+    });
+    const response = await DELETE(request, { params });
+    expect(response.status).toBe(200);
+    // Its trashed notes cascade with it, so their files are swept once the response is sent.
+    expect(calls).toEqual(["delete-notebook"]);
+    await runAfterTasks();
+    expect(calls).toEqual(["delete-notebook", "remove-files"]);
+    expect(mockRemoveUserOrphanedAttachments).toHaveBeenCalledWith("user-1", "web-notebooks");
+  });
+
+  it("returns 500 and sweeps nothing when the delete fails", async () => {
+    authenticateAs("user-1");
+
+    let callCount = 0;
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      callCount++;
+      if (callCount === 1) {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                eq: () => Promise.resolve({ count: 0, error: null }),
+              }),
+            }),
+          }),
+        };
+      }
+      return {
+        delete: () => ({
+          eq: () => ({
+            eq: () => Promise.resolve({ error: { message: "DB error" } }),
           }),
         }),
       };
@@ -180,6 +244,7 @@ describe("DELETE /api/notebooks/[id]", () => {
       method: "DELETE",
     });
     const response = await DELETE(request, { params });
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(500);
+    expect(afterTasks).toHaveLength(0);
   });
 });

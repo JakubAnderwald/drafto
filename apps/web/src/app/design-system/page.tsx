@@ -18,6 +18,7 @@ import {
 import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ProgressBar } from "@/components/ui/progress-bar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 
@@ -497,6 +498,23 @@ export default function DesignSystemPage() {
           <Badge variant="success">Success</Badge>
           <Badge variant="warning">Warning</Badge>
           <Badge variant="error">Error</Badge>
+        </div>
+      </Section>
+
+      <Section title="ProgressBar">
+        <div className="max-w-md space-y-4">
+          {(
+            [
+              { tone: "default", value: 0.4, caption: "Default tone — 40%" },
+              { tone: "warning", value: 0.95, caption: "Warning tone — 95%" },
+              { tone: "danger", value: 1, caption: "Danger tone — 100%" },
+            ] as const
+          ).map(({ tone, value, caption }) => (
+            <div key={tone}>
+              <p className="text-fg-muted mb-1 text-xs">{caption}</p>
+              <ProgressBar value={value} tone={tone} label={caption} />
+            </div>
+          ))}
         </div>
       </Section>
 
