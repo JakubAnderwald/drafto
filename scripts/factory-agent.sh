@@ -5,7 +5,10 @@
 #
 #   --plan       Read Status=Ready items, validate spec, invoke Claude to
 #                propose a plan, advance card to Plan Review (or Blocked).
-#                Works in every phase. Phase A's only meaningful mode.
+#                Works in every phase. Phase A's only meaningful mode. Also
+#                replans Plan Review cards on new operator comments; one that
+#                asks for a split files the sub-cards in Backlog and closes
+#                the card (ADR-0083).
 #
 #   --implement  Pick up Status=In Progress items. Phase A: post a stub
 #                "phase=A; implementation skipped" comment per card and
@@ -515,6 +518,27 @@ FACTORY_PLAN_PROBE_MAX_FOLDS=2
 # Every file here is scanned for, so no value in it can leave in a probe.
 FACTORY_SECRETS_DIR="${FACTORY_SECRETS_DIR:-$HOME/drafto-secrets}"
 case "$FACTORY_SECRETS_DIR" in "~/"*) FACTORY_SECRETS_DIR="$HOME/${FACTORY_SECRETS_DIR#\~/}" ;; esac
+
+# ── Plan size + split on request (scripts/lib/plan-split.mjs, ADR-0083) ───
+# Every plan carries a size estimate and a marker. When its estimate of the
+# lines the PR adds is at least FACTORY_PLAN_OVERSIZE_LINES, bash adds the
+# factory-oversize label; a replan below it removes the label again. 0 stops
+# the labelling. With FACTORY_PLAN_SPLIT=1, an operator comment on a Plan
+# Review card asking for a split makes the planner write one spec per
+# sub-card; bash checks them all, files them as Backlog cards and closes the
+# original. A bad value warns and falls back (splits off; the default
+# threshold).
+FACTORY_PLAN_SPLIT="${FACTORY_PLAN_SPLIT:-1}"
+if [[ "$FACTORY_PLAN_SPLIT" != "0" && "$FACTORY_PLAN_SPLIT" != "1" ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_SPLIT='$FACTORY_PLAN_SPLIT'; turning plan splits off" >&2
+  FACTORY_PLAN_SPLIT=0
+fi
+FACTORY_PLAN_OVERSIZE_LINES="${FACTORY_PLAN_OVERSIZE_LINES:-1500}"
+if ! [[ "$FACTORY_PLAN_OVERSIZE_LINES" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_OVERSIZE_LINES='$FACTORY_PLAN_OVERSIZE_LINES'; defaulting to 1500" >&2
+  FACTORY_PLAN_OVERSIZE_LINES=1500
+fi
+OVERSIZE_LABEL="factory-oversize"
 
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
@@ -1594,6 +1618,353 @@ The factory handled it in $plan_link, which is current. If the plan doesn't answ
       fi
     fi
   done
+}
+
+# ── Plan size + split on request (ADR-0083) ─────────────────────────────────
+# Every plan ends with <!-- drafto-factory-plan-size:<class>:<estLines> -->, the
+# planner's estimate of the lines the PR adds. An oversize plan gets the
+# factory-oversize label (plan_size_label). A comment on a Plan Review card
+# asking for a split makes the planner write one factory spec per sub-card into
+# <reply-dir>/split/NN.md and return action=split; plan_split checks every file
+# before it creates anything, then files them as Backlog cards and closes the
+# original. The planner reads untrusted issue text and the new issues are
+# posted under the operator's identity, so bash's checks are the gate, not the
+# prompt.
+
+OVERSIZE_LABEL_READY=""  # per-tick cache: "" unknown, 1 ready, 0 not ready
+PLAN_SPLIT_RESULT=""     # plan_split's outcome: "done" (split and closed) or "back"
+
+# oversize_label_ready — does the repo have the factory-oversize label? gh
+# --add-label refuses a label the repo lacks, so the add checks first, as
+# verify_column_ready checks status:testing. Checked once per tick and cached,
+# logged when missing. Never call this from a command substitution: the cache
+# would die with the subshell.
+oversize_label_ready() {
+  if [[ -z "$OVERSIZE_LABEL_READY" ]]; then
+    OVERSIZE_LABEL_READY=0
+    if gh api "repos/JakubAnderwald/drafto/labels/$OVERSIZE_LABEL" --silent \
+        >/dev/null 2>>"$LOG_FILE"; then
+      OVERSIZE_LABEL_READY=1
+    else
+      log "WARNING: the repo has no $OVERSIZE_LABEL label (or the lookup failed); oversize plans go unlabelled this tick (run scripts/setup-factory-labels.sh)"
+    fi
+  fi
+  [[ "$OVERSIZE_LABEL_READY" == "1" ]]
+}
+
+# plan_size_label <issue> [<labels-csv>] — after a planned or replanned run:
+# read the size marker from the OWNER plan comment and keep the
+# factory-oversize label in step with it. At or over FACTORY_PLAN_OVERSIZE_LINES
+# the label goes on; below it, it comes off. Its own gh issue edit, never part
+# of transition_status's status-label swap. <labels-csv> is the board item's
+# label list, which the sweeps already hold (only this function changes
+# factory-oversize); without it the labels are read from the issue. A plan with
+# no marker (one written before ADR-0083, or a planner that left it out) leaves
+# the label as it is. Never fails the tick.
+plan_size_label() {
+  local issue_num="$1" comments plan_body size est cls labels has=0
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  [[ "$FACTORY_PLAN_OVERSIZE_LINES" -gt 0 ]] || return 0
+  if ! comments=$(fetch_comments_retry "$issue_num"); then
+    log "WARNING: could not read #$issue_num's comments for the plan's size; leaving its labels as they are"
+    return 0
+  fi
+  plan_body=$(extract_plan_comment "$comments" | jq -r '.body // ""' 2>/dev/null || echo "")
+  size=$(printf '%s' "$plan_body" | node "$SCRIPT_DIR/lib/plan-split.mjs" size 2>>"$LOG_FILE" || echo "null")
+  est=$(echo "$size" | jq -r '.estLines // empty' 2>/dev/null || echo "")
+  cls=$(echo "$size" | jq -r '.sizeClass // empty' 2>/dev/null || echo "")
+  if ! [[ "$est" =~ ^[0-9]+$ ]]; then
+    log "Issue #$issue_num: the plan has no size marker; leaving the $OVERSIZE_LABEL label as it is"
+    return 0
+  fi
+  if [[ $# -ge 2 ]]; then
+    labels=$(tr ',' '\n' <<<"$2")
+  elif ! labels=$(gh issue view "$issue_num" --repo JakubAnderwald/drafto \
+      --json labels --jq '.labels[].name' 2>>"$LOG_FILE"); then
+    log "WARNING: could not read #$issue_num's labels; not updating $OVERSIZE_LABEL"
+    return 0
+  fi
+  if grep -qxF -- "$OVERSIZE_LABEL" <<<"$labels"; then has=1; fi
+  if [[ "$est" -ge "$FACTORY_PLAN_OVERSIZE_LINES" ]]; then
+    [[ "$has" -eq 0 ]] || return 0
+    oversize_label_ready || return 0
+    if gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
+        --add-label "$OVERSIZE_LABEL" >>"$LOG_FILE" 2>&1; then
+      log "Issue #$issue_num: the plan estimates ~$est added lines ($cls), at least $FACTORY_PLAN_OVERSIZE_LINES → added $OVERSIZE_LABEL"
+    else
+      log "WARNING: adding $OVERSIZE_LABEL to #$issue_num failed"
+    fi
+  else
+    [[ "$has" -eq 1 ]] || return 0
+    if gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
+        --remove-label "$OVERSIZE_LABEL" >>"$LOG_FILE" 2>&1; then
+      log "Issue #$issue_num: the plan now estimates ~$est added lines ($cls), under $FACTORY_PLAN_OVERSIZE_LINES → removed $OVERSIZE_LABEL"
+    else
+      log "WARNING: removing $OVERSIZE_LABEL from #$issue_num failed"
+    fi
+  fi
+}
+
+# plan_split_requested <comments-json> <trigger-ids-json> — exit 0 when one of
+# the comments this replan answered asks for a split in so many words: a line
+# that starts with "Split this card" or "Please split this card" and asks no
+# question ("Please split this card, with the migration on its own." counts;
+# "Should we split this card?" and "Don't split this card" don't). The planner
+# decides what a comment asks for, but it also reads the issue's untrusted
+# text, so bash files a split only on the operator's own words (OWNER, or an
+# allowlisted forward: the trigger ids already went through the ADR-0066
+# gate). A forward `> `-quotes the reporter's text, so its quote marks are
+# ignored; in any other comment a quoted line is someone else's words.
+plan_split_requested() {
+  echo "$1" | jq -e --argjson t "${2:-[]}" '
+    any(.[];
+      ((.id | tostring) as $i | $t | map(tostring) | index($i)) != null
+      and ((.body // "") as $b
+        | ($b | test("drafto-support-forward"; "i")) as $fwd
+        | any($b | split("\n")[] | rtrimstr("\r")
+              | if $fwd then sub("^\\s*(>\\s*)+"; "") else . end;
+            test("^\\s*(please\\s+)?split\\s+this\\s+card\\b[^?]*$"; "i"))))' >/dev/null 2>&1
+}
+
+# plan_split_request_link <issue> — " ([your request](…))" for the first trigger
+# comment of this split (PLAN_SPLIT_TRIGGERS), or nothing.
+plan_split_request_link() {
+  local first
+  first=$(echo "${PLAN_SPLIT_TRIGGERS:-[]}" | jq -r '.[0] // "" | tostring' 2>/dev/null || echo "")
+  if [[ "$first" =~ ^[0-9]+$ ]]; then
+    printf ' ([your request](https://github.com/JakubAnderwald/drafto/issues/%s#issuecomment-%s))' "$1" "$first"
+  fi
+}
+
+# plan_split_filed_marker <filed> — the hidden line that records the issues a
+# split attempt filed ("#1001, #1002"), so a retry reuses them instead of
+# filing them twice (plan_split_earlier). Nothing for an empty list.
+plan_split_filed_marker() {
+  local nums
+  nums=$(printf '%s' "${1:-}" | tr -d '# ')
+  [[ "$nums" =~ ^[0-9]+(,[0-9]+)*$ ]] || return 0
+  printf '\n<!-- drafto-factory-plan-split-filed:%s -->' "$nums"
+}
+
+# plan_split_fail <item-id> <issue> <reason> [<filed>] — a split that didn't
+# happen: one 🏭 reply saying why, listing the issues this attempt had already
+# filed (and recording them for a retry), and the card back in Plan Review.
+# The reply's markers keep it from reading as fresh feedback.
+plan_split_fail() {
+  local item_id="$1" issue_num="$2" reason="$3" made="${4:-}" made_text="" body
+  log "Issue #$issue_num: plan split failed: ${reason%%$'\n'*}${made:+ (filed so far: $made)}"
+  if [[ -n "$made" ]]; then
+    made_text="Parts filed so far: $made. The factory won't start them (they're in **Backlog**, or have no status). A retry reuses each one that is still open and has the same title as a part, instead of filing it again; close any you don't want.
+
+"
+  fi
+  body="🏭 **The factory didn't split this card**$(plan_split_request_link "$issue_num").
+
+$reason
+
+${made_text}This card is back in **Plan Review**. To try again, comment \"Split this card\"; to keep it as one card, drag it to **In Progress**.
+
+<!-- drafto-factory-plan-split-failed -->$(plan_split_filed_marker "$made")"
+  if ! printf '%s' "$body" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+      --body-file - >>"$LOG_FILE" 2>&1; then
+    log "WARNING: posting the split failure on #$issue_num failed"
+  fi
+  transition_status "$item_id" "$issue_num" "Plan Review" || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
+    "$issue_num" lastError "plan split failed" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# plan_split_earlier <issue> <comments-json> — the parts an earlier, failed
+# attempt to split <issue> filed that are still open, as {"<title>": <number>}.
+# They're read from the factory's own markers (an unquoted
+# drafto-factory-plan-split-filed line in an OWNER comment), and each must
+# still be open and start with this card's "Split from" line. A lookup that
+# fails leaves that issue out.
+plan_split_earlier() {
+  local issue_num="$1" comments="$2" map="{}" n info
+  while read -r n; do
+    [[ "$n" =~ ^[0-9]+$ ]] || continue
+    info=$(gh issue view "$n" --repo JakubAnderwald/drafto --json state,title,body 2>>"$LOG_FILE") || continue
+    if jq -e --arg pre "_Split from #$issue_num (" \
+        '.state == "OPEN" and ((.body // "") | startswith($pre))' >/dev/null 2>&1 <<<"$info"; then
+      map=$(jq -c --argjson m "$map" --argjson n "$n" \
+        '.title as $t | if $m | has($t) then $m else $m + {($t): $n} end' <<<"$info" 2>/dev/null || echo "$map")
+    fi
+  done < <(echo "$comments" | jq -r '[.[] | select(.authorAssociation == "OWNER")
+      | (.body // "") | split("\n")[] | rtrimstr("\r")
+      | capture("^<!-- drafto-factory-plan-split-filed:(?<n>[0-9]+(,[0-9]+)*) -->$")
+      | .n | split(",")[]] | unique | .[]' 2>/dev/null)
+  printf '%s' "$map"
+}
+
+# plan_split_backlog <issue> — put a card the split just filed in Backlog. The
+# board may take a moment to list the new item, so the lookup is tried three
+# times. Exit 1 when it can't: the card then has no status, which the factory
+# never acts on either.
+plan_split_backlog() {
+  local num="$1" item="" attempt
+  for attempt in 1 2 3; do
+    item=$(node "$SCRIPT_DIR/lib/factory-project.mjs" item-for-issue --issue "$num" 2>>"$LOG_FILE" \
+      | jq -r '.itemId // empty' 2>/dev/null || echo "")
+    [[ -z "$item" ]] || break
+    if [[ "$attempt" -lt 3 ]]; then sleep 2; fi
+  done
+  [[ -n "$item" ]] || return 1
+  node "$SCRIPT_DIR/lib/factory-project.mjs" set-status --item-id "$item" --status Backlog \
+    >>"$LOG_FILE" 2>&1
+}
+
+# plan_split <item-id> <issue> <trigger-ids-json> — the replan returned
+# action=split. Everything is checked before anything is filed: splitting is
+# on; a trigger comment asks for it (plan_split_requested); the OWNER plan acks
+# every trigger (if a step below fails the card stays in Plan Review, and an
+# unacked comment would start a replan that could split it again); and every
+# file passes plan-split.mjs validate (2-4 files, shape, size cap, the plan
+# probe's secret scan; HTML comments, factory tokens and @mentions
+# neutralised) and the spec gate a fresh issue gets (spec_missing_section).
+# Then each part is filed in order with gh issue create --project, its
+# "Depends on" naming the issues filed for earlier parts, and put in Backlog.
+# A part whose title matches an open issue an earlier, failed attempt filed
+# reuses that issue (plan_split_earlier), so a retry never files a part twice.
+# The original is then closed as not planned, one comment links the parts, and
+# the card moves to Done. Any failure goes through plan_split_fail, which lists
+# what was filed. Sets PLAN_SPLIT_RESULT: "done" when the card was split and
+# closed, "back" when it is in Plan Review again.
+plan_split() {
+  local item_id="$1" issue_num="$2" triggers="${3:-[]}"
+  local comments acked unacked dir out scan problems="" n i part spec missing title body
+  local create_out num created="{}" made="" lines="" note="" earlier reused="" left
+  PLAN_SPLIT_TRIGGERS="$triggers"
+  PLAN_SPLIT_RESULT="back"
+  if [[ "$FACTORY_PLAN_SPLIT" != "1" ]]; then
+    plan_split_fail "$item_id" "$issue_num" "Splitting is switched off on the Mac mini (\`FACTORY_PLAN_SPLIT=0\`), so the factory filed nothing."
+    return 0
+  fi
+  if [[ "$(echo "$triggers" | jq 'length' 2>/dev/null || echo 0)" == "0" ]]; then
+    plan_split_fail "$item_id" "$issue_num" "This replan answered no comment, and a split needs one that asks for it, so the factory filed nothing."
+    return 0
+  fi
+  if ! comments=$(fetch_comments_retry "$issue_num"); then
+    plan_split_fail "$item_id" "$issue_num" "The factory couldn't read this issue's comments to check your request, so it filed nothing."
+    return 0
+  fi
+  if ! plan_split_requested "$comments" "$triggers"; then
+    plan_split_fail "$item_id" "$issue_num" "None of the comments this replan answered has a line that starts with \"Split this card\" (or \"Please split this card\") and asks no question, so the factory filed nothing."
+    return 0
+  fi
+  acked=$(extract_acked_comment_ids "$(echo "$comments" | jq -r \
+    "$(plan_comment_jq)"' [.[] | select(is_plan) | .body] | join("\n")')")
+  [[ -n "$acked" ]] || acked='[]'
+  unacked=$(jq -rn --argjson t "$triggers" --argjson a "$acked" \
+    '[$t[] | tostring | select(. as $i | ($a | index($i)) == null)] | join(" ")' 2>/dev/null || echo "?")
+  if [[ -n "$unacked" ]]; then
+    plan_split_fail "$item_id" "$issue_num" "The plan doesn't record your request as handled (its replan-ack marker is missing), so a later tick could act on it a second time. The factory filed nothing, and looks at your comment again on its next tick."
+    return 0
+  fi
+
+  dir="$(reply_dir_for "$issue_num")/split"
+  if ! out=$(node "$SCRIPT_DIR/lib/plan-split.mjs" validate --dir "$dir" \
+      --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
+      --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" \
+      --bypass-file "$FACTORY_VERIFY_BYPASS_FILE" \
+      --secrets-dir "$FACTORY_SECRETS_DIR" 2>>"$LOG_FILE") \
+      || [[ "$(echo "$out" | jq -r '.ok | type' 2>/dev/null)" != "boolean" ]]; then
+    plan_split_fail "$item_id" "$issue_num" "The factory's check of the split files didn't run (the factory log on the Mac mini says why), so it filed nothing."
+    return 0
+  fi
+  scan=$(echo "$out" | jq -r '.scanProblems // [] | join(", ")' 2>/dev/null || echo "")
+  [[ -z "$scan" ]] || log "WARNING: #$issue_num split: the secret scan couldn't load: $scan"
+  if [[ "$(echo "$out" | jq -r '.ok')" != "true" ]]; then
+    problems=$(echo "$out" | jq -r '.problems[] | "- " + .')
+    plan_split_fail "$item_id" "$issue_num" "The split files didn't pass the factory's checks, so it filed nothing:
+
+$problems"
+    return 0
+  fi
+  n=$(echo "$out" | jq '.parts | length')
+  for ((i = 0; i < n; i++)); do
+    spec=$(echo "$out" | jq -c ".parts[$i].spec")
+    missing=$(spec_missing_section "$spec" "")
+    if [[ -n "$missing" ]]; then
+      problems+="- $(echo "$out" | jq -r ".parts[$i].file"): fails the spec gate (\`$missing\`)"$'\n'
+    fi
+  done
+  if [[ -n "$problems" ]]; then
+    plan_split_fail "$item_id" "$issue_num" "The split files didn't pass the spec check a new factory issue gets, so the factory filed nothing:
+
+$problems"
+    return 0
+  fi
+
+  earlier=$(plan_split_earlier "$issue_num" "$comments")
+  [[ -n "$earlier" ]] || earlier='{}'
+  for ((i = 0; i < n; i++)); do
+    part=$((i + 1))
+    title=$(echo "$out" | jq -r ".parts[$i].title")
+    num=$(echo "$earlier" | jq -r --arg t "$title" '.[$t] // empty' 2>/dev/null || echo "")
+    if [[ "$num" =~ ^[0-9]+$ ]]; then
+      # Filed by an earlier attempt and still open: reuse it as it is (its
+      # board column may have moved on since).
+      earlier=$(echo "$earlier" | jq -c --arg t "$title" 'del(.[$t])')
+      reused+="${reused:+, }#$num"
+      log "Issue #$issue_num: split part $part of $n is #$num, filed by an earlier attempt"
+    else
+      if ! body=$(echo "$out" | node "$SCRIPT_DIR/lib/plan-split.mjs" compose --part "$part" \
+          --issue "$issue_num" --created "$created" 2>>"$LOG_FILE"); then
+        plan_split_fail "$item_id" "$issue_num" "Composing part $part of $n failed (the factory log on the Mac mini says why)." "$made"
+        return 0
+      fi
+      # The URL is read even when gh fails: an issue created before a later
+      # step failed still exists and must be listed.
+      create_out=$(printf '%s' "$body" | gh issue create --repo JakubAnderwald/drafto \
+        --project "Drafto Factory" --title "$title" --body-file - 2>>"$LOG_FILE") || true
+      num=$(printf '%s\n' "$create_out" \
+        | sed -nE 's#^https://github\.com/JakubAnderwald/drafto/issues/([0-9]+)$#\1#p' | tail -1)
+      if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+        plan_split_fail "$item_id" "$issue_num" "Filing part $part of $n failed (the factory log on the Mac mini says why; if \`gh\` timed out, the issue may exist anyway)." "$made"
+        return 0
+      fi
+      log "Issue #$issue_num: split part $part of $n filed as #$num"
+      if ! plan_split_backlog "$num"; then
+        log "WARNING: could not put #$num in Backlog"
+        note+="- #$num isn't in **Backlog**: setting its board status failed. With no status the factory won't start it either; set it by hand."$'\n'
+      fi
+    fi
+    created=$(echo "$created" | jq -c --arg k "$part" --argjson v "$num" '. + {($k): $v}')
+    made+="${made:+, }#$num"
+    lines+="$part. #$num"$'\n'
+  done
+  if [[ -n "$reused" ]]; then
+    note+="- $reused: filed by an earlier attempt and reused as it is."$'\n'
+  fi
+  for left in $(echo "$earlier" | jq -r '.[]' 2>/dev/null); do
+    note+="- #$left, filed by an earlier attempt, matches no part of this split. Close it if you don't want it."$'\n'
+  done
+
+  # Close first, so the summary below is true when it's posted.
+  if ! gh issue close "$issue_num" --repo JakubAnderwald/drafto --reason "not planned" \
+      >>"$LOG_FILE" 2>&1; then
+    log "WARNING: closing #$issue_num after its split failed; back to Plan Review"
+    gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **The split filed $made, but closing this card failed.** Close it by hand as not planned and move it to **Done**.
+
+<!-- drafto-factory-plan-split-close-failed -->$(plan_split_filed_marker "$made")" >>"$LOG_FILE" 2>&1 || true
+    transition_status "$item_id" "$issue_num" "Plan Review" || true
+    return 0
+  fi
+  body="🏭 **Split into $n cards**$(plan_split_request_link "$issue_num"), in merge order:
+
+$lines
+Each is in **Backlog**, so nothing starts until you drag it to **Ready**, and each says which of the others it depends on. This card is closed as not planned.
+${note:+
+$note}
+<!-- drafto-factory-plan-split:done -->"
+  if ! printf '%s' "$body" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+      --body-file - >>"$LOG_FILE" 2>&1; then
+    log "WARNING: posting the split summary on #$issue_num failed (new issues: $made)"
+  fi
+  transition_status "$item_id" "$issue_num" "Done" || true
+  PLAN_SPLIT_RESULT="done"
+  log "Issue #$issue_num: split into $made; closed as not planned → Done"
 }
 
 # Has the issue already received the Phase A implement-stub comment? Used so
@@ -7400,6 +7771,9 @@ and drag the card back to **Ready** to retry.
         log "WARNING: unrecognised action '$ACTION' from claude for #$ISSUE_NUM --plan"
         ;;
     esac
+    # The plan's size estimate → the factory-oversize label (ADR-0083). A noop
+    # found a plan an earlier tick posted, which may not be labelled yet.
+    case "$ACTION" in planned | noop) plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" ;; esac
   done
 
   # ── Plan Review sweep: in-place replan on new OWNER comments ──────────────
@@ -7483,12 +7857,17 @@ and drag the card back to **Ready** to retry.
     PLAN_REPLY_MARKERS=$(reply_markers_for \
       "$(echo "$COMMENTS_JSON" | jq -c --argjson t "$UNACKED_JSON" '[.[] | select((.id | tostring) as $i | $t | index($i))]')" \
       "drafto-factory-plan-reply-")
+    # Where the planner writes the sub-card specs if a comment asks for a
+    # split; sent only while splitting is on (ADR-0083).
+    PLAN_SPLIT_DIR=""
+    if [[ "$FACTORY_PLAN_SPLIT" == "1" ]]; then PLAN_SPLIT_DIR="$(reply_dir_for "$ISSUE_NUM")/split"; fi
     REPLAN_JSON=$(jq -n \
       --arg id "$PLAN_COMMENT_ID" \
       --arg issueNum "$ISSUE_NUM" \
       --arg body "$PLAN_BODY" \
       --argjson triggers "$UNACKED_JSON" \
       --arg replyDir "$(reply_dir_for "$ISSUE_NUM")" \
+      --arg splitDir "$PLAN_SPLIT_DIR" \
       --argjson replyMarkers "$PLAN_REPLY_MARKERS" \
       '{
          planCommentId: $id,
@@ -7497,7 +7876,7 @@ and drag the card back to **Ready** to retry.
          triggerCommentIds: $triggers,
          replyMarkers: $replyMarkers,
          replyDir: $replyDir
-       }')
+       } + (if $splitDir == "" then {} else { splitDir: $splitDir } end)')
 
     if ! BUNDLE=$(build_plan_bundle "$ISSUE_RECORD" "$COMMENTS_JSON" "$REPLAN_JSON"); then
       log "ERROR: build_plan_bundle (replan) failed for #$ISSUE_NUM"
@@ -7641,10 +8020,22 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" \
           --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         ;;
+      split)
+        # A comment asked for the card to be split, and the planner wrote one
+        # spec per sub-card (ADR-0083). plan_split checks them all before it
+        # files anything; on any failure the card returns to Plan Review.
+        plan_split "$ITEM_ID" "$ISSUE_NUM" "$UNACKED_JSON"
+        ;;
       *)
         log "WARNING: unrecognised replan action '$ACTION' for #$ISSUE_NUM"
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
         ;;
+    esac
+    # The revised plan's size estimate → the factory-oversize label (ADR-0083).
+    # A split that left the card in Plan Review may have revised the plan too.
+    case "$ACTION" in
+      planned | replanned) plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" ;;
+      split) [[ "$PLAN_SPLIT_RESULT" == "done" ]] || plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" ;;
     esac
   done
 

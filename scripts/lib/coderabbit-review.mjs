@@ -975,7 +975,7 @@ export function sanitizeVendorText(text, { max = 4000 } = {}) {
 // single-line summary bullet, where no fenced block can exist and a stray
 // backtick run decides what GitHub treats as code, telling code from prose is
 // exactly the guess that let a mention through.
-function neutralizeMentions(text) {
+export function neutralizeMentions(text) {
   return String(text ?? "").replace(
     /(^|\W)@([A-Za-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9._-]+)?)/g,
     `$1@${ZWSP}$2`,
