@@ -1795,6 +1795,7 @@ describe("intest_handoff — exact-SHA check, writer skip and incremental mode (
     "scenario_comment_state",
     "scenario_diff_store",
     "scenario_diff_prune",
+    "pr_head_oid",
     "intest_handoff",
   ];
   const scenarioBody = (sha, steps = "1. Open /notes — expected: the list loads.") =>
@@ -1822,6 +1823,8 @@ describe("intest_handoff — exact-SHA check, writer skip and incremental mode (
     maxLines = "800",
     dryRun = 0,
     platforms = '{"mobile":false,"desktop":false,"web":true}',
+    headAfterDiff = HEAD,
+    commentsFailAfterRun = false,
   } = {}) {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "factory-scenario-delta-")));
     const logDir = join(dir, "logs", "factory");
@@ -1865,12 +1868,17 @@ SUPPORT_ALLOWLIST="a@example.com"
 OAUTH_USER_EMAIL="support@example.com"
 PHASE=C
 HEAD=${HEAD}
+HEAD_AFTER_DIFF=${JSON.stringify(headAfterDiff)}
+COMMENTS_FAIL_AFTER_RUN=${commentsFailAfterRun ? 1 : 0}
 CLAUDE_MODE=${claude}
 touch "$CALLS"
 log() { echo "LOG: $*" >>"$LOG_FILE"; }
 logerr() { echo "ERR: $*" >>"$LOG_FILE"; }
 fetch_issue_record() { echo '{"number":${ISSUE},"title":"quota","body":"","labels":[]}'; }
-fetch_issue_comments() { cat "$COMMENTS_FILE"; }
+fetch_issue_comments() {
+  [[ "$COMMENTS_FAIL_AFTER_RUN" == 1 && -f "$REPO_ROOT/claude.input" ]] && return 1
+  cat "$COMMENTS_FILE"
+}
 extract_plan_comment() { echo null; }
 check_session_limit() { return 1; }
 pause_for_session_limit() { :; }
@@ -1878,6 +1886,7 @@ gh() {
   echo "gh $1 $2" >>"$CALLS"
   case "$1 $2" in
     "pr diff") cat ${JSON.stringify(join(dir, "pr.diff"))} ;;
+    "pr view") echo "$HEAD_AFTER_DIFF" ;;
     "issue comment")
       local body="" prev="" a
       for a in "$@"; do [[ "$prev" == "--body" ]] && body="$a"; prev="$a"; done
@@ -2075,6 +2084,33 @@ intest_handoff ${ISSUE} 802 '{"number":802,"url":"u","headRef":"factory/issue-${
     );
     const again = run({ comments: first.comments, claude: "timeout" });
     assert.equal(fallbacks(again).length, 1, "no second fallback for the same head");
+  });
+
+  it("keeps no diff, and runs in full mode, when the head moved while the diff was read", () => {
+    // gh pr diff reads whatever the head is then: a newer head's diff must
+    // never be filed under this head's SHA, nor compared as if it were.
+    for (const headAfterDiff of ["3".repeat(40), ""]) {
+      const r = run({ ...prior(), headAfterDiff, rounds: "1" });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.bundle.prDiffMode, "full");
+      assert.match(r.log, /after reading its diff, not 2{40}; not keeping the diff \(full mode\)/);
+      assert.deepEqual(r.files, [`${ISSUE}-111111111111.diff`, `${ISSUE}-111111111111.json`]);
+      assert.equal(
+        r.state.intestScenarioRounds,
+        "1",
+        "a full run that wasn't counted leaves the count",
+      );
+    }
+  });
+
+  it("leaves the head unrecorded, with no fallback, when the comments can't be read after the run", () => {
+    const r = run({ ...prior(), commentsFailAfterRun: true, rounds: "1" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.calls, /^claude$/m);
+    assert.equal(fallbacks(r).length, 0);
+    assert.match(r.log, /leaving 222222222222 unrecorded so the next tick looks again/);
+    assert.equal(r.state.intestCommentSha ?? null, null);
+    assert.equal(r.state.intestScenarioRounds, "1");
   });
 
   it("prints the delta bundle under --dry-run without storing anything", () => {

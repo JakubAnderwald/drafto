@@ -1621,7 +1621,7 @@ describe("perFilePatchDelta", () => {
     // PR's own patch is the same, only its line numbers and index line moved.
     const moved = chunk("apps/web/a.ts", {
       index: "9999999..def5678 100644",
-      at: "@@ -42,3 +42,4 @@ otherFn()",
+      at: "@@ -42,3 +42,4 @@ fn()",
       body: [" keep", "+added line", " keep"],
     });
     assert.equal(perFilePatchDelta(`${a}\n${b}`, `${moved}\n${b}`).files.length, 0);
@@ -1641,6 +1641,25 @@ describe("perFilePatchDelta", () => {
     // The dropped file's old patch counts toward the size, though none of it is sent.
     assert.equal(d.droppedLines, a.split("\n").length);
     assert.doesNotMatch(d.diff, /apps\/web\/a\.ts/, "a dropped file has no current patch");
+  });
+
+  it("counts the same lines added to another function as a change", () => {
+    // Only the coordinates are dropped: the function context after the
+    // closing @@ is part of the PR's own change.
+    const moved = chunk("apps/web/a.ts", {
+      at: "@@ -42,3 +42,4 @@ otherFn()",
+      body: [" keep", "+added line", " keep"],
+    });
+    assert.deepEqual(perFilePatchDelta(a, moved).files, [
+      { path: "apps/web/a.ts", status: "changed" },
+    ]);
+    // A hunk header without a context, or with a one-line range, still normalises.
+    const bare = (at) => chunk("x.ts", { at, body: ["+y"] });
+    assert.equal(perFilePatchDelta(bare("@@ -1 +1 @@"), bare("@@ -9 +12 @@")).files.length, 0);
+    assert.equal(
+      perFilePatchDelta(bare("@@ -1,0 +1,2 @@"), bare("@@ -7,0 +8,2 @@")).files.length,
+      0,
+    );
   });
 
   it("counts a context line main changed next to the PR's hunk as a change", () => {

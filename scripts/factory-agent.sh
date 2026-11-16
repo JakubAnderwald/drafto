@@ -4576,16 +4576,27 @@ intest_handoff() {
   # run, and let factory-bundle.mjs choose between the whole diff and only
   # what changed since the latest scenario. Off (or extracted without its
   # globals, as in the tests) it is the full mode, as before.
-  if [[ "${FACTORY_SCENARIO_INCREMENTAL:-0}" == "1" && -n "${SCENARIO_DIFF_DIR:-}" ]]; then
-    [[ "$DRY_RUN" -eq 1 ]] || scenario_diff_store "$issue_num" "$head_sha" "$pr_diff" "$platforms"
-    rounds=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
-      --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestScenarioRounds // ""' 2>/dev/null || echo "")
-    [[ "$rounds" =~ ^[0-9]+$ ]] || rounds=0
-    scenario_cfg=$(jq -cn --arg dir "$SCENARIO_DIFF_DIR" --argjson rounds "$rounds" \
-      --argjson maxLines "$FACTORY_SCENARIO_DELTA_MAX_LINES" --argjson fullEvery "$FACTORY_SCENARIO_FULL_EVERY" \
-      '{enabled: true, rounds: $rounds, maxLines: $maxLines, fullEvery: $fullEvery, diffDir: $dir}' \
-      2>>"$LOG_FILE") || scenario_cfg="null"
-    [[ -n "$scenario_cfg" ]] || scenario_cfg="null"
+  #
+  # `gh pr diff` reads whatever the PR head is when it runs, so the head is
+  # read again after it: a diff is kept, or compared, only when that head is
+  # still <head_sha>. A head that moved, or can't be read, means full mode and
+  # nothing stored, never a newer head's diff filed under this one's SHA.
+  local diff_head=""
+  if [[ "${FACTORY_SCENARIO_INCREMENTAL:-0}" == "1" && -n "${SCENARIO_DIFF_DIR:-}" && -n "$pr_diff" ]]; then
+    diff_head=$(pr_head_oid "$pr_num")
+    if [[ "$diff_head" != "$head_sha" ]]; then
+      log "Issue #$issue_num: PR #$pr_num's head is ${diff_head:-unreadable} after reading its diff, not $head_sha; not keeping the diff (full mode)"
+    else
+      [[ "$DRY_RUN" -eq 1 ]] || scenario_diff_store "$issue_num" "$head_sha" "$pr_diff" "$platforms"
+      rounds=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+        --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestScenarioRounds // ""' 2>/dev/null || echo "")
+      [[ "$rounds" =~ ^[0-9]+$ ]] || rounds=0
+      scenario_cfg=$(jq -cn --arg dir "$SCENARIO_DIFF_DIR" --argjson rounds "$rounds" \
+        --argjson maxLines "$FACTORY_SCENARIO_DELTA_MAX_LINES" --argjson fullEvery "$FACTORY_SCENARIO_FULL_EVERY" \
+        '{enabled: true, rounds: $rounds, maxLines: $maxLines, fullEvery: $fullEvery, diffDir: $dir}' \
+        2>>"$LOG_FILE") || scenario_cfg="null"
+      [[ -n "$scenario_cfg" ]] || scenario_cfg="null"
+    fi
   fi
 
   if ! bundle=$(build_intest_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
@@ -4675,8 +4686,11 @@ intest_handoff() {
       ;;
     unknown)
       # Fail closed, as issue_has_marker does: a duplicate comment is worse
-      # than a missing fallback the next head re-arms anyway.
-      log "WARNING: couldn't read #$issue_num's comments after the scenario run (action=${action:-none}); not posting a fallback"
+      # than a late fallback. Nor is the head recorded as handled: the In Test
+      # sweep then looks again on its next tick, and either finds the scenario
+      # (and records it without starting the writer) or writes one.
+      log "WARNING: couldn't read #$issue_num's comments after the scenario run (action=${action:-none}); not posting a fallback, and leaving ${head_sha:0:12} unrecorded so the next tick looks again"
+      return 0
       ;;
     *)
       log "Issue #$issue_num: no test scenario for ${head_sha:0:12} found (action=${action:-none}); posting fallback"

@@ -1315,15 +1315,18 @@ function chunkPath(lines) {
 }
 
 // A chunk as the PR's own change, wherever main has moved the file: hunk
-// headers lose their line numbers (a main commit above the hunk shifts them),
-// and the `index` line goes (its blob ids name the base, which a main merge
-// changes). A binary chunk keeps its index line: its blob ids are the only
-// record of the content.
+// headers lose their line coordinates (a main commit above the hunk shifts
+// them) but keep the function context after the closing `@@`, so the same
+// lines added to another function still count as a change. The `index` line
+// goes (its blob ids name the base, which a main merge changes). A binary
+// chunk keeps its index line: its blob ids are the only record of the content.
+const HUNK_COORDS_RE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/;
+
 function normaliseChunk(lines) {
   const binary = lines.some((l) => l.startsWith("Binary files ") || l === "GIT binary patch");
   return lines
     .filter((l) => binary || !l.startsWith("index "))
-    .map((l) => (l.startsWith("@@") ? "@@" : l))
+    .map((l) => l.replace(HUNK_COORDS_RE, "@@"))
     .join("\n")
     .trimEnd();
 }
