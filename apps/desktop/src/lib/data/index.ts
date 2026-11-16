@@ -19,6 +19,7 @@ export {
   processPendingUploads,
   cleanupOrphanedFiles,
   deleteAllLocalAttachments,
+  discardRefusedAttachment,
 } from "./attachment-queue";
 export type { UploadResult } from "./attachment-queue";
 

@@ -257,6 +257,37 @@ async function removeRefusedObject(attachment: Attachment): Promise<void> {
 }
 
 /**
+ * Discards an attachment the picker's own upload had refused for the storage quota
+ * (issue #794): deletes its local record and its local copy. Nothing references it: the
+ * picker didn't insert it into the note, the server has no row for it, and
+ * "quota_exceeded" is never retried, while `cleanupOrphanedFiles` keeps every file a
+ * record points at, so otherwise the copy (up to 50 MB) would stay until the notebook is
+ * deleted or the user signs out. The user still has the original file. Does nothing for
+ * an attachment that wasn't refused. Best-effort: a failure is logged, never thrown, and
+ * the refusal stands.
+ */
+export async function discardRefusedAttachment(attachment: Attachment): Promise<void> {
+  if (!attachment.isStorageFull) return;
+  const localUri = attachment.localUri;
+  try {
+    // Permanently: the server never had its row, so there is no deletion to sync.
+    await database.write(async () => {
+      await attachment.destroyPermanently();
+    });
+  } catch (err) {
+    console.warn(`Failed to discard refused attachment ${attachment.fileName}:`, err);
+    return;
+  }
+  if (!localUri) return;
+  const localPath = localUri.startsWith("file://") ? localUri.slice(7) : localUri;
+  try {
+    if (await RNFS.exists(localPath)) await RNFS.unlink(localPath);
+  } catch (err) {
+    console.warn(`Failed to delete local copy of ${attachment.fileName}:`, err);
+  }
+}
+
+/**
  * Uploads one queued attachment and records the outcome on it. Returns false when it
  * failed; the caller tells a quota refusal (`attachment.isStorageFull`) from a
  * transient failure.

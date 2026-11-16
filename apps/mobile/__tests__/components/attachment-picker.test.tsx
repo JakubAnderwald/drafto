@@ -11,8 +11,10 @@ const mockPickDocument = jest.fn();
 const mockQueueAttachment = jest.fn();
 const mockUploadAttachment = jest.fn();
 const mockFetchStorageUsage = jest.fn();
+const mockDiscardRefusedAttachment = jest.fn();
 
 jest.mock("@/lib/data", () => ({
+  discardRefusedAttachment: (attachment: unknown) => mockDiscardRefusedAttachment(attachment),
   fetchStorageUsage: () => mockFetchStorageUsage(),
   pickImage: () => mockPickImage(),
   pickDocument: () => mockPickDocument(),
@@ -57,6 +59,7 @@ describe("AttachmentPicker", () => {
     mockPickImage.mockResolvedValue(FILE);
     mockPickDocument.mockResolvedValue(FILE);
     mockFetchStorageUsage.mockResolvedValue(null);
+    mockDiscardRefusedAttachment.mockResolvedValue(undefined);
     mockQueueAttachment.mockImplementation(async () => {
       calls.push("queue");
       return ATTACHMENT;
@@ -91,6 +94,7 @@ describe("AttachmentPicker", () => {
     expect(onReady).toHaveBeenCalledWith(ATTACHMENT);
     expect(calls).toEqual(["queue", "upload", "insert", "sync"]);
     expect(mockShowToast).toHaveBeenCalledWith("Attachment uploaded", "success");
+    expect(mockDiscardRefusedAttachment).not.toHaveBeenCalled();
     // Back to the buttons although the sync is still running.
     expect(await findByText("Image")).toBeTruthy();
   });
@@ -181,11 +185,19 @@ describe("AttachmentPicker", () => {
       } as unknown as Attachment;
       mockQueueAttachment.mockResolvedValue(refused);
       mockUploadAttachment.mockResolvedValue(false);
+      // Discarding the record may clear what it reads; the toast keeps the message.
+      mockDiscardRefusedAttachment.mockImplementation(async (attachment: Attachment) => {
+        calls.push("discard");
+        Object.assign(attachment, { uploadError: null });
+      });
       const onReady = jest.fn();
 
       pickWith("Attach file", onReady);
 
       await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith(message, "warning"));
+      // Nothing references it, so its record and local copy go before the sync runs.
+      expect(mockDiscardRefusedAttachment).toHaveBeenCalledWith(refused);
+      expect(calls).toEqual(["discard", "sync"]);
       expect(mockShowToast).not.toHaveBeenCalledWith(
         "Upload failed — will retry automatically",
         "warning",

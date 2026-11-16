@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { storageFullMessage, wouldExceedQuota } from "@drafto/shared";
 
 import {
+  discardRefusedAttachment,
   fetchStorageUsage,
   pickImage,
   pickDocument,
@@ -64,8 +65,14 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
       const uploaded = isConnected ? await uploadAttachment(attachment) : false;
 
       // Refused for the storage quota: it never reaches the server and is never
-      // retried, so the note doesn't reference it (same as desktop).
-      if (!attachment.isStorageFull) {
+      // retried, so the note doesn't reference it (same as desktop), and nothing
+      // else needs the record or its local copy. Keep the message for the toast.
+      const storageFullError = attachment.isStorageFull
+        ? (attachment.uploadError ?? storageFullMessage(null, null))
+        : null;
+      if (storageFullError !== null) {
+        await discardRefusedAttachment(attachment);
+      } else {
         await onAttachmentReady?.(attachment);
       }
 
@@ -76,9 +83,9 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
 
       if (uploaded) {
         showToast("Attachment uploaded", "success");
-      } else if (attachment.isStorageFull) {
+      } else if (storageFullError !== null) {
         // Refused for the storage quota: not retried, so don't promise a retry.
-        showToast(attachment.uploadError ?? storageFullMessage(null, null), "warning");
+        showToast(storageFullError, "warning");
       } else if (isConnected) {
         showToast("Upload failed — will retry automatically", "warning");
       } else {

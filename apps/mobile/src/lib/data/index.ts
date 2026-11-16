@@ -18,6 +18,7 @@ export {
   uploadAttachment,
   processPendingUploads,
   cleanupOrphanedFiles,
+  discardRefusedAttachment,
 } from "./attachment-queue";
 export type { UploadResult } from "./attachment-queue";
 

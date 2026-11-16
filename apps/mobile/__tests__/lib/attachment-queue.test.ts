@@ -93,6 +93,7 @@ import {
   processPendingUploads,
   uploadAttachment,
   deleteAllLocalAttachments,
+  discardRefusedAttachment,
 } from "@/lib/data/attachment-queue";
 
 beforeEach(() => {
@@ -542,6 +543,76 @@ describe("storage quota (issue #794)", () => {
     });
     expect(fields.uploadStatus).toBe("quota_exceeded");
     expect(mockUpload).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("discardRefusedAttachment (issue #794)", () => {
+  function makeRefused(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "att-1",
+      fileName: "photo.jpg",
+      localUri: "file:///local/photo.jpg",
+      isStorageFull: true,
+      destroyPermanently: jest.fn().mockResolvedValue(undefined),
+      ...overrides,
+    } as unknown as Attachment & { destroyPermanently: jest.Mock };
+  }
+
+  beforeEach(() => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockDatabaseWrite.mockImplementation((fn: () => Promise<unknown>) => fn());
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("deletes the refused attachment's record permanently and its local copy", async () => {
+    const attachment = makeRefused();
+
+    await discardRefusedAttachment(attachment);
+
+    expect(mockDatabaseWrite).toHaveBeenCalledTimes(1);
+    expect(attachment.destroyPermanently).toHaveBeenCalledTimes(1);
+    expect(mockFileDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves an attachment that wasn't refused alone", async () => {
+    const attachment = makeRefused({ isStorageFull: false });
+
+    await discardRefusedAttachment(attachment);
+
+    expect(attachment.destroyPermanently).not.toHaveBeenCalled();
+    expect(mockFileDelete).not.toHaveBeenCalled();
+  });
+
+  it("keeps the local copy, and doesn't throw, when deleting the record fails", async () => {
+    const attachment = makeRefused({
+      destroyPermanently: jest.fn().mockRejectedValue(new Error("db locked")),
+    });
+
+    await expect(discardRefusedAttachment(attachment)).resolves.toBeUndefined();
+
+    expect(mockFileDelete).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "Failed to discard refused attachment photo.jpg:",
+      expect.any(Error),
+    );
+  });
+
+  it("doesn't throw when deleting the local copy fails", async () => {
+    mockFileDelete.mockImplementationOnce(() => {
+      throw new Error("EACCES");
+    });
+    const attachment = makeRefused();
+
+    await expect(discardRefusedAttachment(attachment)).resolves.toBeUndefined();
+
+    expect(attachment.destroyPermanently).toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "Failed to delete local copy of photo.jpg:",
+      expect.any(Error),
+    );
   });
 });
 

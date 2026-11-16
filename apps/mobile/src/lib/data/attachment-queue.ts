@@ -315,6 +315,36 @@ async function recordStorageFull(attachment: Attachment, err: unknown): Promise<
   });
 }
 
+/**
+ * Discard an attachment the picker's own upload had refused for the storage quota
+ * (issue #794): delete its local record and its local copy. Nothing references it:
+ * the picker didn't insert it into the note, the server has no row for it, and
+ * "quota_exceeded" is never retried, so otherwise the copy (up to 50 MB) would stay
+ * on the device until sign-out. The user still has the original file. Does nothing
+ * for an attachment that wasn't refused. Best-effort: a failure is logged, never
+ * thrown, and the refusal stands.
+ */
+export async function discardRefusedAttachment(attachment: Attachment): Promise<void> {
+  if (!attachment.isStorageFull) return;
+  const localUri = attachment.localUri;
+  try {
+    // Permanently: the server never had its row, so there is no deletion to sync.
+    await database.write(async () => {
+      await attachment.destroyPermanently();
+    });
+  } catch (err) {
+    console.warn(`Failed to discard refused attachment ${attachment.fileName}:`, err);
+    return;
+  }
+  if (!localUri) return;
+  try {
+    const localFile = new File(localUri);
+    if (localFile.exists) localFile.delete();
+  } catch (err) {
+    console.warn(`Failed to delete local copy of ${attachment.fileName}:`, err);
+  }
+}
+
 // One upload per attachment at a time. The editor uploads a freshly picked file
 // straight away, while a sync started meanwhile (e.g. by the note write) drains
 // the same queue; without this both would upload the file, and the second could

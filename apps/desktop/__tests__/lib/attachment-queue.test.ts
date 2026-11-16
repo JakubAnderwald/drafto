@@ -76,6 +76,7 @@ import {
   processPendingUploads,
   cleanupOrphanedFiles,
   deleteAllLocalAttachments,
+  discardRefusedAttachment,
 } from "@/lib/data/attachment-queue";
 import RNFS from "react-native-fs";
 import {
@@ -555,6 +556,67 @@ describe("processPendingUploads", () => {
       expect(result).toEqual({ uploaded: 1, storageFull: 0 });
       expect(mockMaybeSingle).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("discardRefusedAttachment (issue #794)", () => {
+  function makeRefused(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "att-1",
+      fileName: "photo.jpg",
+      localUri: "file:///mock/documents/attachments/photo.jpg",
+      isStorageFull: true,
+      destroyPermanently: jest.fn().mockResolvedValue(undefined),
+      ...overrides,
+    } as unknown as Parameters<typeof discardRefusedAttachment>[0] & {
+      destroyPermanently: jest.Mock;
+    };
+  }
+
+  it("deletes the refused attachment's record permanently and its local copy", async () => {
+    const attachment = makeRefused();
+
+    await discardRefusedAttachment(attachment);
+
+    expect(mockDatabaseWrite).toHaveBeenCalledTimes(1);
+    expect(attachment.destroyPermanently).toHaveBeenCalledTimes(1);
+    expect(RNFS.unlink).toHaveBeenCalledWith("/mock/documents/attachments/photo.jpg");
+  });
+
+  it("leaves an attachment that wasn't refused alone", async () => {
+    const attachment = makeRefused({ isStorageFull: false });
+
+    await discardRefusedAttachment(attachment);
+
+    expect(attachment.destroyPermanently).not.toHaveBeenCalled();
+    expect(RNFS.unlink).not.toHaveBeenCalled();
+  });
+
+  it("keeps the local copy, and doesn't throw, when deleting the record fails", async () => {
+    const attachment = makeRefused({
+      destroyPermanently: jest.fn().mockRejectedValue(new Error("db locked")),
+    });
+
+    await expect(discardRefusedAttachment(attachment)).resolves.toBeUndefined();
+
+    expect(RNFS.unlink).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "Failed to discard refused attachment photo.jpg:",
+      expect.any(Error),
+    );
+  });
+
+  it("doesn't throw when deleting the local copy fails", async () => {
+    (RNFS.unlink as jest.Mock).mockRejectedValueOnce(new Error("EACCES"));
+    const attachment = makeRefused();
+
+    await expect(discardRefusedAttachment(attachment)).resolves.toBeUndefined();
+
+    expect(attachment.destroyPermanently).toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "Failed to delete local copy of photo.jpg:",
+      expect.any(Error),
+    );
   });
 });
 

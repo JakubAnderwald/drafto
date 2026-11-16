@@ -8,11 +8,13 @@ import { STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
 const mockPickImage = jest.fn();
 const mockQueueAttachment = jest.fn();
 const mockFetchStorageUsage = jest.fn();
+const mockDiscardRefusedAttachment = jest.fn();
 jest.mock("@/lib/data", () => ({
   pickImage: () => mockPickImage(),
   pickDocument: jest.fn(),
   queueAttachment: (...args: unknown[]) => mockQueueAttachment(...args),
   fetchStorageUsage: () => mockFetchStorageUsage(),
+  discardRefusedAttachment: (attachment: unknown) => mockDiscardRefusedAttachment(attachment),
 }));
 
 jest.mock("@/providers/auth-provider", () => ({
@@ -48,6 +50,7 @@ describe("AttachmentPicker storage quota (issue #794)", () => {
     mockIsConnected = true;
     mockPickImage.mockResolvedValue(FILE);
     mockSync.mockResolvedValue(undefined);
+    mockDiscardRefusedAttachment.mockResolvedValue(undefined);
     mockFetchStorageUsage.mockResolvedValue({ usedBytes: 0, quotaBytes: QUOTA });
     jest.spyOn(Alert, "alert").mockImplementation(() => {});
   });
@@ -91,6 +94,7 @@ describe("AttachmentPicker storage quota (issue #794)", () => {
     expect(mockQueueAttachment).toHaveBeenCalledWith("user-1", "note-1", FILE);
     expect(mockSync).toHaveBeenCalled();
     expect(Alert.alert).not.toHaveBeenCalled();
+    expect(mockDiscardRefusedAttachment).not.toHaveBeenCalled();
   });
 
   it("queues without a pre-check when the usage is unknown", async () => {
@@ -139,6 +143,8 @@ describe("AttachmentPicker storage quota (issue #794)", () => {
     // The buttons come back once the pick has finished.
     await waitFor(() => expect(utils.getByLabelText("Attach image")).toBeTruthy());
     expect(onAttachmentReady).not.toHaveBeenCalled();
+    // Nothing references it, so its record and local copy go (the user has the original).
+    expect(mockDiscardRefusedAttachment).toHaveBeenCalledWith(attachment);
     // DatabaseProvider alerts for the sync's refusals, so the picker adds no second one.
     expect(Alert.alert).not.toHaveBeenCalled();
   });

@@ -2,7 +2,13 @@ import { useState, useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { storageFullMessage, wouldExceedQuota } from "@drafto/shared";
 
-import { fetchStorageUsage, pickImage, pickDocument, queueAttachment } from "@/lib/data";
+import {
+  discardRefusedAttachment,
+  fetchStorageUsage,
+  pickImage,
+  pickDocument,
+  queueAttachment,
+} from "@/lib/data";
 import { STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
@@ -57,7 +63,9 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
         if (attachment.isStorageFull) {
           // Refused for the quota: it never reaches the server and is never retried,
           // so the note doesn't reference it. DatabaseProvider owns the alert: the
-          // sync's upload run counted this refusal and reported it.
+          // sync's upload run counted this refusal and reported it. Nothing else
+          // needs the record or its local copy, so drop both.
+          await discardRefusedAttachment(attachment);
           return;
         }
       }
