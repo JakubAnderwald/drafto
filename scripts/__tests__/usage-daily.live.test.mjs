@@ -3,7 +3,8 @@
 // project, over plain fetch to GoTrue and PostgREST: the same path a client
 // holding the public anon key and its own JWT would use.
 //
-// It creates two throwaway users, A and B, signs each in, and checks:
+// It creates three throwaway users, signs each in, approves A and B (as an
+// admin would; a new user starts unapproved) and leaves C waiting, and checks:
 //   - record_activity records a day once (1, then 0), takes at most 31 days
 //     per call, and rejects an unknown or missing client tag with 22023,
 //     writing nothing when it rejects;
@@ -11,6 +12,7 @@
 //     duplicates, and the rows it leaves are exactly the valid ones;
 //   - it only ever writes rows for the caller: B's rows don't move when A
 //     calls it, and an extra user argument is refused;
+//   - a user awaiting approval (C) gets 0 and no row;
 //   - a signed-in user can't read usage_daily, or insert, update or delete a
 //     row in it, for themselves or for another user; anon can't either, and
 //     can't call record_activity (nor can service_role: it has no user);
@@ -169,7 +171,12 @@ async function awayFromUtcMidnight() {
 
 const createdIds = [];
 
-async function createUser(label) {
+/**
+ * A throwaway user, signed in. Approved, as an admin would approve them,
+ * unless <approved> is false: a new user starts unapproved, and
+ * record_activity records nothing for them.
+ */
+async function createUser(label, { approved = true } = {}) {
   const email = `usage-daily-live+${label}-${Date.now()}-${randomUUID().slice(0, 8)}@example.com`;
   const password = randomUUID();
   const res = await call("/auth/v1/admin/users", {
@@ -179,6 +186,16 @@ async function createUser(label) {
   });
   assert.ok(res.ok, `create ${label}: ${formatResponse(res)}`);
   createdIds.push(res.body.id);
+  if (approved) {
+    const approval = await call(`/rest/v1/profiles?id=eq.${res.body.id}`, {
+      method: "PATCH",
+      ...SERVICE,
+      body: { is_approved: true },
+      prefer: "return=representation",
+    });
+    assert.equal(approval.status, 200, `approve ${label}: ${formatResponse(approval)}`);
+    assert.equal(approval.body?.length, 1, `approve ${label}: ${formatResponse(approval)}`);
+  }
   const session = await call("/auth/v1/token?grant_type=password", {
     method: "POST",
     ...ANON,
@@ -202,6 +219,7 @@ describe(
   () => {
     let a;
     let b;
+    let c;
     // UTC day <n> days from today, as YYYY-MM-DD; fixed in `before`.
     let day;
 
@@ -212,6 +230,7 @@ describe(
         day = (n) => new Date(today + n * DAY).toISOString().slice(0, 10);
         a = await createUser("a");
         b = await createUser("b");
+        c = await createUser("c", { approved: false });
       },
       { timeout: 240_000 },
     );
@@ -319,6 +338,11 @@ describe(
         await rowsOf(a.id),
         [...aRows, { day: day(-2), client: "web-mcp", content_changes: 0 }].sort(byDayAndClient),
       );
+    });
+
+    it("records nothing for a user awaiting approval", { timeout: 30_000 }, async () => {
+      assert.equal(await recordOk(c.auth, [day(0), day(-1)], "mobile-android"), 0);
+      assert.deepEqual(await rowsOf(c.id), []);
     });
 
     it(

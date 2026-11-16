@@ -67,6 +67,7 @@ The only way in for signed-in clients. `SECURITY DEFINER` with `set search_path 
 - `p_client` null or not one of the five tags: `22023`, `unknown client tag: …`.
 - More than 31 elements in `p_days`: `22023`, `at most 31 days per call, got …`.
 - Null or empty `p_days`: returns 0 and writes nothing.
+- A user who isn't approved yet (`is_approved()`): returns 0 and writes nothing, after the checks above. Mobile syncs, and so pings, while a user waits for approval; the other clients never reach the ping for such a user. Returning 0 rather than an error makes the client drop those days instead of re-sending them once the user is approved.
 - Drops null elements, days after today (UTC), days more than 30 days before today, and duplicates.
 - Inserts `on conflict (user_id, day, client) do nothing`, and returns the number of new rows.
 

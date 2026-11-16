@@ -78,7 +78,11 @@ grant select, insert, update, delete on table public.usage_daily to service_role
 -- A device sends every day it queued while offline, so: at most 31 days per
 -- call; null elements, days after today (UTC), days more than 30 days back and
 -- duplicates are dropped; a day already recorded is left alone. Returns how
--- many rows it added, so re-sending a day returns 0. SECURITY DEFINER because
+-- many rows it added, so re-sending a day returns 0. A user who isn't
+-- approved yet (is_approved(), the gate the content RLS uses) gets 0 and no
+-- row: mobile syncs while a user waits for approval, and those days mustn't
+-- count as active. It is 0 rather than an error, so the client drops those
+-- days instead of re-sending them once approved. SECURITY DEFINER because
 -- authenticated has no privilege on the table; the rows are always the
 -- caller's own (auth.uid()), whatever the arguments.
 create or replace function public.record_activity(p_days date[], p_client text)
@@ -109,6 +113,10 @@ begin
   if p_days is null or cardinality(p_days) = 0 then
     return 0;
   end if;
+  -- After the argument checks, so a bad call is an error for every caller.
+  if not public.is_approved() then
+    return 0;
+  end if;
 
   insert into public.usage_daily (user_id, day, client)
   select distinct v_user, d.activity_day, p_client
@@ -125,7 +133,8 @@ $$;
 
 comment on function public.record_activity(date[], text) is
   'Records the UTC days (at most 31, none in the future or more than 30 days back) the '
-  'signed-in user opened Drafto from client p_client; returns the rows added (ADR 0081).';
+  'signed-in, approved user opened Drafto from client p_client; returns the rows added '
+  '(0 for a user awaiting approval) (ADR 0081).';
 
 revoke execute on function public.record_activity(date[], text) from public, anon, service_role;
 grant execute on function public.record_activity(date[], text) to authenticated;

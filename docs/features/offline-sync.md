@@ -71,6 +71,12 @@ holds the logic, identical on both apps.
   the `x-drafto-client` header: `mobile-ios`, `mobile-android` or
   `desktop-macos`. Mobile's fallback `mobile` (neither iOS nor Android) isn't a
   tag `usage_daily` accepts, so such a device keeps its queue and never sends it.
+- **Waiting for approval.** Mobile syncs for a signed-in user who isn't
+  approved yet (the pull just comes back empty), so it pings too.
+  `record_activity` answers such a user with 0 and records nothing, and the
+  client drops those days like any sent day, so a user on the waiting list
+  never counts as active. The day the user is approved isn't sent again from
+  that device once it has been dropped.
 
 ## Code paths
 
@@ -170,10 +176,13 @@ it. This file is hand-maintained, not generated: when a column changes, update
   (or, on desktop, their approval) changes, the provider forgets the run, so the
   next user's `sync()` starts its own and the old one cannot report into the new
   session. This mirrors `resetSyncState()` for `syncDatabase()`.
-- The [activity ping](#activity-ping) never changes a sync's result and never
-  delays the latch: the day is marked without being awaited on entry, and the
-  flush runs only after `synchronize()` resolved, inside a try/catch. Keep both
-  when touching `syncDatabase()` or `runSync`.
+- The [activity ping](#activity-ping) never changes a sync's result, and holds
+  the latch at most `ACTIVITY_PING_MAX_WAIT_MS` after `synchronize()` resolved:
+  the day is marked without being awaited on entry, and the flush runs only
+  after `synchronize()` resolved, inside a try/catch, with `runSync` waiting for
+  it at most that long. Callers that coalesce in that window get a sync whose
+  push has already finished. Keep all three when touching `syncDatabase()` or
+  `runSync`.
 - Note `content` is a JSON column on Supabase and a stringified JSON column in
   WatermelonDB — round-trip with `JSON.parse` / `JSON.stringify` on every hop.
 - Desktop: no sync trigger may pull for a signed-out or unapproved user. RLS

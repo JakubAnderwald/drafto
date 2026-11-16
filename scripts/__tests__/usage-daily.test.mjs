@@ -7,7 +7,8 @@
 // windows of metrics_active_users and metrics_retention.
 //
 // The stand-ins are the ones product-metrics.test.mjs uses, plus an auth.uid()
-// that reads request.jwt.claim.sub like Supabase's does. A "signed-in user" is
+// that reads request.jwt.claim.sub like Supabase's does and the real
+// is_approved() (20260225000001) over it. A "signed-in user" is
 // the authenticated role with that setting, inside one transaction. PGlite has
 // no pg_cron, so the cron migration (20261113000004) is checked as text.
 //
@@ -68,6 +69,17 @@ create table public.profiles (
   is_approved boolean not null default false,
   is_admin boolean not null default false
 );
+-- is_approved() as 20260225000001_fix_rls_recursion.sql defines it;
+-- record_activity reads it.
+create function public.is_approved() returns boolean
+language sql security definer
+set search_path = public, pg_catalog
+as $$
+  select exists (
+    select 1 from public.profiles
+    where id = auth.uid() and is_approved = true
+  );
+$$;
 create table public.notebooks (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -151,13 +163,18 @@ async function anchors(db) {
   return rows[0];
 }
 
-async function addUser(db, { email, createdAt, admin = false }) {
+/** A user with a profile, approved unless <approved> is false, and a notebook. */
+async function addUser(db, { email, createdAt, admin = false, approved = true }) {
   const { rows } = await db.query(
     "insert into auth.users (email, created_at, raw_app_meta_data) values ($1, $2, $3) returning id",
     [email, createdAt.toISOString(), JSON.stringify({ provider: "email" })],
   );
   const id = rows[0].id;
-  await db.query("insert into public.profiles (id, is_admin) values ($1, $2)", [id, admin]);
+  await db.query("insert into public.profiles (id, is_admin, is_approved) values ($1, $2, $3)", [
+    id,
+    admin,
+    approved,
+  ]);
   const notebook = await db.query(
     "insert into public.notebooks (user_id) values ($1) returning id",
     [id],
@@ -375,6 +392,25 @@ describe("usage_daily: table and record_activity (PGlite)", () => {
       record(db, null, [0], "web"),
       (err) => err.code === "42501" && /needs a signed-in user/.test(err.message),
     );
+  });
+
+  it("returns 0 and writes nothing for a user awaiting approval, until approved", async () => {
+    const waiting = await addUser(db, {
+      email: "waiting@example.com",
+      createdAt: new Date(),
+      approved: false,
+    });
+    assert.equal(await record(db, waiting.id, [0, -1], "mobile-android"), 0);
+    assert.deepEqual(await offsetsOf(db, waiting.id), []);
+    // Bad arguments are still an error, approved or not.
+    await assert.rejects(
+      record(db, waiting.id, [0], "mobile"),
+      (err) => err.code === "22023" && err.message === "unknown client tag: mobile",
+    );
+
+    await db.query("update public.profiles set is_approved = true where id = $1", [waiting.id]);
+    assert.equal(await record(db, waiting.id, [0], "mobile-android"), 1);
+    assert.deepEqual(await offsetsOf(db, waiting.id), ["0:mobile-android"]);
   });
 
   it("rejects a client tag the check constraint doesn't list", async () => {
