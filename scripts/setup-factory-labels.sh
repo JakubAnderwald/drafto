@@ -11,7 +11,8 @@
 # docs/features/dark-factory.md and ADR-0026. The status:* set mirrors the
 # Project v2 Status field (the agent writes them as transition side-effects);
 # parity:* and migration-approved are operator gates; factory-pause and
-# factory-failure are kill-switch / failure-trap signals.
+# factory-failure are kill-switch / failure-trap signals; factory-oversize
+# flags a plan whose size estimate suggests a split (ADR-0083).
 
 set -euo pipefail
 
@@ -23,7 +24,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,17p' "$0"
+      sed -n '2,15p' "$0"
       exit 0
       ;;
     *)
@@ -60,6 +61,10 @@ LABELS=(
   "migration-approved|0052CC|Authorises merging this PR's migration SQL as it is when added; an SQL edit removes it."
   "hosted-config-applied|0052CC|Operator applied this PR's supabase/config.toml changes to dev and prod."
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."
+
+  # Planning signals — set and cleared by the factory from the plan's size
+  # estimate (ADR-0083).
+  "factory-oversize|E99695|The plan estimates 1,500+ added lines (FACTORY_PLAN_OVERSIZE_LINES); consider a split."
 
   # Parity overrides — set by the operator to disable the cross-platform
   # parity check for legitimate single-platform work.
