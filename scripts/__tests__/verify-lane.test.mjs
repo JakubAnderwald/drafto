@@ -34,6 +34,7 @@ import {
   UNATTENDED_ENV,
   assertSafeClaudeArgs,
   buildClaudeArgs,
+  checkGuard,
   CURL_CFG,
   SIGNED_OUT_CURL_CFG,
   buildPreviewCurlArgs,
@@ -1643,6 +1644,55 @@ describe("gaps", () => {
 });
 
 describe("transcripts", () => {
+  // #842 review: findTranscriptById moved to session-limit.mjs. It must stay
+  // synchronous and use the env and fs checkGuard hands it, or the guard check
+  // would miss a session that ran tools unguarded.
+  it("checkGuard finds the transcript through the moved lookup: one tool call, no pre record → not ok", async () => {
+    const runDir = path.join(tmp, "guard-run");
+    const worktree = path.join(repoRoot, "worktrees", "guard-wt");
+    mkdirSync(runDir, { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    const guard = writeGuardFiles({ runDir, worktree, repoRoot, home });
+    mkdirSync(path.join(runDir, "guard"), { recursive: true });
+    writeFileSync(
+      path.join(runDir, "guard", `${SESSION}.jsonl`),
+      JSON.stringify({ event: "session-start" }) + "\n",
+    );
+    const dir = path.join(home, ".claude", "projects", "-guard-wt");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "tool_use", name: "Bash" }] },
+      }) + "\n",
+    );
+    const calls = [];
+    const fsSpy = {
+      ...nodeFs,
+      readdirSync: (...a) => {
+        calls.push(a[0]);
+        return nodeFs.readdirSync(...a);
+      },
+    };
+    const r = await checkGuard(
+      { sessionId: SESSION, paths: { guardConfig: guard.configPath } },
+      { env: { HOME: home }, fs: fsSpy },
+    );
+    assert.deepEqual(r, {
+      sessionStart: true,
+      pre: 0,
+      denied: 0,
+      transcript: true,
+      toolUses: 1,
+      ok: false,
+    });
+    // The lookup used the env's HOME and the fs it was given.
+    assert.deepEqual(calls, [path.join(home, ".claude", "projects")]);
+    // And it is synchronous: a path, not a promise.
+    assert.equal(typeof findTranscriptById(SESSION, { env: { HOME: home } }), "string");
+  });
+
   it("finds a session's transcript by id and counts its tool calls", () => {
     const dir = path.join(home, ".claude", "projects", "-some-cwd");
     mkdirSync(dir, { recursive: true });

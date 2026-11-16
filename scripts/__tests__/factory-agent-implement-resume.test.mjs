@@ -54,9 +54,12 @@ describe("implement resume: wiring in the --implement block", () => {
   it("passes the session flag as plain strings and the 30 s kill grace on the implement call only", () => {
     assert.match(
       IMPLEMENT,
-      /CLAUDE_CALL_KILL_GRACE_SEC="\$FACTORY_IMPLEMENT_TERM_GRACE_SEC" \\\n\s*node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p "\$CLAUDE_INPUT" --dangerously-skip-permissions --effort "\$FACTORY_EFFORT" --no-chrome --strict-mcp-config \\\n\s*"\$IMPL_SESSION_FLAG" "\$IMPL_SESSION_ID" \)/,
+      /CLAUDE_CALL_KILL_GRACE_SEC="\$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \\\n\s*node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p "\$CLAUDE_INPUT" --dangerously-skip-permissions --effort "\$FACTORY_EFFORT" --no-chrome --strict-mcp-config \\\n\s*"\$IMPL_SESSION_FLAG" "\$IMPL_SESSION_ID" \)/,
     );
     assert.equal(script.split("CLAUDE_CALL_KILL_GRACE_SEC=").length - 1, 1);
+    // Claude's descendants die with it at the cap (#842 review); other calls
+    // keep signalling the direct child only.
+    assert.equal(script.split("CLAUDE_CALL_KILL_GROUP=1").length - 1, 1);
     assert.equal(script.split('"$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID"').length - 1, 1);
   });
 
@@ -329,12 +332,19 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
     { id: 5, body: "and faster" },
   ]);
   const PRIOR = JSON.stringify({ number: 9, state: "OPEN" });
+  const ISSUE = JSON.stringify({ number: 7, title: "feat: x", body: "### What\nA" });
 
   // Run 1 (fresh) decides, then times out and records itself; run 2 decides.
   function chain(
     dir,
     wt,
-    { wt2 = { reused: true, fastForwarded: false }, between = "", plan2 = PLAN, revs2 = REVS } = {},
+    {
+      wt2 = { reused: true, fastForwarded: false },
+      between = "",
+      plan2 = PLAN,
+      revs2 = REVS,
+      issue2 = ISSUE,
+    } = {},
   ) {
     const wt1 = JSON.stringify({
       path: wt,
@@ -346,17 +356,17 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
     return harness(
       dir,
       [
-        `implement_resume_decide 7 "${wt}" '${wt1}' '${PRIOR}' '${PLAN}' '${REVS}'`,
+        `implement_resume_decide 7 "${wt}" '${wt1}' '${PRIOR}' '${PLAN}' '${REVS}' '${ISSUE}'`,
         'echo "run1 $IMPL_RESUMED $IMPL_SESSION_FLAG $IMPL_SESSION_ID $IMPL_TASK_KEY"',
         `implement_mark_resumable 7 "${wt}" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" "${pre}" 1 "timed out"`,
         'mkdir -p "$HOME/.claude/projects/-wt"',
         'printf "{}\\n" >"$HOME/.claude/projects/-wt/$IMPL_SESSION_ID.jsonl"',
         "FIRST=$IMPL_SESSION_ID",
         between,
-        `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${plan2}' '${revs2}'`,
+        `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${plan2}' '${revs2}' '${issue2}'`,
         'echo "run2 $IMPL_RESUMED $IMPL_SESSION_FLAG $IMPL_SESSION_ID $FIRST $IMPL_RESUME_PRE_HEAD"',
         // A third start finds the record already spent.
-        `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${PLAN}' '${REVS}'`,
+        `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${PLAN}' '${REVS}' '${ISSUE}'`,
         'echo "run3 $IMPL_RESUMED $IMPL_SESSION_FLAG"',
       ].join("\n"),
     );
@@ -372,7 +382,10 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       assert.equal(resumed1, "0");
       assert.equal(flag1, "--session-id");
       assert.match(sid1, /^[0-9a-f-]{36}$/);
-      assert.match(key1, /^plan:111@[0-9a-f]{16}\|rev:5@[0-9a-f]{16},40@[0-9a-f]{16}$/);
+      assert.match(
+        key1,
+        /^plan:111@[0-9a-f]{16}\|rev:5@[0-9a-f]{16},40@[0-9a-f]{16}\|issue:[0-9a-f]{16}$/,
+      );
       const [, resumed2, flag2, sid2, first, preHead] = run2.split(" ");
       assert.equal(resumed2, "1");
       assert.equal(flag2, "--resume");
@@ -422,6 +435,18 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       const wt = makeWorktree(dir);
       const edited = JSON.stringify({ id: 111, body: "<!-- drafto-factory-plan -->\nNow also X." });
       const r = chain(dir, wt, { plan2: edited });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      assert.match(r.stdout, /^run2 0 --session-id /m);
+      assert.match(r.log, /no resume: task-changed/);
+    });
+  });
+
+  // #842 review: the issue body is the spec; a fresh bundle reads it again.
+  it("runs fresh when the issue body was edited since the stop", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const edited = JSON.stringify({ number: 7, title: "feat: x", body: "### What\nB" });
+      const r = chain(dir, wt, { issue2: edited });
       assert.equal(r.status, 0, r.stderr + r.log);
       assert.match(r.stdout, /^run2 0 --session-id /m);
       assert.match(r.log, /no resume: task-changed/);
@@ -617,6 +642,7 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       'implement_park_blocked() { echo "blocked: $4" >>"$CALLS"; }',
       'implement_mark_resumable() { echo "mark-resumable $5 $6 $7" >>"$CALLS"; }',
       "worktree_untouched() { return 0; }",
+      'implement_head_landed() { echo "landed? $3" >>"$CALLS"; [[ "${FAKE_LANDED:-1}" == "1" ]]; }',
       'gh() { echo "gh $1 $2" >>"$CALLS"; }',
       'node() { echo "node $2 $3 $4" >>"$CALLS"; case "$*" in *factory:get-issue*) printf \'{"intestCommentSha":"%s"}\' "$FAKE_SHOWN" ;; esac; }',
       "for _once in 1; do",
@@ -654,6 +680,28 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       assert.match(r.calls, new RegExp(`^claim head=${b1} since=${b0}$`, "m"));
       assert.doesNotMatch(r.calls, /bump-attempts/);
       assert.match(r.calls, /factory:reset-attempts/);
+    });
+  });
+
+  it("implemented whose worktree commits never reached the PR: not advanced, feedback unconsumed", () => {
+    withDir((dir) => {
+      const { wt, b0, b1, b2 } = repo(dir);
+      git(wt, "checkout", "-q", b2);
+      const r = run(dir, {
+        ACTION: "implemented",
+        WT_PATH: wt,
+        PRE_HEAD_OID: b1,
+        CHAIN_PRE_HEAD_OID: b0,
+        FAKE_POST_HEAD: b1,
+        FAKE_LANDED: "0",
+      });
+      assert.equal(r.status, 0, r.stderr + r.log);
+      // The chain moved the PR (B0 → B1), so only the landed check stops it.
+      assert.doesNotMatch(r.log, /head is unchanged/);
+      assert.match(r.calls, new RegExp(`^landed\\? ${b1}$`, "m"));
+      assert.match(r.log, /the worktree's commits aren't all on PR #9/);
+      assert.match(r.calls, /factory:bump-attempts/);
+      assert.doesNotMatch(r.calls, /transition In Review|lastFeedbackAt|parity/);
     });
   });
 
@@ -767,6 +815,119 @@ describe("result handler on a resumed run whose predecessor already pushed (real
         CHAIN_PRE_HEAD_OID: b0,
       });
       assert.match(fresh.calls, new RegExp(`^mark-resumable ${b0} 1 action=incomplete$`, "m"));
+    });
+  });
+});
+
+// #842 review: action=implemented only advances when the worktree's commits
+// are on the PR. The real helper, against a bare origin.
+describe("implement_head_landed (real helper, bare origin)", () => {
+  function setup(dir) {
+    const origin = join(dir, "origin.git");
+    const wt = join(dir, "wt");
+    mkdirSync(wt);
+    spawnSync("git", ["init", "-q", "--bare", origin]);
+    git(wt, "init", "-q");
+    git(wt, "config", "user.name", "t");
+    git(wt, "config", "user.email", "t@example.com");
+    git(wt, "config", "commit.gpgsign", "false");
+    git(wt, "remote", "add", "origin", origin);
+    git(wt, "commit", "-q", "--allow-empty", "-m", "B0");
+    const b0 = git(wt, "rev-parse", "HEAD");
+    git(wt, "commit", "-q", "--allow-empty", "-m", "B1");
+    const b1 = git(wt, "rev-parse", "HEAD");
+    git(wt, "push", "-q", "origin", "HEAD:refs/heads/factory/issue-7");
+    return { wt, b0, b1 };
+  }
+
+  const check = (dir, wt, head) =>
+    harness(
+      dir,
+      [
+        extract("implement_head_landed"),
+        `if implement_head_landed "${wt}" 7 "${head}"; then echo landed; else echo missing; fi`,
+      ].join("\n"),
+    );
+
+  it("lands when the worktree HEAD is the PR head, or behind it", () => {
+    withDir((dir) => {
+      const { wt, b0, b1 } = setup(dir);
+      assert.equal(check(dir, wt, b1).stdout.trim(), "landed");
+      git(wt, "checkout", "-q", b0);
+      assert.equal(check(dir, wt, b1).stdout.trim(), "landed");
+    });
+  });
+
+  it("is missing when the worktree has a commit the PR lacks, or the PR head is unknown", () => {
+    withDir((dir) => {
+      const { wt, b1 } = setup(dir);
+      git(wt, "commit", "-q", "--allow-empty", "-m", "wip");
+      assert.equal(check(dir, wt, b1).stdout.trim(), "missing");
+      assert.equal(check(dir, wt, "").stdout.trim(), "missing");
+    });
+  });
+
+  it("fetches a PR head it doesn't have yet before judging", () => {
+    withDir((dir) => {
+      const { wt, b1 } = setup(dir);
+      // Someone else pushes on top of B1; the worktree never saw that commit.
+      const other = join(dir, "other");
+      spawnSync("git", ["clone", "-q", join(dir, "origin.git"), other]);
+      git(other, "config", "user.name", "t");
+      git(other, "config", "user.email", "t@example.com");
+      git(other, "checkout", "-q", "factory/issue-7");
+      git(other, "commit", "-q", "--allow-empty", "-m", "B2");
+      const b2 = git(other, "rev-parse", "HEAD");
+      git(other, "push", "-q", "origin", "HEAD:refs/heads/factory/issue-7");
+      git(wt, "checkout", "-q", b1);
+      assert.equal(check(dir, wt, b2).stdout.trim(), "landed");
+    });
+  });
+});
+
+// #842 review: what the factory hands task-key is the raw plan comment that
+// extract_plan_comment picks from fetch_issue_comments' output ({id, body}),
+// not the bundle's approvedPlan. Through that real path, an edit to the plan's
+// body changes the key.
+describe("task key through the caller's real plan comment shape", () => {
+  const comments = (planBody) =>
+    JSON.stringify([
+      {
+        id: 111,
+        user: { login: "o" },
+        body: `<!-- drafto-factory-plan -->\n${planBody}`,
+        createdAt: "2026-11-16T10:00:00Z",
+        authorAssociation: "OWNER",
+      },
+      {
+        id: 112,
+        user: { login: "x" },
+        body: "a comment from someone else",
+        createdAt: "2026-11-16T10:05:00Z",
+        authorAssociation: "NONE",
+      },
+    ]);
+  const key = (dir, planBody) =>
+    harness(
+      dir,
+      [
+        extract("plan_comment_jq"),
+        extract("extract_plan_comment"),
+        `plan=$(extract_plan_comment '${comments(planBody)}')`,
+        'echo "$plan" | jq -r .id',
+        `node "$SCRIPT_DIR/lib/implement-resume.mjs" task-key --plan-comment "$plan" --revision-comments '[]'`,
+      ].join("\n"),
+    );
+
+  it("keys on the plan comment's id and body, and changes when the body is edited", () => {
+    withDir((dir) => {
+      const a = key(dir, "## Approach\nDo A.");
+      assert.equal(a.status, 0, a.stderr + a.log);
+      const [id, k] = a.stdout.trim().split("\n");
+      assert.equal(id, "111");
+      assert.match(k, /^plan:111@[0-9a-f]{16}\|rev:\|issue:/);
+      const b = key(dir, "## Approach\nDo B.");
+      assert.notEqual(b.stdout.trim().split("\n")[1], k);
     });
   });
 });

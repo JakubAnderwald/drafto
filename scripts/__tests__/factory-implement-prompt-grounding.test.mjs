@@ -433,6 +433,6 @@ describe("resume prompt (ADR-0084)", () => {
       rflat,
       /If this run runs out of time too, bash will not resume this session again/,
     );
-    assert.match(rflat, /check that `git rev-parse HEAD` equals the PR's `headRefOid`/);
+    assert.match(rflat, /check that `git log -1 --format=%H` equals the PR's `headRefOid`/);
   });
 });

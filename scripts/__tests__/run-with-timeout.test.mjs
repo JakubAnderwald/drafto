@@ -207,3 +207,92 @@ describe("resolveKillGraceMs (pure)", () => {
     }
   });
 });
+
+// #842 review: at the cap, claude's descendants (its Bash tasks, background
+// agents) must not keep writing to the worktree the next run resumes in. Real
+// processes: a child that ignores SIGTERM, with a grandchild that also ignores
+// it and writes a marker after a delay, so only SIGKILL stops them.
+describe("forced SIGKILL and the child's descendants (real processes)", () => {
+  const SCRIPT = 'trap "" TERM; ( trap "" TERM; sleep 1.2; echo late > "$MARKER" ) & sleep 30';
+
+  async function runCase({ killGroup }) {
+    const { mkdtempSync, existsSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = mkdtempSync(path.join(tmpdir(), "rwt-group-"));
+    const marker = path.join(dir, "marker");
+    const saved = process.env.MARKER;
+    process.env.MARKER = marker;
+    try {
+      const result = await lib.runWithTimeout({
+        command: "bash",
+        args: ["-c", SCRIPT],
+        timeoutMs: 200,
+        killGraceMs: 200,
+        label: "test",
+        killGroup,
+      });
+      await new Promise((r) => setTimeout(r, 1800));
+      return { result, marker: existsSync(marker) };
+    } finally {
+      if (saved === undefined) delete process.env.MARKER;
+      else process.env.MARKER = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("by default signals the direct child only: a descendant outlives the cap", async () => {
+    const { result, marker } = await runCase({ killGroup: false });
+    assert.equal(result.exitCode, 124);
+    assert.equal(marker, true, "the default for every other caller is unchanged");
+  });
+
+  it("in process-group mode kills the whole group: the descendant never writes", async () => {
+    const { result, marker } = await runCase({ killGroup: true });
+    assert.equal(result.exitCode, 124);
+    assert.equal(marker, false);
+  });
+
+  it("in group mode passes a SIGTERM sent to the wrapper on to the group", async () => {
+    const { spawn } = await import("node:child_process");
+    const { mkdtempSync, existsSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const cli = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "lib",
+      "run-with-timeout.mjs",
+    );
+    const dir = mkdtempSync(path.join(tmpdir(), "rwt-forward-"));
+    const marker = path.join(dir, "marker");
+    try {
+      // The grandchild doesn't ignore TERM here: forwarding is enough.
+      const wrapper = spawn(
+        process.execPath,
+        [cli, "60", "bash", "-c", '( sleep 1.2; echo late > "$MARKER" ) & sleep 30'],
+        { env: { ...process.env, MARKER: marker, CLAUDE_CALL_KILL_GROUP: "1" }, stdio: "ignore" },
+      );
+      await new Promise((r) => setTimeout(r, 300));
+      wrapper.kill("SIGTERM");
+      const code = await new Promise((r) => wrapper.once("exit", (c) => r(c)));
+      await new Promise((r) => setTimeout(r, 1500));
+      assert.equal(code, 143, "the child's death by SIGTERM, as a shell reports it");
+      assert.equal(existsSync(marker), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveKillGroup (pure)", () => {
+  it("is on only for CLAUDE_CALL_KILL_GROUP=1", () => {
+    assert.equal(lib.resolveKillGroup({}), false);
+    assert.equal(lib.resolveKillGroup({ CLAUDE_CALL_KILL_GROUP: "1" }), true);
+    assert.equal(lib.resolveKillGroup({ CLAUDE_CALL_KILL_GROUP: " 1 " }), true);
+    for (const v of ["0", "", "true", "yes"]) {
+      assert.equal(lib.resolveKillGroup({ CLAUDE_CALL_KILL_GROUP: v }), false, v);
+    }
+  });
+});

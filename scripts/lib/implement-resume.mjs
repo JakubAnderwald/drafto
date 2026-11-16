@@ -16,8 +16,10 @@
 //
 // CLI (all output on stdout; errors as one JSON line on stderr, exit 1):
 //   task-key --plan-comment <comment JSON> [--revision-comments <JSON array>]
-//       The task key, bare: "plan:<id>@<digest>|rev:<id>@<digest>,…", each
-//       digest a hash of that comment's body, so an edit changes the key.
+//            [--issue-record <issue JSON>]
+//       The task key, bare: "plan:<id>@<digest>|rev:<id>@<digest>,…|issue:<digest>",
+//       each digest a hash of a body (the issue's is the spec), so an edit to
+//       any of them changes the key.
 //   worktree-digest --path <worktree>
 //       A hash of the worktree's uncommitted state (status, diff against HEAD,
 //       untracked files' contents), bare. Exit 1 when git can't say.
@@ -71,26 +73,38 @@ export function bodyDigest(body) {
     .slice(0, 16);
 }
 
+// The factory passes raw GitHub comments ({id, body}: fetch_issue_comments,
+// extract_plan_comment); the bundle's approvedPlan spells them commentId and
+// bodyEnveloped. Either shape maps to the same id and body.
 function commentId(c) {
-  const id = String(c?.id ?? "").trim();
-  return id === "null" ? "" : id;
+  const id = String(c?.id ?? c?.commentId ?? "").trim();
+  return id === "null" || id === "undefined" ? "" : id;
 }
 
-// "plan:<id>@<digest>|rev:<id>@<digest>,…" (revisions sorted by id, one entry
-// per id). It names what the run was asked to do: a resumed session carries the
-// plan and the feedback it was started with, so a new or edited plan comment
-// (an in-place edit keeps the id) or a new or edited feedback comment must
-// start a fresh one. "" when there is no plan id.
-export function taskKey({ plan = null, revisions = [] } = {}) {
+function commentBody(c) {
+  return c?.body ?? c?.bodyEnveloped ?? "";
+}
+
+// "plan:<id>@<digest>|rev:<id>@<digest>,…|issue:<digest>" (revisions sorted by
+// id, one entry per id). It names what the run was asked to do: a resumed
+// session carries the plan, the feedback and the issue body (the spec) it was
+// started with, while a fresh run's bundle reads them again. So a new or edited
+// plan comment (an in-place edit keeps the id), a new or edited feedback
+// comment, or an edited issue body must start a fresh session. "" when there
+// is no plan id.
+export function taskKey({ plan = null, revisions = [], issue = null } = {}) {
   const planId = commentId(plan);
   if (planId === "") return "";
   const byId = new Map();
   for (const c of Array.isArray(revisions) ? revisions : []) {
     const id = commentId(c);
-    if (id !== "") byId.set(id, bodyDigest(c.body));
+    if (id !== "") byId.set(id, bodyDigest(commentBody(c)));
   }
   const revs = [...byId.keys()].sort(byIdString).map((id) => `${id}@${byId.get(id)}`);
-  return `plan:${planId}@${bodyDigest(plan.body)}|rev:${revs.join(",")}`;
+  return (
+    `plan:${planId}@${bodyDigest(commentBody(plan))}|rev:${revs.join(",")}` +
+    `|issue:${bodyDigest(issue?.body)}`
+  );
 }
 
 function gitOut(cwd, args, spawn) {
@@ -103,7 +117,8 @@ function gitOut(cwd, args, spawn) {
 }
 
 // A hash of everything uncommitted in <wtPath>: `git status` (staged,
-// unstaged, untracked paths), the diff of tracked files against HEAD, and the
+// unstaged, untracked paths), the diff of tracked files against HEAD, the
+// staged diff (the index can change while the files on disk don't), and the
 // contents of untracked files that aren't ignored. A stopped run's edits that
 // never reached a commit are part of what its session remembers, so a change
 // to them between the stop and the next start must start a fresh session.
@@ -115,10 +130,16 @@ export function worktreeDigest(wtPath, { spawn = spawnSync } = {}) {
     ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv"],
     spawn,
   );
+  const staged = gitOut(
+    wtPath,
+    ["diff", "--cached", "--binary", "--no-color", "--no-ext-diff", "--no-textconv"],
+    spawn,
+  );
   const untracked = gitOut(wtPath, ["ls-files", "--others", "--exclude-standard", "-z"], spawn);
-  if (status == null || diff == null || untracked == null) return null;
+  if (status == null || diff == null || staged == null || untracked == null) return null;
   const hash = createHash("sha256");
-  hash.update("status\0").update(status).update("\0diff\0").update(diff).update("\0untracked\0");
+  hash.update("status\0").update(status).update("\0diff\0").update(diff);
+  hash.update("\0staged\0").update(staged).update("\0untracked\0");
   for (const file of untracked.toString("utf8").split("\0").filter(Boolean).sort()) {
     const blob = gitOut(wtPath, ["hash-object", "--", file], spawn);
     if (blob == null) return null;
@@ -234,6 +255,7 @@ export function main(argv, { fs = nodeFs } = {}) {
       return taskKey({
         plan: parseJsonFlag(flags["plan-comment"], "plan-comment"),
         revisions: parseJsonFlag(flags["revision-comments"], "revision-comments") ?? [],
+        issue: parseJsonFlag(flags["issue-record"], "issue-record"),
       });
     case "worktree-digest": {
       if (!flags.path) throw new Error("worktree-digest requires --path <worktree>");

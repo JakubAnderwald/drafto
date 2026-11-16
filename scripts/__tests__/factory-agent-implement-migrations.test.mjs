@@ -354,7 +354,12 @@ describe("factory-agent.sh — DRAFTO_UNATTENDED reaches its claude runs", () =>
 
   it("isn't stripped on the way: run-with-timeout spawns claude with the inherited env", () => {
     const runner = readFileSync(resolve(SCRIPTS, "lib", "run-with-timeout.mjs"), "utf8");
-    assert.match(runner, /spawn\(command, args, \{ stdio: "inherit" \}\)/);
+    // Process-group mode (ADR-0084) only adds `detached`; no env is passed.
+    assert.match(
+      runner,
+      /spawn\(\s*command,\s*args,\s*killGroup \? \{ stdio: "inherit", detached: true \} : \{ stdio: "inherit" \},?\s*\)/,
+    );
+    assert.doesNotMatch(runner, /\benv:/);
     assert.doesNotMatch(script, /env -i[^\n]*run-claude/);
   });
 });

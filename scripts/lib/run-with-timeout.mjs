@@ -21,6 +21,13 @@
 //     (FACTORY_IMPLEMENT_TERM_GRACE_SEC), so it can write the interrupted tool
 //     call to its transcript before the SIGKILL and the session can be resumed
 //     (ADR-0084).
+//   - Process-group mode (killGroup, or CLAUDE_CALL_KILL_GROUP=1 in the env):
+//     the child leads its own process group, and SIGTERM, SIGKILL and any
+//     SIGTERM/SIGINT/SIGHUP this wrapper receives go to the whole group. A
+//     timed-out child's descendants (claude's Bash tasks, its background
+//     agents) are killed with it, so none can keep writing to the worktree
+//     after the next run starts there. --implement turns it on; every other
+//     caller keeps signalling the direct child only.
 //   - spawn() failure (e.g. ENOENT): resolve exit code 127.
 //
 // stdio is `inherit`ed so the caller's existing redirects keep working.
@@ -44,6 +51,11 @@ export function resolveKillGraceMs(env = process.env) {
   return Number.parseInt(String(raw).trim(), 10) * 1000;
 }
 
+// Pure: process-group mode from CLAUDE_CALL_KILL_GROUP ("1" only).
+export function resolveKillGroup(env = process.env) {
+  return String(env.CLAUDE_CALL_KILL_GROUP ?? "").trim() === "1";
+}
+
 // Core: spawn `command` with `args`, kill it after `timeoutMs`, return a
 // promise resolving to {exitCode, timedOut, signal}. exitCode is the raw child
 // exit code on normal exit; on timeout it's TIMEOUT_EXIT_CODE (124). Tests
@@ -55,11 +67,35 @@ export function runWithTimeout({
   killGraceMs = resolveKillGraceMs(),
   label = "run-with-timeout",
   spawn = nodeSpawn,
+  killGroup = resolveKillGroup(),
+  signalProcess = process,
 } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: "inherit" });
+    const child = spawn(
+      command,
+      args,
+      killGroup ? { stdio: "inherit", detached: true } : { stdio: "inherit" },
+    );
     let timedOut = false;
     let killTimer = null;
+    // Group mode signals -pid (every process in the child's group); otherwise
+    // the child alone, as before.
+    const signal = (sig) => {
+      try {
+        if (killGroup && child.pid) signalProcess.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        /* already gone */
+      }
+    };
+    // A detached group no longer gets the signals sent to ours (launchd
+    // stopping the job, a Ctrl-C): pass them on.
+    const forwarded = ["SIGTERM", "SIGINT", "SIGHUP"];
+    const forward = (sig) => signal(sig);
+    if (killGroup) for (const sig of forwarded) signalProcess.on?.(sig, forward);
+    const unforward = () => {
+      if (killGroup) for (const sig of forwarded) signalProcess.off?.(sig, forward);
+    };
 
     const fireTimeout = () => {
       timedOut = true;
@@ -70,20 +106,12 @@ export function runWithTimeout({
       process.stderr.write(
         `${label}: wall-time cap reached after ${timeoutMs}ms; sending SIGTERM\n`,
       );
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* child already exited */
-      }
+      signal("SIGTERM");
       killTimer = setTimeout(() => {
         process.stderr.write(
           `${label}: child ignored SIGTERM for ${killGraceMs}ms; escalating to SIGKILL\n`,
         );
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* child already exited */
-        }
+        signal("SIGKILL");
       }, killGraceMs);
       killTimer.unref?.();
     };
@@ -91,28 +119,33 @@ export function runWithTimeout({
     const wallTimer = setTimeout(fireTimeout, timeoutMs);
     wallTimer.unref?.();
 
-    child.once("exit", (code, signal) => {
+    child.once("exit", (code, exitSignal) => {
       clearTimeout(wallTimer);
       if (killTimer) clearTimeout(killTimer);
+      unforward();
       if (timedOut) {
-        resolve({ exitCode: TIMEOUT_EXIT_CODE, timedOut: true, signal });
+        // The child is gone; in group mode take whatever it left running
+        // (descendants that ignored SIGTERM) down with it.
+        if (killGroup) signal("SIGKILL");
+        resolve({ exitCode: TIMEOUT_EXIT_CODE, timedOut: true, signal: exitSignal });
         return;
       }
       // Normal exit: propagate the child's exit code. If killed by an external
       // signal (not us), surface 128+signum like a POSIX shell.
       if (code != null) {
-        resolve({ exitCode: code, timedOut: false, signal });
-      } else if (signal) {
-        const signum = osConstants.signals[signal] ?? 0;
-        resolve({ exitCode: 128 + signum, timedOut: false, signal });
+        resolve({ exitCode: code, timedOut: false, signal: exitSignal });
+      } else if (exitSignal) {
+        const signum = osConstants.signals[exitSignal] ?? 0;
+        resolve({ exitCode: 128 + signum, timedOut: false, signal: exitSignal });
       } else {
-        resolve({ exitCode: 1, timedOut: false, signal });
+        resolve({ exitCode: 1, timedOut: false, signal: exitSignal });
       }
     });
 
     child.once("error", (err) => {
       clearTimeout(wallTimer);
       if (killTimer) clearTimeout(killTimer);
+      unforward();
       // spawn() failed (e.g. ENOENT — command not on PATH). Surface a distinct
       // exit code so the caller doesn't confuse it with a child-side error or a
       // timeout.

@@ -31,7 +31,7 @@ Pick up where you stopped:
    revision run, the push and the replies). Push any `chore(wip)` commits with
    the rest.
 4. If the earlier run already pushed everything and opened the PR, check that
-   `git rev-parse HEAD` equals the PR's `headRefOid` and report it as
+   `git log -1 --format=%H` equals the PR's `headRefOid` and report it as
    `action=implemented` with the PR's URL.
 5. End with the directive line, exactly as before:
 

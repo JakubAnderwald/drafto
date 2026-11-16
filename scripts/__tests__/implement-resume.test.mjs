@@ -77,7 +77,7 @@ describe("taskKey", () => {
         { id: 40, body: "b" },
       ],
     });
-    assert.equal(key, `plan:111@${d(plan.body)}|rev:5@${d("a")},40@${d("b")}`);
+    assert.equal(key, `plan:111@${d(plan.body)}|rev:5@${d("a")},40@${d("b")}|issue:${d("")}`);
     assert.match(d("x"), /^[0-9a-f]{16}$/);
   });
 
@@ -89,7 +89,7 @@ describe("taskKey", () => {
         { id: "999999999", body: "" },
       ],
     });
-    assert.match(key, /\|rev:999999999@[0-9a-f]{16},3000000001@[0-9a-f]{16}$/);
+    assert.match(key, /\|rev:999999999@[0-9a-f]{16},3000000001@[0-9a-f]{16}\|issue:/);
   });
 
   // An approved plan edited in place keeps its comment id (#842 review).
@@ -114,8 +114,36 @@ describe("taskKey", () => {
   });
 
   it("has an empty revision list on a first implementation", () => {
-    assert.equal(taskKey({ plan }), `plan:111@${d(plan.body)}|rev:`);
-    assert.equal(taskKey({ plan, revisions: null }), `plan:111@${d(plan.body)}|rev:`);
+    const none = `plan:111@${d(plan.body)}|rev:|issue:${d("")}`;
+    assert.equal(taskKey({ plan }), none);
+    assert.equal(taskKey({ plan, revisions: null }), none);
+  });
+
+  // #842 review: the issue body is the spec, and every fresh bundle reads it
+  // again; a resumed session holds the one it started with.
+  it("changes when the issue body (the spec) is edited", () => {
+    const issue = { number: 7, title: "feat: x", body: "### What\nA" };
+    const base = taskKey({ plan, issue });
+    assert.ok(base.endsWith(`|issue:${d(issue.body)}`));
+    assert.notEqual(taskKey({ plan, issue: { ...issue, body: "### What\nB" } }), base);
+    // The title isn't part of the spec bash bundles from the body.
+    assert.equal(taskKey({ plan, issue: { ...issue, title: "feat: y" } }), base);
+  });
+
+  // #842 review: the factory passes raw GitHub comments ({id, body}); the
+  // bundle's approvedPlan spells them commentId / bodyEnveloped.
+  it("reads the raw comment shape and the bundle's approvedPlan shape alike", () => {
+    const raw = { id: 111, body: "plan text", user: { login: "o" }, authorAssociation: "OWNER" };
+    const bundled = { commentId: "111", bodyEnveloped: "plan text", url: "u" };
+    assert.equal(taskKey({ plan: bundled }), taskKey({ plan: raw }));
+    assert.notEqual(
+      taskKey({ plan: { ...raw, body: "plan text, edited" } }),
+      taskKey({ plan: raw }),
+    );
+    assert.equal(
+      taskKey({ plan: raw, revisions: [{ commentId: 5, bodyEnveloped: "a" }] }),
+      taskKey({ plan: raw, revisions: [{ id: 5, body: "a" }] }),
+    );
   });
 
   it("is empty without a plan id", () => {
@@ -167,6 +195,35 @@ describe("worktreeDigest", () => {
       assert.notEqual(worktreeDigest(dir), untracked);
       spawnSync("git", ["-C", dir, "add", "new.txt"]);
       assert.notEqual(worktreeDigest(dir), untracked, "staging changes the status");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #842 review: the index can change while the files on disk don't.
+  it("moves when only the staged content changes", () => {
+    const dir = gitRepo();
+    try {
+      writeFileSync(path.join(dir, "a.txt"), "v2\n");
+      spawnSync("git", ["-C", dir, "add", "a.txt"]);
+      writeFileSync(path.join(dir, "a.txt"), "v3\n");
+      const before = worktreeDigest(dir);
+      // Stage v3, then put the same v3 back on disk: the working file and the
+      // status letters (MM → M_) differ only through the index.
+      spawnSync("git", ["-C", dir, "add", "a.txt"]);
+      const staged = worktreeDigest(dir);
+      assert.notEqual(staged, before);
+      // Unstage to v2 again by hand: same file on disk, different index.
+      writeFileSync(path.join(dir, "a.txt"), "v2\n");
+      spawnSync("git", ["-C", dir, "add", "a.txt"]);
+      writeFileSync(path.join(dir, "a.txt"), "v3\n");
+      assert.equal(worktreeDigest(dir), before, "same index and files, same digest");
+      // Index v4, disk still v3: same status (MM), same working file, same
+      // diff against HEAD. Only the staged diff tells this apart.
+      writeFileSync(path.join(dir, "a.txt"), "v4\n");
+      spawnSync("git", ["-C", dir, "add", "a.txt"]);
+      writeFileSync(path.join(dir, "a.txt"), "v3\n");
+      assert.notEqual(worktreeDigest(dir), before, "a different index, same files on disk");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -369,10 +426,18 @@ describe("CLI", () => {
     assert.equal(r.status, 0, r.stderr);
     assert.equal(
       r.stdout,
-      `plan:111@${bodyDigest("plan")}|rev:5@${bodyDigest("a")},40@${bodyDigest("b")}`,
+      `plan:111@${bodyDigest("plan")}|rev:5@${bodyDigest("a")},40@${bodyDigest("b")}|issue:${bodyDigest("")}`,
     );
     const none = run(["task-key", "--plan-comment", JSON.stringify({ id: 1, body: "" })]);
-    assert.equal(none.stdout, `plan:1@${bodyDigest("")}|rev:`);
+    assert.equal(none.stdout, `plan:1@${bodyDigest("")}|rev:|issue:${bodyDigest("")}`);
+    const issue = run([
+      "task-key",
+      "--plan-comment",
+      JSON.stringify({ id: 1, body: "" }),
+      "--issue-record",
+      JSON.stringify({ number: 7, body: "spec" }),
+    ]);
+    assert.equal(issue.stdout, `plan:1@${bodyDigest("")}|rev:|issue:${bodyDigest("spec")}`);
   });
 
   it("worktree-digest prints the digest, and fails outside git", () => {

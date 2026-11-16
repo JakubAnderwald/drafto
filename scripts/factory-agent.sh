@@ -2244,12 +2244,13 @@ implement_runtime_facts() {
 }
 
 # implement_resume_decide <issue> <worktree path> <worktree-cli add JSON>
-#   <prior-pr JSON> <plan comment JSON> <revision comments JSON> — at an
+#   <prior-pr JSON> <plan comment JSON> <revision comments JSON>
+#   [<issue record JSON>] — at an
 # implement start, decide whether this run resumes the session a stopped run
 # recorded (implement-resume.mjs decide), and clear that record whatever the
 # answer, so a timeout chain resumes at most once. Sets:
-#   IMPL_TASK_KEY       "plan:<id>@<digest>|rev:<id>@<digest>,…", for
-#                       implement_mark_resumable
+#   IMPL_TASK_KEY       "plan:<id>@<digest>|rev:<id>@<digest>,…|issue:<digest>",
+#                       for implement_mark_resumable
 #   IMPL_RESUMED        1 when resuming, else 0
 #   IMPL_SESSION_FLAG   --resume or --session-id
 #   IMPL_SESSION_ID     the recorded session, or a new uuid
@@ -2259,7 +2260,7 @@ implement_runtime_facts() {
 # fresh. Returns 1 only when no session id could be made at all.
 implement_resume_decide() {
   local issue_num="$1" wt_path="$2" wt_json="$3" prior_pr="$4" plan_json="$5" revisions="$6"
-  local record head tree pr_state decision resume_sid="" reason detail
+  local issue_json="${7:-}" record head tree pr_state decision resume_sid="" reason detail
   IMPL_RESUMED=0
   IMPL_SESSION_FLAG="--session-id"
   IMPL_RESUME_PRE_HEAD=""
@@ -2271,11 +2272,13 @@ implement_resume_decide() {
     log "ERROR: #$issue_num: could not make a claude session id (uuidgen and node both failed)"
     return 1
   fi
-  # The key hashes the plan's and each feedback comment's body: an edit in
-  # place keeps a comment's id but must still start a fresh session.
+  # The key hashes the plan's, each feedback comment's and the issue's body
+  # (the spec, which every fresh bundle reads again): an edit in place keeps an
+  # id but must still start a fresh session. The comments are the raw GitHub
+  # ones ({id, body}), as fetch_issue_comments gives them.
   IMPL_TASK_KEY=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" task-key \
     --plan-comment "${plan_json:-null}" --revision-comments "${revisions:-[]}" \
-    2>>"$LOG_FILE") || IMPL_TASK_KEY=""
+    --issue-record "${issue_json:-null}" 2>>"$LOG_FILE") || IMPL_TASK_KEY=""
   record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE") || record=""
   head=$(git -C "$wt_path" rev-parse HEAD 2>>"$LOG_FILE") || head=""
@@ -2333,6 +2336,21 @@ implement_mark_resumable() {
   else
     log "WARNING: #$issue_num: could not record session $session as resumable ($why); the next attempt runs fresh"
   fi
+}
+
+# implement_head_landed <worktree path> <issue> <PR head sha> — exit 0 when the
+# worktree's HEAD is the PR head or an ancestor of it: everything the run
+# committed reached the PR. The PR head is fetched first (bounded), so an
+# ancestry check never fails for want of the object. Exit 1 when it isn't, or
+# when anything can't be read: the caller then doesn't advance the card.
+implement_head_landed() {
+  local wt="$1" issue="$2" pr_head="$3" local_head
+  [[ -n "$pr_head" ]] || return 1
+  local_head=$(git -C "$wt" rev-parse HEAD 2>>"$LOG_FILE") || return 1
+  [[ "$local_head" == "$pr_head" ]] && return 0
+  node "$SCRIPT_DIR/lib/run-with-timeout.mjs" 120 git -C "$wt" fetch -q origin \
+    "+refs/heads/factory/issue-$issue:refs/remotes/origin/factory/issue-$issue" >>"$LOG_FILE" 2>&1 || return 1
+  git -C "$wt" merge-base --is-ancestor "$local_head" "$pr_head" 2>>"$LOG_FILE"
 }
 
 # implement_resume_never_started <session> <since-iso> <start-epoch> — exit 0
@@ -8438,7 +8456,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # wall cap (or at action=incomplete, or at the session limit) when nothing
     # it relied on changed, and clear that record either way.
     if ! implement_resume_decide "$ISSUE_NUM" "$WT_PATH" "$WT_JSON" "$PRIOR_PR" \
-        "$PLAN_COMMENT_JSON" "$REVISION_COMMENTS"; then
+        "$PLAN_COMMENT_JSON" "$REVISION_COMMENTS" "$ISSUE_RECORD"; then
       log "ERROR: #$ISSUE_NUM: no claude session id; keeping slot $SLOT for retry"
       continue
     fi
@@ -8480,7 +8498,7 @@ Drag it back to **Ready** so the factory can plan it first.
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" \
+    ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \
         node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config \
         "$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID" ) >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
@@ -8602,6 +8620,18 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         # Parity / phase post-check. implement_parity_gate parks a violation in
         # Blocked (slot released, worktree removed) and skips it when
         # `gh pr diff` fails; the revision noop on an unshown head runs the same.
+        # The worktree's own commits must be on the PR too: a resumed run that
+        # committed more after its predecessor pushed, then reported success
+        # without pushing, moved the PR from the chain's baseline all the same.
+        # Checked against the PR head now, never the agent's word (#842 review).
+        if [[ -z "$CHAIN_PRE_HEAD_OID" ]]; then
+          POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
+        fi
+        if ! implement_head_landed "$WT_PATH" "$ISSUE_NUM" "$POST_HEAD_OID"; then
+          log "ERROR: #$ISSUE_NUM claimed action=implemented but the worktree's commits aren't all on PR #$PR_NUM (PR head ${POST_HEAD_OID:0:12}); not advancing, feedback left unconsumed"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          continue
+        fi
         if ! implement_parity_gate "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "$PR_NUM" \
             "$AFFECTED" "$PARITY_OVERRIDE"; then
           continue

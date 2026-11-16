@@ -11,6 +11,7 @@ import {
   findLatestTranscript,
   findTranscriptById,
   projectsDirFor,
+  SESSION_ID_RE,
   detectSessionLimit,
   parseResetTime,
 } from "../lib/session-limit.mjs";
@@ -574,5 +575,22 @@ describe("findTranscriptById + check --session-id", () => {
     const now = runCli(["check", "--cwd", cwd, "--now", "nope"]);
     assert.equal(now.status, 1);
     assert.match(now.stderr, /invalid --now/);
+  });
+});
+
+// #842 review: verify-lane imports this regex as its UUID_RE (buildClaudeArgs,
+// the transcript lookup). A /g or /y flag would make .test() stateful through
+// lastIndex and fail every other call.
+describe("SESSION_ID_RE", () => {
+  it("is stateless: the same id passes on every call, and paths never do", () => {
+    assert.equal(SESSION_ID_RE.global, false);
+    assert.equal(SESSION_ID_RE.sticky, false);
+    const id = "aaaaaaaa-2222-4333-8444-55555555beef";
+    for (let i = 0; i < 5; i++) assert.equal(SESSION_ID_RE.test(id), true, `call ${i}`);
+    for (const bad of ["../session", `../${id}`, `${id}/..`, `${id}.jsonl`, id.toUpperCase(), ""]) {
+      assert.equal(SESSION_ID_RE.test(bad), false, bad);
+      assert.equal(SESSION_ID_RE.test(bad), false, `${bad} (again)`);
+    }
+    assert.equal(findTranscriptById("../session", { projectsDir: "/tmp" }), null);
   });
 });

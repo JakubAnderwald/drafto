@@ -1282,12 +1282,21 @@ An `--implement` run gets a Claude session id and a **Run-time facts** block wit
 
 A run the session limit stops is recorded too, resumed or not, and spends no attempt; the run after the reset resumes it. Every implement start clears the record, so a timeout chain resumes at most once. A resumed run's `action=implemented` is checked against the PR head before the chain's first run, so what the predecessor pushed before the cap counts; its noop and declined checks use the PR head at its own start. A resume that ends within 3 minutes without the model answering spends no attempt, and the next tick runs fresh.
 
+To see a card's resume record and the session id of its latest run:
+
 ```bash
-# The record and the latest session id for a card:
 node scripts/lib/state-cli.mjs factory:get-issue <n> | jq '{implementSessionId, implementResumeSession, implementResumeHead, implementResumeTreeDigest, implementResumeKey, implementResumeAt}'
-# Stop the next run from resuming (it runs fresh):
+```
+
+To stop the next run from resuming, so it runs fresh:
+
+```bash
 node scripts/lib/state-cli.mjs factory:implement-resume-clear <n>
-# Read a session's transcript:
+```
+
+To find a session's transcript:
+
+```bash
 ls ~/.claude/projects/*/<session-id>.jsonl
 ```
 
