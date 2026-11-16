@@ -527,9 +527,9 @@ export function getSlot(state, slotIndex) {
 }
 
 // Returns true if slot is unoccupied OR its recorded pid is no longer alive.
-// The caller is responsible for whatever real mutual-exclusion lock it needs
-// (factory-agent.sh holds an flock on logs/factory.slot{0,1}.pid). This is
-// just the bookkeeping check; callers should still flock before mutating.
+// There is no per-slot file lock: factory-agent.sh's --implement and --watch
+// can run at once, and its slot_acquire reads factory:slot-acquire's refusal
+// (ok:false, exit 0) to defer a card whose slot another issue holds (#466).
 export function isSlotFree(state, slotIndex, { isPidAlive } = {}) {
   const slot = getSlot(state, slotIndex);
   // Explicit null checks (vs `!slot.pid`) so a hypothetical pid 0 — the kernel

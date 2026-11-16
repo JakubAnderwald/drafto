@@ -101,13 +101,14 @@
 //                                    timed pause before reporting.
 //   factory:slot-acquire <slot> <issue> [<pid>]
 //                                    Record slot <slot> (0|1) as occupied by
-//                                    <issue> + <pid>. Caller still holds an
-//                                    flock on logs/factory.slot<N>.pid for
-//                                    real mutual exclusion — this is just
-//                                    the bookkeeping side. Refuses if slot
-//                                    is already occupied and the existing
-//                                    pid is still alive (use --force to
-//                                    steal a slot whose pid is dead).
+//                                    <issue> + <pid>. Refuses if slot is
+//                                    already occupied and the existing pid
+//                                    is still alive (--force takes it
+//                                    anyway). A refusal prints ok:false,
+//                                    reason "slot-occupied" and exits 0:
+//                                    callers read the JSON (factory-agent.sh's
+//                                    slot_acquire, #466). There is no
+//                                    per-slot file lock.
 //   factory:slot-release <slot>     Clear slot <slot>.
 //   factory:slot-status [<slot>]    Print one slot's record, or all slots
 //                                    if <slot> is omitted.
