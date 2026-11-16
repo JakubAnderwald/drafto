@@ -245,7 +245,8 @@
 // next run may resume, and clears the record at every implement start.
 //
 //   factory:implement-resume-set <issue> --session <uuid> --head <sha>
-//        --tree-digest <sha256> --key <task-key> [--pre-head <sha>]
+//        --tree-digest <sha256> --key <task-key> --run-started-at <iso>
+//        [--pre-head <sha>]
 //                                    Record that <issue>'s run in session <uuid>
 //                                    stopped (wall cap, action=incomplete or the
 //                                    session limit) with the worktree at <sha>
@@ -1031,6 +1032,7 @@ async function main(argv) {
         treeDigest: flags["tree-digest"],
         key: flags.key,
         preHead: flags["pre-head"] ?? "",
+        runStartedAt: flags["run-started-at"],
         now,
       });
       await saveFactoryState(state, file);
@@ -1139,7 +1141,7 @@ async function main(argv) {
           "factory:verify-resume|" +
           "factory:verify-reset <issue>|" +
           "factory:plan-probe-reset <issue>|" +
-          "factory:implement-resume-set <issue> --session <uuid> --head <sha> --tree-digest <sha256> --key <key> [--pre-head <sha>]|" +
+          "factory:implement-resume-set <issue> --session <uuid> --head <sha> --tree-digest <sha256> --key <key> --run-started-at <iso> [--pre-head <sha>]|" +
           "factory:implement-resume-clear <issue> [--session-id <uuid>]> " +
           "[--state-file <path>] [--now <iso>]\n",
       );

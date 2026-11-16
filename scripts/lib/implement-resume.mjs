@@ -26,6 +26,7 @@
 //       untracked files' contents), bare. Exit 1 when git can't say.
 //   decide --record <issue JSON> --worktree <worktree-cli add JSON>
 //          --head <sha> --tree-digest <digest> --task-key <key>
+//          [--newest-owner-comment-at <iso>]
 //          [--pr-state OPEN|CLOSED|MERGED|""] [--enabled 0|1]
 //          [--max-age-min <n>] [--now <iso>] [--projects-dir <dir>]
 //       One JSON line: {"resume":true,"sessionId":…,"preHead":…} or
@@ -54,6 +55,7 @@ export const NO_RESUME_REASONS = Object.freeze([
   "head-moved", // the worktree HEAD isn't the one the stopped run left
   "worktree-dirty-changed", // same HEAD, but its uncommitted files changed
   "task-changed", // a different or edited approved plan, or different feedback
+  "new-feedback", // an OWNER comment arrived after the stopped run started
   "pr-closed", // the card's PR was closed or merged since
   "no-transcript", // claude has no <session>.jsonl to resume
 ]);
@@ -161,6 +163,8 @@ function no(reason, detail = null) {
 //   head       the worktree's HEAD now
 //   treeDigest the worktree's uncommitted state now (worktreeDigest())
 //   taskKey    this run's task key (taskKey())
+//   newestOwnerCommentAt  createdAt of the newest OWNER comment that isn't the
+//              factory's own (no "<!-- drafto-factory" marker), or null
 //   prState    the card's PR state (OPEN, CLOSED, MERGED), "" or null for none
 //   transcript the recorded session's transcript path, or null
 // Returns {resume:true, sessionId, preHead} — preHead is the PR head before
@@ -172,6 +176,7 @@ export function decideResume({
   head = "",
   treeDigest = null,
   taskKey: key = "",
+  newestOwnerCommentAt = null,
   prState = null,
   transcript = null,
   now = new Date(),
@@ -199,6 +204,16 @@ export function decideResume({
     return no("worktree-dirty-changed");
   }
   if (!key || key !== record.implementResumeKey) return no("task-changed");
+  // The key only names the feedback a run was given. On a first
+  // implementation there is none (no lastFeedbackAt yet), so a comment the
+  // reporter posts meanwhile must still start a fresh session, whose bundle
+  // carries it (#842 review).
+  const startedMs = Date.parse(String(record.implementResumeRunStartedAt ?? ""));
+  if (Number.isNaN(startedMs)) return no("new-feedback", "no run start recorded");
+  const newestMs = Date.parse(String(newestOwnerCommentAt ?? ""));
+  if (!Number.isNaN(newestMs) && newestMs > startedMs) {
+    return no("new-feedback", `owner comment at ${newestOwnerCommentAt}`);
+  }
   if (prState && prState !== "OPEN") return no("pr-closed", prState);
   if (!transcript) return no("no-transcript");
   return {
@@ -278,6 +293,7 @@ export function main(argv, { fs = nodeFs } = {}) {
         head: flags.head ?? "",
         treeDigest: flags["tree-digest"] || null,
         taskKey: flags["task-key"] ?? "",
+        newestOwnerCommentAt: flags["newest-owner-comment-at"] || null,
         prState: flags["pr-state"] || null,
         transcript: SESSION_ID_RE.test(String(session ?? ""))
           ? findTranscriptById(session, { projectsDir, fs })

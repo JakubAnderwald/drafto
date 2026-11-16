@@ -98,7 +98,7 @@ describe("implement resume: wiring in the --implement block", () => {
     assert.ok(cat !== -1 && cat < rm, "stdout is logged before the file is deleted");
     assert.match(
       branch,
-      /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable "\$ISSUE_NUM" "\$WT_PATH" "\$IMPL_SESSION_ID" "\$IMPL_TASK_KEY" \\\n\s*"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "timed out"\n\s*fi/,
+      /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable "\$ISSUE_NUM" "\$WT_PATH" "\$IMPL_SESSION_ID" "\$IMPL_TASK_KEY" \\\n\s*"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "timed out" "\$CLAUDE_START_ISO"\n\s*fi/,
     );
     assert.match(branch, /factory:bump-attempts "\$ISSUE_NUM"/);
     assert.match(branch, /continue\n$/);
@@ -128,7 +128,10 @@ describe("implement resume: wiring in the --implement block", () => {
     );
     const mark = branch.indexOf("implement_mark_resumable ");
     assert.ok(mark !== -1 && mark < branch.indexOf("pause_for_session_limit"));
-    assert.match(branch, /"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "session limit"\n/);
+    assert.match(
+      branch,
+      /"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "session limit" "\$CLAUDE_START_ISO"\n/,
+    );
     assert.doesNotMatch(branch, /IMPL_RESUMED/, "a resumed run is recorded again after a limit");
     assert.doesNotMatch(branch, /bump-attempts/);
   });
@@ -152,7 +155,7 @@ describe("implement resume: wiring in the --implement block", () => {
     const arm = slice("      incomplete)\n", "        ;;\n");
     assert.match(arm, /action=incomplete\); keeping slot \$SLOT for retry/);
     assert.match(arm, /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable /);
-    assert.match(arm, /"action=incomplete"\n/);
+    assert.match(arm, /"action=incomplete" "\$CLAUDE_START_ISO"\n/);
     assert.match(arm, /factory:bump-attempts "\$ISSUE_NUM"/);
     assert.doesNotMatch(arm, /transition_status|slot-release/);
   });
@@ -344,6 +347,7 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       plan2 = PLAN,
       revs2 = REVS,
       issue2 = ISSUE,
+      comments2 = "[]",
       env = { PHASE: "C" },
     } = {},
   ) {
@@ -359,12 +363,12 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
       [
         `implement_resume_decide 7 "${wt}" '${wt1}' '${PRIOR}' '${PLAN}' '${REVS}' '${ISSUE}'`,
         'echo "run1 $IMPL_RESUMED $IMPL_SESSION_FLAG $IMPL_SESSION_ID $IMPL_TASK_KEY"',
-        `implement_mark_resumable 7 "${wt}" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" "${pre}" 1 "timed out"`,
+        `implement_mark_resumable 7 "${wt}" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" "${pre}" 1 "timed out" "2026-11-16T10:00:00Z"`,
         'mkdir -p "$HOME/.claude/projects/-wt"',
         'printf "{}\\n" >"$HOME/.claude/projects/-wt/$IMPL_SESSION_ID.jsonl"',
         "FIRST=$IMPL_SESSION_ID",
         between,
-        `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${plan2}' '${revs2}' '${issue2}'`,
+        `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${plan2}' '${revs2}' '${issue2}' '${comments2}'`,
         'echo "run2 $IMPL_RESUMED $IMPL_SESSION_FLAG $IMPL_SESSION_ID $FIRST $IMPL_RESUME_PRE_HEAD"',
         // A third start finds the record already spent.
         `implement_resume_decide 7 "${wt}" '${JSON.stringify(wt2)}' '${PRIOR}' '${PLAN}' '${REVS}' '${ISSUE}'`,
@@ -457,6 +461,34 @@ describe("implement_mark_resumable → implement_resume_decide (real helpers)", 
 
   // #842 review: a session started under another FACTORY_PHASE holds that
   // phase's scope.
+  // #842 review (CodeRabbit bot): a first implementation has no feedback in
+  // its key, so a reporter comment posted after the stopped run started must
+  // start a fresh session whose bundle carries it. The factory's own marker
+  // comments, and anything older than the run, don't count.
+  it("runs fresh on an initial chain when an owner comment arrived after the stopped run started", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const comments = (createdAt, body = "please also handle X") =>
+        JSON.stringify([
+          {
+            id: 1,
+            authorAssociation: "OWNER",
+            body: "<!-- drafto-factory-plan -->",
+            createdAt: "2026-11-16T11:00:00Z",
+          },
+          { id: 2, authorAssociation: "OWNER", body, createdAt },
+          { id: 3, authorAssociation: "NONE", body: "drive-by", createdAt: "2026-11-16T12:00:00Z" },
+        ]);
+      const after = chain(dir, wt, { comments2: comments("2026-11-16T10:05:00Z") });
+      assert.match(after.stdout, /^run2 0 --session-id /m);
+      assert.match(after.log, /no resume: new-feedback, owner comment at 2026-11-16T10:05:00Z/);
+      // Older than the run, or the factory's own marker comment (11:00), or
+      // not from the owner: resumed.
+      const before = chain(dir, wt, { comments2: comments("2026-11-16T09:55:00Z") });
+      assert.match(before.stdout, /^run2 1 --resume /m);
+    });
+  });
+
   it("runs fresh when FACTORY_PHASE changed since the stop", () => {
     withDir((dir) => {
       const wt = makeWorktree(dir);
@@ -638,6 +670,7 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       IMPL_RESUMED: "1",
       IMPL_SESSION_ID: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
       IMPL_TASK_KEY: "plan:1@x|rev:",
+      CLAUDE_START_ISO: "2026-11-16T10:00:00Z",
       ...vars,
     };
     const snippet = [
@@ -654,7 +687,7 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       'revision_noop_route() { echo "noop-route head=$4" >>"$CALLS"; }',
       'revision_return_to_test() { echo "return-to-test head=$3" >>"$CALLS"; }',
       'implement_park_blocked() { echo "blocked: $4" >>"$CALLS"; }',
-      'implement_mark_resumable() { echo "mark-resumable $5 $6 $7" >>"$CALLS"; }',
+      'implement_mark_resumable() { echo "mark-resumable $5 $6 $7 $8" >>"$CALLS"; }',
       "worktree_untouched() { return 0; }",
       'implement_head_landed() { echo "landed? $3" >>"$CALLS"; [[ "${FAKE_LANDED:-1}" == "1" ]]; }',
       'gh() { echo "gh $1 $2" >>"$CALLS"; }',
@@ -828,7 +861,10 @@ describe("result handler on a resumed run whose predecessor already pushed (real
         PRE_HEAD_OID: b0,
         CHAIN_PRE_HEAD_OID: b0,
       });
-      assert.match(fresh.calls, new RegExp(`^mark-resumable ${b0} 1 action=incomplete$`, "m"));
+      assert.match(
+        fresh.calls,
+        new RegExp(`^mark-resumable ${b0} 1 action=incomplete 2026-11-16T10:00:00Z$`, "m"),
+      );
     });
   });
 });

@@ -126,10 +126,11 @@ describe("runWithTimeout (mocked spawn)", () => {
     assert.equal(result.timedOut, true);
   });
 
-  it("takes the grace window from CLAUDE_CALL_KILL_GRACE_SEC when none is passed", async () => {
+  it("takes the grace window from CLAUDE_CALL_KILL_GRACE_SEC when none is passed", async (t) => {
     // --implement sets it to 30 s (ADR-0084) so claude can record the killed
-    // tool call before the SIGKILL. Here 1 s: SIGTERM at the cap, no SIGKILL
-    // half a second later, SIGKILL once the second has passed.
+    // tool call before the SIGKILL. Here 1 s. Mocked timers step through the
+    // cap and the grace separately, so a loaded machine can't reorder them.
+    t.mock.timers.enable({ apis: ["setTimeout"] });
     const saved = process.env.CLAUDE_CALL_KILL_GRACE_SEC;
     process.env.CLAUDE_CALL_KILL_GRACE_SEC = "1";
     try {
@@ -139,15 +140,16 @@ describe("runWithTimeout (mocked spawn)", () => {
         timeoutMs: 100,
         spawn: makeSpawn(scenario),
       });
-      setTimeout(() => {
-        const c = scenario.children[0];
-        assert.deepEqual(c.killSignals, ["SIGTERM"], "still inside the 1 s grace window");
-      }, 600);
-      setTimeout(() => {
-        const c = scenario.children[0];
-        assert.deepEqual(c.killSignals, ["SIGTERM", "SIGKILL"]);
-        c.emit("exit", null, "SIGKILL");
-      }, 1500);
+      const c = scenario.children[0];
+      t.mock.timers.tick(99);
+      assert.deepEqual(c.killSignals, [], "before the cap");
+      t.mock.timers.tick(1);
+      assert.deepEqual(c.killSignals, ["SIGTERM"], "SIGTERM at the cap");
+      t.mock.timers.tick(999);
+      assert.deepEqual(c.killSignals, ["SIGTERM"], "still inside the 1 s grace window");
+      t.mock.timers.tick(1);
+      assert.deepEqual(c.killSignals, ["SIGTERM", "SIGKILL"], "SIGKILL once the second has passed");
+      c.emit("exit", null, "SIGKILL");
       const result = await promise;
       assert.equal(result.exitCode, 124);
     } finally {

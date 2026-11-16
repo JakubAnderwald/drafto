@@ -42,6 +42,7 @@ function record(over = {}) {
     implementResumeTreeDigest: TREE,
     implementResumeKey: KEY,
     implementResumePreHead: PRE,
+    implementResumeRunStartedAt: "2026-11-16T10:15:00.000Z",
     implementResumeAt: "2026-11-16T11:00:00.000Z",
     ...over,
   };
@@ -271,6 +272,20 @@ describe("decideResume", () => {
     assert.deepEqual(d, { resume: true, sessionId: SESSION, preHead: "" });
   });
 
+  // #842 review: on a first implementation the key names no feedback, so a
+  // reporter comment posted after the stopped run started must refuse.
+  it("resumes past owner comments from before the stopped run started, not after", () => {
+    assert.equal(decideResume(safe({ newestOwnerCommentAt: "2026-11-16T10:14:59Z" })).resume, true);
+    assert.equal(decideResume(safe({ newestOwnerCommentAt: "2026-11-16T10:15:00Z" })).resume, true);
+    assert.equal(decideResume(safe({ newestOwnerCommentAt: "" })).resume, true);
+    const d = decideResume(safe({ newestOwnerCommentAt: "2026-11-16T10:15:01Z" }));
+    assert.deepEqual(d, {
+      resume: false,
+      reason: "new-feedback",
+      detail: "owner comment at 2026-11-16T10:15:01Z",
+    });
+  });
+
   it("resumes with no PR state (the PR isn't open yet) and with an open one", () => {
     assert.equal(decideResume(safe({ prState: "" })).resume, true);
     assert.equal(decideResume(safe({ prState: "OPEN" })).resume, true);
@@ -299,6 +314,8 @@ describe("decideResume", () => {
     ["task-changed", { taskKey: "plan:111@aaaa|rev:5@bbbb,40@cccc,41@dddd" }],
     ["task-changed", { taskKey: "plan:111@ffff|rev:5@bbbb,40@cccc" }],
     ["task-changed", { taskKey: "" }],
+    ["new-feedback", { newestOwnerCommentAt: "2026-11-16T10:20:00Z" }],
+    ["new-feedback", { record: record({ implementResumeRunStartedAt: null }) }],
     ["pr-closed", { prState: "CLOSED" }],
     ["pr-closed", { prState: "MERGED" }],
     ["no-transcript", { transcript: null }],

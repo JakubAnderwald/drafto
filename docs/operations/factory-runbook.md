@@ -1291,6 +1291,7 @@ An `--implement` run gets a Claude session id and a **Run-time facts** block wit
 - the worktree was reused as it was: not recreated, fast-forwarded or snapshotted;
 - its HEAD hasn't moved, and its uncommitted files are exactly as the stopped run left them (a digest of `git status`, `git diff HEAD` and the untracked files);
 - the approved plan and the feedback being answered are the same, text included: an edit to either starts fresh;
+- no comment of yours (other than the factory's own) is newer than the stopped run's start;
 - the PR isn't closed or merged;
 - the transcript exists;
 - the record is younger than `FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN`.

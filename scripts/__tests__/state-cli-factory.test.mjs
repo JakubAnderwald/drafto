@@ -1710,6 +1710,8 @@ describe("factory:implement-resume-set / -clear", () => {
       TREE,
       "--key",
       "plan:7|rev:1,2",
+      "--run-started-at",
+      "2026-11-16T11:30:00Z",
       ...extra,
       "--state-file",
       stateFile,
@@ -1729,6 +1731,7 @@ describe("factory:implement-resume-set / -clear", () => {
       implementResumeTreeDigest: TREE,
       implementResumeKey: "plan:7|rev:1,2",
       implementResumePreHead: PRE,
+      implementResumeRunStartedAt: "2026-11-16T11:30:00.000Z",
       implementResumeAt: "2026-11-16T12:00:00.000Z",
     });
     const issue = readState().issues["42"];
@@ -1780,7 +1783,7 @@ describe("factory:implement-resume-set / -clear", () => {
     assert.equal(r.status, 0, r.stderr);
     const out = JSON.parse(r.stdout);
     assert.equal(out.ok, true);
-    assert.equal(out.cleared.length, 6);
+    assert.equal(out.cleared.length, 7);
     assert.equal(out.implementSessionId, NEXT);
     const issue = readState().issues["42"];
     assert.equal(issue.implementResumeSession, null);

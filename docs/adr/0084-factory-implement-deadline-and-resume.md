@@ -34,6 +34,7 @@ The CLI (2.1.323 on the Mac mini) can continue a session: `claude -p --resume <i
    - HEAD moved (`head-moved`);
    - HEAD is the same but the uncommitted files changed (`worktree-dirty-changed`). That includes a lockfile the next start's `pnpm install` rewrote: the run is then fresh, as before this ADR;
    - the task key changed (`task-changed`), including an edit to the plan or to a feedback comment;
+   - an OWNER comment that isn't one of the factory's own arrived after the stopped run started (`new-feedback`). A first implementation's key names no feedback, so without this a resumed session could miss a comment its fresh replacement's bundle would carry. The record stores that start time;
    - the PR was closed or merged (`pr-closed`);
    - claude has no transcript for the session (`no-transcript`).
 
