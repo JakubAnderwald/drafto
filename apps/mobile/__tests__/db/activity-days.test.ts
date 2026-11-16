@@ -2,7 +2,7 @@
 import { utcDay } from "@drafto/shared";
 import type { ActivityRpcClient, ActivityRpcResponse } from "@drafto/shared";
 
-import { flushActivityDays, markAppOpened } from "@/db/activity-days";
+import { flushActivityDays, invalidateActivityDays, markAppOpened } from "@/db/activity-days";
 
 const TAG = "mobile-ios";
 const KEY = "drafto_activity_days";
@@ -36,7 +36,9 @@ function makeDb(initial?: unknown) {
     const json = store.get(KEY);
     return json === undefined ? undefined : JSON.parse(json);
   };
-  return { db: { localStorage }, localStorage, stored };
+  // What unsafeResetDatabase does to localStorage.
+  const clear = (): void => store.clear();
+  return { db: { localStorage }, localStorage, stored, clear };
 }
 
 function makeClient() {
@@ -315,5 +317,60 @@ describe("flushActivityDays", () => {
       expect.stringContaining("Could not send"),
       expect.any(Error),
     );
+  });
+});
+
+describe("invalidateActivityDays (sign-out, through resetSyncState)", () => {
+  it("stops a mark already started from writing", async () => {
+    const { db, localStorage, stored } = makeDb();
+
+    const marking = markAppOpened(db, at(0));
+    invalidateActivityDays();
+    await marking;
+
+    expect(localStorage.set).not.toHaveBeenCalled();
+    expect(stored()).toBeUndefined();
+
+    // Work started after the invalidation writes as usual.
+    await markAppOpened(db, at(0));
+    expect(stored()).toEqual({ days: [day(0)], lastSent: null });
+  });
+
+  it("stops a flush whose call was out from writing into the reset queue", async () => {
+    const { db, localStorage, stored, clear } = makeDb({ days: [day(0)], lastSent: null });
+    const { client, rpc } = makeClient();
+    let release!: (response: ActivityRpcResponse) => void;
+    let called!: () => void;
+    const rpcCalled = new Promise<void>((resolve) => (called = resolve));
+    rpc.mockImplementationOnce(() => {
+      called();
+      return new Promise<ActivityRpcResponse>((resolve) => (release = resolve));
+    });
+
+    const flushing = flushActivityDays(db, client, TAG);
+    await rpcCalled;
+    // Sign-out: invalidate, then reset the local database.
+    invalidateActivityDays();
+    clear();
+    release({ error: null });
+    await flushing;
+
+    // The previous user's lastSent would hold back the next user's today.
+    expect(localStorage.set).not.toHaveBeenCalled();
+    expect(stored()).toBeUndefined();
+    await markAppOpened(db, at(0));
+    expect(stored()).toEqual({ days: [day(0)], lastSent: null });
+  });
+
+  it("makes no call for a flush invalidated before it read the queue", async () => {
+    const { db, stored } = makeDb({ days: [day(0)], lastSent: null });
+    const { client, rpc } = makeClient();
+
+    const flushing = flushActivityDays(db, client, TAG);
+    invalidateActivityDays();
+    await flushing;
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(stored()).toEqual({ days: [day(0)], lastSent: null });
   });
 });

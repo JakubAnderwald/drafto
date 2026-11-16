@@ -518,4 +518,40 @@ describe("activity ping after a successful sync (ADR-0085)", () => {
     expect(mockSynchronize).toHaveBeenCalledTimes(1);
     expect(pings()).toEqual([]);
   });
+
+  it("frees the latch once synchronize() resolves, so a caller arriving during the ping syncs on its own", async () => {
+    const db = makeDb();
+    let release!: () => void;
+    let called!: () => void;
+    const rpcCalled = new Promise<void>((resolve) => (called = resolve));
+    mockSupabaseRpc.mockImplementationOnce(() => {
+      called();
+      return new Promise((resolve) => (release = () => resolve({ data: null, error: null })));
+    });
+
+    const first = syncDatabase(db);
+    await rpcCalled;
+    // Sign-out's final sync, or a follow-up pass for an edit made after the
+    // first push: it must push again, not join a sync whose push is done.
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    expect(mockSynchronize).toHaveBeenCalledTimes(2);
+
+    release();
+    await expect(first).resolves.toEqual({ remoteChangeCount: 0 });
+  });
+
+  it("sends no ping for a sync that resetSyncState superseded", async () => {
+    const db = makeDb();
+    let release!: () => void;
+    mockSynchronize.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (release = () => resolve(undefined))),
+    );
+
+    const stale = syncDatabase(db);
+    resetSyncState();
+    release();
+    await expect(stale).resolves.toEqual({ remoteChangeCount: 0 });
+
+    expect(pings()).toEqual([]);
+  });
 });

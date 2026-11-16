@@ -38,7 +38,7 @@ describe("<ActivityPing />", () => {
       p_client: "web",
     });
     await waitFor(() =>
-      expect(window.sessionStorage.getItem(ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${today}`),
+      expect(window.sessionStorage.getItem(`${ACTIVITY_DAY_STORAGE_KEY}:user-1`)).toBe(today),
     );
   });
 });

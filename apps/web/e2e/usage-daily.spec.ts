@@ -16,7 +16,10 @@ import { test, expect } from "./helpers/test";
  */
 
 const RECORD_ACTIVITY_PATH = "/rest/v1/rpc/record_activity";
-/** sessionStorage key the ping writes once the server accepted the day (use-activity-ping.ts). */
+/**
+ * Prefix of the sessionStorage keys (`<prefix>:<userId>`, value: the UTC day) the ping writes
+ * once the server accepted the day (use-activity-ping.ts).
+ */
 const ACTIVITY_DAY_STORAGE_KEY = "drafto:activity-day";
 /** How long a reload gets to (wrongly) send the day again. */
 const NO_REPEAT_WINDOW_MS = 3_000;
@@ -67,8 +70,16 @@ test.describe("Activity day ping", () => {
 
     // The day is marked only after the server accepted it; wait for that before reloading.
     await expect
-      .poll(() => page.evaluate((key) => sessionStorage.getItem(key), ACTIVITY_DAY_STORAGE_KEY))
-      .toMatch(new RegExp(`:${day}$`));
+      .poll(() =>
+        page.evaluate(
+          (prefix) =>
+            Object.keys(sessionStorage)
+              .filter((key) => key.startsWith(`${prefix}:`))
+              .map((key) => sessionStorage.getItem(key)),
+          ACTIVITY_DAY_STORAGE_KEY,
+        ),
+      )
+      .toContain(day);
     expect(pings).toBe(1);
 
     // Same tab, same session: a reload must not send the day again.

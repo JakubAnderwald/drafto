@@ -34,6 +34,11 @@ function rpcArgs(day: string) {
   return ["record_activity", { p_days: [day], p_client: "web" }];
 }
 
+/** The day this tab's sessionStorage says it recorded for <userId>, or null. */
+function storedDay(userId: string): string | null {
+  return window.sessionStorage.getItem(`drafto:activity-day:${userId}`);
+}
+
 /** Lets the hook's fire-and-forget promise chain settle. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
@@ -70,12 +75,10 @@ describe("useActivityPing", () => {
     expect(mockRpc).toHaveBeenCalledTimes(1);
     expect(mockRpc).toHaveBeenCalledWith(...rpcArgs(DAY_1));
     // Still in flight: nothing is marked yet.
-    expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBeNull();
+    expect(storedDay("user-1")).toBeNull();
 
     resolveRpc({ error: null });
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_1}`),
-    );
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
     expect(mockCaptureMessage).not.toHaveBeenCalled();
   });
 
@@ -90,9 +93,7 @@ describe("useActivityPing", () => {
 
   it("sends nothing on a second mount the same day, in the same page or after a reload", async () => {
     const first = renderHook(() => mod.useActivityPing("user-1"));
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_1}`),
-    );
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
     first.unmount();
 
     renderHook(() => mod.useActivityPing("user-1"));
@@ -108,9 +109,7 @@ describe("useActivityPing", () => {
 
   it("records again on the next UTC day", async () => {
     const first = renderHook(() => mod.useActivityPing("user-1"));
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_1}`),
-    );
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
     first.unmount();
 
     setNow(`${DAY_2}T00:00:01.000Z`);
@@ -118,31 +117,82 @@ describe("useActivityPing", () => {
 
     expect(mockRpc).toHaveBeenCalledTimes(2);
     expect(mockRpc).toHaveBeenLastCalledWith(...rpcArgs(DAY_2));
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_2}`),
-    );
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_2));
   });
 
   it("records again for another user in the same tab", async () => {
     const first = renderHook(() => mod.useActivityPing("user-1"));
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_1}`),
-    );
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
     first.unmount();
 
     renderHook(() => mod.useActivityPing("user-2"));
 
     expect(mockRpc).toHaveBeenCalledTimes(2);
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-2:${DAY_1}`),
+    await waitFor(() => expect(storedDay("user-2")).toBe(DAY_1));
+  });
+
+  it("doesn't record again when the tab switches back to an account it already recorded", async () => {
+    const first = renderHook(() => mod.useActivityPing("user-1"));
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
+    first.unmount();
+    const second = renderHook(() => mod.useActivityPing("user-2"));
+    await waitFor(() => expect(storedDay("user-2")).toBe(DAY_1));
+    second.unmount();
+
+    // Back to the first account, after a reload too.
+    renderHook(() => mod.useActivityPing("user-1"));
+    await flush();
+    const reloaded = await loadHook();
+    renderHook(() => reloaded.useActivityPing("user-1"));
+    await flush();
+
+    expect(mockRpc).toHaveBeenCalledTimes(2);
+    expect(storedDay("user-1")).toBe(DAY_1);
+  });
+
+  it("keeps each account's day when their pings answer out of order", async () => {
+    const answers: Array<(value: { error: null }) => void> = [];
+    mockRpc.mockImplementation(
+      () => new Promise((resolve) => answers.push(resolve as (value: { error: null }) => void)),
     );
+
+    const first = renderHook(() => mod.useActivityPing("user-1"));
+    first.unmount();
+    renderHook(() => mod.useActivityPing("user-2"));
+    expect(answers).toHaveLength(2);
+
+    // The second account's ping answers first.
+    answers[1]({ error: null });
+    await waitFor(() => expect(storedDay("user-2")).toBe(DAY_1));
+    answers[0]({ error: null });
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
+    expect(storedDay("user-2")).toBe(DAY_1);
+  });
+
+  it("doesn't move the day back when an earlier day's ping answers last", async () => {
+    let answerDay1: (value: { error: null }) => void = () => {};
+    mockRpc.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerDay1 = resolve;
+      }),
+    );
+
+    const first = renderHook(() => mod.useActivityPing("user-1"));
+    first.unmount();
+    setNow(`${DAY_2}T00:00:06.000Z`);
+    renderHook(() => mod.useActivityPing("user-1"));
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_2));
+
+    answerDay1({ error: null });
+    await flush();
+
+    expect(mockRpc).toHaveBeenCalledTimes(2);
+    expect(storedDay("user-1")).toBe(DAY_2);
   });
 
   it("re-checks when the user returns to a tab left open into the next UTC day", async () => {
     renderHook(() => mod.useActivityPing("user-1"));
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_1}`),
-    );
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
 
     // Same day: returning to the tab sends nothing.
     window.dispatchEvent(new Event("focus"));
@@ -165,7 +215,7 @@ describe("useActivityPing", () => {
     renderHook(() => mod.useActivityPing("user-1"));
     // waitFor polls with setTimeout, which this test fakes.
     await flush();
-    expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_1}`);
+    expect(storedDay("user-1")).toBe(DAY_1);
 
     // No focus, visibility change or remount: only the clock moves.
     await vi.advanceTimersByTimeAsync(2 * 60_000);
@@ -222,15 +272,13 @@ describe("useActivityPing", () => {
 
     const first = renderHook(() => mod.useActivityPing("user-1"));
     await waitFor(() => expect(mockCaptureMessage).toHaveBeenCalledTimes(1));
-    expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBeNull();
+    expect(storedDay("user-1")).toBeNull();
     first.unmount();
 
     renderHook(() => mod.useActivityPing("user-1"));
 
     expect(mockRpc).toHaveBeenCalledTimes(2);
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBe(`user-1:${DAY_1}`),
-    );
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
   });
 
   it("reports at most one Sentry warning per page session, however many pings fail", async () => {
@@ -253,7 +301,7 @@ describe("useActivityPing", () => {
         extra: { error: "permission denied" },
       }),
     );
-    expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBeNull();
+    expect(storedDay("user-1")).toBeNull();
   });
 
   it("keeps working when sessionStorage can't be reached at all", async () => {
@@ -307,7 +355,7 @@ describe("useActivityPing", () => {
       expect.objectContaining({ extra: { error: "Invalid environment variables" } }),
     );
     expect(mockRpc).not.toHaveBeenCalled();
-    expect(window.sessionStorage.getItem(mod.ACTIVITY_DAY_STORAGE_KEY)).toBeNull();
+    expect(storedDay("user-1")).toBeNull();
   });
 
   it("makes one call under StrictMode's double effect", async () => {

@@ -6,9 +6,10 @@ import { recordActivity, utcDay } from "@drafto/shared";
 import { createClient } from "@/lib/supabase/client";
 
 /**
- * sessionStorage key holding `<userId>:<UTC day>`: the last day this browser tab recorded
- * for that user (ADR 0085). Written only after the server accepted the day, so a failed
- * ping is retried on the next mount.
+ * Prefix of the sessionStorage keys recording the activity day (ADR 0085): `<prefix>:<userId>`
+ * holds the latest UTC day this browser tab recorded for that user. One key per user, so
+ * signing in as another account in the same tab and back again doesn't send a day twice.
+ * Written only after the server accepted the day, so a failed ping is retried on the next mount.
  */
 export const ACTIVITY_DAY_STORAGE_KEY = "drafto:activity-day";
 
@@ -19,18 +20,22 @@ const ROLLOVER_DELAY_MS = 5_000;
 
 // The guards live at module level, not in the component: React StrictMode runs effects
 // twice in development, and a remount must not send the same day again while the first
-// call is still on its way.
-let inFlightMarker: string | null = null;
+// call is still on its way. Both hold `<userId>:<day>` markers.
+const inFlightMarkers = new Set<string>();
 // Fallback for a tab whose sessionStorage is unavailable (private mode, storage disabled):
 // without it every remount in that page would send the day again.
-let recordedMarker: string | null = null;
+const recordedMarkers = new Set<string>();
 // A ping that fails once (offline, expired session) tends to fail on every retry, and each
 // failure is the same signal, so only the first one in a page session reaches Sentry.
 let failureReported = false;
 
-function readStoredMarker(): string | null {
+function storageKey(userId: string): string {
+  return `${ACTIVITY_DAY_STORAGE_KEY}:${userId}`;
+}
+
+function readStoredDay(userId: string): string | null {
   try {
-    return window.sessionStorage.getItem(ACTIVITY_DAY_STORAGE_KEY);
+    return window.sessionStorage.getItem(storageKey(userId));
   } catch {
     // Storage is unavailable: behave as if nothing was recorded. At worst the server sees
     // a day it already has, which it ignores.
@@ -38,11 +43,15 @@ function readStoredMarker(): string | null {
   }
 }
 
-function storeMarker(marker: string): void {
+function storeDay(userId: string, day: string): void {
   try {
-    window.sessionStorage.setItem(ACTIVITY_DAY_STORAGE_KEY, marker);
+    const key = storageKey(userId);
+    const stored = window.sessionStorage.getItem(key);
+    // A ping for an earlier day that answers after a later day's must not move the marker back.
+    if (stored !== null && stored > day) return;
+    window.sessionStorage.setItem(key, day);
   } catch {
-    // Storage is unavailable: `recordedMarker` still prevents repeats in this page.
+    // Storage is unavailable: `recordedMarkers` still prevents repeats in this page.
   }
 }
 
@@ -56,21 +65,21 @@ function reportFailure(error: string): void {
   });
 }
 
-async function sendPing(marker: string, day: string): Promise<void> {
-  inFlightMarker = marker;
+async function sendPing(userId: string, day: string, marker: string): Promise<void> {
+  inFlightMarkers.add(marker);
   try {
     // recordActivity never throws; the try/catch covers creating the client.
     const outcome = await recordActivity(createClient(), [day], "web");
     if (outcome.ok) {
-      recordedMarker = marker;
-      storeMarker(marker);
+      recordedMarkers.add(marker);
+      storeDay(userId, day);
     } else {
       reportFailure(outcome.error);
     }
   } catch (err) {
     reportFailure(err instanceof Error ? err.message : String(err));
   } finally {
-    if (inFlightMarker === marker) inFlightMarker = null;
+    inFlightMarkers.delete(marker);
   }
 }
 
@@ -78,10 +87,10 @@ async function sendPing(marker: string, day: string): Promise<void> {
 function pingActivity(userId: string): void {
   const day = utcDay();
   const marker = `${userId}:${day}`;
-  if (marker === inFlightMarker || marker === recordedMarker) return;
-  if (marker === readStoredMarker()) return;
+  if (inFlightMarkers.has(marker) || recordedMarkers.has(marker)) return;
+  if (readStoredDay(userId) === day) return;
   // Fire-and-forget: sendPing handles its own errors, and rendering never waits for it.
-  void sendPing(marker, day);
+  void sendPing(userId, day, marker);
 }
 
 /** Milliseconds from <now> until just after the next midnight UTC. */

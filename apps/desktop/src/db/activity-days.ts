@@ -17,8 +17,9 @@ import type { ActivityRpcClient } from "@drafto/shared";
  *
  * The queue lives in WatermelonDB's localStorage, not in AsyncStorage or the
  * keychain, because `unsafeResetDatabase` (sign-out, a different user signing
- * in) clears it with the notes: one user's days are never sent under another
- * user's session.
+ * in) clears it with the notes. Sign-out also calls `invalidateActivityDays()`
+ * (through `resetSyncState()`) before that reset, so a mark or flush started
+ * for the user signing out writes nothing into the next user's queue.
  *
  * apps/mobile/src/db/activity-days.ts and apps/desktop/src/db/activity-days.ts
  * are identical; change both.
@@ -63,6 +64,21 @@ function exclusive<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
+// Bumped by invalidateActivityDays(). A mark or flush captures the generation
+// it started under and writes only while it is still current.
+let generation = 0;
+
+/**
+ * Stops every mark and flush already started from writing the stored state.
+ * Sign-out calls it, through `resetSyncState()`, before the local database is
+ * reset: work started for the user signing out (a flush whose call is still
+ * out, a mark waiting for the lock) would otherwise write that user's
+ * `lastSent` or days into the next user's queue once the reset has cleared it.
+ */
+export function invalidateActivityDays(): void {
+  generation += 1;
+}
+
 /** The stored state; a missing or malformed value reads as an empty queue. */
 async function readState(storage: ActivityDaysStorage): Promise<ActivityDaysState> {
   const stored = await storage.get(STORAGE_KEY);
@@ -89,9 +105,11 @@ export async function markAppOpened(
   try {
     const storage = db.localStorage;
     if (!storage) return;
+    const started = generation;
     await exclusive(async () => {
       const today = utcDay(now);
       const state = await readState(storage);
+      if (generation !== started) return;
       // A lastSent after today was sent while this device's clock ran ahead.
       // The server drops days after its own today, so it never recorded that
       // day, which mustn't be held back when it really comes.
@@ -124,10 +142,11 @@ export async function flushActivityDays(
     if (!isDraftoClientTag(clientTag)) return;
     const storage = db.localStorage;
     if (!storage) return;
+    const started = generation;
 
     // The call runs outside the lock, so marking a day never waits on the network.
     const { days } = await exclusive(() => readState(storage));
-    if (days.length === 0) return;
+    if (days.length === 0 || generation !== started) return;
 
     const outcome = await recordActivity(client, days, clientTag);
     if (!outcome.ok) {
@@ -142,6 +161,8 @@ export async function flushActivityDays(
     await exclusive(async () => {
       // Read again: a day queued while the call was in flight must stay queued.
       const current = await readState(storage);
+      // Invalidated while the call was out: this state may be the next user's.
+      if (generation !== started) return;
       await storage.set(STORAGE_KEY, {
         days: withoutSent(current.days, sent),
         lastSent: newerDay(current.lastSent, sent[sent.length - 1]),

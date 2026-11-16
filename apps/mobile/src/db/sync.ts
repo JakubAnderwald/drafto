@@ -6,7 +6,7 @@ import type { SyncPullResult } from "@nozbe/watermelondb/sync";
 import { isVisibleRemoteChange } from "@drafto/shared";
 import type { Database } from "@drafto/shared";
 
-import { flushActivityDays, markAppOpened } from "@/db/activity-days";
+import { flushActivityDays, invalidateActivityDays, markAppOpened } from "@/db/activity-days";
 import { clientTag, supabase } from "@/lib/supabase";
 
 type NotebookRow = Database["public"]["Tables"]["notebooks"]["Row"];
@@ -287,7 +287,7 @@ export interface SyncResult {
   remoteChangeCount: number;
 }
 
-async function runSync(db: WMDatabase, opened: Promise<void>): Promise<SyncResult> {
+async function runSync(db: WMDatabase): Promise<SyncResult> {
   let remoteChangeCount = 0;
 
   try {
@@ -313,24 +313,28 @@ async function runSync(db: WMDatabase, opened: Promise<void>): Promise<SyncResul
     throw error;
   }
 
-  // The activity ping (ADR-0085, docs/features/offline-sync.md) goes only
-  // after a sync got through, with every day queued since the last one. Both
-  // calls never reject; the catch is a backstop so a ping can never change
-  // the sync's result. A failed ping keeps its days for the next sync. The
-  // sync waits for it at most ACTIVITY_PING_MAX_WAIT_MS.
+  return { remoteChangeCount };
+}
+
+/**
+ * The activity ping (ADR-0085, docs/features/offline-sync.md): sent only after
+ * a sync got through, with every day queued since the last one. Both calls
+ * never reject; the catch is a backstop so a ping can never change the sync's
+ * result. A failed ping keeps its days for the next sync. Waits for it at most
+ * ACTIVITY_PING_MAX_WAIT_MS.
+ */
+async function pingActivity(db: WMDatabase, opened: Promise<void>): Promise<void> {
   const ping = opened
     .then(() => flushActivityDays(db, supabase, clientTag))
     .catch((error: unknown) => console.warn("[Sync] Activity ping failed:", error));
   await settleWithin(ping, ACTIVITY_PING_MAX_WAIT_MS);
-
-  return { remoteChangeCount };
 }
 
 /**
  * How long a sync waits for its activity ping before returning. A ping that
  * hasn't answered by then carries on in the background, and its days stay
- * queued until the server answers, so a stalled request can't hold the
- * in-flight latch below and delay the next sync's push.
+ * queued until the server answers, so a stalled request can't keep the caller
+ * that started the sync waiting.
  */
 export const ACTIVITY_PING_MAX_WAIT_MS = 10_000;
 
@@ -373,21 +377,25 @@ let syncGeneration = 0;
 export function resetSyncState(): void {
   syncGeneration += 1;
   inFlightSync = null;
+  // The activity ping is part of the sync: a mark or flush still running for
+  // this session must not write into the next user's queue either.
+  invalidateActivityDays();
 }
 
 export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
   // Every sync attempt, offline ones included, counts as opening the app
   // today (ADR-0085). Started before the latch check and not awaited here, so
-  // coalescing and resetSyncState work as before; runSync awaits it.
+  // coalescing and resetSyncState work as before; the ping below awaits it.
   const opened = markAppOpened(db);
   if (inFlightSync) {
     return inFlightSync;
   }
   const generation = syncGeneration;
-  const pending = runSync(db, opened);
+  const pending = runSync(db);
   inFlightSync = pending;
+  let result: SyncResult;
   try {
-    return await pending;
+    result = await pending;
   } finally {
     // Only clear the latch if it still points at THIS run and no reset (or
     // newer sync) superseded us — otherwise we'd null out a live sync.
@@ -395,4 +403,11 @@ export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
       inFlightSync = null;
     }
   }
+  // The latch is already free while the ping is out. A caller arriving now
+  // (sign-out's final sync, a follow-up pass for a local edit) runs its own
+  // synchronize() and pushes what changed since this push, instead of joining
+  // a sync whose push has already finished. A sync that resetSyncState
+  // superseded sends no ping: its session has ended.
+  if (syncGeneration === generation) await pingActivity(db, opened);
+  return result;
 }

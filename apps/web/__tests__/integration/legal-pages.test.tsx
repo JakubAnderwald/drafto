@@ -172,7 +172,7 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     const collected = sectionText(/Data We Collect/);
-    // Web: sessionStorage "drafto:activity-day" holds "<userId>:<day>".
+    // Web: sessionStorage "drafto:activity-day:<userId>" holds "<day>".
     expect(collected).toMatch(
       /the web app keeps a day marker \(your account ID and today's date\) so it records each usage day only once per browser session/,
     );

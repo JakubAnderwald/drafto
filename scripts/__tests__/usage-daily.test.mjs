@@ -727,6 +727,36 @@ describe("usage_daily: rollup_usage_daily (PGlite)", () => {
     );
   });
 
+  it("holds a lock keyed to its day until its transaction ends, so same-day runs can't overlap", async () => {
+    // PGlite has one connection, so two runs can't actually overlap here; this
+    // checks the lock a second run for the same day would wait on.
+    const locks = await db.transaction(async (tx) => {
+      await tx.exec("set local role service_role");
+      await tx.query("select public.rollup_usage_daily($1)", [D]);
+      await tx.exec("reset role");
+      return (
+        await tx.query(
+          `select l.classid::int as k1, l.objid::int as k2, l.mode, l.granted
+             from pg_locks l
+            where l.locktype = 'advisory' and l.objsubid = 2 and l.pid = pg_backend_pid()`,
+        )
+      ).rows;
+    });
+    const [{ k1, k2 }] = (
+      await db.query(
+        `select hashtext('public.rollup_usage_daily') as k1, $1::date - date '2000-01-01' as k2`,
+        [D],
+      )
+    ).rows;
+    assert.deepEqual(locks, [{ k1, k2, mode: "ExclusiveLock", granted: true }]);
+
+    // Released at commit.
+    const { rows: left } = await db.query(
+      "select count(*)::int as n from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()",
+    );
+    assert.equal(left[0].n, 0);
+  });
+
   it("can't be run by anon or authenticated", async () => {
     for (const role of ["anon", "authenticated"]) {
       await assert.rejects(

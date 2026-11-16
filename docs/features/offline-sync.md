@@ -47,15 +47,18 @@ holds the logic, identical on both apps.
   `lastSent` after today was sent while the device clock ran ahead, and the
   server dropped it as a future day, so marking a day forgets it.
   Then the real day isn't held back when it comes.
-- **Sending.** After `synchronize()` resolves, `runSync` waits for the mark,
-  then calls `flushActivityDays(db, supabase, clientTag)`. That sends the whole
-  queue through `record_activity` (`recordActivity` in `@drafto/shared`). On
-  success it reads the queue again, removes only the days it sent (a day marked
-  in the meantime stays), and moves `lastSent` to the newest day sent.
-  `runSync` waits for the ping at most `ACTIVITY_PING_MAX_WAIT_MS` (10 s). A
-  ping that hasn't answered by then carries on in the background with its days
-  still queued, so a stalled request can't hold the in-flight latch and delay
-  the next sync.
+- **Sending.** After `synchronize()` resolves, `syncDatabase()` frees the
+  in-flight latch, waits for the mark, then calls
+  `flushActivityDays(db, supabase, clientTag)`. That sends the whole queue
+  through `record_activity` (`recordActivity` in `@drafto/shared`). On success
+  it reads the queue again, removes only the days it sent (a day marked in the
+  meantime stays), and moves `lastSent` to the newest day sent. The caller that
+  started the sync waits for the ping at most `ACTIVITY_PING_MAX_WAIT_MS`
+  (10 s). A ping that hasn't answered by then carries on in the background with
+  its days still queued. Because the latch is already free, a sync started
+  while the ping is out (sign-out's final sync, a follow-up pass for a local
+  edit) runs its own `synchronize()` and pushes, rather than joining a sync
+  whose push has already finished.
 - **A failed ping never fails the sync.** The flush runs inside a try/catch and
   never rejects, so the sync's result doesn't change. It only logs a
   `console.warn`, because the native apps have no Sentry SDK. The queue is kept
@@ -66,7 +69,11 @@ holds the logic, identical on both apps.
 - **Per user.** `unsafeResetDatabase()` clears `localStorage` with the rest of
   the local database on sign-out and on an account switch
   (`providers/auth-provider.tsx`, `lib/data/local-identity.ts`), so one user's
-  days are never sent under another user's session.
+  days are never sent under another user's session. Before that reset,
+  sign-out's `resetSyncState()` calls `invalidateActivityDays()`: a mark or
+  flush started for the user signing out (a flush whose call is still out, say)
+  then writes nothing, so it can't put that user's days or `lastSent` into the
+  next user's queue. A sync that `resetSyncState()` superseded sends no ping.
 - **The tag.** `lib/supabase.ts` exports `clientTag`, the same value it sends as
   the `x-drafto-client` header: `mobile-ios`, `mobile-android` or
   `desktop-macos`. Mobile's fallback `mobile` (neither iOS nor Android) isn't a
@@ -176,12 +183,13 @@ it. This file is hand-maintained, not generated: when a column changes, update
   (or, on desktop, their approval) changes, the provider forgets the run, so the
   next user's `sync()` starts its own and the old one cannot report into the new
   session. This mirrors `resetSyncState()` for `syncDatabase()`.
-- The [activity ping](#activity-ping) never changes a sync's result, and holds
-  the latch at most `ACTIVITY_PING_MAX_WAIT_MS` after `synchronize()` resolved:
-  the day is marked without being awaited on entry, and the flush runs only
-  after `synchronize()` resolved, inside a try/catch, with `runSync` waiting for
-  it at most that long. Callers that coalesce in that window get a sync whose
-  push has already finished. Keep all three when touching `syncDatabase()` or
+- The [activity ping](#activity-ping) never changes a sync's result and never
+  holds the in-flight latch: the day is marked without being awaited on entry,
+  and the flush runs only after `synchronize()` resolved and the latch was
+  freed, inside a try/catch, with `syncDatabase()` waiting for it at most
+  `ACTIVITY_PING_MAX_WAIT_MS`. So a caller only ever coalesces onto a sync whose
+  push is still to come, and sign-out's final sync can't skip a note edited
+  while a ping was out. Keep all three when touching `syncDatabase()` or
   `runSync`.
 - Note `content` is a JSON column on Supabase and a stringified JSON column in
   WatermelonDB — round-trip with `JSON.parse` / `JSON.stringify` on every hop.

@@ -197,6 +197,11 @@ begin
   v_from := p_day::timestamp at time zone 'UTC';
   v_to := (p_day + 1)::timestamp at time zone 'UTC';
 
+  -- One rollup per day at a time: two overlapping calls for the same day (a
+  -- manual rerun during the nightly job) could each add step 3's untagged
+  -- counts onto a row the other had already filled. Released at commit.
+  perform pg_advisory_xact_lock(hashtext('public.rollup_usage_daily'), p_day - date '2000-01-01');
+
   -- 1. Start from zero, so reruns converge.
   update public.usage_daily u
   set content_changes = 0
