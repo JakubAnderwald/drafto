@@ -391,6 +391,13 @@ if [[ "$FACTORY_INTEST_BETA_REUSE" != "0" && "$FACTORY_INTEST_BETA_REUSE" != "1"
   echo "WARNING: invalid FACTORY_INTEST_BETA_REUSE='$FACTORY_INTEST_BETA_REUSE'; turning beta reuse off" >&2
   FACTORY_INTEST_BETA_REUSE=0
 fi
+# Never reuse a build older than this many days. TestFlight expires a build
+# after 90, so this leaves a tester a month to finish with one.
+FACTORY_INTEST_BETA_REUSE_MAX_DAYS="${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60}"
+if ! [[ "$FACTORY_INTEST_BETA_REUSE_MAX_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_INTEST_BETA_REUSE_MAX_DAYS='$FACTORY_INTEST_BETA_REUSE_MAX_DAYS'; defaulting to 60" >&2
+  FACTORY_INTEST_BETA_REUSE_MAX_DAYS=60
+fi
 
 # ── Browser runner (Claude in Chrome, ADR-0051) ────────────────────────────
 # On by default; FACTORY_BROWSER=0 in the plist turns it off. ONE kind of claude
@@ -3960,6 +3967,26 @@ lane_attempt_set() {
   echo "${out:+$out,}${lane}:${n}"
 }
 
+# lane_exit_epoch <file> — when <file> was last written, in seconds since the
+# epoch (GNU stat, then BSD), or now when neither can say.
+lane_exit_epoch() {
+  local t
+  t=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true)
+  [[ "$t" =~ ^[0-9]+$ ]] || t=$(date +%s)
+  echo "$t"
+}
+
+# intest_reuse_fresh <built-at-csv> <lane> — 0 when <lane>'s last successful
+# build (intestBetaBuiltAt, "mobile:<epoch>,…") finished less than
+# FACTORY_INTEST_BETA_REUSE_MAX_DAYS ago (ADR-0081). An unknown time is never
+# fresh: TestFlight expires builds after 90 days.
+intest_reuse_fresh() {
+  local at
+  at=$(lane_attempt_of "$1" "$2")
+  [[ "$at" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ $(( $(date +%s) - at )) -lt $(( ${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60} * 86400 )) ]]
+}
+
 # intest_reused_json <reused-csv> [<lanes-csv>] — intestBetaReused
 # ("mobile:<sha40>,…") as betaDispatch's reused list, [{id, fromSha, builds: []}],
 # keeping only <lanes-csv> when it is given. intest_reused_builds fills builds.
@@ -4001,7 +4028,7 @@ intest_check_lane_outcomes() {
   local state_json prior_sha prior_lanes prior_attempts dispatched_at lane exit_file
   local log_file_path code lane_attempt kept="" changed=0 give_up
   local reason new_attempts attempts_changed=0 lane_at_csv lane_started lane_age_min
-  local built reused built_changed=0
+  local built built_at reused built_changed=0
 
   state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" || echo "{}")
@@ -4011,6 +4038,7 @@ intest_check_lane_outcomes() {
   prior_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
   lane_at_csv=$(echo "$state_json" | jq -r '.intestBetaLaneAt // ""' 2>/dev/null || echo "")
   built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  built_at=$(echo "$state_json" | jq -r '.intestBetaBuiltAt // ""' 2>/dev/null || echo "")
   reused=$(echo "$state_json" | jq -r '.intestBetaReused // ""' 2>/dev/null || echo "")
   new_attempts="$prior_attempts"
   # Only meaningful for the commit currently under test.
@@ -4100,9 +4128,11 @@ intest_check_lane_outcomes() {
       code="${code:0:4}"
       if [[ "$code" == "0" ]]; then
         kept="${kept:+$kept,}$lane"          # succeeded — stay suppressed
-        # The lane's last successful build, which a later head may reuse (ADR-0081).
+        # The lane's last successful build, which a later head may reuse
+        # (ADR-0081), and when it finished, which caps how long it may be.
         if [[ "$(lane_attempt_of "$built" "$lane")" != "$sha" ]]; then
           built=$(lane_attempt_set "$built" "$lane" "$sha")
+          built_at=$(lane_attempt_set "$built_at" "$lane" "$(lane_exit_epoch "$exit_file")")
           built_changed=1
         fi
         # A retry that succeeds must retract its own failure notice. GitHub
@@ -4178,8 +4208,9 @@ Log on the build machine: \`$log_file_path\`
       intestBetaAttempts "$new_attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
   if [[ "$built_changed" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaBuilt "$built" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-fields "$issue_num" \
+      intestBetaBuilt "$built" intestBetaBuiltAt "$built_at" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
   fi
   return 0
 }
@@ -4195,18 +4226,24 @@ Log on the build machine: \`$log_file_path\`
 # no outcome check saw it. Anything else (no build, an API error, a rebase, too
 # many files) leaves the lane out, so it is dispatched as before.
 #
+# A build older than FACTORY_INTEST_BETA_REUSE_MAX_DAYS, or of unknown age, is
+# not reused either.
+#
 # Prints the reused lanes as intestBetaReused ("mobile:<built-sha40>,…").
-# When it compared anything it records the decision for the head: intestBetaSha
-# moves to the head with the previous head's lanes and retry budget cleared (a
-# new head drops those anyway), so later ticks read the decision back instead of
-# calling the API again. No lane is confirmed started, so the dispatch retry
-# stays armed. Logs via logerr only: the caller captures its stdout.
+# When it decided anything it records the decision for the head in ONE state
+# write: intestBetaSha moves to the head with the previous head's lanes and
+# retry budget cleared (a new head drops those anyway), so later ticks read the
+# decision back instead of calling the API again. No lane is confirmed started,
+# so the dispatch retry stays armed. Returns 1 when that write fails: nothing is
+# recorded then, and the caller must not dispatch this tick. Logs via logerr
+# only: the caller captures its stdout.
 intest_beta_reuse_decide() {
   local issue_num="$1" sha="$2" lanes="$3" state_json="$4"
-  local built prev_sha prev_lanes prev_attempts lane from n exit_file code cmp="" cmp_from="" status count verdict
-  local reused="" evaluated=0 built_changed=0
+  local built built_at prev_sha prev_lanes prev_attempts lane from n exit_file code cmp="" cmp_from="" status count verdict
+  local reused="" evaluated=0 built_changed=0 fields=()
   [[ "${FACTORY_INTEST_BETA_REUSE:-1}" == "1" && "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
   built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  built_at=$(echo "$state_json" | jq -r '.intestBetaBuiltAt // ""' 2>/dev/null || echo "")
   prev_sha=$(echo "$state_json" | jq -r '.intestBetaSha // ""' 2>/dev/null || echo "")
   prev_lanes=$(echo "$state_json" | jq -r '.intestBetaLanes // ""' 2>/dev/null || echo "")
   prev_attempts=$(echo "$state_json" | jq -r '.intestBetaAttempts // ""' 2>/dev/null || echo "")
@@ -4219,6 +4256,7 @@ intest_beta_reuse_decide() {
       code=$(tr -cd '0-9' <"$exit_file" 2>/dev/null || true)
       [[ "$code" == "0" && "$(lane_attempt_of "$built" "$lane")" != "$prev_sha" ]] || continue
       built=$(lane_attempt_set "$built" "$lane" "$prev_sha")
+      built_at=$(lane_attempt_set "$built_at" "$lane" "$(lane_exit_epoch "$exit_file")")
       built_changed=1
     done
   fi
@@ -4226,6 +4264,10 @@ intest_beta_reuse_decide() {
     from=$(lane_attempt_of "$built" "$lane")
     [[ "$from" =~ ^[0-9a-f]{40}$ ]] || continue
     evaluated=1
+    if ! intest_reuse_fresh "$built_at" "$lane"; then
+      logerr "Issue #$issue_num: the $lane beta from ${from:0:12} is over ${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60} days old, or of unknown age; building it again"
+      continue
+    fi
     if [[ "$from" != "$sha" ]]; then
       # One line each: the status, the file count, then every path, a rename's
       # old one too (a file moved out of the lane's app changes the lane). Both
@@ -4263,24 +4305,49 @@ intest_beta_reuse_decide() {
   done
   if [[ "$DRY_RUN" -eq 0 ]]; then
     if [[ "$built_changed" -eq 1 ]]; then
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-        intestBetaBuilt "$built" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      fields+=(intestBetaBuilt "$built" intestBetaBuiltAt "$built_at")
     fi
     if [[ "$evaluated" -eq 1 ]]; then
-      # intestBetaSha LAST: the others are only read under a matching SHA, so a
-      # write lost or cut short before it leaves the old head's record, never
-      # the old head's lanes filed under the new one.
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-        intestBetaLanes "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-        intestBetaAttempts "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-        intestBetaReused "$reused" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-        intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      fields+=(intestBetaLanes "" intestBetaAttempts "" intestBetaReused "$reused" intestBetaSha "$sha")
+    fi
+    # One load-modify-save, so the decision lands whole or not at all.
+    if [[ ${#fields[@]} -gt 0 ]] \
+        && ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-fields "$issue_num" "${fields[@]}" \
+          --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
+        && [[ "$evaluated" -eq 1 ]]; then
+      logerr "WARNING: Issue #$issue_num: couldn't record the beta reuse decision for ${sha:0:12}; dispatching nothing this tick"
+      echo "$reused"
+      return 1
     fi
   fi
   echo "$reused"
+}
+
+# intest_reused_drop_stale <issue> <reused-csv> <state-json> — <reused-csv>
+# without the lanes whose build may no longer be tested: it is no longer the
+# lane's last successful build, or it is over FACTORY_INTEST_BETA_REUSE_MAX_DAYS
+# old. A reused build ages while its head waits in In Test, so the dispatch
+# checks this on every tick, not only when it decides. A dropped lane is
+# written back at once (the verification report reads the field), and is then
+# dispatched as missing. Logs via logerr only: the caller captures its stdout.
+intest_reused_drop_stale() {
+  local issue_num="$1" reused="$2" state_json="$3" built built_at pair lane from kept=""
+  built=$(echo "$state_json" | jq -r '.intestBetaBuilt // ""' 2>/dev/null || echo "")
+  built_at=$(echo "$state_json" | jq -r '.intestBetaBuiltAt // ""' 2>/dev/null || echo "")
+  for pair in $(echo "$reused" | tr ',' ' '); do
+    lane="${pair%%:*}"
+    from="${pair#*:}"
+    if [[ "$(lane_attempt_of "$built" "$lane")" == "$from" ]] && intest_reuse_fresh "$built_at" "$lane"; then
+      kept="${kept:+$kept,}$pair"
+    else
+      logerr "Issue #$issue_num: the reused $lane beta from ${from:0:12} is over ${FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60} days old or no longer its last build; building it again"
+    fi
+  done
+  if [[ "$kept" != "$reused" && "$DRY_RUN" -eq 0 ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
+      intestBetaReused "$kept" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
+  echo "$kept"
 }
 
 # Dispatch pre-merge beta builds for an In Test card, so a native change is
@@ -4370,8 +4437,23 @@ intest_dispatch_betas() {
   if [[ -z "$sha" || "$prior_sha" != "$sha" ]]; then
     prior_lanes=""
     prior_attempts=""
-    # …and decides, once, which lanes the new commit can reuse.
-    reused_csv=$(intest_beta_reuse_decide "$issue_num" "$sha" "$lanes" "$state_json")
+    # …and decides, once, which lanes the new commit can reuse. A decision that
+    # couldn't be recorded starts nothing: lanes started now would be filed
+    # beside the previous head's record. The next tick decides again.
+    if ! reused_csv=$(intest_beta_reuse_decide "$issue_num" "$sha" "$lanes" "$state_json"); then
+      reused_json=$(intest_reused_json "$reused_csv" "$lanes")
+      jq -nc --arg lanes "$lanes" --arg reused "$reused_csv" --argjson skipped "$skipped_json" \
+        --argjson manual "$manual" --argjson reusedList "$reused_json" '
+        { dispatched: [],
+          skipped: ($skipped + [ $lanes | split(",")[] | select(length > 0)
+                     | select(. as $l | ("," + $reused + ",") | contains("," + $l + ":") | not)
+                     | { id: ., reason: "state-write-failed, retrying next tick" } ]),
+          manualCommands: $manual, reused: $reusedList }'
+      return 0
+    fi
+  elif [[ -n "$reused_csv" ]]; then
+    # A reused build ages while its head waits, so it is re-checked each tick.
+    reused_csv=$(intest_reused_drop_stale "$issue_num" "$reused_csv" "$state_json")
   fi
   reused_json=$(intest_reused_json "$reused_csv" "$lanes")
 
@@ -4484,24 +4566,11 @@ intest_dispatch_betas() {
     done < <(echo "$dispatch_json" | jq -r '.dispatched[]? | "\(.id)\t\(.pid // "")"' 2>/dev/null || true)
     merged_lanes=$(printf '%s\n%s\n' "${prior_lanes//,/$'\n'}" "${confirmed_csv//,/$'\n'}" \
       | grep -v '^$' | sort -u | paste -sd, -)
-    # Rewritten before the SHA, as intest_beta_reuse_decide does, so a value
-    # left by an earlier commit (or by reuse before FACTORY_INTEST_BETA_REUSE
-    # was turned off) is never read for this one.
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaReused "$reused_csv" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaSha "$sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaLanes "$merged_lanes" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     new_attempts="$prior_attempts"
     for want in $(echo "$confirmed_csv" | tr ',' ' '); do
       [[ -n "$want" ]] || continue
       new_attempts=$(lane_attempt_set "$new_attempts" "$want" "$lane_attempt")
     done
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaAttempts "$new_attempts" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
     # Per-lane start time, for the FACTORY_LANE_MAX_MIN cap. Only the lanes
     # started NOW are stamped; a sibling still building keeps its own clock.
     new_lane_at=$(echo "$state_json" | jq -r '.intestBetaLaneAt // ""' 2>/dev/null || echo "")
@@ -4509,8 +4578,19 @@ intest_dispatch_betas() {
       [[ -n "$want" ]] || continue
       new_lane_at=$(lane_attempt_set "$new_lane_at" "$want" "$(date +%s)")
     done
-    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
-      intestBetaLaneAt "$new_lane_at" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    # One load-modify-save, so the SHA never lands without its lanes, budget
+    # and reuse record (ADR-0081): intestBetaReused is rewritten with it, so a
+    # value left by an earlier commit, or by reuse before
+    # FACTORY_INTEST_BETA_REUSE was turned off, is never read for this one.
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-fields "$issue_num" \
+      intestBetaReused "$reused_csv" \
+      intestBetaSha "$sha" \
+      intestBetaAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      intestBetaLanes "$merged_lanes" \
+      intestBetaAttempts "$new_attempts" \
+      intestBetaLaneAt "$new_lane_at" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
+      || logerr "WARNING: Issue #$issue_num: couldn't record the beta lane(s) started at ${sha:0:12}; the next tick may start them again"
   else
     # Nothing started — deliberately record NO SHA, so the next tick retries.
     logerr "WARNING: pre-merge beta dispatch started no lanes for #$issue_num; leaving retry armed"

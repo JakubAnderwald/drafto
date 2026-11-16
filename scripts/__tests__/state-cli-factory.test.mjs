@@ -397,6 +397,7 @@ describe("factory:set-issue-field / get-issue", () => {
     const sha = "a".repeat(40);
     for (const [field, value] of [
       ["intestBetaBuilt", `mobile:${sha},desktop:${sha}`],
+      ["intestBetaBuiltAt", "mobile:1700000000,desktop:1700000000"],
       ["intestBetaReused", `mobile:${sha}`],
     ]) {
       let r = run(["factory:set-issue-field", "42", field, value, "--state-file", stateFile]);
@@ -408,7 +409,57 @@ describe("factory:set-issue-field / get-issue", () => {
     }
     const fresh = JSON.parse(run(["factory:get-issue", "999", "--state-file", stateFile]).stdout);
     assert.equal(fresh.intestBetaBuilt, null);
+    assert.equal(fresh.intestBetaBuiltAt, null);
     assert.equal(fresh.intestBetaReused, null);
+  });
+
+  it("factory:set-issue-fields writes several fields in one save, all or none", () => {
+    // The beta reuse decision (ADR-0081) moves intestBetaSha with the fields it
+    // keys; a partial write would file one head's record under another.
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ issues: { 42: { intestBetaSha: "old", intestBetaLanes: "mobile" } } }),
+    );
+    let r = run([
+      "factory:set-issue-fields",
+      "42",
+      "intestBetaLanes",
+      "",
+      "intestBetaReused",
+      "mobile:x",
+      "intestBetaSha",
+      "new",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    let issue = readState().issues["42"];
+    assert.deepEqual(
+      [issue.intestBetaSha, issue.intestBetaLanes, issue.intestBetaReused],
+      ["new", null, "mobile:x"],
+    );
+    // One unknown field rejects the whole call before anything is written.
+    r = run([
+      "factory:set-issue-fields",
+      "42",
+      "intestBetaSha",
+      "newer",
+      "intestBetaBogus",
+      "1",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /unknown field intestBetaBogus/);
+    assert.equal(readState().issues["42"].intestBetaSha, "new");
+    // A field without a value, or no field at all, is a usage error.
+    for (const args of [["42", "intestBetaSha"], ["42"], []]) {
+      r = run(["factory:set-issue-fields", ...args, "--state-file", stateFile]);
+      assert.notEqual(r.status, 0, JSON.stringify(args));
+      assert.match(r.stderr, /requires <issue> <field> <value>/);
+    }
+    issue = readState().issues["42"];
+    assert.equal(issue.intestBetaSha, "new");
   });
 
   it("accepts and resets the behind-main update budget (ADR-0070)", () => {

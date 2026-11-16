@@ -11,6 +11,7 @@ import {
   statSync,
   utimesSync,
   existsSync,
+  chmodSync,
   realpathSync,
 } from "node:fs";
 import { dirname, resolve, join } from "node:path";
@@ -1006,6 +1007,7 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
     path = process.env.PATH,
     env = {},
     extraState = {},
+    exitMtime = null,
   }) => {
     const dir = mkdtempSync(join(tmpdir(), "drafto-outcome-"));
     const stateFile = join(dir, "state.json");
@@ -1041,12 +1043,16 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
       utimesSync(base, old, old);
     }
     if (exitContent !== undefined) writeFileSync(`${base}.exit`, exitContent);
+    if (exitContent !== undefined && exitMtime !== null) {
+      utimesSync(`${base}.exit`, exitMtime, exitMtime);
+    }
     for (const [name, body] of Object.entries(decoys ?? {})) writeFileSync(join(dir, name), body);
     const snippet = `
 set -uo pipefail
 eval "$(awk '/^iso_age_min\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^lane_attempt_of\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^lane_attempt_set\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+eval "$(awk '/^lane_exit_epoch\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^kill_lane_holding_log\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^intest_check_lane_outcomes\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 log() { echo "[log] $*"; }
@@ -1503,10 +1509,17 @@ cat "$STATE_FILE"
 
   // ADR-0081: the last successful build per lane is what a later head reuses.
   it("records a succeeded lane's commit as its last successful build", () => {
-    const r = run({ exitContent: "0\n", extraState: { intestBetaBuilt: "desktop:old" } });
+    const finished = 1_700_000_000;
+    const r = run({
+      exitContent: "0\n",
+      exitMtime: finished,
+      extraState: { intestBetaBuilt: "desktop:old", intestBetaBuiltAt: "desktop:5" },
+    });
     assert.equal(r.status, 0, r.stderr);
     const issue = JSON.parse(readFileSync(r.stateFile, "utf8")).issues["463"];
     assert.equal(issue.intestBetaBuilt, "desktop:old,mobile:abc123");
+    // When it finished (its .exit's mtime): reuse stops once it is too old.
+    assert.equal(issue.intestBetaBuiltAt, `desktop:5,mobile:${finished}`);
     assert.equal(issue.intestBetaLanes, "mobile", "still suppressed");
     rmSync(r.dir, { recursive: true, force: true });
     for (const [exitContent, dryRun] of [
@@ -1807,10 +1820,19 @@ node() {
   const FNS = [
     "lane_attempt_of",
     "lane_attempt_set",
+    "lane_exit_epoch",
+    "intest_reuse_fresh",
     "intest_reused_json",
     "intest_beta_reuse_decide",
+    "intest_reused_drop_stale",
     "intest_dispatch_betas",
   ];
+  // "mobile:<sha>,…" → the same lanes, finished <daysAgo> days ago.
+  const builtAt = (csv, daysAgo = 0.05) =>
+    csv
+      .split(",")
+      .map((p) => `${p.split(":")[0]}:${Math.floor(Date.now() / 1000 - daysAgo * 86400)}`)
+      .join(",");
 
   // compare: {"<from>...<to>": response JSON}; exits: {"<file name>": content}.
   function run(
@@ -1819,21 +1841,36 @@ node() {
       state = {},
       compare = {},
       exits = {},
+      exitTimes = {},
       lanes = "mobile",
       knob = "1",
+      maxDays = "60",
       dryRun = 0,
       ticks = 1,
+      lockState = false,
     } = {},
   ) {
     const dir = mkdtempSync(join(tmpdir(), "drafto-reuse-"));
-    const stateFile = join(dir, "state.json");
+    // Its own directory, so lockState can make every save fail.
+    const stateDir = join(dir, "st");
+    mkdirSync(stateDir);
+    const stateFile = join(stateDir, "state.json");
     const respDir = join(dir, "resp");
     mkdirSync(respDir);
-    writeFileSync(stateFile, JSON.stringify({ issues: { 463: state } }));
+    // A recorded build is a fresh one unless the case says otherwise.
+    const issue =
+      state.intestBetaBuilt && !("intestBetaBuiltAt" in state)
+        ? { ...state, intestBetaBuiltAt: builtAt(state.intestBetaBuilt) }
+        : state;
+    writeFileSync(stateFile, JSON.stringify({ issues: { 463: issue } }));
+    if (lockState) chmodSync(stateDir, 0o555);
     for (const [key, body] of Object.entries(compare)) {
       writeFileSync(join(respDir, `${key}.json`), JSON.stringify(body));
     }
-    for (const [name, body] of Object.entries(exits)) writeFileSync(join(dir, name), body);
+    for (const [name, body] of Object.entries(exits)) {
+      writeFileSync(join(dir, name), body);
+      if (exitTimes[name]) utimesSync(join(dir, name), exitTimes[name], exitTimes[name]);
+    }
     const snippet = `
 set -euo pipefail
 ${FNS.map((f) => `eval "$(awk '/^${f}\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"`).join("\n")}
@@ -1848,6 +1885,7 @@ GATE_LANES=${JSON.stringify(lanes)}
 DRY_RUN=${dryRun}
 REPO_ROOT=${JSON.stringify(dir)}
 FACTORY_INTEST_BETA_REUSE=${JSON.stringify(knob)}
+FACTORY_INTEST_BETA_REUSE_MAX_DAYS=${JSON.stringify(maxDays)}
 touch "$CALLS" "$LOG_FILE"
 state() { command node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 463 --state-file "$STATE_FILE"; }
 for _tick in $(seq ${ticks}); do
@@ -1864,6 +1902,7 @@ done
       calls: read("calls"),
       issue: JSON.parse(readFileSync(stateFile, "utf8")).issues["463"],
     };
+    chmodSync(stateDir, 0o755);
     rmSync(dir, { recursive: true, force: true });
     assert.equal(out.status, 0, `${out.stderr}\n--- log ---\n${out.log}`);
     return out;
@@ -1965,6 +2004,7 @@ done
     });
 
     it("adopts the previous head's lane that finished after the last outcome check", () => {
+      const finished = Math.floor(Date.now() / 1000) - 3600;
       const r = run(decide(), {
         state: {
           intestBetaSha: PREV,
@@ -1972,10 +2012,12 @@ done
           intestBetaAttempts: "mobile:2",
         },
         exits: { [`beta-lane-mobile-463-${PREV.slice(0, 12)}-a2.log.exit`]: "0\n" },
+        exitTimes: { [`beta-lane-mobile-463-${PREV.slice(0, 12)}-a2.log.exit`]: finished },
         compare: { [`${PREV}...${HEAD}`]: ahead("docs/a.md") },
       });
       assert.equal(result(r), `mobile:${PREV}`);
       assert.equal(r.issue.intestBetaBuilt, `mobile:${PREV}`);
+      assert.equal(r.issue.intestBetaBuiltAt, `mobile:${finished}`, "when its .exit was written");
       // A failed or unfinished one is not a build.
       for (const exits of [
         { [`beta-lane-mobile-463-${PREV.slice(0, 12)}-a2.log.exit`]: "1\n" },
@@ -2007,6 +2049,98 @@ done
         assert.deepEqual(compares(r), [], JSON.stringify(opts));
         assert.equal(r.issue.intestBetaSha ?? null, null, JSON.stringify(opts));
       }
+    });
+
+    it("never reuses a build past FACTORY_INTEST_BETA_REUSE_MAX_DAYS, or of unknown age", () => {
+      const docsOnly = { [`${OLD}...${HEAD}`]: ahead("docs/a.md") };
+      for (const [why, opts] of [
+        [
+          "61 days old",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 61),
+            },
+          },
+        ],
+        ["unknown age", { state: { intestBetaBuilt: `mobile:${OLD}`, intestBetaBuiltAt: null } }],
+        [
+          "another lane's age",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`desktop:${OLD}`),
+            },
+          },
+        ],
+        [
+          "8 days old, limit 7",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 8),
+            },
+            maxDays: "7",
+          },
+        ],
+      ]) {
+        const r = run(decide(), { ...opts, compare: docsOnly });
+        assert.equal(result(r), "", why);
+        assert.match(
+          r.log,
+          /beta from aaaaaaaaaaaa is over \d+ days old, or of unknown age; building it again/,
+          why,
+        );
+        assert.deepEqual(compares(r), [], `${why}: no API call for a build it won't reuse`);
+        assert.equal(r.issue.intestBetaSha, HEAD, `${why}: decided once`);
+      }
+      for (const [why, opts] of [
+        [
+          "59 days old",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 59),
+            },
+          },
+        ],
+        [
+          "6 days old, limit 7",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 6),
+            },
+            maxDays: "7",
+          },
+        ],
+      ]) {
+        assert.equal(result(run(decide(), { ...opts, compare: docsOnly })), `mobile:${OLD}`, why);
+      }
+    });
+
+    it("records nothing, and says so, when its one state write fails", () => {
+      const r = run(
+        `if intest_beta_reuse_decide 463 ${HEAD} mobile "$(state)" >/dev/null; then echo RC=0; else echo RC=1; fi`,
+        {
+          state: {
+            intestBetaBuilt: `mobile:${OLD}`,
+            intestBetaSha: PREV,
+            intestBetaLanes: "mobile",
+          },
+          compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md") },
+          lockState: true,
+        },
+      );
+      assert.match(r.stdout, /^RC=1$/m);
+      assert.match(
+        r.log,
+        /couldn't record the beta reuse decision for cccccccccccc; dispatching nothing this tick/,
+      );
+      // All or nothing: the previous head's record is untouched.
+      assert.equal(r.issue.intestBetaSha, PREV);
+      assert.equal(r.issue.intestBetaLanes, "mobile");
+      assert.equal(r.issue.intestBetaReused ?? null, null);
     });
 
     it("writes nothing under --dry-run", () => {
@@ -2093,12 +2227,80 @@ done
       assert.equal(r.issue.intestBetaLanes, "mobile");
     });
 
+    it("starts nothing when the reuse decision couldn't be recorded", () => {
+      const r = run(dispatch, {
+        lanes: "mobile,desktop",
+        state: { intestBetaBuilt: `mobile:${OLD}`, intestBetaSha: PREV },
+        compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md") },
+        lockState: true,
+      });
+      const [o] = out(r);
+      assert.deepEqual(o.dispatched, []);
+      assert.deepEqual(
+        o.reused.map((d) => d.id),
+        ["mobile"],
+      );
+      assert.deepEqual(o.skipped, [
+        { id: "desktop", reason: "state-write-failed, retrying next tick" },
+      ]);
+      assert.doesNotMatch(r.calls, /^root |dispatch-premerge/m);
+      assert.equal(r.issue.intestBetaSha, PREV);
+    });
+
+    it("rebuilds a reused lane once its build grows too old, or stops being the last one", () => {
+      for (const [why, state] of [
+        [
+          "61 days old",
+          { intestBetaBuilt: `mobile:${OLD}`, intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 61) },
+        ],
+        ["a newer build since", { intestBetaBuilt: `mobile:${PREV}` }],
+      ]) {
+        const r = run(dispatch, {
+          state: {
+            ...state,
+            intestBetaSha: HEAD,
+            intestBetaReused: `mobile:${OLD}`,
+            intestBetaLanes: "",
+          },
+        });
+        const [o] = out(r);
+        assert.deepEqual(
+          o.dispatched.map((d) => d.id),
+          ["mobile"],
+          why,
+        );
+        assert.deepEqual(o.reused, [], why);
+        assert.match(
+          r.log,
+          /reused mobile beta from aaaaaaaaaaaa is over 60 days old or no longer its last build/,
+          why,
+        );
+        assert.equal(r.issue.intestBetaReused ?? null, null, why);
+        assert.equal(r.issue.intestBetaLanes, "mobile", why);
+      }
+      // Still fresh: kept, nothing built.
+      const kept = run(dispatch, {
+        state: {
+          intestBetaBuilt: `mobile:${OLD}`,
+          intestBetaSha: HEAD,
+          intestBetaReused: `mobile:${OLD}`,
+          intestBetaLanes: "",
+        },
+      });
+      assert.deepEqual(
+        out(kept)[0].reused.map((d) => d.id),
+        ["mobile"],
+      );
+      assert.doesNotMatch(kept.calls, /dispatch-premerge/);
+    });
+
     it("reports a reused lane only while the gate still lets it through", () => {
       const r = run(dispatch, {
         lanes: "mobile",
         state: {
           intestBetaSha: HEAD,
           intestBetaReused: `mobile:${OLD},desktop:${OLD}`,
+          intestBetaBuilt: `mobile:${OLD},desktop:${OLD}`,
           intestBetaLanes: "",
         },
       });
@@ -2359,12 +2561,56 @@ describe("beta reuse wiring (ADR-0081)", () => {
     assert.ok(reusedWrite !== -1 && reusedWrite < shaWrite && shaWrite < elseIdx);
   });
 
-  it("records a reuse decision with intestBetaSha written last", () => {
+  it("records a reuse decision in one state write, all of it or none", () => {
     const body = fnBody("intest_beta_reuse_decide");
-    const sha = body.indexOf('intestBetaSha "$sha"');
-    for (const w of ['intestBetaLanes ""', 'intestBetaAttempts ""', 'intestBetaReused "$reused"']) {
-      const i = body.indexOf(w);
-      assert.ok(i !== -1 && i < sha, w);
+    assert.equal(body.split("state-cli.mjs").length - 1, 1, "exactly one state-cli call");
+    assert.match(body, /factory:set-issue-fields "\$issue_num" "\$\{fields\[@\]\}"/);
+    assert.match(
+      body,
+      /fields\+=\(intestBetaLanes "" intestBetaAttempts "" intestBetaReused "\$reused" intestBetaSha "\$sha"\)/,
+    );
+    // Its failure is acted on, never swallowed.
+    assert.doesNotMatch(body, /--state-file "\$STATE_FILE" >>"\$LOG_FILE" 2>&1 \|\| true/);
+    // The dispatch's own record of what it started is one write too.
+    const dispatch = fnBody("intest_dispatch_betas");
+    assert.equal(
+      (dispatch.match(/factory:set-issue-fields? /g) || []).length,
+      1,
+      "the success branch writes once",
+    );
+    assert.match(
+      dispatch,
+      /factory:set-issue-fields "\$issue_num" \\\n\s+intestBetaReused "\$reused_csv"/,
+    );
+  });
+
+  it("defines a validated maximum age for a reused build, 60 days by default", () => {
+    assert.match(
+      script,
+      /^FACTORY_INTEST_BETA_REUSE_MAX_DAYS="\$\{FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60\}"$/m,
+    );
+    const block = script.slice(
+      script.indexOf('FACTORY_INTEST_BETA_REUSE_MAX_DAYS="'),
+      script.indexOf("fi\n", script.indexOf('FACTORY_INTEST_BETA_REUSE_MAX_DAYS="')) + 3,
+    );
+    for (const [value, want] of [
+      ["", "60"],
+      ["7", "7"],
+      ["0", "60"],
+      ["-3", "60"],
+      ["sixty", "60"],
+    ]) {
+      const r = spawnSync(
+        "bash",
+        ["-c", `set -u\n${block}\necho "$FACTORY_INTEST_BETA_REUSE_MAX_DAYS"`],
+        {
+          encoding: "utf8",
+          env: { PATH: process.env.PATH, FACTORY_INTEST_BETA_REUSE_MAX_DAYS: value },
+        },
+      );
+      assert.equal(r.stdout.trim(), want, value);
+      if (want !== value && value !== "")
+        assert.match(r.stderr, /invalid FACTORY_INTEST_BETA_REUSE_MAX_DAYS/);
     }
   });
 
@@ -2373,7 +2619,7 @@ describe("beta reuse wiring (ADR-0081)", () => {
     // Every jq that prints the payload after the decision carries them.
     const after = body.slice(body.indexOf("reused_json=$(intest_reused_json"));
     const outputs = after.match(/manualCommands: (?:\$manual|\[\])[^}]*\}/g) || [];
-    assert.equal(outputs.length, 5, outputs.join("\n"));
+    assert.equal(outputs.length, 6, outputs.join("\n"));
     for (const o of outputs) assert.match(o, /reused: \$reused/);
   });
 
