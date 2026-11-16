@@ -395,7 +395,7 @@ describe("resume prompt (ADR-0084)", () => {
   it("says why the session stopped and that waited-on work is gone", () => {
     assert.match(
       rflat,
-      /bash killed it at the wall-clock cap, or you ended it yourself with `action=incomplete`/,
+      /bash killed it at the wall-clock cap, the shared Claude subscription hit its usage limit, or you ended it yourself with `action=incomplete`/,
     );
     assert.match(rflat, /any Workflow or background agent you were waiting on is gone/);
   });
@@ -429,7 +429,10 @@ describe("resume prompt (ADR-0084)", () => {
       resume,
       /issue=<n> action=<implemented\|noop\|declined\|blocked\|incomplete> pr=<url\|->/,
     );
-    assert.match(rflat, /Bash will not resume this session again/);
+    assert.match(
+      rflat,
+      /If this run runs out of time too, bash will not resume this session again/,
+    );
     assert.match(rflat, /check that `git rev-parse HEAD` equals the PR's `headRefOid`/);
   });
 });

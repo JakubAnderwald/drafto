@@ -115,6 +115,33 @@ describe("implement resume: wiring in the --implement block", () => {
     );
   });
 
+  it("records a session the limit stopped, resumed or not, before pausing", () => {
+    const branch = slice(
+      'if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO" "$IMPL_SESSION_ID"; then',
+      "        exit 0\n",
+    );
+    const mark = branch.indexOf("implement_mark_resumable ");
+    assert.ok(mark !== -1 && mark < branch.indexOf("pause_for_session_limit"));
+    assert.match(branch, /"\$PRE_HEAD_OID" "\$PRE_HEAD_KNOWN" "session limit"\n/);
+    assert.doesNotMatch(branch, /IMPL_RESUMED/, "a resumed run is recorded again after a limit");
+    assert.doesNotMatch(branch, /bump-attempts/);
+  });
+
+  it("spends an attempt when the worktree diverged from the PR branch, so the card can reach Blocked", () => {
+    const branch = slice("WT_DIVERGED=0\n", '    fi\n    cat "$WT_ERR_FILE"');
+    assert.match(branch, /grep -q 'has diverged from' "\$WT_ERR_FILE"/);
+    assert.ok(
+      branch.indexOf("WT_DIVERGED=1") < branch.indexOf("worktree_cli_error"),
+      "read the error before worktree_cli_error deletes the file",
+    );
+    assert.match(
+      branch,
+      /if \[\[ "\$WT_DIVERGED" -eq 1 \]\]; then\n[^\n]*has diverged[^\n]*\n\s*node "\$SCRIPT_DIR\/lib\/state-cli\.mjs" factory:bump-attempts "\$ISSUE_NUM"/,
+    );
+    // Any other add failure (origin unreachable…) still spends nothing.
+    assert.equal(branch.split("bump-attempts").length - 1, 1);
+  });
+
   it("gives action=incomplete its own arm: resumable when fresh, attempt spent", () => {
     const arm = slice("      incomplete)\n", "        ;;\n");
     assert.match(arm, /action=incomplete\); keeping slot \$SLOT for retry/);
@@ -260,6 +287,18 @@ describe("implement_runtime_facts (real helper)", () => {
       });
       const t = JSON.parse(tiny.stdout);
       assert.equal(t.softDeadlineAt, t.hardDeadlineAt);
+    });
+  });
+
+  it("reports null counts, not 0, when git can't read the worktree", () => {
+    withDir((dir) => {
+      const notGit = join(dir, "plain");
+      mkdirSync(notGit);
+      const r = harness(dir, `implement_runtime_facts 1763294400 0 '{"reused":true}' "${notGit}"`);
+      assert.equal(r.status, 0, r.stderr + r.log);
+      const facts = JSON.parse(r.stdout);
+      assert.equal(facts.worktree.unpushedCommits, null);
+      assert.equal(facts.worktree.uncommittedChanges, null);
     });
   });
 

@@ -1238,7 +1238,7 @@ An `--implement` run gets a Claude session id and a **Run-time facts** block wit
 - the transcript exists;
 - the record is younger than `FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN`.
 
-Every implement start clears the record, so a chain resumes at most once. A resumed run keeps the first run's PR head as its baseline, so what it pushed before the cap counts. A resume that ends within 3 minutes without the model answering spends no attempt, and the next tick runs fresh.
+A run the session limit stops is recorded too, resumed or not, and spends no attempt; the run after the reset resumes it. Every implement start clears the record, so a timeout chain resumes at most once. A resumed run keeps the first run's PR head as its baseline, so what it pushed before the cap counts. A resume that ends within 3 minutes without the model answering spends no attempt, and the next tick runs fresh.
 
 ```bash
 # The record and the latest session id for a card:
@@ -1248,6 +1248,8 @@ node scripts/lib/state-cli.mjs factory:implement-resume-clear <n>
 # Read a session's transcript:
 ls ~/.claude/projects/*/<session-id>.jsonl
 ```
+
+A stopped run's unpushed `chore(wip)` commits plus a push to the PR branch leave the worktree diverged (`worktree add failed … has diverged`). Each such tick spends an attempt, so the card ends in Blocked; merge or rebase `factory/issue-<n>` by hand, reset the attempts and drag it back.
 
 To turn resuming off, set `FACTORY_IMPLEMENT_RESUME=0` in the plist. The deadline facts and the prompt's Time budget stay. See [ADR-0084](../adr/0084-factory-implement-deadline-and-resume.md).
 

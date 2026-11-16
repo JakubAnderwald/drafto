@@ -64,6 +64,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { SESSION_ID_RE } from "./session-limit.mjs";
 
 export const DEFAULT_FACTORY_STATE_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -612,16 +613,22 @@ export const PLAN_PROBE_ISSUE_FIELDS = Object.freeze([
   "planProbeFoldAttempts",
 ]);
 
-// The --implement resume record (ADR-0084), documented in emptyIssue. One list
-// feeds the setter allowlist and clearImplementResume, so a key added later
-// can't be writable yet survive a clear.
-export const IMPLEMENT_RESUME_ISSUE_FIELDS = Object.freeze([
-  "implementSessionId",
+// The --implement resume record (ADR-0084), documented in emptyIssue: the keys
+// setImplementResume writes and clearImplementResume nulls, all together.
+export const IMPLEMENT_RESUME_RECORD_FIELDS = Object.freeze([
   "implementResumeSession",
   "implementResumeHead",
   "implementResumeKey",
   "implementResumePreHead",
   "implementResumeAt",
+]);
+
+// Every --implement session key: the record plus the latest run's session id.
+// One list feeds the setter allowlist, so a key added to the record later can't
+// be writable yet survive a clear.
+export const IMPLEMENT_RESUME_ISSUE_FIELDS = Object.freeze([
+  "implementSessionId",
+  ...IMPLEMENT_RESUME_RECORD_FIELDS,
 ]);
 
 // Allowed issue fields a CLI caller may mutate. Restricting the set keeps
@@ -730,7 +737,6 @@ export function setIssueField(state, issueNumber, field, value) {
 // decideResume says that is safe. The record is all-or-nothing: set writes
 // every key, clear nulls every key, so a half-written record can't be resumed.
 
-const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 
 export function setImplementResume(state, issueNumber, { session, head, key, preHead, now }) {
@@ -756,12 +762,7 @@ export function setImplementResume(state, issueNumber, { session, head, key, pre
   issue.implementResumeKey = key;
   issue.implementResumePreHead = pre === "" ? null : pre;
   issue.implementResumeAt = new Date(Date.parse(now)).toISOString();
-  return Object.fromEntries(
-    IMPLEMENT_RESUME_ISSUE_FIELDS.filter((f) => f !== "implementSessionId").map((f) => [
-      f,
-      issue[f],
-    ]),
-  );
+  return Object.fromEntries(IMPLEMENT_RESUME_RECORD_FIELDS.map((f) => [f, issue[f]]));
 }
 
 // Forget the resume record (the five implementResume* keys). With <sessionId>,
@@ -772,9 +773,8 @@ export function clearImplementResume(state, issueNumber, { sessionId = null } = 
     throw new Error(`clearImplementResume: invalid session id ${JSON.stringify(sessionId)}`);
   }
   const issue = getIssue(state, issueNumber);
-  const keys = IMPLEMENT_RESUME_ISSUE_FIELDS.filter((f) => f !== "implementSessionId");
-  const cleared = keys.filter((f) => issue[f] != null && issue[f] !== "");
-  for (const f of keys) issue[f] = null;
+  const cleared = IMPLEMENT_RESUME_RECORD_FIELDS.filter((f) => issue[f] != null && issue[f] !== "");
+  for (const f of IMPLEMENT_RESUME_RECORD_FIELDS) issue[f] = null;
   if (sessionId != null) issue.implementSessionId = String(sessionId);
   return cleared;
 }

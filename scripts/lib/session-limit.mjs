@@ -23,8 +23,11 @@
 //
 //   The transcript read is <session-id>.jsonl when --session-id is given and
 //   that file exists (findTranscriptById), else the newest one for <cwd>. A
-//   caller that knows its session id (--implement, ADR-0084) names it, so a
-//   concurrent run's transcript in the same cwd can't stand in for its own.
+//   caller that knows its session id (--implement, ADR-0084) names it, so its
+//   own transcript is read even when another run's in the same cwd is newer.
+//   With no file by that id, the newest one in <cwd> is read as before; --since
+//   keeps it to this run's window, and a limit there is the shared
+//   subscription's anyway.
 //   --now is the clock the reset time is computed against (tests pin it).
 //
 //   Exit 0  — that transcript ends in a session-limit API error (newer than
@@ -46,7 +49,10 @@ import { isMainModule } from "./is-main.mjs";
 
 const fs = nodeFs.promises;
 
-export const DEFAULT_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
+// Where `check` looks without --projects-dir. projectsDirFor honours
+// $CLAUDE_CONFIG_DIR like the CLI does, so this agrees with findTranscriptById's
+// default (implement-resume.mjs, verify-lane.mjs) on where a session lives.
+export const DEFAULT_PROJECTS_DIR = projectsDirFor(process.env);
 
 // A claude session id: what --session-id takes and what names its transcript.
 export const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

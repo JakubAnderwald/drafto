@@ -125,8 +125,8 @@ export function decideResume({
 }
 
 // Did a resumed session get going? True when the transcript has an assistant
-// record stamped at or after <since> that isn't an API error: the model
-// answered. A resume that died first (a CLI error, an API error on the
+// record stamped at or after <since> that isn't an API error or written by the
+// CLI itself: the model answered. A resume that died first (a CLI error, an API error on the
 // restored conversation) wrote none, and costs the card no attempt. <since> is
 // bash's second-precision start time, truncated, so no slack is needed. An
 // unreadable <since> counts as started: the attempt is spent, as before.
@@ -142,6 +142,9 @@ export function resumeStarted(jsonlText, since) {
       continue;
     }
     if (record?.type !== "assistant" || record.isApiErrorMessage === true) continue;
+    // The CLI writes some assistant records itself (model "<synthetic>": an
+    // interruption note, a "no response requested" filler), not the model.
+    if (record.message?.model === "<synthetic>") continue;
     const t = Date.parse(String(record.timestamp ?? ""));
     if (!Number.isNaN(t) && t >= sinceMs) return true;
   }

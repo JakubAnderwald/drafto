@@ -98,7 +98,11 @@ import { fileURLToPath } from "node:url";
 import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
-import { detectSessionLimit, findTranscriptById } from "./session-limit.mjs";
+import {
+  detectSessionLimit,
+  findTranscriptById,
+  SESSION_ID_RE as UUID_RE,
+} from "./session-limit.mjs";
 import { inspectMain } from "./dev-inspect.mjs";
 import { accountFileProblem, adminAccountFileProblem } from "./browser-report.mjs";
 import { keyFileProblem } from "./browser-signin.mjs";
@@ -147,7 +151,6 @@ const LIB_DIR = path.dirname(THIS_FILE);
 const DEFAULT_PROMPT_FILE = path.resolve(LIB_DIR, "..", "factory-verify-prompt.md");
 const RUN_CLAUDE = path.join(LIB_DIR, "run-claude.mjs");
 const SHA40 = /^[0-9a-f]{40}$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const RUN_ID_RE = /^\d+-[0-9a-f]{12}-\d{8}T\d{6}Z$/;
 const MINUTE_MS = 60_000;
 // One tick: a live start finishes reserve → attach in seconds.

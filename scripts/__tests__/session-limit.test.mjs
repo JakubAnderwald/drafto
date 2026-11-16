@@ -537,6 +537,36 @@ describe("findTranscriptById + check --session-id", () => {
     });
   });
 
+  it("check finds the session under $CLAUDE_CONFIG_DIR without --projects-dir", () => {
+    withProjectsDir((base) => {
+      put(
+        base,
+        path.join("projects", projectSlugForCwd(cwd)),
+        `${SESSION}.jsonl`,
+        limit("2026-07-21T07:11:15Z"),
+      );
+      const r = spawnSync(
+        "node",
+        [
+          CLI,
+          "check",
+          "--cwd",
+          "/elsewhere",
+          "--session-id",
+          SESSION,
+          "--now",
+          "2026-07-21T05:41:00Z",
+        ],
+        { encoding: "utf8", env: { ...process.env, CLAUDE_CONFIG_DIR: base } },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(
+        JSON.parse(r.stdout).transcript,
+        path.join(base, "projects", projectSlugForCwd(cwd), `${SESSION}.jsonl`),
+      );
+    });
+  });
+
   it("check fails open on a malformed --session-id or --now", () => {
     const bad = runCli(["check", "--cwd", cwd, "--session-id", "nope"]);
     assert.equal(bad.status, 1);

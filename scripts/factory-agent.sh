@@ -2074,7 +2074,7 @@ implement_park_blocked() {
 # prompt's Time budget section documents every key, and a test pins them to it.
 # Prints nothing on failure; the caller then leaves the block out.
 implement_runtime_facts() {
-  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" cap_min margin max_margin branch base unpushed uncommitted
+  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" cap_min margin max_margin branch base unpushed uncommitted porcelain
   cap_min=$(( IMPLEMENT_TIMEOUT_SEC / 60 ))
   margin="$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN"
   max_margin=$(( cap_min - 5 ))
@@ -2088,8 +2088,12 @@ implement_runtime_facts() {
   fi
   unpushed=$(git -C "$wt_path" rev-list --count "$base..HEAD" 2>/dev/null || echo "")
   [[ "$unpushed" =~ ^[0-9]+$ ]] || unpushed="null"
-  uncommitted=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ' || echo "")
-  [[ "$uncommitted" =~ ^[0-9]+$ ]] || uncommitted="null"
+  # null, not 0, when git can't say (an index.lock a killed run left behind).
+  uncommitted="null"
+  if porcelain=$(git -C "$wt_path" status --porcelain 2>/dev/null); then
+    uncommitted=$(printf '%s' "$porcelain" | awk 'END { print NR }')
+    [[ "$uncommitted" =~ ^[0-9]+$ ]] || uncommitted="null"
+  fi
   jq -n --argjson start "$start" --argjson cap "$IMPLEMENT_TIMEOUT_SEC" --argjson margin "$margin" \
     --argjson resumed "$resumed" --argjson unpushed "$unpushed" --argjson uncommitted "$uncommitted" \
     --argjson wt "${wt_json:-null}" '{
@@ -2172,8 +2176,8 @@ implement_resume_decide() {
 
 # implement_mark_resumable <issue> <worktree path> <session> <task key>
 #   <pre-head> <pre-head known 0|1> <why> — record that this run's session may
-# be resumed by the next attempt (a fresh run that hit the wall cap or stopped
-# with action=incomplete). Not when resuming is off, nor when the PR head
+# be resumed by the next attempt: a fresh run that hit the wall cap or stopped
+# with action=incomplete, or any run the session limit stopped. Not when resuming is off, nor when the PR head
 # before the run is unknown: a resumed run inherits that head as its baseline.
 implement_mark_resumable() {
   local issue_num="$1" wt_path="$2" session="$3" key="$4" pre_head="$5" pre_known="$6" why="$7" head
@@ -8080,8 +8084,18 @@ Drag it back to **Ready** so the factory can plan it first.
     WT_ERR_FILE=$(mktemp -t factory-wt-err)
     if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
         --root "$REPO_ROOT" --base origin/main --fetch 2>"$WT_ERR_FILE"); then
+      WT_DIVERGED=0
+      if grep -q 'has diverged from' "$WT_ERR_FILE" 2>/dev/null; then WT_DIVERGED=1; fi
       log "ERROR: worktree add failed for #$ISSUE_NUM: $(worktree_cli_error "$WT_ERR_FILE"); releasing slot $SLOT"
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      # A branch that diverged from the PR's (unpushed commits, such as a
+      # stopped run's chore(wip) ones, plus a push to the PR) needs a human and
+      # fails the same way every tick. Spend an attempt, so the retry budget
+      # parks the card in Blocked instead of it looping unseen (ADR-0084).
+      if [[ "$WT_DIVERGED" -eq 1 ]]; then
+        log "Issue #$ISSUE_NUM: the worktree has diverged from the PR branch; spending an attempt so the card reaches Blocked if it persists"
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      fi
       continue
     fi
     cat "$WT_ERR_FILE" >>"$LOG_FILE" 2>/dev/null || true; rm -f "$WT_ERR_FILE"
@@ -8186,6 +8200,10 @@ Drag it back to **Ready** so the factory can plan it first.
       # tick reuses the warm worktree; the card stays In Progress.
       if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO" "$IMPL_SESSION_ID"; then
         rm -f "$CLAUDE_OUTPUT_FILE"
+        # The limit stopped the session, not the card: record it for the run
+        # after the reset to resume, a resumed one included (ADR-0084).
+        implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+          "$PRE_HEAD_OID" "$PRE_HEAD_KNOWN" "session limit"
         log "Issue #$ISSUE_NUM: session limit — keeping slot $SLOT + worktree; card stays In Progress for resume"
         pause_for_session_limit
         log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="

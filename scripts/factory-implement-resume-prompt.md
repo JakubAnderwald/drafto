@@ -2,10 +2,10 @@
 
 This is your own session, resumed by `scripts/factory-agent.sh --implement`.
 Your previous run in it stopped before it finished: bash killed it at the
-wall-clock cap, or you ended it yourself with `action=incomplete` at the soft
-deadline. After a kill, the tool call that was running did not finish, and any
-Workflow or background agent you were waiting on is gone. It will not report
-back.
+wall-clock cap, the shared Claude subscription hit its usage limit, or you
+ended it yourself with `action=incomplete` at the soft deadline. After a kill
+or a limit, the tool call that was running did not finish, and any Workflow or
+background agent you were waiting on is gone. It will not report back.
 
 Everything in your original instructions still applies: the approved plan and
 the phase scope, the tools and the **Refuse** list, **Revision runs** and
@@ -39,6 +39,7 @@ Pick up where you stopped:
    issue=<n> action=<implemented|noop|declined|blocked|incomplete> pr=<url|->
    ```
 
-Bash will not resume this session again. If you run out of time once more,
-commit your work locally as `chore(wip): <what>`, don't push it, and emit
-`action=incomplete`: the next attempt starts a fresh session from your commits.
+If this run runs out of time too, bash will not resume this session again.
+Before that happens, commit your work locally as `chore(wip): <what>`, don't
+push it, and emit `action=incomplete`: the next attempt starts a fresh session
+from your commits.

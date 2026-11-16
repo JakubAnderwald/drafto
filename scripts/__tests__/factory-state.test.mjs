@@ -40,6 +40,7 @@ import {
   verifyIssueRecords,
   resetIssueVerify,
   IMPLEMENT_RESUME_ISSUE_FIELDS,
+  IMPLEMENT_RESUME_RECORD_FIELDS,
   setImplementResume,
   clearImplementResume,
 } from "../lib/factory-state.mjs";
@@ -940,6 +941,12 @@ describe("implement resume record", () => {
       ],
     );
     assert.throws(() => IMPLEMENT_RESUME_ISSUE_FIELDS.push("x"), TypeError);
+    // The record is every key but the latest run's session id.
+    assert.deepEqual(
+      [...IMPLEMENT_RESUME_RECORD_FIELDS],
+      IMPLEMENT_RESUME_ISSUE_FIELDS.filter((f) => f !== "implementSessionId"),
+    );
+    assert.throws(() => IMPLEMENT_RESUME_RECORD_FIELDS.push("x"), TypeError);
     const s = emptyFactoryState();
     const issue = getIssue(s, 7);
     for (const f of IMPLEMENT_RESUME_ISSUE_FIELDS) assert.equal(issue[f], null, f);

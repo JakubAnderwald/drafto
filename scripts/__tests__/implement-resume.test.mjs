@@ -210,6 +210,18 @@ describe("resumeStarted", () => {
     assert.equal(resumeStarted("", since), false);
   });
 
+  it("ignores the assistant records the CLI writes itself", () => {
+    const synthetic = line({
+      type: "assistant",
+      timestamp: "2026-11-16T12:00:03.000Z",
+      message: {
+        model: "<synthetic>",
+        content: [{ type: "text", text: "No response requested." }],
+      },
+    });
+    assert.equal(resumeStarted([old, prompt, synthetic].join("\n"), since), false);
+  });
+
   it("counts as started when <since> can't be read (the attempt is spent, as before)", () => {
     assert.equal(resumeStarted(old, "garbage"), true);
   });
