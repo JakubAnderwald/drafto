@@ -40,7 +40,11 @@
 //                        factory is verifying it now. A commit with a
 //                        verification round gets the verification platforms,
 //                        where `webViaShared: true` marks web reached only
-//                        through packages/shared/.
+//                        through packages/shared/. With `scenario` set
+//                        (ADR-0082) the CLI may pick the incremental mode:
+//                        the writer gets its own latest scenario and only the
+//                        files whose patch changed since, instead of the
+//                        whole diff (decideScenarioMode).
 //
 //   factory_browser_run — for `factory-agent.sh --browser` (ADR-0051): the
 //                        Web section of the scenario for the locked-down
@@ -93,6 +97,8 @@
 //     "config":        { "phase", ... },
 //     "repo":          { "nameWithOwner", "headRef" }
 //   }
+
+import { readFileSync } from "node:fs";
 
 import { readAccountFile } from "./browser-report.mjs";
 import { isMainModule } from "./is-main.mjs";
@@ -471,6 +477,25 @@ function shapeReplyDir(dir) {
     !dir.split("/").includes("..")
     ? dir
     : null;
+}
+
+// The size marker every plan carries (ADR-0083), re-emitted on every replan:
+// <!-- drafto-factory-plan-size:<class>:<estLines> -->. <class> is S, M, L or
+// XL; <estLines> is the planner's best estimate of the lines the PR adds.
+export const FACTORY_PLAN_SIZE_PREFIX = "drafto-factory-plan-size:";
+export const PLAN_SIZE_CLASSES = Object.freeze(["S", "M", "L", "XL"]);
+const PLAN_SIZE_RE = /<!--\s*drafto-factory-plan-size:(S|M|L|XL):(\d{1,7})\s*-->/g;
+
+// Pure: the size marker in a plan body, as {sizeClass, estLines}, or null when
+// there is none. The last marker wins, so a plan that quotes an older one
+// further up still reads as its own. Bash compares estLines with
+// FACTORY_PLAN_OVERSIZE_LINES to keep the factory-oversize label in step.
+export function parsePlanSize(body) {
+  if (typeof body !== "string" || body.length === 0) return null;
+  let last = null;
+  for (const m of body.matchAll(PLAN_SIZE_RE)) last = m;
+  if (!last) return null;
+  return { sizeClass: last[1], estLines: Number(last[2]) };
 }
 
 // Keep only { commentId, marker } pairs whose marker is exactly the one bash
@@ -983,6 +1008,75 @@ export function shapePlatforms(platforms, keys) {
   return out;
 }
 
+// ── Reused pre-merge betas (ADR-0081) ──────────────────────────────────────
+// betaDispatch.reused lists the lanes the factory did not rebuild for this
+// head because nothing they build from changed since an earlier commit's
+// beta: [{id, fromSha, builds: [{platform, build}]}]. bash fills `builds` from
+// the lane's own build-number notices (intest_reused_builds).
+const REUSED_LANE_PLATFORMS = Object.freeze({ mobile: ["android", "ios"], desktop: ["macos"] });
+const BUILD_PLATFORM_LABELS = Object.freeze({ android: "Android", ios: "iOS", macos: "macOS" });
+
+// Pure: the reused list, validated. An entry needs a known lane and a full
+// commit SHA; builds keep only that lane's platforms and numeric build numbers.
+export function shapeReusedBetas(list) {
+  const out = [];
+  for (const r of Array.isArray(list) ? list : []) {
+    const id = r?.id;
+    const fromSha = String(r?.fromSha ?? "");
+    if (!Object.hasOwn(REUSED_LANE_PLATFORMS, id) || !/^[0-9a-f]{40}$/.test(fromSha)) continue;
+    if (out.some((o) => o.id === id)) continue;
+    const builds = (Array.isArray(r.builds) ? r.builds : [])
+      .filter(
+        (b) =>
+          REUSED_LANE_PLATFORMS[id].includes(b?.platform) &&
+          /^[0-9]{1,12}$/.test(String(b?.build ?? "")),
+      )
+      .map((b) => ({ platform: b.platform, build: String(b.build) }));
+    out.push({ id, fromSha, builds });
+  }
+  return out;
+}
+
+// Pure: a shaped entry's build numbers, "Android build 152 / iOS build 147"
+// for mobile and "build 80" for desktop; "" when none was found.
+export function reusedBuildsText(entry) {
+  return entry.builds
+    .map(
+      (b) =>
+        `${entry.id === "mobile" ? `${BUILD_PLATFORM_LABELS[b.platform]} ` : ""}build ${b.build}`,
+    )
+    .join(" / ");
+}
+
+// Pure: the Android caveat for a reused mobile lane, "" for desktop. Google
+// Play's internal track installs only its newest upload, so another card's
+// later upload makes this one uninstallable from Play. TestFlight keeps older
+// builds, so iOS and macOS need no caveat.
+export function reusedAndroidCaveat(entry) {
+  if (entry.id !== "mobile") return "";
+  const android = entry.builds.find((b) => b.platform === "android");
+  return (
+    "Android: Play's internal track serves only its newest upload, so check that the " +
+    `installed build number is ${android ? android.build : "the one an earlier comment gives"}. ` +
+    "If Play shows a newer build, this card's Android build is no longer installable from " +
+    "Play; test iOS from TestFlight and ask in a comment for the Android build."
+  );
+}
+
+// Pure: what a tester reads for a reused lane, the Android caveat included.
+// The bash fallback comment (intest_fallback_comment) renders the same words.
+export function reusedBetaNote(entry) {
+  const sha12 = entry.fromSha.slice(0, 12);
+  const what = entry.id === "mobile" ? "mobile" : "macOS";
+  const builds = reusedBuildsText(entry);
+  const note = builds
+    ? `No ${what} change since ${builds} (\`${sha12}\`); keep testing that build.`
+    : `No ${what} change since the beta built from \`${sha12}\`; keep testing that build. ` +
+      "An earlier comment on this issue gives its build number.";
+  const caveat = reusedAndroidCaveat(entry);
+  return caveat ? `${note} ${caveat}` : note;
+}
+
 export function buildFactoryInTestBundle({
   stage = "intest",
   issue,
@@ -998,6 +1092,8 @@ export function buildFactoryInTestBundle({
   headSha = "",
   comments = [],
   screenshotSources = [],
+  // decideScenarioMode's result (ADR-0082), or null for the full mode.
+  scenarioMode = null,
   config,
   repo,
   nowIso,
@@ -1008,7 +1104,11 @@ export function buildFactoryInTestBundle({
   const planBody = typeof approvedPlan?.body === "string" ? approvedPlan.body : "";
   const planClean = planBody.split(FACTORY_PLAN_MARKER).join("").trim();
   const spec = parseSpec(issue.body ?? "");
-  const diff = truncateDiff(prDiff);
+  const delta = shapeScenarioDelta(scenarioMode);
+  // In the delta mode the full diff stays out of the bundle: that is the
+  // point. The writer can still fetch it with `gh pr diff`.
+  const diff = truncateDiff(delta ? "" : prDiff);
+  const deltaDiff = truncateDiff(delta ? delta.diff : "");
   return {
     kind: "factory_intest",
     stage: INTEST_STAGES.includes(stage) ? stage : "intest",
@@ -1036,12 +1136,31 @@ export function buildFactoryInTestBundle({
         }
       : null,
     headSha: typeof headSha === "string" ? headSha : "",
+    // "full": the whole PR diff is in prDiffEnveloped (the long-standing
+    // shape). "delta" (ADR-0082): prDiffEnveloped is "", and the writer
+    // updates its own latest scenario (priorScenarioEnveloped, written for
+    // priorScenarioSha) from the files whose patch changed since
+    // (deltaFiles, deltaDiffEnveloped). prDiffModeReason says why, for the log.
+    prDiffMode: delta ? "delta" : "full",
+    prDiffModeReason:
+      scenarioMode?.mode === "delta" && !delta
+        ? "invalid-delta"
+        : shortReason(scenarioMode?.reason),
     // The diff is enveloped like every other untrusted input: a PR may touch a
     // file whose contents quote a directive, and a hunk must never be read as
     // an instruction.
-    prDiffEnveloped: envelopeBody(diff.text, "pr-diff"),
+    prDiffEnveloped: delta ? "" : envelopeBody(diff.text, "pr-diff"),
     prDiffTruncated: diff.truncated,
     prDiffOmittedLines: diff.omittedLines,
+    priorScenarioSha: delta ? delta.priorSha : "",
+    // The factory's own comment, but written by a model from untrusted input:
+    // data, like the rest. The factory markers are stripped, so a stale
+    // scenario-sha marker can't be copied into the new comment.
+    priorScenarioEnveloped: delta ? envelopeBody(delta.priorBody, "prior-scenario") : "",
+    deltaFiles: delta ? delta.files : [],
+    deltaDiffEnveloped: delta ? envelopeBody(deltaDiff.text, "pr-diff") : "",
+    deltaDiffTruncated: deltaDiff.truncated,
+    deltaDiffOmittedLines: deltaDiff.omittedLines,
     prFiles: String(prFiles ?? "")
       .split("\n")
       .map((f) => f.trim())
@@ -1070,8 +1189,9 @@ export function buildFactoryInTestBundle({
             ? betaDispatch.manualCommands
             : []
           ).map((c) => (typeof c === "string" ? { id: "", command: c } : c)),
+          reused: shapeReusedBetas(betaDispatch.reused),
         }
-      : { dispatched: [], skipped: [], manualCommands: [] },
+      : { dispatched: [], skipped: [], manualCommands: [], reused: [] },
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
     config: shapeConfig(config),
@@ -1088,27 +1208,65 @@ export function buildFactoryInTestBundle({
 
 export const SCENARIO_FALLBACK_MARKER = "<!-- drafto-factory-scenario-fallback -->";
 
+// The factory's markers count only on a line of their own, unquoted. A
+// support forward is posted as OWNER too, but it quotes every customer line
+// with `> ` (ADR-0066), so a customer who pastes a marker into an email can't
+// make the forward pass for a scenario.
+//
+// Lines are split on LF only, as support_forward_filter splits them, and lose
+// one trailing CR (a body edited on the web). The patterns have no `m` flag:
+// with it, `^` and `$` also match at a CR, U+2028 or U+2029 inside a line, so
+// a quoted line could carry a marker past the rule.
+const SCENARIO_SHA_LINE_RE = /^[ \t]*<!-- drafto-factory-scenario-sha:([0-9a-f]{40}) -->[ \t]*$/;
+const SCENARIO_FALLBACK_LINE_RE = /^[ \t]*<!-- drafto-factory-scenario-fallback -->[ \t]*$/;
+
+function bodyLines(body) {
+  return body.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+}
+
+// The full SHAs a comment's own scenario-sha marker lines name, in order.
+function scenarioShasOf(body) {
+  if (typeof body !== "string") return [];
+  return bodyLines(body)
+    .map((line) => SCENARIO_SHA_LINE_RE.exec(line)?.[1])
+    .filter(Boolean);
+}
+
+// A comment the factory itself posted for a test scenario, real or fallback:
+// OWNER (the repo is public, so anyone can paste the factory's markers into a
+// comment of their own) with a scenario-sha marker line. The one predicate
+// behind selectScenarioComment, selectLatestScenarioComment and
+// scenarioCommentState, so the writer skip, the post-run check, the prior
+// scenario and the browser runner all agree on what a scenario is.
+function scenarioCommentShas(c) {
+  if (!c || c.authorAssociation !== "OWNER" || typeof c.body !== "string") return [];
+  return scenarioShasOf(c.body);
+}
+
+function isScenarioFallback(c) {
+  return (
+    typeof c?.body === "string" &&
+    bodyLines(c.body).some((line) => SCENARIO_FALLBACK_LINE_RE.test(line))
+  );
+}
+
+function newest(comments) {
+  if (comments.length === 0) return null;
+  return comments.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
+}
+
 // The scenario comment for exactly `headSha`, or null. Three filters, each
-// load-bearing: OWNER (the repo is public, so anyone can paste the factory's
-// markers into a comment of their own), the exact full-SHA marker (a scenario
-// for an older commit describes code that no longer exists), and not the
-// deterministic fallback (it has no steps to run). Newest wins, matching how
-// the scenario writer replaces itself on a refresh.
+// load-bearing: the factory's own comment (scenarioCommentShas), the exact
+// full-SHA marker (a scenario for an older commit describes code that no
+// longer exists), and not the deterministic fallback (it has no steps to run).
+// Newest wins, matching how the scenario writer replaces itself on a refresh.
 export function selectScenarioComment(comments, headSha) {
   if (!Array.isArray(comments) || typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) {
     return null;
   }
-  const marker = `<!-- drafto-factory-scenario-sha:${headSha} -->`;
-  const matches = comments.filter(
-    (c) =>
-      c &&
-      c.authorAssociation === "OWNER" &&
-      typeof c.body === "string" &&
-      c.body.includes(marker) &&
-      !c.body.includes(SCENARIO_FALLBACK_MARKER),
+  return newest(
+    comments.filter((c) => scenarioCommentShas(c).includes(headSha) && !isScenarioFallback(c)),
   );
-  if (matches.length === 0) return null;
-  return matches.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
 }
 
 // The text of the section whose heading is at lines[start]: up to the next
@@ -1191,6 +1349,284 @@ export function extractScenarioSections(body) {
     if (text) sections.push({ heading: h[1], text });
   }
   return sections;
+}
+
+// ── Incremental scenario rewrite (ADR-0082) ────────────────────────────────
+// Each new head of a card used to send the scenario writer the whole PR diff
+// (#794: seven runs of ~220 KB prompts, most of them for a main merge or a
+// one-file fix). Now bash keeps each run's PR diff on disk
+// (logs/factory/scenario/<issue>-<sha12>.diff, plus a .json with the
+// platforms the scenario was written for), and the next run gets the
+// factory's latest scenario plus only the files whose own patch changed since.
+
+// The full SHA a scenario comment was written for: its last scenario-sha
+// marker line (the markers close the comment), or null.
+export function scenarioShaOf(body) {
+  return scenarioShasOf(body).at(-1) ?? null;
+}
+
+// The factory's newest scenario comment for ANY head, or null: the same
+// filters as selectScenarioComment minus the exact SHA. Never the fallback:
+// it has no steps to build on.
+export function selectLatestScenarioComment(comments) {
+  if (!Array.isArray(comments)) return null;
+  return newest(
+    comments.filter((c) => scenarioCommentShas(c).length > 0 && !isScenarioFallback(c)),
+  );
+}
+
+// What the issue holds for exactly `headSha`: "scenario" (a real one,
+// selectScenarioComment), "fallback" (only the factory's deterministic
+// fallback), or "none". Bash skips the writer on "scenario", and after a run
+// posts the fallback only on "none".
+export function scenarioCommentState(comments, headSha) {
+  if (selectScenarioComment(comments, headSha)) return "scenario";
+  if (!Array.isArray(comments) || typeof headSha !== "string") return "none";
+  const fallback = comments.some(
+    (c) => scenarioCommentShas(c).includes(headSha) && isScenarioFallback(c),
+  );
+  return fallback ? "fallback" : "none";
+}
+
+// The file a `diff --git` chunk is about, as the new side names it: the
+// rename target, the `+++ b/` path, the `--- a/` path of a deleted file, or
+// the header itself. Only needs to be the same key in both diffs.
+function chunkPath(lines) {
+  const strip = (p) => p.replace(/^"/, "").replace(/"$/, "").replace(/\t.*$/, "");
+  let minus = null;
+  for (const line of lines) {
+    if (line.startsWith("@@")) break;
+    if (line.startsWith("rename to ")) return strip(line.slice(10));
+    if (line.startsWith("+++ ")) {
+      const p = strip(line.slice(4));
+      if (p !== "/dev/null") return p.replace(/^b\//, "");
+    }
+    if (line.startsWith("--- ")) minus = strip(line.slice(4));
+  }
+  if (minus && minus !== "/dev/null") return minus.replace(/^a\//, "");
+  // No ---/+++ lines (a binary file, a mode change): `diff --git a/P b/P`.
+  const rest = lines[0].slice("diff --git ".length);
+  const n = (rest.length - 5) / 2;
+  if (
+    Number.isInteger(n) &&
+    n > 0 &&
+    rest === `a/${rest.slice(2, 2 + n)} b/${rest.slice(2, 2 + n)}`
+  ) {
+    return rest.slice(2, 2 + n);
+  }
+  return rest;
+}
+
+// A chunk as the PR's own change, wherever main has moved the file: hunk
+// headers lose their line coordinates (a main commit above the hunk shifts
+// them) but keep the function context after the closing `@@`, so the same
+// lines added to another function still count as a change. The `index` line
+// goes (its blob ids name the base, which a main merge changes). A binary
+// chunk keeps its index line: its blob ids are the only record of the content.
+const HUNK_COORDS_RE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/;
+
+function normaliseChunk(lines) {
+  const binary = lines.some((l) => l.startsWith("Binary files ") || l === "GIT binary patch");
+  return lines
+    .filter((l) => binary || !l.startsWith("index "))
+    .map((l) => l.replace(HUNK_COORDS_RE, "@@"))
+    .join("\n")
+    .trimEnd();
+}
+
+// A unified diff (`gh pr diff`) split per file: path → { raw, norm }, in the
+// diff's order. Text before the first `diff --git` line is ignored.
+function diffByFile(text) {
+  const files = new Map();
+  if (typeof text !== "string") return files;
+  let chunk = null;
+  const flush = () => {
+    if (!chunk) return;
+    let key = chunkPath(chunk);
+    // Two chunks for one path never happen in a git diff; keep both anyway.
+    for (let i = 2; files.has(key); i++) key = `${chunkPath(chunk)} (${i})`;
+    files.set(key, { raw: chunk.join("\n").trimEnd(), norm: normaliseChunk(chunk) });
+  };
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      flush();
+      chunk = [line];
+    } else if (chunk) {
+      chunk.push(line);
+    }
+  }
+  flush();
+  return files;
+}
+
+// Pure: which files' PR-own patch changed between two PR diffs of one PR (the
+// one the last scenario was written from, and the current one). Each file is
+// "added" (the PR didn't touch it then), "changed" (its normalised patch
+// differs) or "dropped" (the PR no longer touches it). `diff` is the current
+// patches of the added and changed files, in the current diff's order, and
+// `lines` its line count. `droppedLines` counts the old patches of the
+// dropped files: no text of theirs reaches the writer, but the scenario still
+// changes by that much. A merge of main that touches nothing the PR touches
+// leaves every patch as it was, so it gives an empty delta.
+export function perFilePatchDelta(oldDiff, newDiff) {
+  const before = diffByFile(oldDiff);
+  const after = diffByFile(newDiff);
+  const files = [];
+  const patches = [];
+  for (const [path, now] of after) {
+    const then = before.get(path);
+    if (then && then.norm === now.norm) continue;
+    files.push({ path, status: then ? "changed" : "added" });
+    patches.push(now.raw);
+  }
+  let droppedLines = 0;
+  for (const [path, then] of before) {
+    if (after.has(path)) continue;
+    files.push({ path, status: "dropped" });
+    droppedLines += then.raw.split("\n").length;
+  }
+  const diff = patches.join("\n");
+  return { files, diff, lines: diff ? diff.split("\n").length : 0, droppedLines };
+}
+
+const DELTA_STATUSES = new Set(["added", "changed", "dropped"]);
+const MAX_DELTA_FILES = 300;
+
+// The delta half of decideScenarioMode's result, checked, or null (full mode).
+function shapeScenarioDelta(mode) {
+  if (!mode || typeof mode !== "object" || mode.mode !== "delta") return null;
+  if (typeof mode.priorSha !== "string" || !/^[0-9a-f]{40}$/.test(mode.priorSha)) return null;
+  const priorBody = stripFactoryMarkers(mode.priorBody);
+  if (!priorBody) return null;
+  const files = (Array.isArray(mode.files) ? mode.files : [])
+    .filter((f) => f && typeof f.path === "string" && DELTA_STATUSES.has(f.status))
+    .slice(0, MAX_DELTA_FILES)
+    .map((f) => ({ path: f.path, status: f.status }));
+  return {
+    priorSha: mode.priorSha,
+    priorBody,
+    files,
+    diff: typeof mode.diff === "string" ? mode.diff : "",
+  };
+}
+
+// A scenario body without the factory's marker lines.
+function stripFactoryMarkers(body) {
+  if (typeof body !== "string") return "";
+  return body
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("<!-- drafto-factory"))
+    .join("\n")
+    .trim();
+}
+
+function shortReason(reason) {
+  return typeof reason === "string" && reason.length <= 80 ? reason : "";
+}
+
+function positiveInt(value, fallback) {
+  const n = Number.parseInt(String(value ?? ""), 10);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+// Same platform set, webViaShared included (shapePlatforms keeps it beside
+// web only).
+function samePlatforms(a, b) {
+  const keys = ["mobile", "desktop", "web"];
+  return JSON.stringify(shapePlatforms(a, keys)) === JSON.stringify(shapePlatforms(b, keys));
+}
+
+// Pure: full or delta mode for one scenario run (ADR-0082). `readStored(sha)`
+// returns { diff, platforms } for the run that wrote the scenario for <sha>,
+// or null. Full mode (the long-standing one) unless every check passes: the
+// switch is on, there is a current diff and a prior real scenario, fewer than
+// `fullEvery` delta rounds ran since the last full one, the prior run's diff
+// and platforms are on disk, the platforms are unchanged (a platform coming
+// or going needs a section written from scratch), and the delta is at most
+// `maxLines` lines. `reason` says which check decided it.
+export function decideScenarioMode({
+  enabled = true,
+  headSha = "",
+  comments = [],
+  platforms = {},
+  prDiff = "",
+  readStored = () => null,
+  rounds = 0,
+  maxLines = 800,
+  fullEvery = 4,
+} = {}) {
+  const full = (reason) => ({ mode: "full", reason });
+  if (!enabled) return full("off");
+  if (typeof prDiff !== "string" || !prDiff.trim()) return full("no-diff");
+  const prior = selectLatestScenarioComment(comments);
+  const priorSha = prior ? scenarioShaOf(prior.body) : null;
+  if (!priorSha) return full("no-prior-scenario");
+  // Bash skips the writer when the head already has its scenario, so this
+  // only fires when that check couldn't read the comments: a delta against
+  // itself would be empty and keep every step unchecked.
+  if (priorSha === headSha) return full("prior-is-head");
+  const every = positiveInt(fullEvery, 4);
+  if (positiveInt(rounds, 0) >= every) return full(`full-every-${every}`);
+  let stored = null;
+  try {
+    stored = readStored(priorSha);
+  } catch {
+    stored = null;
+  }
+  if (!stored || typeof stored.diff !== "string" || !stored.diff.trim()) {
+    return full("no-stored-diff");
+  }
+  if (!stored.platforms || !samePlatforms(stored.platforms, platforms)) {
+    return full("platforms-changed");
+  }
+  const delta = perFilePatchDelta(stored.diff, prDiff);
+  const cap = positiveInt(maxLines, 800);
+  if (delta.lines + delta.droppedLines > cap) return full(`delta-over-${cap}-lines`);
+  // shapeScenarioDelta keeps at most this many entries; a longer list would
+  // reach the writer cut short, with nothing saying so.
+  if (delta.files.length > MAX_DELTA_FILES) return full(`delta-over-${MAX_DELTA_FILES}-files`);
+  return {
+    mode: "delta",
+    reason: `${delta.files.length} file(s), ${delta.lines} line(s) since ${priorSha.slice(0, 12)}`,
+    priorSha,
+    priorBody: prior.body,
+    files: delta.files,
+    diff: delta.diff,
+    lines: delta.lines,
+  };
+}
+
+// Where bash keeps a scenario run's PR diff: <dir>/<issue>-<sha12>.diff and
+// .json ({ headSha, platforms }). scenario_diff_store in factory-agent.sh
+// writes the same names.
+export function scenarioDiffBase(dir, issueNumber, sha) {
+  return `${dir}/${issueNumber}-${sha.slice(0, 12)}`;
+}
+
+const SCENARIO_DIR_RE = /^\/(?:[^/]+\/)*logs\/factory\/scenario$/;
+
+// readStored for decideScenarioMode, over bash's files. Null for any file
+// that is missing, unreadable or for another SHA (two heads can share 12
+// characters), so a doubt always means the full mode.
+export function storedScenarioReader(dir, issueNumber) {
+  if (
+    typeof dir !== "string" ||
+    !SCENARIO_DIR_RE.test(dir) ||
+    dir.split("/").includes("..") ||
+    !Number.isInteger(issueNumber)
+  ) {
+    return () => null;
+  }
+  return (sha) => {
+    const base = scenarioDiffBase(dir, issueNumber, sha);
+    try {
+      const meta = JSON.parse(readFileSync(`${base}.json`, "utf8"));
+      if (meta?.headSha !== sha) return null;
+      return { diff: readFileSync(`${base}.diff`, "utf8"), platforms: meta.platforms };
+    } catch {
+      return null;
+    }
+  };
 }
 
 // The runner's uses (FACTORY_BROWSER_KINDS in factory-agent.sh). intest and
@@ -1445,7 +1881,26 @@ async function main() {
       nowIso: input.nowIso,
     });
   } else if (input.kind === "factory_intest") {
+    // `scenario` (ADR-0082): { enabled, rounds, maxLines, fullEvery, diffDir }
+    // from bash's knobs and state. The mode is decided here, where the stored
+    // diffs can be read; the builder itself stays pure. Without it, full mode.
+    const s = input.scenario;
+    const scenarioMode =
+      s && typeof s === "object"
+        ? decideScenarioMode({
+            enabled: s.enabled === true,
+            rounds: s.rounds,
+            maxLines: s.maxLines,
+            fullEvery: s.fullEvery,
+            headSha: input.headSha,
+            comments: input.screenshotSources,
+            platforms: input.platforms,
+            prDiff: input.prDiff,
+            readStored: storedScenarioReader(s.diffDir, input.issue?.number),
+          })
+        : null;
     bundle = buildFactoryInTestBundle({
+      scenarioMode,
       stage: input.stage,
       issue: input.issue,
       approvedPlan: input.approvedPlan,

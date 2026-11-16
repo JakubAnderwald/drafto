@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   FixtureSpecError,
   MAX_FIXTURE_BYTES,
+  enexSize,
   makeFixtures,
   paddedImage,
   parseFixtureSpecs,
@@ -94,6 +95,9 @@ describe("fixtures", () => {
     ["- a.jpg 1KB\n- a.jpg 2KB", /twice/],
     ["- x.enex", /notes=N image=SIZE/],
     ["- x.enex notes=50 image=1KB", /1 to 20/],
+    // #794's spec: 3 × 2.5 MB of images is 10,487,070 bytes once base64-encoded,
+    // over what one file_upload takes.
+    ["- quota-import.enex notes=3 image=2.5MB", /a third bigger.*one upload takes/],
     [Array.from({ length: 11 }, (_, i) => `- f${i}.txt 1KB`).join("\n"), /at most 10/],
   ]) {
     it(`refuses ${JSON.stringify(text).slice(0, 40)}`, () => {
@@ -130,6 +134,21 @@ describe("fixtures", () => {
     assert.equal(readFileSync(made[1].path).subarray(1, 4).toString(), "PNG");
     const enex = readFileSync(made[3].path, "utf8");
     assert.equal((enex.match(/<note>/g) ?? []).length, 2);
+  });
+
+  it("computes an .enex's size exactly, and the largest it takes fits one upload", () => {
+    const { dir } = files();
+    for (const [notes, image] of [
+      [2, "1KB"],
+      [1, "10B"],
+      [3, "2MB"],
+      [3, "2.49MB"],
+    ]) {
+      const [spec] = parseFixtureSpecs(`- q.enex notes=${notes} image=${image}`);
+      const [made] = makeFixtures([spec], path.join(dir, `fx-${notes}-${image}`));
+      assert.equal(enexSize(spec.notes, spec.imageBytes), made.size);
+      assert.ok(made.size <= MAX_FIXTURE_BYTES);
+    }
   });
 
   it("reads the Fixtures section's text from stdin, never a bundle file", async () => {

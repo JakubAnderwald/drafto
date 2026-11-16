@@ -1,15 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The dark factory must invoke `claude` at an explicit effort on every call:
 // ultracode on --implement, xhigh on --watch fix passes (ADR-0076) and xhigh on
-// the read-only planning stages (--plan/replan). See ADR-0029. Locking the flag —
+// the read-only stages (--plan/replan, review, scenario writer, browser runner).
+// See ADR-0029. Locking the flag —
 // and its validation guards — in against a refactor that drops it: a silent
 // regression would send the factory back to whatever ambient effort the host
 // happens to default to, which is exactly the drift this change removed.
+//
+// The model knobs (ADR-0080) are the opposite: unset, no call passes --model,
+// so the factory runs on the CLI's default model exactly as before.
 
 const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "factory-agent.sh");
 const script = readFileSync(scriptPath, "utf8");
@@ -125,5 +130,109 @@ describe("factory-agent Claude effort", () => {
       exportAt > 0 && exportAt < firstCall,
       "ceiling must be exported before any claude call",
     );
+  });
+});
+
+describe("factory-agent Claude model knobs (ADR-0080)", () => {
+  const block = script.match(/^MODEL_KNOB_RE=[\s\S]*?^ {2}FACTORY_INTEST_MODEL=""\nfi\n/m);
+
+  // Run the knob block in bash with only the given env, under the factory's
+  // own `set -euo pipefail` (bash 3.2 on the Mac mini).
+  function runKnobs(env) {
+    assert.ok(block, "model knob block not found");
+    const r = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        `set -euo pipefail\n${block[0]}\n` +
+          'printf "B=[%s] I=[%s]\\n" "$FACTORY_BROWSER_MODEL" "$FACTORY_INTEST_MODEL"',
+      ],
+      { encoding: "utf8", env: { PATH: process.env.PATH, ...env } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    return r;
+  }
+
+  it("defaults both knobs to empty, which passes no --model", () => {
+    assert.match(script, /^FACTORY_BROWSER_MODEL="\$\{FACTORY_BROWSER_MODEL:-\}"/m);
+    assert.match(script, /^FACTORY_INTEST_MODEL="\$\{FACTORY_INTEST_MODEL:-\}"/m);
+    const r = runKnobs({});
+    assert.match(r.stdout, /^B=\[\] I=\[\]$/m);
+    assert.equal(r.stderr, "", "an unset knob is not a warning");
+    assert.equal(runKnobs({ FACTORY_BROWSER_MODEL: "", FACTORY_INTEST_MODEL: "" }).stderr, "");
+  });
+
+  it("keeps an alias or a full claude-… name, with or without [1m]", () => {
+    for (const good of [
+      "sonnet",
+      "opus",
+      "haiku",
+      "fable",
+      "opus[1m]",
+      "claude-sonnet-5-5",
+      "claude-sonnet-5-5[1m]",
+      "claude-opus-4-1-20250805",
+    ]) {
+      const r = runKnobs({ FACTORY_BROWSER_MODEL: good, FACTORY_INTEST_MODEL: good });
+      assert.equal(r.stdout, `B=[${good}] I=[${good}]\n`, good);
+      assert.equal(r.stderr, "", good);
+    }
+  });
+
+  it("drops anything else to empty with a warning, each knob on its own", () => {
+    // A leading dash or a space would smuggle a flag into the call; the rest
+    // are typos the CLI would reject on every call.
+    for (const bad of [
+      "--chrome",
+      "sonnet --chrome",
+      " sonnet",
+      "sonnet\n",
+      "Sonnet",
+      "gpt-5",
+      "claude-",
+      "claude-x;rm",
+      "sonnet[2m]",
+      "$(id)",
+    ]) {
+      const b = runKnobs({ FACTORY_BROWSER_MODEL: bad, FACTORY_INTEST_MODEL: "sonnet" });
+      assert.equal(b.stdout, "B=[] I=[sonnet]\n", JSON.stringify(bad));
+      assert.match(b.stderr, /invalid FACTORY_BROWSER_MODEL='[\s\S]*'; using the CLI's default/);
+      assert.doesNotMatch(b.stderr, /FACTORY_INTEST_MODEL/);
+      const i = runKnobs({ FACTORY_BROWSER_MODEL: "opus", FACTORY_INTEST_MODEL: bad });
+      assert.equal(i.stdout, "B=[opus] I=[]\n", JSON.stringify(bad));
+      assert.match(i.stderr, /invalid FACTORY_INTEST_MODEL='[\s\S]*'; using the CLI's default/);
+    }
+  });
+
+  it("passes --model only at the browser runner and the scenario writer, never bare", () => {
+    // Each through its own optional array, so an empty knob adds no argv at
+    // all. Seven calls still, so the other effort and --no-chrome counts hold.
+    const calls = script.match(/run-claude\.mjs" -p\b/g) || [];
+    assert.equal(calls.length, 7);
+    const expansions = script.match(/\$\{model_args\[@\]\+"\$\{model_args\[@\]\}"\}/g) || [];
+    assert.equal(expansions.length, 2, "one optional --model per knob");
+    assert.doesNotMatch(script, /--model "\$FACTORY_[A-Z_]*MODEL" \)/, "never a bare --model");
+    assert.equal(
+      (script.match(/model_args=\(--model "\$FACTORY_BROWSER_MODEL"\)/g) || []).length,
+      1,
+    );
+    assert.equal(
+      (script.match(/model_args=\(--model "\$FACTORY_INTEST_MODEL"\)/g) || []).length,
+      1,
+    );
+    // Browser runner: after --chrome, before the --effort the test above pins.
+    assert.match(
+      script,
+      /run-claude\.mjs" -p --chrome(?:[^\n]*\\\n){1,3}[^\n]*\$\{model_args\[@\]\+"\$\{model_args\[@\]\}"\} --effort "\$FACTORY_PLAN_EFFORT" \)/,
+    );
+    // Scenario writer: after --strict-mcp-config, which keeps
+    // `--effort … --no-chrome --strict-mcp-config` adjacent.
+    const writer = script.match(/Invoking claude for #\$issue_num \(In Test scenario[\s\S]{0,800}/);
+    assert.ok(writer, "In Test claude invocation not found");
+    assert.match(
+      writer[0],
+      /--effort "\$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \$\{model_args\[@\]\+"\$\{model_args\[@\]\}"\} \)/,
+    );
+    assert.match(writer[0], /model=\$\{FACTORY_INTEST_MODEL:-default\}\)/);
   });
 });
