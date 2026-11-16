@@ -1713,8 +1713,9 @@ plan_size_label() {
 # decides what a comment asks for, but it also reads the issue's untrusted
 # text, so bash files a split only on the operator's own words (OWNER, or an
 # allowlisted forward: the trigger ids already went through the ADR-0066
-# gate). A forward `> `-quotes the reporter's text, so its quote marks are
-# ignored; in any other comment a quoted line is someone else's words.
+# gate). A forward `> `-quotes the reporter's text, so one quote level is
+# ignored there, and only one: a deeper level is someone the reporter quoted.
+# In any other comment a quoted line is someone else's words.
 plan_split_requested() {
   echo "$1" | jq -e --argjson t "${2:-[]}" '
     any(.[];
@@ -1722,7 +1723,7 @@ plan_split_requested() {
       and ((.body // "") as $b
         | ($b | test("drafto-support-forward"; "i")) as $fwd
         | any($b | split("\n")[] | rtrimstr("\r")
-              | if $fwd then sub("^\\s*(>\\s*)+"; "") else . end;
+              | if $fwd then sub("^\\s*> ?"; "") else . end;
             test("^\\s*(please\\s+)?split\\s+this\\s+card\\b[^?]*$"; "i"))))' >/dev/null 2>&1
 }
 
@@ -1736,16 +1737,6 @@ plan_split_request_link() {
   fi
 }
 
-# plan_split_filed_marker <filed> — the hidden line that records the issues a
-# split attempt filed ("#1001, #1002"), so a retry reuses them instead of
-# filing them twice (plan_split_earlier). Nothing for an empty list.
-plan_split_filed_marker() {
-  local nums
-  nums=$(printf '%s' "${1:-}" | tr -d '# ')
-  [[ "$nums" =~ ^[0-9]+(,[0-9]+)*$ ]] || return 0
-  printf '\n<!-- drafto-factory-plan-split-filed:%s -->' "$nums"
-}
-
 # plan_split_fail <item-id> <issue> <reason> [<filed>] — a split that didn't
 # happen: one 🏭 reply saying why, listing the issues this attempt had already
 # filed (and recording them for a retry), and the card back in Plan Review.
@@ -1754,7 +1745,7 @@ plan_split_fail() {
   local item_id="$1" issue_num="$2" reason="$3" made="${4:-}" made_text="" body
   log "Issue #$issue_num: plan split failed: ${reason%%$'\n'*}${made:+ (filed so far: $made)}"
   if [[ -n "$made" ]]; then
-    made_text="Parts filed so far: $made. The factory won't start them (they're in **Backlog**, or have no status). A retry reuses each one that is still open and has the same title as a part, instead of filing it again; close any you don't want.
+    made_text="Parts filed so far: $made. The factory won't start them (they're in **Backlog**, or have no status). A retry reuses each one that is still open and still matches its part (title, spec and dependencies) instead of filing it again; close any you don't want.
 
 "
   fi
@@ -1764,7 +1755,7 @@ $reason
 
 ${made_text}This card is back in **Plan Review**. To try again, comment \"Split this card\"; to keep it as one card, drag it to **In Progress**.
 
-<!-- drafto-factory-plan-split-failed -->$(plan_split_filed_marker "$made")"
+<!-- drafto-factory-plan-split-failed -->"
   if ! printf '%s' "$body" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
       --body-file - >>"$LOG_FILE" 2>&1; then
     log "WARNING: posting the split failure on #$issue_num failed"
@@ -1774,27 +1765,33 @@ ${made_text}This card is back in **Plan Review**. To try again, comment \"Split 
     "$issue_num" lastError "plan split failed" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
 }
 
-# plan_split_earlier <issue> <comments-json> — the parts an earlier, failed
-# attempt to split <issue> filed that are still open, as {"<title>": <number>}.
-# They're read from the factory's own markers (an unquoted
-# drafto-factory-plan-split-filed line in an OWNER comment), and each must
-# still be open and start with this card's "Split from" line. A lookup that
-# fails leaves that issue out.
+# plan_split_earlier <issue> — the open parts an earlier attempt to split
+# <issue> filed, as a JSON array of {number, title, body}; exit 1 when that
+# can't be known, so the caller files nothing rather than risk a duplicate.
+# Every part's body names <issue>, so GitHub lists each one on <issue>'s
+# timeline (a cross-reference) whether or not the attempt that filed it ever
+# saw gh's reply. A candidate counts only if the factory's own gh identity
+# opened it, it is open, and its body carries this issue's part marker
+# (plan-split.mjs splitPartMarker): anyone can open an issue that mentions
+# this one.
 plan_split_earlier() {
-  local issue_num="$1" comments="$2" map="{}" n info
-  while read -r n; do
+  local issue_num="$1" login nums n info out="[]"
+  login=$(gh api user --jq .login 2>>"$LOG_FILE") || return 1
+  [[ -n "$login" ]] || return 1
+  nums=$(gh api --paginate "repos/JakubAnderwald/drafto/issues/$issue_num/timeline" \
+    --jq '.[] | select(.event == "cross-referenced" and .source.type == "issue"
+            and (.source.issue.pull_request == null)) | .source.issue.number' 2>>"$LOG_FILE") || return 1
+  for n in $(printf '%s\n' "$nums" | sort -un); do
     [[ "$n" =~ ^[0-9]+$ ]] || continue
-    info=$(gh issue view "$n" --repo JakubAnderwald/drafto --json state,title,body 2>>"$LOG_FILE") || continue
-    if jq -e --arg pre "_Split from #$issue_num (" \
-        '.state == "OPEN" and ((.body // "") | startswith($pre))' >/dev/null 2>&1 <<<"$info"; then
-      map=$(jq -c --argjson m "$map" --argjson n "$n" \
-        '.title as $t | if $m | has($t) then $m else $m + {($t): $n} end' <<<"$info" 2>/dev/null || echo "$map")
-    fi
-  done < <(echo "$comments" | jq -r '[.[] | select(.authorAssociation == "OWNER")
-      | (.body // "") | split("\n")[] | rtrimstr("\r")
-      | capture("^<!-- drafto-factory-plan-split-filed:(?<n>[0-9]+(,[0-9]+)*) -->$")
-      | .n | split(",")[]] | unique | .[]' 2>/dev/null)
-  printf '%s' "$map"
+    info=$(gh issue view "$n" --repo JakubAnderwald/drafto --json number,state,title,body,author \
+      2>>"$LOG_FILE") || return 1
+    out=$(jq -c --argjson acc "$out" --arg login "$login" \
+      --arg marker "<!-- drafto-factory-split-part:$issue_num:" '
+        if .state == "OPEN" and .author.login == $login
+           and ((.body // "") | split("\n") | any(.[]; rtrimstr("\r") | startswith($marker)))
+        then $acc + [{number, title, body}] else $acc end' <<<"$info") || return 1
+  done
+  printf '%s' "$out"
 }
 
 # plan_split_backlog <issue> — put a card the split just filed in Backlog. The
@@ -1824,8 +1821,11 @@ plan_split_backlog() {
 # neutralised) and the spec gate a fresh issue gets (spec_missing_section).
 # Then each part is filed in order with gh issue create --project, its
 # "Depends on" naming the issues filed for earlier parts, and put in Backlog.
-# A part whose title matches an open issue an earlier, failed attempt filed
-# reuses that issue (plan_split_earlier), so a retry never files a part twice.
+# Before anything is filed, the open parts an earlier attempt filed
+# (plan_split_earlier) are matched against this split (plan-split.mjs plan): a
+# part reuses the earlier issue with its title when that issue's spec and
+# dependencies still match, and any mismatch stops the split, so a retry
+# never files a part twice or keeps a stale one.
 # The original is then closed as not planned, one comment links the parts, and
 # the card moves to Done. Any failure goes through plan_split_fail, which lists
 # what was filed. Sets PLAN_SPLIT_RESULT: "done" when the card was split and
@@ -1833,7 +1833,7 @@ plan_split_backlog() {
 plan_split() {
   local item_id="$1" issue_num="$2" triggers="${3:-[]}"
   local comments acked unacked dir out scan problems="" n i part spec missing title body
-  local create_out num created="{}" made="" lines="" note="" earlier reused="" left
+  local create_out num created="{}" made="" lines="" note="" earlier filing reused="" left
   PLAN_SPLIT_TRIGGERS="$triggers"
   PLAN_SPLIT_RESULT="back"
   if [[ "$FACTORY_PLAN_SPLIT" != "1" ]]; then
@@ -1896,16 +1896,35 @@ $problems"
     return 0
   fi
 
-  earlier=$(plan_split_earlier "$issue_num" "$comments")
-  [[ -n "$earlier" ]] || earlier='{}'
+  # Which parts an earlier attempt already filed, and whether each still
+  # matches: decided in full before anything is filed.
+  if ! earlier=$(plan_split_earlier "$issue_num") || [[ -z "$earlier" ]]; then
+    plan_split_fail "$item_id" "$issue_num" "The factory couldn't check which parts an earlier attempt filed for this card (the factory log on the Mac mini says why), so it filed nothing rather than risk filing a part twice."
+    return 0
+  fi
+  if ! filing=$(jq -cn --argjson split "$out" --argjson earlier "$earlier" '{split: $split, earlier: $earlier}' \
+      | node "$SCRIPT_DIR/lib/plan-split.mjs" plan --issue "$issue_num" 2>>"$LOG_FILE") \
+      || [[ "$(echo "$filing" | jq -r '.ok | type' 2>/dev/null)" != "boolean" ]]; then
+    plan_split_fail "$item_id" "$issue_num" "The factory couldn't match this split against the parts an earlier attempt filed (the factory log on the Mac mini says why), so it filed nothing."
+    return 0
+  fi
+  if [[ "$(echo "$filing" | jq -r '.ok')" != "true" ]]; then
+    problems=$(echo "$filing" | jq -r '.problems[] | "- " + .')
+    plan_split_fail "$item_id" "$issue_num" "Parts an earlier attempt filed don't match this split, so the factory filed nothing and left this card open:
+
+$problems
+
+Close each of those issues to have its part filed again, or edit it to match, then comment \"Split this card\" again."
+    return 0
+  fi
   for ((i = 0; i < n; i++)); do
     part=$((i + 1))
     title=$(echo "$out" | jq -r ".parts[$i].title")
-    num=$(echo "$earlier" | jq -r --arg t "$title" '.[$t] // empty' 2>/dev/null || echo "")
+    num=$(echo "$filing" | jq -r --argjson p "$part" '.actions[] | select(.part == $p and .action == "reuse") | .number' 2>/dev/null || echo "")
     if [[ "$num" =~ ^[0-9]+$ ]]; then
-      # Filed by an earlier attempt and still open: reuse it as it is (its
-      # board column may have moved on since).
-      earlier=$(echo "$earlier" | jq -c --arg t "$title" 'del(.[$t])')
+      # Filed by an earlier attempt, still open, and still this part with these
+      # dependencies (plan-split.mjs plan): reuse it as it is (its board
+      # column may have moved on since).
       reused+="${reused:+, }#$num"
       log "Issue #$issue_num: split part $part of $n is #$num, filed by an earlier attempt"
     else
@@ -1914,14 +1933,15 @@ $problems"
         plan_split_fail "$item_id" "$issue_num" "Composing part $part of $n failed (the factory log on the Mac mini says why)." "$made"
         return 0
       fi
-      # The URL is read even when gh fails: an issue created before a later
-      # step failed still exists and must be listed.
+      # The body carries the part marker, so even a create whose reply is lost
+      # is found by the next attempt (plan_split_earlier). The URL is read even
+      # when gh fails: an issue created before a later step failed still exists.
       create_out=$(printf '%s' "$body" | gh issue create --repo JakubAnderwald/drafto \
         --project "Drafto Factory" --title "$title" --body-file - 2>>"$LOG_FILE") || true
       num=$(printf '%s\n' "$create_out" \
         | sed -nE 's#^https://github\.com/JakubAnderwald/drafto/issues/([0-9]+)$#\1#p' | tail -1)
       if ! [[ "$num" =~ ^[0-9]+$ ]]; then
-        plan_split_fail "$item_id" "$issue_num" "Filing part $part of $n failed (the factory log on the Mac mini says why; if \`gh\` timed out, the issue may exist anyway)." "$made"
+        plan_split_fail "$item_id" "$issue_num" "Filing part $part of $n failed (the factory log on the Mac mini says why). If \`gh\` timed out, the issue may exist anyway: a retry finds it and reuses it." "$made"
         return 0
       fi
       log "Issue #$issue_num: split part $part of $n filed as #$num"
@@ -1937,7 +1957,7 @@ $problems"
   if [[ -n "$reused" ]]; then
     note+="- $reused: filed by an earlier attempt and reused as it is."$'\n'
   fi
-  for left in $(echo "$earlier" | jq -r '.[]' 2>/dev/null); do
+  for left in $(echo "$filing" | jq -r '.leftovers[]' 2>/dev/null); do
     note+="- #$left, filed by an earlier attempt, matches no part of this split. Close it if you don't want it."$'\n'
   done
 
@@ -1947,7 +1967,7 @@ $problems"
     log "WARNING: closing #$issue_num after its split failed; back to Plan Review"
     gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body "🏭 **The split filed $made, but closing this card failed.** Close it by hand as not planned and move it to **Done**.
 
-<!-- drafto-factory-plan-split-close-failed -->$(plan_split_filed_marker "$made")" >>"$LOG_FILE" 2>&1 || true
+<!-- drafto-factory-plan-split-close-failed -->" >>"$LOG_FILE" 2>&1 || true
     transition_status "$item_id" "$issue_num" "Plan Review" || true
     return 0
   fi

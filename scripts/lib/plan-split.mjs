@@ -30,9 +30,15 @@
 //              --secrets-dir D
 //              Prints {ok, problems, scanProblems, parts}. Each part is
 //              {part, file, title, dependsOn, spec, body}.
+//   plan       --issue N
+//              stdin: {split: validate's JSON, earlier: [{number, title, body}]},
+//              the open parts an earlier attempt filed for issue N. Prints
+//              {ok, problems, actions: [{part, action: "file"|"reuse", number?}],
+//              leftovers: [number]}.
 //   compose    --part K --issue N [--created '{"1":123}']
 //              stdin: validate's JSON. Prints part K's issue body, with its
-//              "Depends on" line naming the issues already created.
+//              "Depends on" line naming the issues already created, and the
+//              hidden part marker that identifies it on a retry.
 
 import * as nodeFs from "node:fs";
 import path from "node:path";
@@ -290,10 +296,18 @@ export function validateSplit(dir, { secrets, fs = nodeFs } = {}) {
   return { ok: true, problems: [], scanProblems: [], parts };
 }
 
+// Every part's issue body ends with this marker, written in the same call that
+// creates the issue: a retry recognises a part an earlier attempt filed even
+// when that attempt never saw gh's reply (a lost response, a killed tick).
+export const SPLIT_PART_MARKER_PREFIX = "drafto-factory-split-part:";
+export const splitPartMarker = (issue, part) =>
+  `<!-- ${SPLIT_PART_MARKER_PREFIX}${issue}:${part} -->`;
+const DEPENDS_LINE_RE = /^\*\*Depends on:\*\* (.*)$/;
+
 /**
  * Part <part>'s issue body: where it came from, what it depends on (the issues
- * already created for earlier parts, from <created>, {"1": 123, …}), then its
- * sanitised spec.
+ * already created for earlier parts, from <created>, {"1": 123, …}), its
+ * sanitised spec, then the part marker.
  */
 export function composeSplitBody({ split, part, issue, created = {} }) {
   const parts = Array.isArray(split?.parts) ? split.parts : [];
@@ -312,7 +326,99 @@ export function composeSplitBody({ split, part, issue, created = {} }) {
     "",
     String(p.body ?? "").trim(),
     "",
+    splitPartMarker(issue, part),
+    "",
   ].join("\n");
+}
+
+/**
+ * A part an earlier attempt filed for <issue>, read back from its issue body
+ * (composeSplitBody's shape): its part number, the issues its "Depends on"
+ * line names and its spec text. Null when the body isn't one of this issue's
+ * parts. Line endings are normalised: a body edited on the web comes back with
+ * CRLF.
+ */
+export function parseFiledPart(body, issue) {
+  const lines = String(body ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n");
+  const markerRe = new RegExp(`^<!-- ${SPLIT_PART_MARKER_PREFIX}${issue}:([1-9]) -->$`);
+  const markerAt = lines.findIndex((l) => markerRe.test(l.trim()));
+  const dependsAt = lines.findIndex((l) => DEPENDS_LINE_RE.test(l.trim()));
+  if (markerAt === -1 || dependsAt === -1 || dependsAt > markerAt) return null;
+  const depsText = DEPENDS_LINE_RE.exec(lines[dependsAt].trim())[1];
+  return {
+    part: Number(markerRe.exec(lines[markerAt].trim())[1]),
+    deps: [...depsText.matchAll(/#(\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b),
+    spec: lines
+      .slice(dependsAt + 1, markerAt)
+      .join("\n")
+      .trim(),
+  };
+}
+
+/**
+ * Decide, before anything is filed, which parts reuse an issue an earlier
+ * attempt filed and which are filed now. <earlier> holds the open issues that
+ * attempt filed for <issue> (bash checks they are the factory's own). A part
+ * reuses the earlier issue with its title only when that issue's spec is the
+ * part's spec and its "Depends on" names exactly the issues this split
+ * resolves the part's dependencies to. Anything else is a conflict, and
+ * nothing may be filed: reusing a stale part would leave a card with an
+ * outdated spec, or one that depends on an obsolete issue, and filing a new
+ * one beside it would leave two. Earlier issues no part matches are
+ * `leftovers`, for the summary to name.
+ */
+export function planSplitFiling({ split, earlier = [], issue }) {
+  const parts = Array.isArray(split?.parts) ? split.parts : [];
+  const byTitle = new Map();
+  for (const e of Array.isArray(earlier) ? earlier : []) {
+    if (Number.isInteger(e?.number) && typeof e?.title === "string" && !byTitle.has(e.title)) {
+      byTitle.set(e.title, e);
+    }
+  }
+  const resolved = {};
+  const actions = [];
+  const problems = [];
+  for (const p of parts) {
+    const e = byTitle.get(p.title);
+    const planned = (p.dependsOn ?? []).map((d) => resolved[d]);
+    if (!e) {
+      resolved[p.part] = null;
+      actions.push({ part: p.part, action: "file" });
+      continue;
+    }
+    byTitle.delete(p.title);
+    resolved[p.part] = e.number;
+    const filed = parseFiledPart(e.body, issue);
+    if (!filed) {
+      problems.push(
+        `part ${p.part} has the title of #${e.number}, which isn't in the shape the factory files parts in`,
+      );
+    } else if (filed.spec !== String(p.body ?? "").trim()) {
+      problems.push(
+        `part ${p.part} has the title of #${e.number}, but #${e.number}'s spec differs from this split's`,
+      );
+    } else if (
+      planned.some((n) => n === null) ||
+      planned.length !== filed.deps.length ||
+      [...planned].sort((a, b) => a - b).some((n, k) => n !== filed.deps[k])
+    ) {
+      const want = (p.dependsOn ?? [])
+        .map((d) =>
+          resolved[d] === null ? `part ${d}, which this split files anew` : `#${resolved[d]}`,
+        )
+        .join(", ");
+      const have = filed.deps.length > 0 ? filed.deps.map((n) => `#${n}`).join(", ") : "nothing";
+      problems.push(
+        `part ${p.part} matches #${e.number}, but #${e.number} depends on ${have} and this split needs ${want || "nothing"}`,
+      );
+    }
+    actions.push({ part: p.part, action: "reuse", number: e.number });
+  }
+  const leftovers = [...byTitle.values()].map((e) => e.number).sort((a, b) => a - b);
+  if (problems.length > 0) return { ok: false, problems, actions: [], leftovers };
+  return { ok: true, problems: [], actions, leftovers };
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
@@ -348,6 +454,17 @@ function main(argv) {
     process.stdout.write(`${JSON.stringify(validateSplit(flags.dir, { secrets }))}\n`);
     return 0;
   }
+  if (cmd === "plan") {
+    const issue = Number(flags.issue);
+    if (!Number.isInteger(issue) || issue <= 0) {
+      process.stderr.write("usage: plan-split.mjs plan --issue N\n");
+      return 2;
+    }
+    const input = JSON.parse(readStdin());
+    const out = planSplitFiling({ split: input.split, earlier: input.earlier, issue });
+    process.stdout.write(`${JSON.stringify(out)}\n`);
+    return 0;
+  }
   if (cmd === "compose") {
     const part = Number(flags.part);
     const issue = Number(flags.issue);
@@ -360,7 +477,7 @@ function main(argv) {
     process.stdout.write(composeSplitBody({ split, part, issue, created }));
     return 0;
   }
-  process.stderr.write("usage: plan-split.mjs <size|validate|compose> …\n");
+  process.stderr.write("usage: plan-split.mjs <size|validate|plan|compose> …\n");
   return 2;
 }
 

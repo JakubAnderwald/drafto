@@ -11,6 +11,9 @@ import {
   SPLIT_FILE_MAX_BYTES,
   composeSplitBody,
   hasUnclosedComment,
+  parseFiledPart,
+  planSplitFiling,
+  splitPartMarker,
   loadSplitSecrets,
   parseDependsOn,
   parseSplitFile,
@@ -495,15 +498,21 @@ describe("sanitisation contract on a realistic spec near the size cap", () => {
     assert.match(parsed.outOfScope, /^```ts\n[\s\S]*\n```\n\n- Sorting by title\. END-OF-SPEC$/);
   });
 
-  it("composes a public issue body that carries the whole sanitised spec and nothing hidden", () => {
+  it("composes a public issue body that carries the whole sanitised spec and only the factory's part marker", () => {
     const out = validate();
     const issue = composeSplitBody({ split: out, part: 2, issue: 900, created: { 1: 1001 } });
     const first = composeSplitBody({ split: out, part: 1, issue: 900 });
-    assert.ok(first.endsWith(`${expected}\n`));
+    assert.ok(first.endsWith(`${expected}\n\n<!-- drafto-factory-split-part:900:1 -->\n`));
     assert.match(issue, /\*\*Depends on:\*\* #1001\n/);
-    for (const text of [first, issue]) {
-      assert.doesNotMatch(text, /<!--|drafto-factory-/);
+    for (const [text, part] of [
+      [first, 1],
+      [issue, 2],
+    ]) {
+      const rest = text.replace(splitPartMarker(900, part), "");
+      assert.doesNotMatch(rest, /<!--|drafto-factory-/);
     }
+    // And it reads back as the same part, spec intact.
+    assert.deepEqual(parseFiledPart(first, 900), { part: 1, deps: [], spec: expected });
   });
 
   it("refuses an unclosed HTML comment instead of filing the spec cut short", () => {
@@ -540,13 +549,121 @@ describe("composeSplitBody", () => {
     assert.match(one, /^_Split from #900 \(part 1 of 3\) by the dark factory/);
     assert.match(one, /\*\*Depends on:\*\* nothing; this part can start first/);
     const three = composeSplitBody({ split, part: 3, issue: 900, created: { 1: 1001, 2: 1002 } });
-    assert.match(three, /\*\*Depends on:\*\* #1001, #1002\n\n### What\n\nthree\n$/);
+    assert.match(
+      three,
+      /\*\*Depends on:\*\* #1001, #1002\n\n### What\n\nthree\n\n<!-- drafto-factory-split-part:900:3 -->\n$/,
+    );
   });
 
   it("refuses a dependency with no issue yet, an unknown part and a bad issue", () => {
     assert.throws(() => composeSplitBody({ split, part: 2, issue: 900 }), /part 1 has no issue/);
     assert.throws(() => composeSplitBody({ split, part: 4, issue: 900 }), /no part 4/);
     assert.throws(() => composeSplitBody({ split, part: 1, issue: 0 }), /bad --issue/);
+  });
+});
+
+describe("parseFiledPart / planSplitFiling: reusing what an earlier attempt filed", () => {
+  const split = {
+    parts: [
+      { part: 1, title: "feat: a", dependsOn: [], body: "### What\n\na" },
+      { part: 2, title: "feat: b", dependsOn: [1], body: "### What\n\nb" },
+      { part: 3, title: "feat: c", dependsOn: [1, 2], body: "### What\n\nc" },
+    ],
+  };
+  const filed = (number, part, created, overrides = {}) => ({
+    number,
+    title: split.parts[part - 1].title,
+    body: composeSplitBody({ split, part, issue: 900, created }),
+    ...overrides,
+  });
+
+  it("reads a filed part back: its number, dependencies and spec, CRLF or not", () => {
+    const body = composeSplitBody({ split, part: 3, issue: 900, created: { 1: 11, 2: 7 } });
+    assert.deepEqual(parseFiledPart(body, 900), { part: 3, deps: [7, 11], spec: "### What\n\nc" });
+    assert.deepEqual(parseFiledPart(body.replace(/\n/g, "\r\n"), 900), {
+      part: 3,
+      deps: [7, 11],
+      spec: "### What\n\nc",
+    });
+    assert.equal(parseFiledPart(body, 901), null, "another card's part");
+    assert.equal(parseFiledPart("### What\n\nc", 900), null, "no marker");
+  });
+
+  it("files everything when nothing was filed before", () => {
+    const out = planSplitFiling({ split, earlier: [], issue: 900 });
+    assert.equal(out.ok, true);
+    assert.deepEqual(
+      out.actions.map((a) => a.action),
+      ["file", "file", "file"],
+    );
+  });
+
+  it("reuses parts whose spec and resolved dependencies still match, and files the rest after them", () => {
+    const out = planSplitFiling({
+      split,
+      earlier: [filed(1001, 1, {}), filed(1002, 2, { 1: 1001 })],
+      issue: 900,
+    });
+    assert.equal(out.ok, true, JSON.stringify(out.problems));
+    assert.deepEqual(out.actions, [
+      { part: 1, action: "reuse", number: 1001 },
+      { part: 2, action: "reuse", number: 1002 },
+      { part: 3, action: "file" },
+    ]);
+  });
+
+  it("stops when a part to reuse depends on one this split files anew (replace A, keep B)", () => {
+    // #1001 (A) was closed, so A is filed again; #1002 (B) still depends on #1001.
+    const out = planSplitFiling({ split, earlier: [filed(1002, 2, { 1: 1001 })], issue: 900 });
+    assert.equal(out.ok, false);
+    assert.deepEqual(out.actions, []);
+    assert.match(
+      out.problems.join("\n"),
+      /part 2 matches #1002, but #1002 depends on #1001 and this split needs part 1, which this split files anew/,
+    );
+  });
+
+  it("stops when a matching title carries a different spec or other dependencies", () => {
+    const spec = planSplitFiling({
+      split,
+      earlier: [
+        filed(
+          1001,
+          1,
+          {},
+          {
+            body: composeSplitBody({ split, part: 1, issue: 900 }).replace(
+              "\na\n",
+              "\nA changed\n",
+            ),
+          },
+        ),
+      ],
+      issue: 900,
+    });
+    assert.match(spec.problems.join("\n"), /#1001's spec differs from this split's/);
+    const deps = planSplitFiling({
+      split,
+      earlier: [filed(1001, 1, {}), filed(1002, 2, { 1: 999 })],
+      issue: 900,
+    });
+    assert.match(deps.problems.join("\n"), /#1002 depends on #999 and this split needs #1001/);
+    const shape = planSplitFiling({
+      split,
+      earlier: [{ number: 1001, title: "feat: a", body: "hand-written" }],
+      issue: 900,
+    });
+    assert.match(shape.problems.join("\n"), /isn't in the shape the factory files parts in/);
+  });
+
+  it("names earlier parts that match no part as leftovers", () => {
+    const out = planSplitFiling({
+      split,
+      earlier: [filed(1001, 1, {}), { number: 1009, title: "feat: gone", body: "" }],
+      issue: 900,
+    });
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.leftovers, [1009]);
   });
 });
 
@@ -586,6 +703,22 @@ describe("plan-split.mjs CLI", () => {
     } finally {
       rmSync(d.root, { recursive: true, force: true });
     }
+  });
+
+  it("plan reads {split, earlier} and prints the filing plan", () => {
+    const split = { parts: [{ part: 1, title: "feat: a", dependsOn: [], body: "x" }] };
+    const r = spawnSync(process.execPath, [cli, "plan", "--issue", "900"], {
+      input: JSON.stringify({ split, earlier: [] }),
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      ok: true,
+      problems: [],
+      actions: [{ part: 1, action: "file" }],
+      leftovers: [],
+    });
+    assert.equal(spawnSync(process.execPath, [cli, "plan"], { encoding: "utf8" }).status, 2);
   });
 
   it("exits 2 on a usage error", () => {

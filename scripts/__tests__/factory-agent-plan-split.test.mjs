@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { composeSplitBody, sanitiseSplitText } from "../lib/plan-split.mjs";
+
 // factory-agent.sh's side of plan size + split on request (ADR-0083): the
 // factory-oversize label step after a plan run, and plan_split, which checks
 // every file the planner wrote before it files anything. `gh` is a HARD STUB in
@@ -104,15 +106,21 @@ const TWO = {
 };
 
 describe("plan_split (extracted, real bash, gh stubbed)", () => {
+  const FACTORY = "JakubAnderwald";
+
+  // views: {<number>: {state, title, body, author}} for `gh issue view`;
+  // timeline: the issue numbers #900's timeline cross-references.
   function runSplit({
     files = TWO,
     comments = [plan("10"), ask()],
     triggers = ["10"],
     split = "1",
     failCreateAt = 0,
-    backlogFail = false,
+    backlogFail = "",
     closeFail = false,
     views = {},
+    timeline = [],
+    timelineFail = false,
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "plan-split-bash-"));
     const replies = join(dir, "replies");
@@ -129,7 +137,13 @@ describe("plan_split (extracted, real bash, gh stubbed)", () => {
     const commentsFile = join(dir, "comments.json");
     const viewsFile = join(dir, "views.json");
     writeFileSync(commentsFile, JSON.stringify(comments));
-    writeFileSync(viewsFile, JSON.stringify(views));
+    const shaped = Object.fromEntries(
+      Object.entries(views).map(([n, v]) => [
+        n,
+        { number: Number(n), state: "OPEN", author: { login: FACTORY }, ...v },
+      ]),
+    );
+    writeFileSync(viewsFile, JSON.stringify(shaped));
     try {
       const snippet = `
 set -euo pipefail
@@ -139,7 +153,6 @@ ${extract("fetch_comments_retry")}
 ${extract("spec_missing_section")}
 ${extract("plan_split_requested")}
 ${extract("plan_split_request_link")}
-${extract("plan_split_filed_marker")}
 ${extract("plan_split_fail")}
 ${extract("plan_split_earlier")}
 ${extract("plan_split_backlog")}
@@ -153,9 +166,10 @@ node() {
   case "\${1:-}" in
     *factory-project.mjs)
       echo "[factory-project] \${*:2}" >>${JSON.stringify(calls)}
-      if [[ "\${2:-}" == item-for-issue ]]; then
-        ${backlogFail ? "return 1" : 'printf \'{"itemId":"PVTI_%s"}\' "$4"'}
-      fi
+      case "\${2:-}" in
+        item-for-issue) ${backlogFail === "lookup" ? "return 1" : 'printf \'{"itemId":"PVTI_%s"}\' "$4"'} ;;
+        set-status) ${backlogFail === "set" ? "return 1" : ":"} ;;
+      esac
       return 0 ;;
     *state-cli.mjs) echo "[state-cli] \${*:2}" >>${JSON.stringify(calls)}; return 0 ;;
   esac
@@ -164,6 +178,9 @@ node() {
 gh() {
   echo "[gh] $*" >>${JSON.stringify(calls)}
   case "\${1:-} \${2:-}" in
+    "api user") echo ${JSON.stringify(FACTORY)} ;;
+    "api --paginate")
+      ${timelineFail ? 'echo "HTTP 502" >&2; return 1' : `printf '%s\\n' ${timeline.join(" ") || '""'}`} ;;
     "issue create")
       local n
       n=$(( $(cat ${JSON.stringify(counter)} 2>/dev/null || echo 0) + 1 ))
@@ -212,6 +229,22 @@ echo "[result] $PLAN_SPLIT_RESULT"
     }
   }
 
+  // What plan_split files for TWO, as validate + compose would build it: the
+  // body an earlier attempt left on a part's issue.
+  const parts = [
+    { part: 1, title: "feat: duplicate a note", dependsOn: [], file: TWO["01.md"] },
+    {
+      part: 2,
+      title: `feat: bulk duplicate, for @${ZWSP}someone`,
+      dependsOn: [1],
+      file: TWO["02.md"],
+    },
+  ].map((p) => ({ ...p, body: sanitiseSplitText(p.file.slice(p.file.indexOf("### What"))) }));
+  const earlierPart = (part, created = {}) => ({
+    title: parts[part - 1].title,
+    body: composeSplitBody({ split: { parts }, part, issue: 900, created }),
+  });
+
   it("files every part in order on the board, closes the card as not planned, then links the parts and moves it to Done", () => {
     const out = runSplit();
     assert.equal(out.creates, 2);
@@ -224,9 +257,15 @@ echo "[result] $PLAN_SPLIT_RESULT"
     // Part 2 names the issue part 1 became.
     assert.match(out.bodies, /_Split from #900 \(part 1 of 2\)/);
     assert.match(out.bodies, /\*\*Depends on:\*\* #2001\n/);
-    // Neutralised: no mention, no hidden comment (a forged support footer).
+    // Each body carries its part marker, written in the create itself, and no
+    // other hidden text: no mention, no forged support footer.
+    assert.match(out.bodies, /<!-- drafto-factory-split-part:900:1 -->/);
+    assert.match(out.bodies, /<!-- drafto-factory-split-part:900:2 -->/);
     assert.ok(out.bodies.includes(`cc @${ZWSP}jakub`));
-    assert.doesNotMatch(out.bodies, /<!--|reporter-email/);
+    assert.doesNotMatch(
+      out.bodies.replace(/<!-- drafto-factory-split-part:900:\d -->/g, ""),
+      /<!--|reporter-email/,
+    );
     // Each lands in Backlog.
     assert.match(out.calls, /\[factory-project\] item-for-issue --issue 2001/);
     assert.match(out.calls, /\[factory-project\] set-status --item-id PVTI_2001 --status Backlog/);
@@ -241,6 +280,12 @@ echo "[result] $PLAN_SPLIT_RESULT"
       out.calls,
       /\[gh\] issue close 900 --repo JakubAnderwald\/drafto --reason not planned/,
     );
+    // It looked for earlier parts first, through the timeline, as itself.
+    assert.ok(out.calls.indexOf("[gh] api user") < out.calls.indexOf("[gh] issue create"));
+    assert.match(
+      out.calls,
+      /\[gh\] api --paginate repos\/JakubAnderwald\/drafto\/issues\/900\/timeline/,
+    );
     // Closed first, so the summary saying so is true when it's posted.
     assert.ok(
       out.calls.indexOf("issue close 900") < out.calls.indexOf("issue comment 900") &&
@@ -254,7 +299,6 @@ echo "[result] $PLAN_SPLIT_RESULT"
     assert.match(out.posted, /🏭 \*\*The factory didn't split this card\*\*/);
     assert.match(out.posted, why);
     assert.match(out.posted, /<!-- drafto-factory-plan-split-failed -->/);
-    assert.doesNotMatch(out.posted, /drafto-factory-plan-split-filed/);
     assert.match(out.calls, /\[transition\] 900 -> Plan Review/);
     assert.doesNotMatch(out.calls, /issue close|-> Done/);
   };
@@ -308,13 +352,29 @@ echo "[result] $PLAN_SPLIT_RESULT"
     );
   });
 
-  it("accepts the request with steering after it, and in an allowlisted forward's quoted text", () => {
+  const FORWARD =
+    "<!-- drafto-support-forward sender:wife@example.com -->\nCustomer replied via support@drafto.eu:\n\n";
+
+  it("accepts the request with steering after it, and in an allowlisted forward's own quoted text", () => {
     for (const body of [
       "Split this card",
       "Looks big.\n\nplease split this card, with the migration on its own.",
-      "<!-- drafto-support-forward sender:wife@example.com -->\nCustomer replied via support@drafto.eu:\n\n> Please split this card.",
+      `${FORWARD}> Please split this card.`,
     ]) {
       assert.equal(runSplit({ comments: [plan("10"), ask(10, body)] }).creates, 2, body);
+    }
+  });
+
+  it("never reads a forward's nested quote (someone the reporter quoted) as the request", () => {
+    for (const body of [
+      `${FORWARD}> Sounds good.\n>\n> > Please split this card.`,
+      `${FORWARD}> >Split this card`,
+      `${FORWARD}>> Split this card`,
+    ]) {
+      refused(
+        runSplit({ comments: [plan("10"), ask(10, body)] }),
+        /has a line that starts with "Split this card"/,
+      );
     }
   });
 
@@ -322,7 +382,14 @@ echo "[result] $PLAN_SPLIT_RESULT"
     refused(runSplit({ split: "0" }), /FACTORY_PLAN_SPLIT=0/);
   });
 
-  it("stops at a failed create, lists what it filed and records it for a retry", () => {
+  it("files nothing when it can't check for parts an earlier attempt filed", () => {
+    refused(
+      runSplit({ timelineFail: true }),
+      /couldn't check which parts an earlier attempt filed/,
+    );
+  });
+
+  it("stops at a failed create and lists what it filed", () => {
     const out = runSplit({
       files: { ...TWO, "03.md": spec({ title: "feat: part three", depends: "02" }) },
       failCreateAt: 2,
@@ -330,49 +397,20 @@ echo "[result] $PLAN_SPLIT_RESULT"
     assert.equal(out.creates, 2);
     assert.equal(out.result, "back");
     assert.match(out.posted, /Filing part 2 of 3 failed/);
+    assert.match(out.posted, /a retry finds it and reuses it/);
     assert.match(out.posted, /Parts filed so far: #2001\./);
-    assert.match(out.posted, /<!-- drafto-factory-plan-split-filed:2001 -->/);
     assert.match(out.calls, /\[transition\] 900 -> Plan Review/);
     assert.doesNotMatch(out.calls, /issue close/);
   });
 
-  it("on a retry, reuses each open part an earlier attempt filed instead of filing it twice", () => {
-    const earlierFail = {
-      id: 600,
-      authorAssociation: "OWNER",
-      createdAt: "2026-11-16T10:30:00Z",
-      body: "🏭 **The factory didn't split this card**\n\n<!-- drafto-factory-plan-split-failed -->\n<!-- drafto-factory-plan-split-filed:1001,1003,1004,1005 -->",
-    };
-    const forged = {
-      id: 601,
-      authorAssociation: "NONE",
-      createdAt: "2026-11-16T10:31:00Z",
-      body: "<!-- drafto-factory-plan-split-filed:1006 -->",
-    };
-    const ours = (title, state = "OPEN", from = 900) => ({
-      state,
-      title,
-      body: `_Split from #${from} (part 1 of 2) by the dark factory, at the operator's request._\n\n### What`,
-    });
-    const out = runSplit({
-      comments: [plan("10"), earlierFail, forged, ask()],
-      views: {
-        1001: ours("feat: duplicate a note"),
-        1003: ours("feat: an old part nobody needs"),
-        1004: ours("feat: closed since", "CLOSED"),
-        1005: ours("feat: bulk duplicate, for @someone", "OPEN", 777),
-        1006: ours("feat: duplicate a note"),
-      },
-    });
-    // Part 1 is reused; part 2 is filed (1005 belongs to another card).
-    assert.equal(out.creates, 1);
+  it("on a retry, reuses a part an earlier attempt filed, even one whose create reply was lost", () => {
+    // #1001 exists only on the timeline: no comment ever named it.
+    const out = runSplit({ timeline: [1001], views: { 1001: earlierPart(1) } });
+    assert.equal(out.creates, 1, "part 1 is reused, part 2 is filed");
     assert.equal(out.result, "done");
     assert.match(out.bodies, /_Split from #900 \(part 2 of 2\)[\s\S]*\*\*Depends on:\*\* #1001\n/);
     assert.match(out.posted, /1\. #1001\n2\. #2001\n/);
     assert.match(out.posted, /- #1001: filed by an earlier attempt and reused as it is\./);
-    assert.match(out.posted, /- #1003, filed by an earlier attempt, matches no part of this split/);
-    assert.doesNotMatch(out.posted, /#1004|#1005|#1006/);
-    assert.doesNotMatch(out.calls, /issue view 1006/, "a non-OWNER marker is ignored");
     assert.doesNotMatch(
       out.calls,
       /set-status --item-id PVTI_1001/,
@@ -380,18 +418,77 @@ echo "[result] $PLAN_SPLIT_RESULT"
     );
   });
 
-  it("still finishes when a new card can't be put in Backlog, and says so", () => {
-    const out = runSplit({ backlogFail: true });
-    assert.equal(out.creates, 2);
-    assert.match(out.posted, /#2001 isn't in \*\*Backlog\*\*/);
-    assert.match(out.calls, /\[transition\] 900 -> Done/);
+  it("reuses every part when all still match, and files nothing", () => {
+    const out = runSplit({
+      timeline: [1001, 1002],
+      views: { 1001: earlierPart(1), 1002: earlierPart(2, { 1: 1001 }) },
+    });
+    assert.equal(out.creates, 0);
+    assert.equal(out.result, "done");
+    assert.match(out.posted, /1\. #1001\n2\. #1002\n/);
   });
 
-  it("returns the card to Plan Review when closing it fails, records the parts and posts no summary", () => {
+  it("only reuses the factory's own open parts of this card", () => {
+    const out = runSplit({
+      timeline: [1001, 1006, 1007, 1008],
+      views: {
+        1006: { ...earlierPart(1), author: { login: "mallory" } },
+        1007: { ...earlierPart(1), state: "CLOSED" },
+        1008: { ...earlierPart(1), body: earlierPart(1).body.replace(":900:", ":777:") },
+        1001: { ...earlierPart(1), title: "feat: something else" },
+      },
+    });
+    assert.equal(out.creates, 2, "nothing was reusable");
+    assert.match(out.posted, /- #1001, filed by an earlier attempt, matches no part of this split/);
+    assert.doesNotMatch(out.posted, /#1006|#1007|#1008/);
+  });
+
+  it("stops before filing anything when a part to reuse depends on one being replaced (replace A, keep B)", () => {
+    // #1001 (A) was closed, so A would be filed again; #1002 (B) still depends on #1001.
+    const out = runSplit({
+      timeline: [1001, 1002],
+      views: {
+        1001: { ...earlierPart(1), state: "CLOSED" },
+        1002: earlierPart(2, { 1: 1001 }),
+      },
+    });
+    refused(
+      out,
+      /part 2 matches #1002, but #1002 depends on #1001 and this split needs part 1, which this split files anew/,
+    );
+    assert.match(
+      out.posted,
+      /Close each of those issues to have its part filed again, or edit it to match/,
+    );
+  });
+
+  it("stops before filing anything when an earlier part's spec differs", () => {
+    const changed = earlierPart(1);
+    changed.body = changed.body.replace("Users can duplicate", "Users can copy");
+    refused(
+      runSplit({ timeline: [1001], views: { 1001: changed } }),
+      /part 1 has the title of #1001, but #1001's spec differs from this split's/,
+    );
+  });
+
+  for (const mode of ["lookup", "set"]) {
+    it(`still finishes when a new card can't be put in Backlog (${mode} fails), and says so`, () => {
+      // The board's "Item added to project" workflow is off and Status has no
+      // default, so such a card has no Status: no factory sweep reads it.
+      const out = runSplit({ backlogFail: mode });
+      assert.equal(out.creates, 2);
+      assert.match(out.posted, /#2001 isn't in \*\*Backlog\*\*/);
+      assert.match(out.posted, /#2002 isn't in \*\*Backlog\*\*/);
+      // No other column is ever written for a new card.
+      assert.doesNotMatch(out.calls, /set-status --item-id \S+ --status (?!Backlog)/);
+      assert.match(out.calls, /\[transition\] 900 -> Done/);
+    });
+  }
+
+  it("returns the card to Plan Review when closing it fails, and posts no summary", () => {
     const out = runSplit({ closeFail: true });
     assert.equal(out.result, "back");
     assert.match(out.calls, /drafto-factory-plan-split-close-failed/);
-    assert.match(out.calls, /drafto-factory-plan-split-filed:2001,2002/);
     assert.doesNotMatch(out.posted, /Split into/);
     assert.match(out.calls, /\[transition\] 900 -> Plan Review/);
     assert.doesNotMatch(out.calls, /-> Done/);
