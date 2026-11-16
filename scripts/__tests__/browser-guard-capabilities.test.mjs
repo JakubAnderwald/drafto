@@ -63,9 +63,33 @@ describe("capabilities in the config", () => {
     assert.ok(!alwaysDeny(all).includes("javascript_tool"));
     assert.ok(alwaysDeny(all).includes("upload_image"));
     assert.ok(alwaysDeny(all).includes("switch_browser"));
-    assert.equal(sessionToolsArg(all), "Bash");
+    assert.equal(sessionToolsArg(all), "Bash,Read");
     assert.ok(allowedToolsArg(all).split(",").includes("Bash"));
     assert.deepEqual(runnerTools({ capabilities: ["js"] }).slice(-1), ["javascript_tool"]);
+  });
+
+  // Measured with Claude Code 2.1.323 (2026-11-16, a runner-like `claude -p
+  // --chrome` against a local page): with --tools "" an upload from an
+  // additionalDirectories folder is refused ("only files this session is
+  // allowed to read can be uploaded"), and so is --add-dir or a Read allow
+  // rule; with --tools "Read" it goes through, also while a hook denies every
+  // Read call. Without the shared folder, --tools "Read" alone is refused too.
+  test("uploads put Read in the session only: never allowed, never denied by a rule", () => {
+    assert.equal(sessionToolsArg({ capabilities: ["uploads"] }), "Read");
+    assert.equal(sessionToolsArg({ capabilities: ["inspect"] }), "Bash");
+    assert.equal(sessionToolsArg({ capabilities: ["js"] }), "");
+    const paths = { nodePath: "/n/node", guardPath: "/g/guard.mjs", configPath: "/c/cfg.json" };
+    for (const config of [
+      null,
+      { capabilities: ["uploads"], fixturesDir: "/r/fixtures" },
+      { capabilities: ["uploads", "js", "inspect"], fixturesDir: "/r/fixtures" },
+    ]) {
+      // An --allowedTools "Read" would allow reading any path.
+      assert.ok(!allowedToolsArg(config).split(",").includes("Read"));
+      // A Read deny rule makes file_upload refuse every file.
+      const settings = buildGuardSettings({ ...paths, config });
+      assert.ok(!settings.permissions.deny.some((t) => /^Read\b/.test(t)));
+    }
   });
 
   test("validateConfig refuses an unknown capability, and uploads without a fixtures dir", () => {
@@ -80,7 +104,7 @@ describe("capabilities in the config", () => {
     assert.equal(c.fixturesDir, "/r/fixtures");
   });
 
-  test("the settings deny what stays off and hook Bash only with inspect", () => {
+  test("the settings deny what stays off, hook Bash only with inspect and Read only with uploads", () => {
     const paths = { nodePath: "/n/node", guardPath: "/g/guard.mjs", configPath: "/c/cfg.json" };
     const plain = buildGuardSettings(paths);
     assert.deepEqual(plain.permissions.deny, ALWAYS_DENY.map(T));
@@ -93,9 +117,18 @@ describe("capabilities in the config", () => {
     assert.ok(all.permissions.deny.includes(T("upload_image")));
     assert.deepEqual(
       all.hooks.PreToolUse.map((h) => h.matcher),
+      ["mcp__claude-in-chrome__.*", "Bash", "Read"],
+    );
+    for (const hook of all.hooks.PreToolUse.slice(1)) {
+      assert.match(hook.hooks[0].command, /hook pre .*\|\| exit 2$/);
+    }
+    assert.deepEqual(
+      buildGuardSettings({
+        ...paths,
+        config: { capabilities: ["js", "inspect"] },
+      }).hooks.PreToolUse.map((h) => h.matcher),
       ["mcp__claude-in-chrome__.*", "Bash"],
     );
-    assert.match(all.hooks.PreToolUse[1].hooks[0].command, /hook pre .*\|\| exit 2$/);
   });
 
   // Claude Code's file_upload refuses a file the session may not read, and
