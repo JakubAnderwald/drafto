@@ -150,17 +150,20 @@ describe("intest_handoff — failure degrades, never escalates", () => {
 
   it("falls back to a deterministic comment on timeout, error, or no marker", () => {
     // One fallback per failure path: missing prompt, issue fetch, bundle build,
-    // non-zero exit, session limit, and a missing marker after a clean exit.
+    // session limit, and no scenario for the head after the run. A timeout or
+    // an error exit goes through that last check too (ADR-0082): the run may
+    // have posted before it died.
     const calls = body.match(/intest_fallback_comment/g) || [];
-    assert.ok(calls.length >= 6, `expected a fallback on every failure path, got ${calls.length}`);
+    assert.ok(calls.length >= 5, `expected a fallback on every failure path, got ${calls.length}`);
     assert.match(body, /exit_code -eq 124/);
     assert.match(body, /check_session_limit/);
+    assert.match(body, /action="exit-\$exit_code"/);
   });
 
   it("forwards its coverage-note argument to every fallback and to the bundle", () => {
     assert.match(body, /local cr_note="\$\{10:-\}"/);
     const calls = body.match(/intest_fallback_comment [^\n]*/g) || [];
-    assert.ok(calls.length >= 6);
+    assert.ok(calls.length >= 5);
     for (const call of calls) {
       assert.match(call, /"\$\{beta_json:-\}" "\$cr_note"$/, `fallback without the note: ${call}`);
     }
@@ -186,9 +189,9 @@ describe("intest_handoff — failure degrades, never escalates", () => {
     // re-post the same comment every 5-minute tick — issue spam.
     const posts = (body.match(/intest_fallback_comment/g) || []).length;
     const records = (body.match(/intest_record_comment_sha/g) || []).length;
-    assert.ok(posts >= 6, `expected a fallback on every failure path, got ${posts}`);
-    // Five early-return paths pair 1:1 with a recorder; the sixth (marker
-    // missing after a clean exit) falls through to the recorder at the tail,
+    assert.ok(posts >= 5, `expected a fallback on every failure path, got ${posts}`);
+    // Four early-return paths pair 1:1 with a recorder; the fifth (no scenario
+    // for the head after the run) falls through to the recorder at the tail,
     // which also covers the success path. The one extra recorder is the skip
     // for a head that already has its scenario (ADR-0082), which posts nothing
     // but must still stop the sweep re-firing.
@@ -1767,7 +1770,7 @@ describe("scenario knobs (ADR-0082)", () => {
     assert.match(script, /^SCENARIO_DIFF_DIR="\$LOG_DIR\/scenario"$/m);
     assert.match(
       script,
-      /find "\$SCENARIO_DIFF_DIR" -maxdepth 1 -type f \\\( -name '\*\.diff' -o -name '\*\.json' \\\) -mtime \+30 -delete/,
+      /find "\$SCENARIO_DIFF_DIR" -maxdepth 1 -type f \\\( -name '\*\.diff' -o -name '\*\.json' -o -name '\*\.json\.tmp' \\\) -mtime \+30 -delete/,
     );
     assert.match(
       fnBody("release_slot_and_worktree"),
@@ -1890,10 +1893,12 @@ node() {
     printf '%s' "$3" >"$REPO_ROOT/claude.input"
     case "$CLAUDE_MODE" in
       silent) return 0 ;;
-      post)
+      post|post-then-timeout)
         gh issue comment ${ISSUE} --body "$(printf '## Test scenario\\n\\n### Web\\n\\n1. new step\\n\\n<!-- drafto-factory-in-test -->\\n<!-- drafto-factory-test-scenario -->\\n<!-- drafto-factory-scenario-sha:%s -->' "$HEAD")"
+        [[ "$CLAUDE_MODE" == "post" ]] || return 124
         echo "issue=${ISSUE} action=commented comment=https://example.invalid/c"
         return 0 ;;
+      timeout) return 124 ;;
       *) return 1 ;;
     esac
   fi
@@ -2049,6 +2054,27 @@ intest_handoff ${ISSUE} 802 '{"number":802,"url":"u","headRef":"factory/issue-${
     assert.equal(fallbacks(r).length, 1);
     assert.equal(r.state.intestScenarioRounds, "1");
     assert.ok(r.files.includes(`${ISSUE}-111111111111.diff`));
+  });
+
+  it("treats a run that posted and then timed out as posted: no fallback, the round counts", () => {
+    const r = run({ ...prior(), claude: "post-then-timeout", rounds: "1" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fallbacks(r).length, 0);
+    assert.match(r.log, /claude timed out writing the In Test scenario/);
+    assert.match(r.log, /test scenario posted \(action=exit-124, delta mode\)/);
+    assert.equal(r.state.intestScenarioRounds, "2");
+    assert.equal(r.state.intestCommentSha, HEAD);
+  });
+
+  it("still posts the fallback after a timeout that posted nothing, but only once per head", () => {
+    const first = run({ claude: "timeout" });
+    assert.equal(fallbacks(first).length, 1);
+    assert.match(
+      first.log,
+      /no test scenario for 222222222222 found \(action=exit-124\); posting fallback/,
+    );
+    const again = run({ comments: first.comments, claude: "timeout" });
+    assert.equal(fallbacks(again).length, 1, "no second fallback for the same head");
   });
 
   it("prints the delta bundle under --dry-run without storing anything", () => {

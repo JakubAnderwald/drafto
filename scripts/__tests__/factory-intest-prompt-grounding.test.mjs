@@ -405,6 +405,12 @@ describe("In Test prompt — machine contract", () => {
   it("allows noop ONLY on an exact full-SHA match, never on judgement", () => {
     assert.match(flat, /byte-for-byte equal to `bundle\.headSha`/);
     assert.match(flat, /Do not judge staleness by reading the steps/);
+    // The fallback carries the head's SHA marker too, but bash runs the writer
+    // for a fallback-only head precisely to replace it (ADR-0082).
+    assert.match(
+      flat,
+      /A comment that also carries `<!-- drafto-factory-scenario-fallback -->` is the factory's deterministic fallback, not a scenario: it never makes a scenario current/,
+    );
   });
 
   it("keys manual build commands by platform id, not list order", () => {

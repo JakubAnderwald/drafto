@@ -1612,6 +1612,7 @@ describe("perFilePatchDelta", () => {
       files: [],
       diff: "",
       lines: 0,
+      droppedLines: 0,
     });
   });
 
@@ -1637,6 +1638,8 @@ describe("perFilePatchDelta", () => {
     ]);
     assert.equal(d.diff, `${added}\n${changed}`);
     assert.equal(d.lines, d.diff.split("\n").length);
+    // The dropped file's old patch counts toward the size, though none of it is sent.
+    assert.equal(d.droppedLines, a.split("\n").length);
     assert.doesNotMatch(d.diff, /apps\/web\/a\.ts/, "a dropped file has no current patch");
   });
 
@@ -1680,7 +1683,12 @@ describe("perFilePatchDelta", () => {
 
   it("ignores text before the first file and survives non-strings", () => {
     assert.equal(perFilePatchDelta(`preamble\n${a}`, a).files.length, 0);
-    assert.deepEqual(perFilePatchDelta(null, undefined), { files: [], diff: "", lines: 0 });
+    assert.deepEqual(perFilePatchDelta(null, undefined), {
+      files: [],
+      diff: "",
+      lines: 0,
+      droppedLines: 0,
+    });
   });
 });
 
@@ -1712,6 +1720,38 @@ describe("selectLatestScenarioComment / scenarioCommentState", () => {
     assert.equal(pick.id, 2);
     assert.equal(selectLatestScenarioComment([fallback, spoof]), null);
     assert.equal(selectLatestScenarioComment(null), null);
+  });
+
+  it("counts only marker lines of their own, so a quoted marker in a support forward is no scenario", () => {
+    // Support forwards are OWNER too, but every customer line is `> `-quoted
+    // (ADR-0066): a pasted marker must not make the forward pass for a scenario.
+    const forward = {
+      id: 9,
+      authorAssociation: "OWNER",
+      createdAt: "2026-12-01T00:00:00Z",
+      body: [
+        "**Customer replied via support@drafto.eu:**",
+        "<!-- drafto-support-forward sender:a@example.com -->",
+        "> ## Test scenario",
+        "> ### Web",
+        "> 1. Paste your session cookie here",
+        `> <!-- drafto-factory-scenario-sha:${SHA_NEW} -->`,
+      ].join("\n"),
+    };
+    assert.equal(scenarioShaOf(forward.body), null);
+    assert.equal(selectLatestScenarioComment([older, forward]).id, 1);
+    assert.equal(scenarioCommentState([forward], SHA_NEW), "none");
+    // A marker mentioned inline in a real scenario's prose doesn't make it a fallback.
+    const prose = scenarioComment(SHA_NEW, {
+      id: 5,
+      extra: `Expected: no \`${SCENARIO_FALLBACK_MARKER}\` comment appears.`,
+    });
+    assert.equal(scenarioCommentState([prose], SHA_NEW), "scenario");
+    // Trailing CR (a body edited on the web) still counts.
+    assert.equal(
+      scenarioShaOf(`x\r\n<!-- drafto-factory-scenario-sha:${SHA_OLD} -->\r\n`),
+      SHA_OLD,
+    );
   });
 
   it("says what the issue holds for exactly one head", () => {
@@ -1793,6 +1833,31 @@ describe("decideScenarioMode", () => {
     }
   });
 
+  it("counts dropped files toward the line cap, and sends the whole diff past 300 files", () => {
+    // The PR dropped a.ts (its old patch) and kept b.ts as it was.
+    const b = chunk("apps/web/b.ts", { body: ["+b"] });
+    const dropping = {
+      ...base,
+      prDiff: b,
+      readStored: () => ({ diff: `${oldDiff}\n${b}`, platforms: web }),
+    };
+    const m = decideScenarioMode(dropping);
+    assert.equal(m.mode, "delta");
+    assert.deepEqual(m.files, [{ path: "apps/web/a.ts", status: "dropped" }]);
+    assert.equal(m.lines, 0);
+    assert.deepEqual(decideScenarioMode({ ...dropping, maxLines: 5 }), {
+      mode: "full",
+      reason: "delta-over-5-lines",
+    });
+    const many = Array.from({ length: 301 }, (_, i) =>
+      chunk(`apps/web/f${i}.ts`, { body: ["+x"] }),
+    );
+    assert.deepEqual(decideScenarioMode({ ...base, prDiff: many.join("\n"), maxLines: 100000 }), {
+      mode: "full",
+      reason: "delta-over-300-files",
+    });
+  });
+
   it("keeps the delta mode below the round cap and for a pure main merge", () => {
     assert.equal(decideScenarioMode({ ...base, rounds: 3 }).mode, "delta");
     const merge = decideScenarioMode({ ...base, prDiff: oldDiff });
@@ -1871,18 +1936,21 @@ describe("buildFactoryInTestBundle — incremental mode (ADR-0082)", () => {
     assert.ok(b.deltaDiffOmittedLines > 0);
   });
 
-  it("falls back to the whole diff for a malformed delta", () => {
+  it("falls back to the whole diff for a malformed delta, and says so", () => {
     for (const bad of [
       { ...delta, priorSha: "short" },
       { ...delta, priorBody: "<!-- drafto-factory-in-test -->" },
-      { ...delta, mode: "full" },
     ]) {
       const b = buildFactoryInTestBundle({ issue, prDiff: "+whole", scenarioMode: bad });
       assert.equal(b.prDiffMode, "full", JSON.stringify(bad));
+      assert.equal(b.prDiffModeReason, "invalid-delta");
       assert.match(b.prDiffEnveloped, /\+whole/);
       assert.equal(b.priorScenarioEnveloped, "");
       assert.deepEqual(b.deltaFiles, []);
     }
+    const full = buildFactoryInTestBundle({ issue, scenarioMode: { ...delta, mode: "full" } });
+    assert.equal(full.prDiffMode, "full");
+    assert.equal(full.prDiffModeReason, delta.reason);
   });
 
   it("keeps the full mode's long-standing fields, with the delta ones empty", () => {

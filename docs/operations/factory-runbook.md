@@ -378,7 +378,7 @@ Lanes are still skipped up front — with the reason in the In Test comment — 
 
 ## In Test scenario writer
 
-`intest_handoff` writes the test scenario for each new PR head: at Testing entry, at the In Review → In Test promotion, and from the In Test sweep. It counts a run as posted only when the issue holds the factory's own scenario for exactly that head: its comment, with the full-SHA `drafto-factory-scenario-sha` marker, and not the fallback. Otherwise it posts the deterministic fallback, unless that head already has one. When the head already has a real scenario, the writer isn't started at all. The log says `a test scenario for <sha12> is already posted; not invoking the writer`.
+`intest_handoff` writes the test scenario for each new PR head: at Testing entry, at the In Review → In Test promotion, and from the In Test sweep. It counts a run as posted only when the issue holds the factory's own scenario for exactly that head: its comment, with the full-SHA `drafto-factory-scenario-sha` marker on a line of its own, and not the fallback. Otherwise it posts the deterministic fallback, unless that head already has one. A run that timed out is checked the same way, since it may have posted first; only a session limit posts the fallback straight away. When the head already has a real scenario, the writer isn't started at all. The log says `a test scenario for <sha12> is already posted; not invoking the writer`.
 
 **Incremental rewrite ([ADR-0082](../adr/0082-incremental-in-test-scenario-rewrite.md)).** Each run keeps the head's PR diff, and the platforms the scenario is written for, in `logs/factory/scenario/<issue>-<sha12>.diff` and `.json` (mode 600). The next head's run compares the two diffs file by file. It ignores hunk line numbers and the base blob ids, so a merge of main that touches nothing in the PR gives an empty delta. The writer then gets its previous scenario and only the patches of the files that changed, and still posts a complete scenario. The log line before each run gives the mode and the reason:
 
@@ -387,7 +387,7 @@ Issue #794: scenario for ca1b0f44bfba in delta mode (4 file(s), 734 line(s) sinc
 Issue #794: scenario for 6e093f6e6d18 in full mode (delta-over-800-lines)
 ```
 
-The other full-mode reasons are `off`, `no-diff`, `no-prior-scenario`, `no-stored-diff`, `platforms-changed` and `full-every-<n>`.
+The other full-mode reasons are `off`, `no-diff`, `no-prior-scenario`, `no-stored-diff`, `platforms-changed`, `delta-over-300-files`, `full-every-<n>` and `invalid-delta`. A dropped file counts toward the line cap with its old patch.
 
 | Var                                | Default | Purpose                                                                                                                                                       |
 | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |

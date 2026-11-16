@@ -1054,7 +1054,10 @@ export function buildFactoryInTestBundle({
     // priorScenarioSha) from the files whose patch changed since
     // (deltaFiles, deltaDiffEnveloped). prDiffModeReason says why, for the log.
     prDiffMode: delta ? "delta" : "full",
-    prDiffModeReason: shortReason(delta ? scenarioMode.reason : scenarioMode?.reason),
+    prDiffModeReason:
+      scenarioMode?.mode === "delta" && !delta
+        ? "invalid-delta"
+        : shortReason(scenarioMode?.reason),
     // The diff is enveloped like every other untrusted input: a PR may touch a
     // file whose contents quote a directive, and a hunk must never be read as
     // an instruction.
@@ -1116,27 +1119,51 @@ export function buildFactoryInTestBundle({
 
 export const SCENARIO_FALLBACK_MARKER = "<!-- drafto-factory-scenario-fallback -->";
 
+// The factory's markers count only on a line of their own, unquoted. A
+// support forward is posted as OWNER too, but it quotes every customer line
+// with `> ` (ADR-0066), so a customer who pastes a marker into an email can't
+// make the forward pass for a scenario.
+const SCENARIO_SHA_LINE_RE =
+  /^[ \t]*<!-- drafto-factory-scenario-sha:([0-9a-f]{40}) -->[ \t\r]*$/gm;
+const SCENARIO_FALLBACK_LINE_RE = /^[ \t]*<!-- drafto-factory-scenario-fallback -->[ \t\r]*$/m;
+
+// The full SHAs a comment's own scenario-sha marker lines name, in order.
+function scenarioShasOf(body) {
+  return typeof body === "string" ? [...body.matchAll(SCENARIO_SHA_LINE_RE)].map((m) => m[1]) : [];
+}
+
+// A comment the factory itself posted for a test scenario, real or fallback:
+// OWNER (the repo is public, so anyone can paste the factory's markers into a
+// comment of their own) with a scenario-sha marker line. The one predicate
+// behind selectScenarioComment, selectLatestScenarioComment and
+// scenarioCommentState, so the writer skip, the post-run check, the prior
+// scenario and the browser runner all agree on what a scenario is.
+function scenarioCommentShas(c) {
+  if (!c || c.authorAssociation !== "OWNER" || typeof c.body !== "string") return [];
+  return scenarioShasOf(c.body);
+}
+
+function isScenarioFallback(c) {
+  return SCENARIO_FALLBACK_LINE_RE.test(c.body);
+}
+
+function newest(comments) {
+  if (comments.length === 0) return null;
+  return comments.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
+}
+
 // The scenario comment for exactly `headSha`, or null. Three filters, each
-// load-bearing: OWNER (the repo is public, so anyone can paste the factory's
-// markers into a comment of their own), the exact full-SHA marker (a scenario
-// for an older commit describes code that no longer exists), and not the
-// deterministic fallback (it has no steps to run). Newest wins, matching how
-// the scenario writer replaces itself on a refresh.
+// load-bearing: the factory's own comment (scenarioCommentShas), the exact
+// full-SHA marker (a scenario for an older commit describes code that no
+// longer exists), and not the deterministic fallback (it has no steps to run).
+// Newest wins, matching how the scenario writer replaces itself on a refresh.
 export function selectScenarioComment(comments, headSha) {
   if (!Array.isArray(comments) || typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) {
     return null;
   }
-  const marker = `<!-- drafto-factory-scenario-sha:${headSha} -->`;
-  const matches = comments.filter(
-    (c) =>
-      c &&
-      c.authorAssociation === "OWNER" &&
-      typeof c.body === "string" &&
-      c.body.includes(marker) &&
-      !c.body.includes(SCENARIO_FALLBACK_MARKER),
+  return newest(
+    comments.filter((c) => scenarioCommentShas(c).includes(headSha) && !isScenarioFallback(c)),
   );
-  if (matches.length === 0) return null;
-  return matches.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
 }
 
 // The text of the section whose heading is at lines[start]: up to the next
@@ -1229,32 +1256,20 @@ export function extractScenarioSections(body) {
 // platforms the scenario was written for), and the next run gets the
 // factory's latest scenario plus only the files whose own patch changed since.
 
-const SCENARIO_SHA_MARKER_RE = /<!-- drafto-factory-scenario-sha:([0-9a-f]{40}) -->/g;
-
-// The full SHA a scenario comment was written for: the last scenario-sha
-// marker in the body (the markers close the comment), or null.
+// The full SHA a scenario comment was written for: its last scenario-sha
+// marker line (the markers close the comment), or null.
 export function scenarioShaOf(body) {
-  if (typeof body !== "string") return null;
-  let sha = null;
-  for (const m of body.matchAll(SCENARIO_SHA_MARKER_RE)) sha = m[1];
-  return sha;
+  return scenarioShasOf(body).at(-1) ?? null;
 }
 
-// The factory's newest scenario comment for ANY head, or null: OWNER, a
-// scenario-sha marker, and not the deterministic fallback (it has no steps to
-// build on). The same filters as selectScenarioComment minus the exact SHA.
+// The factory's newest scenario comment for ANY head, or null: the same
+// filters as selectScenarioComment minus the exact SHA. Never the fallback:
+// it has no steps to build on.
 export function selectLatestScenarioComment(comments) {
   if (!Array.isArray(comments)) return null;
-  const matches = comments.filter(
-    (c) =>
-      c &&
-      c.authorAssociation === "OWNER" &&
-      typeof c.body === "string" &&
-      scenarioShaOf(c.body) !== null &&
-      !c.body.includes(SCENARIO_FALLBACK_MARKER),
+  return newest(
+    comments.filter((c) => scenarioCommentShas(c).length > 0 && !isScenarioFallback(c)),
   );
-  if (matches.length === 0) return null;
-  return matches.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
 }
 
 // What the issue holds for exactly `headSha`: "scenario" (a real one,
@@ -1264,14 +1279,8 @@ export function selectLatestScenarioComment(comments) {
 export function scenarioCommentState(comments, headSha) {
   if (selectScenarioComment(comments, headSha)) return "scenario";
   if (!Array.isArray(comments) || typeof headSha !== "string") return "none";
-  const marker = `<!-- drafto-factory-scenario-sha:${headSha} -->`;
   const fallback = comments.some(
-    (c) =>
-      c &&
-      c.authorAssociation === "OWNER" &&
-      typeof c.body === "string" &&
-      c.body.includes(marker) &&
-      c.body.includes(SCENARIO_FALLBACK_MARKER),
+    (c) => scenarioCommentShas(c).includes(headSha) && isScenarioFallback(c),
   );
   return fallback ? "fallback" : "none";
 }
@@ -1349,7 +1358,9 @@ function diffByFile(text) {
 // "added" (the PR didn't touch it then), "changed" (its normalised patch
 // differs) or "dropped" (the PR no longer touches it). `diff` is the current
 // patches of the added and changed files, in the current diff's order, and
-// `lines` its line count. A merge of main that touches nothing the PR touches
+// `lines` its line count. `droppedLines` counts the old patches of the
+// dropped files: no text of theirs reaches the writer, but the scenario still
+// changes by that much. A merge of main that touches nothing the PR touches
 // leaves every patch as it was, so it gives an empty delta.
 export function perFilePatchDelta(oldDiff, newDiff) {
   const before = diffByFile(oldDiff);
@@ -1362,11 +1373,14 @@ export function perFilePatchDelta(oldDiff, newDiff) {
     files.push({ path, status: then ? "changed" : "added" });
     patches.push(now.raw);
   }
-  for (const path of before.keys()) {
-    if (!after.has(path)) files.push({ path, status: "dropped" });
+  let droppedLines = 0;
+  for (const [path, then] of before) {
+    if (after.has(path)) continue;
+    files.push({ path, status: "dropped" });
+    droppedLines += then.raw.split("\n").length;
   }
   const diff = patches.join("\n");
-  return { files, diff, lines: diff ? diff.split("\n").length : 0 };
+  return { files, diff, lines: diff ? diff.split("\n").length : 0, droppedLines };
 }
 
 const DELTA_STATUSES = new Set(["added", "changed", "dropped"]);
@@ -1441,6 +1455,9 @@ export function decideScenarioMode({
   const prior = selectLatestScenarioComment(comments);
   const priorSha = prior ? scenarioShaOf(prior.body) : null;
   if (!priorSha) return full("no-prior-scenario");
+  // Bash skips the writer when the head already has its scenario, so this
+  // only fires when that check couldn't read the comments: a delta against
+  // itself would be empty and keep every step unchecked.
   if (priorSha === headSha) return full("prior-is-head");
   const every = positiveInt(fullEvery, 4);
   if (positiveInt(rounds, 0) >= every) return full(`full-every-${every}`);
@@ -1458,7 +1475,10 @@ export function decideScenarioMode({
   }
   const delta = perFilePatchDelta(stored.diff, prDiff);
   const cap = positiveInt(maxLines, 800);
-  if (delta.lines > cap) return full(`delta-over-${cap}-lines`);
+  if (delta.lines + delta.droppedLines > cap) return full(`delta-over-${cap}-lines`);
+  // shapeScenarioDelta keeps at most this many entries; a longer list would
+  // reach the writer cut short, with nothing saying so.
+  if (delta.files.length > MAX_DELTA_FILES) return full(`delta-over-${MAX_DELTA_FILES}-files`);
   return {
     mode: "delta",
     reason: `${delta.files.length} file(s), ${delta.lines} line(s) since ${priorSha.slice(0, 12)}`,

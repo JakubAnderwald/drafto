@@ -833,7 +833,7 @@ find "$LOG_DIR/verify" -maxdepth 1 -type f -name 'report-*' -mtime +30 -delete 2
 # .json. A merged card's go at once (release_slot_and_worktree), and a card's
 # older ones whenever a new scenario lands; this window catches abandoned cards.
 SCENARIO_DIFF_DIR="$LOG_DIR/scenario"
-find "$SCENARIO_DIFF_DIR" -maxdepth 1 -type f \( -name '*.diff' -o -name '*.json' \) -mtime +30 -delete 2>/dev/null || true
+find "$SCENARIO_DIFF_DIR" -maxdepth 1 -type f \( -name '*.diff' -o -name '*.json' -o -name '*.json.tmp' \) -mtime +30 -delete 2>/dev/null || true
 # (Build-root locks live at "<root>.lock" beside the root itself, not in
 # $LOG_DIR, and are reaped by the pid check in ensure_beta_build_root.)
 
@@ -4626,8 +4626,9 @@ intest_handoff() {
     [[ $exit_code -eq 124 ]] && log "WARNING: claude timed out writing the In Test scenario for #$issue_num" \
       || log "ERROR: claude exited $exit_code writing the In Test scenario for #$issue_num"
     cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
-    # A session limit is worth pausing the whole factory for; anything else just
-    # falls back. Either way the retry budget is untouched — this is commentary.
+    # A session limit is worth pausing the whole factory for; anything else goes
+    # to the check below. Either way the retry budget is untouched — this is
+    # commentary.
     if [[ $exit_code -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
       rm -f "$out_file"
       intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
@@ -4635,18 +4636,19 @@ intest_handoff() {
       pause_for_session_limit
       return 0
     fi
-    rm -f "$out_file"
-    intest_fallback_comment "$issue_num" "$pr_num" "$preview_url" "$advisory" "$head_sha" "$platforms" "${beta_json:-}" "$cr_note"
-    intest_record_comment_sha "$issue_num" "$head_sha"
-    return 0
+    # A run that timed out or failed may have posted its scenario before it
+    # died: the check below decides, as for a clean exit, so a posted one
+    # gets no fallback on top and still counts its round.
+    action="exit-$exit_code"
+  else
+    cat "$out_file" >>"$LOG_FILE"
+    summary_line=$(grep -E '^issue=[0-9]+ action=[a-z]+ comment=[^ ]+$' "$out_file" | tail -1 || true)
+    action=$(echo "${summary_line:-}" | sed -E 's/.*action=([^ ]+).*/\1/')
   fi
-  cat "$out_file" >>"$LOG_FILE"
-  summary_line=$(grep -E '^issue=[0-9]+ action=[a-z]+ comment=[^ ]+$' "$out_file" | tail -1 || true)
   rm -f "$out_file"
-  action=$(echo "${summary_line:-}" | sed -E 's/.*action=([^ ]+).*/\1/')
 
-  # Trust the comment, not the directive line: a scenario for exactly this head
-  # either exists or it doesn't. A model that claims `commented` without
+  # Trust the comment, not the directive line or the exit code: a scenario for
+  # exactly this head either exists or it doesn't. A model that claims `commented` without
   # posting still gets a fallback, and one that posted without emitting a
   # parseable line doesn't get a duplicate. Only the full-SHA marker counts:
   # every older scenario carries the plain test-scenario marker too, so

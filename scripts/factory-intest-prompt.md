@@ -456,7 +456,10 @@ In this mode:
 Post nothing and emit `action=noop` **only** when an existing comment carries
 `<!-- drafto-factory-scenario-sha:<X> -->` where `<X>` is byte-for-byte equal to
 `bundle.headSha`. Anything else — a scenario for a different SHA, or one with no
-SHA marker at all — means the scenario is stale: write a fresh one. Do not judge
+SHA marker at all — means the scenario is stale: write a fresh one. A comment
+that also carries `<!-- drafto-factory-scenario-fallback -->` is the factory's
+deterministic fallback, not a scenario: it never makes a scenario current, so
+write the real one. Do not judge
 staleness by reading the steps. Bash re-invokes this stage after a revision
 precisely so the scenario is refreshed.
 
