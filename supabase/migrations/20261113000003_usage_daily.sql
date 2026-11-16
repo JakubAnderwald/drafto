@@ -150,7 +150,12 @@ grant execute on function public.record_activity(date[], text) to authenticated;
 --   2. Content overwrites (note_content_history rows archived that day) tagged
 --      with one of the five client tags count on that client's row. When that
 --      client never pinged that day (an app version without the ping), the
---      row is created, for users that still exist.
+--      row is created, for users that still exist, once tracking has started:
+--      only when usage_daily holds a row on or before p_day. So the rollup
+--      can't move the table's oldest day, which metrics_retention reads as
+--      the day tracking started, to before the first ping: a run for a day
+--      before any ping (the first cron run, or a manual one) backfills no
+--      writes-only rows.
 --   3. Untagged work: overwrites with no tag or another tag (e.g. 'web-cron'),
 --      plus notes created that day (inserts carry no tag). It is added to the
 --      user's row for that day whose client comes first in the tag order web,
@@ -158,7 +163,10 @@ grant execute on function public.record_activity(date[], text) to authenticated;
 --      step 2 created. A user with no row that day has nowhere to put it, so
 --      it is dropped.
 --   4. Rows older than 13 months are deleted.
--- Returns how many of p_day's rows have content_changes > 0. Only p_day is
+-- Raises 22023 on a null p_day, or one more than 29 days before today (UTC):
+-- cleanup_note_content_history deletes overwrites 30 days after they were
+-- archived, and step 1 would reset counts the remaining history can no longer
+-- rebuild. Returns how many of p_day's rows have content_changes > 0. Only p_day is
 -- rolled up, and work is dated when the server receives it (archived_at and
 -- created_at are server defaults; sync sends no created_at), so work done
 -- offline counts on the day it syncs, never on an earlier day;
@@ -182,6 +190,10 @@ begin
     raise exception 'p_day must be a date, got null'
       using errcode = '22023';
   end if;
+  if p_day < (now() at time zone 'UTC')::date - 29 then
+    raise exception 'p_day % is more than 29 days ago: note_content_history no longer holds all of it, so its counts would shrink', p_day
+      using errcode = '22023';
+  end if;
   v_from := p_day::timestamp at time zone 'UTC';
   v_to := (p_day + 1)::timestamp at time zone 'UTC';
 
@@ -199,6 +211,7 @@ begin
     and h.archived_at < v_to
     and h.archived_by = any (v_tags)
     and exists (select 1 from auth.users au where au.id = h.user_id)
+    and exists (select 1 from public.usage_daily e where e.day <= p_day)
   group by h.user_id, h.archived_by
   on conflict (user_id, day, client)
     do update set content_changes = excluded.content_changes;

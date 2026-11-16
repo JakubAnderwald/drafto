@@ -86,15 +86,21 @@ const DAY = 86_400_000;
 // packages/shared, and the 30-day look-back).
 const MAX_DAYS_PER_CALL = 31;
 const MAX_DAYS_BACK = 30;
+// Each request, body included, is aborted after this long, so a hung one
+// fails fast instead of eating its hook's budget: the `after` hook can still
+// try all three user deletions within its 60 s.
+const REQUEST_TIMEOUT_MS = 15_000;
 
 async function call(path, { method = "GET", key, token, body, prefer } = {}) {
   const headers = { apikey: key, Authorization: `Bearer ${token}` };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (prefer) headers.Prefer = prefer;
+  // One signal for the request and the body read: aborting it rejects either.
   const res = await fetch(`${origin}${path}`, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await res.text();
   let json = null;

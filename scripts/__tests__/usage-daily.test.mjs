@@ -715,6 +715,18 @@ describe("usage_daily: rollup_usage_daily (PGlite)", () => {
     );
   });
 
+  it("rejects a day more than 29 days ago, beyond the history retention", async () => {
+    // Today is read in the same statement, so a run across midnight can't split it.
+    await assert.rejects(
+      asServiceRole(db, "select public.rollup_usage_daily((now() at time zone 'UTC')::date - 30)"),
+      (err) => err.code === "22023" && /more than 29 days ago/.test(err.message),
+    );
+    assert.equal(
+      await result("select public.rollup_usage_daily((now() at time zone 'UTC')::date - 29) as n"),
+      0,
+    );
+  });
+
   it("can't be run by anon or authenticated", async () => {
     for (const role of ["anon", "authenticated"]) {
       await assert.rejects(
@@ -725,6 +737,46 @@ describe("usage_daily: rollup_usage_daily (PGlite)", () => {
         role,
       );
     }
+  });
+});
+
+describe("usage_daily: rollup_usage_daily before tracking started (PGlite)", () => {
+  let db;
+  let D; // two days ago (UTC)
+  let user;
+  const rollup = async (day) =>
+    (await asServiceRole(db, "select public.rollup_usage_daily($1) as n", [day]))[0].n;
+
+  before(async () => {
+    db = await freshDb();
+    const { today } = await anchors(db);
+    D = plusDays(today, -2);
+    const longAgo = at(plusDays(D, -40), 9);
+    user = await addUser(db, { email: "early@example.com", createdAt: longAgo });
+    // A web overwrite on D, while usage_daily is still empty.
+    await addNote(db, user, [
+      { chars: 10, at: longAgo },
+      { chars: 10, at: at(D, 10), client: "web" },
+    ]);
+  });
+
+  after(async () => {
+    await db?.close();
+  });
+
+  it("creates no row for a day before the oldest usage_daily row", async () => {
+    assert.equal(await rollup(D), 0);
+    assert.deepEqual(await dayRows(db, D), {});
+    // A ping the day after: D is still before tracking started.
+    await addDay(db, user, plusDays(D, 1), "mobile-ios");
+    assert.equal(await rollup(D), 0);
+    assert.deepEqual(await dayRows(db, D), {});
+  });
+
+  it("creates it once usage_daily holds a row on or before that day", async () => {
+    await addDay(db, user, plusDays(D, -1), "mobile-ios");
+    assert.equal(await rollup(D), 1);
+    assert.deepEqual(await dayRows(db, D), { "early@example.com:web": 1 });
   });
 });
 
