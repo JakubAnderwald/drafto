@@ -45,9 +45,11 @@ import {
   UPLOAD_FILE,
   commitMessage,
   evidenceRef,
+  gitBlobId,
   imagePath,
   main,
   priorUpload,
+  publishRun,
   rawUrl,
   renderWithheld,
   selftest,
@@ -166,6 +168,10 @@ function commitOf(origin, commit) {
 
 const blobOf = (origin, commit, rel) =>
   gitIn(origin, ["cat-file", "blob", `${commit}:${rel}`], { buffer: true }).stdout;
+
+// git's own id for the blob at <rel> in <commit>.
+const blobIdOf = (origin, commit, rel) =>
+  gitIn(origin, ["rev-parse", "--verify", `${commit}:${rel}`]).stdout.trim();
 
 const modeOf = (file) => statSync(file).mode & 0o777;
 const readJsonFile = (file) => JSON.parse(readFileSync(file, "utf8"));
@@ -867,14 +873,17 @@ describe("upload publishes one parentless commit on the run's own ref", () => {
         url: `${RAW}${commit}/${dir}/01.png`,
         local: join(fx.evidenceDir, one.name),
         name: one.name,
+        blob: blobIdOf(fx.origin, commit, `${dir}/01.png`),
       },
       {
         n: 3,
         url: `${RAW}${commit}/${dir}/03.jpg`,
         local: join(fx.evidenceDir, three.name),
         name: three.name,
+        blob: blobIdOf(fx.origin, commit, `${dir}/03.jpg`),
       },
     ]);
+    assert.equal(record.images[0].blob, gitBlobId(one.data));
     assert.doesNotMatch(readFileSync(fx.out, "utf8"), /"data"/);
 
     // Each published image was OCR-scanned, and nothing else was.
@@ -1147,6 +1156,53 @@ describe("upload is idempotent per issue + head + run", () => {
     assert.equal(fx.pushes(), 1);
   });
 
+  it("publishRun reusing a commit names a local file only when its bytes are the published blob", async () => {
+    const fx = uploadFixture({ shots: [shot(1), shot(2, "jpg")] });
+    const first = await upload(fx);
+    assert.equal(first.ok, true);
+    // A later try of the same run: slot 1 still holds the published bytes,
+    // slot 2's file is another image now.
+    const selection = {
+      ok: true,
+      upload: [
+        { slot: 1, name: "a.png", path: "/run/a.png", data: PNG(1), ext: "png", label: "same" },
+        { slot: 2, name: "b.jpg", path: "/run/b.jpg", data: JPG(99), ext: "jpg", label: "other" },
+      ],
+      overflow: [],
+    };
+    const record = publishRun({ issue: ISSUE, sha: SHA, runId: RUN_ID, selection, git: fx.git });
+    assert.equal(record.ok, true);
+    assert.equal(record.commit, first.commit);
+    assert.equal(fx.pushes(), 1);
+    const dir = `${ISSUE}/${SHA12}/${RUN_ID}`;
+    assert.deepEqual(record.images, [
+      {
+        n: 1,
+        url: `${RAW}${first.commit}/${dir}/01.png`,
+        local: "/run/a.png",
+        name: "a.png",
+        label: "same",
+        blob: gitBlobId(PNG(1)),
+      },
+      {
+        n: 2,
+        url: `${RAW}${first.commit}/${dir}/02.jpg`,
+        local: null,
+        name: null,
+        blob: blobIdOf(fx.origin, first.commit, `${dir}/02.jpg`),
+      },
+    ]);
+  });
+
+  it("gitBlobId matches git's ids, SHA-1 and SHA-256", () => {
+    const data = Buffer.from("hello\n");
+    assert.equal(gitBlobId(data), "ce013625030ba8dba906f756967f9e9ca394464a");
+    assert.equal(
+      gitBlobId(data, "0".repeat(64)),
+      "2cf8d83d9ee29543b34a87727421fdecb7e3f3a183d337639025de576db9ebb4",
+    );
+  });
+
   it("fails closed, without reading anything local, when GitHub can't say whether the run is published", async () => {
     const fx = uploadFixture();
     const offline = (args, opts) =>
@@ -1181,7 +1237,7 @@ describe("upload is idempotent per issue + head + run", () => {
       runId: RUN_ID,
       ref: record.ref,
       commit: first.commit,
-      images: record.images.map(({ n, url }) => ({ n, url, local: null, name: null })),
+      images: record.images.map(({ n, url, blob }) => ({ n, url, local: null, name: null, blob })),
       overflow: [],
       reused: true,
     });

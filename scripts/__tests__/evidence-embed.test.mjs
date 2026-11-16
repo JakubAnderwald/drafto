@@ -824,6 +824,54 @@ describe("evidenceSection", () => {
     assert.equal(ev.footer, publishedFooter(DIR));
   });
 
+  it("hides a kept file's line that trips isSafe, keeping the safe ones and the step-group titles", () => {
+    const report = table([["1", "Typed hunter2 into the field", "PASS", "screenshot 1"]]);
+    const ev = evidenceSection({
+      report,
+      upload: upload([1], {
+        overflow: [
+          { n: 2, path: `${DIR}/hunter2.png`, why: "too many" },
+          { n: 3, path: `${DIR}/shot-3.png`, why: "too many" },
+        ],
+      }),
+      evidenceDir: DIR,
+      isSafe: (lines) => !lines.join("\n").includes("hunter2"),
+    });
+    const text = ev.block.join("\n");
+    assert.ok(!text.includes("hunter2"), text);
+    assert.ok(text.includes("**Step group 1**\n\n" + imgTag(1)));
+    assert.ok(
+      ev.block.includes(
+        "- screenshot 2: its path and reason matched a secret pattern, so they aren't shown",
+      ),
+    );
+    assert.ok(ev.block.includes(`- screenshot 3, too many: \`${DIR}/shot-3.png\``));
+    assert.equal(ev.embedded, 1);
+    assert.equal(ev.footer, publishedFooter(DIR));
+  });
+
+  it('posts no section ("unsafe") when the rebuilt block still trips isSafe', () => {
+    const calls = [];
+    const ev = evidenceSection({
+      report: table([["1", "Saved", "PASS", "screenshot 1"]]),
+      upload: upload([1]),
+      evidenceDir: DIR,
+      // Trips on the images themselves, so no rebuild can pass.
+      isSafe: (lines) => {
+        calls.push(lines);
+        return !lines.join("\n").includes("<img");
+      },
+    });
+    assert.deepEqual(ev, {
+      block: [],
+      footer: localFooter(DIR, "unsafe"),
+      embedded: 0,
+      reason: "unsafe",
+    });
+    assert.ok(calls.length >= 2, "the rebuilt block was checked again");
+    assert.ok(ev.footer.includes(REASONS.unsafe));
+  });
+
   it("groups a macOS run by its step-<id>-<STATUS> labels", () => {
     const rec = upload([], {
       images: [

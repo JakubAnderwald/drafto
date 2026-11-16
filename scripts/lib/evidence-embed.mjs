@@ -57,6 +57,7 @@ export const REASONS = Object.freeze({
   remote: "GitHub couldn't be asked whether they were already published",
   none: "the run saved no screenshots",
   "none-passed": "none of its screenshots passed the checks",
+  unsafe: "their section matched a secret pattern",
   unreadable: "the upload record couldn't be read",
   error: "the upload failed",
 });
@@ -279,6 +280,8 @@ function overflowLines(overflow) {
   if (!overflow.length) return [];
   const shown = overflow.slice(0, OVERFLOW_MAX).map((o) => {
     const which = Number.isInteger(o.n) && o.n > 0 ? `screenshot ${o.n}` : "a screenshot";
+    if (o.redacted)
+      return `- ${which}: its path and reason matched a secret pattern, so they aren't shown`;
     return `- ${which}, ${labelText(o.why, 160)}: \`${pathText(o.path)}\``;
   });
   if (overflow.length > OVERFLOW_MAX) shown.push(`- …and ${overflow.length - OVERFLOW_MAX} more.`);
@@ -342,7 +345,8 @@ export function publishedFooter(evidenceDir, mode = "report") {
  * @param {"report"|"macos"} [o.mode]
  * @param {object[]} [o.results] macOS results.jsonl rows (mode "macos")
  * @param {(lines:string[]) => boolean} [o.isSafe] a final check on the block;
- *   false drops the step labels' text
+ *   false drops the step labels' text and hides each kept file's line that
+ *   trips it, and a block that still trips it is not posted ("unsafe")
  * @returns {{block: string[], footer: string, embedded: number, reason: string|null}}
  */
 export function evidenceSection({
@@ -378,9 +382,22 @@ export function evidenceSection({
   // that makes a label safe Markdown would also hide a secret from a scan.
   const raw = grouped.groups.flatMap((g) => g.raw ?? []);
   if (!isSafe([...block, ...raw])) {
-    // A step label tripped the caller's scan: keep the images, drop the text.
+    // A step label or a kept file's line tripped the caller's scan: keep the
+    // images, drop the labels' text, and hide each kept file's path and
+    // reason that trips it on its own.
     const plain = grouped.groups.map((g, i) => ({ ...g, title: `**Step group ${i + 1}**` }));
-    block = renderEvidence({ groups: plain, other: grouped.other, overflow });
+    const kept = overflow.map((o) => (isSafe(overflowLines([o])) ? o : { n: o.n, redacted: true }));
+    block = renderEvidence({ groups: plain, other: grouped.other, overflow: kept });
+    // What's left is the factory's own text and pinned URLs. If the scan still
+    // trips, nothing of the section is posted.
+    if (!isSafe(block)) {
+      return {
+        block: [],
+        footer: localFooter(evidenceDir, "unsafe"),
+        embedded: 0,
+        reason: "unsafe",
+      };
+    }
   }
   if (images.length === 0) {
     const reason = overflow.length ? "none-passed" : "none";

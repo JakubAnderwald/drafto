@@ -59,6 +59,7 @@
 //     reason}. Exit 0 either way; 2 on a usage error.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -169,16 +170,33 @@ export function buildEvidenceCommit({ git, files, message, tmpRoot = os.tmpdir()
   }
 }
 
-/** The paths in <commit>'s tree, fetching <ref> once if it isn't local. null on error. */
-export function commitPaths(git, commit, ref) {
-  const list = () => git(["ls-tree", "-r", "--name-only", commit]);
+/**
+ * The git blob id of <data>, in the object format of <like> (a blob id read
+ * from a tree; 64 hex digits is a SHA-256 repository).
+ */
+export function gitBlobId(data, like = "") {
+  const algo = String(like).length === 64 ? "sha256" : "sha1";
+  return createHash(algo).update(`blob ${data.length}\0`).update(data).digest("hex");
+}
+
+const TREE_LINE = /^[0-7]{6} blob ([0-9a-f]{40}|[0-9a-f]{64})\t(.+)$/;
+
+/**
+ * The files in <commit>'s tree as [{path, blob}], fetching <ref> once if it
+ * isn't local. null on error.
+ */
+export function commitTree(git, commit, ref) {
+  const list = () => git(["ls-tree", "-r", commit]);
   let r = list();
   if (r.code !== 0) {
     git(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin", ref]);
     r = list();
   }
   if (r.code !== 0) return null;
-  return r.stdout.split("\n").filter(Boolean);
+  return r.stdout.split("\n").flatMap((line) => {
+    const m = TREE_LINE.exec(line);
+    return m ? [{ path: m[2], blob: m[1] }] : [];
+  });
 }
 
 // ── files ───────────────────────────────────────────────────────────────────
@@ -389,19 +407,25 @@ export function publishRun({ issue, sha, runId, selection, git }) {
   const base = { issue, sha, runId, ref };
   const overflow = overflowOut(selection);
   const bySlot = new Map(selection.upload.map((u) => [u.slot, u]));
-  const record = (commit, paths) => {
+  // <entries>: the commit's files, [{path, blob}]. This selection's file of a
+  // slot is that image only when its bytes are the published blob: a commit
+  // reused from an earlier try can hold other bytes, and the file's path and
+  // label would then put the image under a step it may not show.
+  const record = (commit, entries) => {
     const images = [];
-    for (const rel of paths) {
+    for (const { path: rel, blob } of entries) {
       const m = /\/([0-9]{2,3})\.(png|jpg)$/.exec(rel);
       if (!m) continue;
       const n = Number(m[1]);
-      const local = bySlot.get(n);
+      const mine = bySlot.get(n);
+      const local = mine && gitBlobId(mine.data, blob) === blob ? mine : null;
       images.push({
         n,
         url: rawUrl(commit, rel),
         local: local?.path ?? null,
         name: local?.name ?? null,
         ...(local?.label ? { label: local.label } : {}),
+        blob,
       });
     }
     images.sort((a, b) => a.n - b.n);
@@ -411,8 +435,8 @@ export function publishRun({ issue, sha, runId, selection, git }) {
     return { ok: true, ...base, commit: null, images: [], overflow };
 
   const reuse = (commit) => {
-    const paths = commitPaths(git, commit, ref);
-    return paths ? record(commit, paths) : { ok: false, ...base, reason: "remote", overflow };
+    const entries = commitTree(git, commit, ref);
+    return entries ? record(commit, entries) : { ok: false, ...base, reason: "remote", overflow };
   };
   const existing = remoteRefSha(git, ref);
   if (existing === null) return { ok: false, ...base, reason: "remote", overflow };
@@ -431,7 +455,7 @@ export function publishRun({ issue, sha, runId, selection, git }) {
   }
   return record(
     commit,
-    files.map((f) => f.path),
+    files.map((f) => ({ path: f.path, blob: gitBlobId(f.data) })),
   );
 }
 
@@ -451,7 +475,7 @@ function isRunRecord(record, { issue, sha, runId }) {
  * files now in its evidence dir: the run's own upload.json (<out>), else the
  * commit already on its ref. The record ({ok: true, …, reused: true}) as
  * uploadRun returns it; images from the ref's tree carry no local path or
- * label. null when nothing is published for the run yet; {ok: false, reason:
+ * label, only their blob id. null when nothing is published for the run yet; {ok: false, reason:
  * "remote"} when GitHub can't be asked, or the ref's commit can't be read:
  * then nobody can say what is published, so a caller must not guess.
  */
@@ -466,12 +490,15 @@ export function priorUpload({ issue, sha, runId, out, repoRoot, git = defaultGit
   const existing = remoteRefSha(git, ref);
   if (existing === null) return { ok: false, ...base, reason: "remote", overflow: [] };
   if (!SHA_RE.test(existing)) return null;
-  const paths = commitPaths(git, existing, ref);
-  if (paths === null) return { ok: false, ...base, reason: "remote", overflow: [] };
-  // The image paths, as publishRun's record reads them back.
-  const images = paths.flatMap((rel) => {
+  const entries = commitTree(git, existing, ref);
+  if (entries === null) return { ok: false, ...base, reason: "remote", overflow: [] };
+  // The images, as publishRun's record reads them back. Each keeps its blob
+  // id, so a caller can tell which local file, if any, has its bytes.
+  const images = entries.flatMap(({ path: rel, blob }) => {
     const m = /\/([0-9]{2,3})\.(?:png|jpg)$/.exec(rel);
-    return m ? [{ n: Number(m[1]), url: rawUrl(existing, rel), local: null, name: null }] : [];
+    return m
+      ? [{ n: Number(m[1]), url: rawUrl(existing, rel), local: null, name: null, blob }]
+      : [];
   });
   images.sort((a, b) => a.n - b.n);
   return { ok: true, ...base, commit: existing, images, overflow: [], reused: true };

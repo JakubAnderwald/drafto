@@ -41,12 +41,13 @@ import { fileURLToPath } from "node:url";
 
 import { COMMENT_MAX_CHARS, defangReport } from "./browser-report.mjs";
 import { evidenceSection, readUpload } from "./evidence-embed.mjs";
-import { macosManifest, ocrAvailable } from "./evidence-images.mjs";
+import { checkImage, macosManifest, ocrAvailable } from "./evidence-images.mjs";
 import {
   REPO,
   RUN_ID_RE,
   UPLOAD_FILE,
   evidenceRef,
+  gitBlobId,
   prepareRun,
   priorUpload,
   uploadGate,
@@ -441,20 +442,24 @@ export function postMacosRun({
 
 // A record read back from the ref has no labels (its tree holds only
 // NN.png): take each one's from the run's own shot of that number, so the
-// comment still puts it under its step, as publishRun's reuse does. A number
-// with two shots gets no label: the ref doesn't say which of them was
-// published, so the image goes under "Other screenshots", never under a step
-// it may not show.
+// comment still puts it under its step, as publishRun's reuse does. Only a
+// shot whose bytes are the published blob counts, so a shot replaced or
+// renamed since can't name a step the image doesn't show. When no shot of
+// the number matches, or matching shots name different steps, the image gets
+// no label and goes under "Other screenshots".
 function withShotLabels(record, shotsDir) {
-  const labels = new Map();
-  for (const e of macosManifest(shotsDir)) {
-    labels.set(e.slot, labels.has(e.slot) ? null : e.label);
-  }
+  const shots = macosManifest(shotsDir);
   return {
     ...record,
     images: record.images.map((i) => {
-      const label = labels.get(i.n);
-      return i.label || !label ? i : { ...i, label };
+      if (i.label || typeof i.blob !== "string") return i;
+      const labels = new Set();
+      for (const e of shots) {
+        if (e.slot !== i.n) continue;
+        const c = checkImage(path.join(shotsDir, e.name), shotsDir);
+        if (c.ok && gitBlobId(c.data, i.blob) === i.blob) labels.add(e.label);
+      }
+      return labels.size === 1 ? { ...i, label: [...labels][0] } : i;
     }),
   };
 }

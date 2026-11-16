@@ -1425,6 +1425,32 @@ describe("a retry after an earlier --yes", () => {
     assert.equal(lines.filter((l) => l === img(commit, 3)).length, 1);
   });
 
+  it("--yes from the ref names a step only from a shot that still has the published bytes", () => {
+    const t = setup({ gh: { commentCode: 1 } });
+    assertRefuses(() => t.post({ yes: true }), /posting the comment failed/);
+    const commit = git(t.origin, ["rev-parse", evidenceRef(ISSUE, SHA, RUN_ID)]).stdout.trim();
+    rmSync(join(t.runDir, UPLOAD_FILE));
+    // 03 was published from 03-step-2-FAIL.png; that file now holds another
+    // image, and a shot with 02's bytes was renamed to name another step.
+    writeFileSync(
+      join(t.runDir, "shots", "03-step-2-FAIL.png"),
+      Buffer.concat([SELFTEST_PNG, Buffer.from("changed")]),
+    );
+    rmSync(join(t.runDir, "shots", "02-step-1-PASS.png"));
+    writeFileSync(join(t.runDir, "shots", "02-step-2-FAIL.png"), SELFTEST_PNG);
+    const gh = fakeGh();
+    assert.equal(t.post({ yes: true, gh: gh.gh }).posted, true);
+    const lines = gh.posts[0].body.split("\n");
+    // 02 is still the published bytes, so its shot's (new) name places it.
+    const s2 = lineAt(lines, "**Step 2** · FAIL · Open a note and type");
+    assert.ok(lines.slice(s2, s2 + 10).includes(img(commit, 2)));
+    assert.ok(lines.slice(s2, s2 + 10).includes(img(commit, 4)));
+    // 03's shot no longer has its bytes: it is under no step.
+    const other = lineAt(lines, "**Other screenshots**");
+    assert.ok(lines.slice(other).includes(img(commit, 3)));
+    assert.equal(lines.filter((l) => l === img(commit, 3)).length, 1);
+  });
+
   it("refuses to list or post when origin can't say whether the run is already published", () => {
     // The first push landed, but git reported a failure (a timeout), so upload.json isn't ok.
     const t = setup({ gh: { commentCode: 1 } });
