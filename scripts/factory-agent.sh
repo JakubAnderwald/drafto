@@ -5,7 +5,10 @@
 #
 #   --plan       Read Status=Ready items, validate spec, invoke Claude to
 #                propose a plan, advance card to Plan Review (or Blocked).
-#                Works in every phase. Phase A's only meaningful mode.
+#                Works in every phase. Phase A's only meaningful mode. Also
+#                replans Plan Review cards on new operator comments, and keeps
+#                the factory-oversize label in step with each plan's size
+#                estimate (ADR-0083).
 #
 #   --implement  Pick up Status=In Progress items. Phase A: post a stub
 #                "phase=A; implementation skipped" comment per card and
@@ -537,6 +540,18 @@ FACTORY_PLAN_PROBE_MAX_FOLDS=2
 # Every file here is scanned for, so no value in it can leave in a probe.
 FACTORY_SECRETS_DIR="${FACTORY_SECRETS_DIR:-$HOME/drafto-secrets}"
 case "$FACTORY_SECRETS_DIR" in "~/"*) FACTORY_SECRETS_DIR="$HOME/${FACTORY_SECRETS_DIR#\~/}" ;; esac
+
+# ── Plan size estimate + factory-oversize label (ADR-0083) ─────────────────
+# Every plan carries a size estimate and a marker. When its estimate of the
+# lines the PR adds is at least FACTORY_PLAN_OVERSIZE_LINES, bash adds the
+# factory-oversize label; a replan below it removes the label again. 0 stops
+# the labelling. A bad value warns and falls back to the default.
+FACTORY_PLAN_OVERSIZE_LINES="${FACTORY_PLAN_OVERSIZE_LINES:-1500}"
+if ! [[ "$FACTORY_PLAN_OVERSIZE_LINES" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then
+  echo "WARNING: invalid FACTORY_PLAN_OVERSIZE_LINES='$FACTORY_PLAN_OVERSIZE_LINES'; defaulting to 1500" >&2
+  FACTORY_PLAN_OVERSIZE_LINES=1500
+fi
+OVERSIZE_LABEL="factory-oversize"
 
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
@@ -1621,6 +1636,96 @@ The factory handled it in $plan_link, which is current. If the plan doesn't answ
       fi
     fi
   done
+}
+
+# ── Plan size estimate + factory-oversize label (ADR-0083) ─────────────────
+# Every plan ends with <!-- drafto-factory-plan-size:<class>:<estLines> -->, the
+# planner's estimate of the lines the PR adds. An oversize plan gets the
+# factory-oversize label (plan_size_label). Its "Proposed split" is advice for
+# the operator, who files any sub-issues by hand: the factory never does.
+
+OVERSIZE_LABEL_READY=""  # per-tick cache: "" unknown, 1 ready, 0 not ready
+
+# oversize_label_ready — does the repo have the factory-oversize label? gh
+# --add-label refuses a label the repo lacks, so the add checks first, as
+# verify_column_ready checks status:testing. Checked once per tick and cached,
+# logged when missing. Never call this from a command substitution: the cache
+# would die with the subshell.
+oversize_label_ready() {
+  if [[ -z "$OVERSIZE_LABEL_READY" ]]; then
+    OVERSIZE_LABEL_READY=0
+    if gh api "repos/JakubAnderwald/drafto/labels/$OVERSIZE_LABEL" --silent \
+        >/dev/null 2>>"$LOG_FILE"; then
+      OVERSIZE_LABEL_READY=1
+    else
+      # Once per daily log file: the replan sweep asks on every tick.
+      local msg="WARNING: the repo has no $OVERSIZE_LABEL label (or the lookup failed); oversize plans go unlabelled (run scripts/setup-factory-labels.sh)"
+      grep -qF -- "$msg" "${LOG_FILE:-}" 2>/dev/null || log "$msg"
+    fi
+  fi
+  [[ "$OVERSIZE_LABEL_READY" == "1" ]]
+}
+
+PLAN_SIZE_LAST=""  # "<issue>:<0|1>": factory-oversize as plan_size_label last set it this tick
+
+# plan_size_label <issue> <labels-csv> [<plan-body>] — keep the
+# factory-oversize label in step with the size marker in the OWNER plan: at or
+# over FACTORY_PLAN_OVERSIZE_LINES the label goes on, below it it comes off.
+# Its own gh issue edit, never part of transition_status's status-label swap.
+# <labels-csv> is the board item's label list, which the sweeps already hold
+# (only this function changes factory-oversize, and PLAN_SIZE_LAST carries an
+# edit it made earlier in the same tick). Without <plan-body> the plan is read
+# from the issue, as after a plan run; the replan sweep passes the body it
+# already read, on every tick, so an edit that failed, or a label created
+# since, is caught up without waiting for another replan. A plan with no
+# marker (one written before ADR-0083, or a planner that left it out) leaves
+# the label as it is. Never fails the tick.
+plan_size_label() {
+  local issue_num="$1" labels_csv="${2:-}" plan_body comments size est cls has=0 msg
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  [[ "$FACTORY_PLAN_OVERSIZE_LINES" -gt 0 ]] || return 0
+  if [[ $# -ge 3 ]]; then
+    plan_body="$3"
+  elif ! comments=$(fetch_comments_retry "$issue_num"); then
+    log "WARNING: could not read #$issue_num's comments for the plan's size; leaving its labels as they are"
+    return 0
+  else
+    plan_body=$(extract_plan_comment "$comments" | jq -r '.body // ""' 2>/dev/null || echo "")
+  fi
+  size=$(printf '%s' "$plan_body" | node "$SCRIPT_DIR/lib/plan-size.mjs" 2>>"$LOG_FILE" || echo "null")
+  est=$(echo "$size" | jq -r '.estLines // empty' 2>/dev/null || echo "")
+  cls=$(echo "$size" | jq -r '.sizeClass // empty' 2>/dev/null || echo "")
+  if ! [[ "$est" =~ ^[0-9]+$ ]]; then
+    # Once per daily log file: the replan sweep looks on every tick.
+    msg="Issue #$issue_num: the plan has no size marker; leaving the $OVERSIZE_LABEL label as it is"
+    grep -qF -- "$msg" "${LOG_FILE:-}" 2>/dev/null || log "$msg"
+    return 0
+  fi
+  if [[ "$PLAN_SIZE_LAST" == "$issue_num:"* ]]; then
+    has="${PLAN_SIZE_LAST#*:}"
+  elif [[ ",$labels_csv," == *",$OVERSIZE_LABEL,"* ]]; then
+    has=1
+  fi
+  if [[ "$est" -ge "$FACTORY_PLAN_OVERSIZE_LINES" ]]; then
+    [[ "$has" -eq 0 ]] || return 0
+    oversize_label_ready || return 0
+    if gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
+        --add-label "$OVERSIZE_LABEL" >>"$LOG_FILE" 2>&1; then
+      PLAN_SIZE_LAST="$issue_num:1"
+      log "Issue #$issue_num: the plan estimates ~$est added lines ($cls), at least $FACTORY_PLAN_OVERSIZE_LINES → added $OVERSIZE_LABEL"
+    else
+      log "WARNING: adding $OVERSIZE_LABEL to #$issue_num failed; the next tick tries again"
+    fi
+  else
+    [[ "$has" -eq 1 ]] || return 0
+    if gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
+        --remove-label "$OVERSIZE_LABEL" >>"$LOG_FILE" 2>&1; then
+      PLAN_SIZE_LAST="$issue_num:0"
+      log "Issue #$issue_num: the plan now estimates ~$est added lines ($cls), under $FACTORY_PLAN_OVERSIZE_LINES → removed $OVERSIZE_LABEL"
+    else
+      log "WARNING: removing $OVERSIZE_LABEL from #$issue_num failed; the next tick tries again"
+    fi
+  fi
 }
 
 # Has the issue already received the Phase A implement-stub comment? Used so
@@ -7578,6 +7683,9 @@ and drag the card back to **Ready** to retry.
         log "WARNING: unrecognised action '$ACTION' from claude for #$ISSUE_NUM --plan"
         ;;
     esac
+    # The plan's size estimate → the factory-oversize label (ADR-0083). A noop
+    # found a plan an earlier tick posted, which may not be labelled yet.
+    case "$ACTION" in planned | noop) plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" ;; esac
   done
 
   # ── Plan Review sweep: in-place replan on new OWNER comments ──────────────
@@ -7637,6 +7745,10 @@ and drag the card back to **Ready** to retry.
     PLAN_COMMENT_ID=$(echo "$PLAN_COMMENT_JSON" | jq -r '.id | tostring')
     PLAN_CREATED_AT=$(echo "$PLAN_COMMENT_JSON" | jq -r '.createdAt')
     PLAN_BODY=$(echo "$PLAN_COMMENT_JSON" | jq -r '.body')
+    # Keep factory-oversize in step with the plan on every tick, from what was
+    # just read (ADR-0083): a label edit that failed, or a label created
+    # since, is caught up without waiting for another replan.
+    plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" "$PLAN_BODY"
 
     ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
     if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
@@ -7824,6 +7936,8 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
         transition_status "$ITEM_ID" "$ISSUE_NUM" "Plan Review" || true
         ;;
     esac
+    # The revised plan's size estimate → the factory-oversize label (ADR-0083).
+    case "$ACTION" in planned | replanned) plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" ;; esac
   done
 
   log "=== factory-agent --plan completed in $(( $(date +%s) - START_TIME ))s ==="
