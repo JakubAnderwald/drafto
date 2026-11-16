@@ -20,6 +20,9 @@ import {
   effectiveParityOverride,
   reporterFromBody,
   extractScreenshots,
+  shapeReusedBetas,
+  reusedBetaNote,
+  reusedAndroidCaveat,
   SCENARIO_FALLBACK_MARKER,
   decideScenarioMode,
   perFilePatchDelta,
@@ -1049,7 +1052,12 @@ describe("buildFactoryInTestBundle", () => {
 
   it("normalises a missing betaDispatch to empty lists", () => {
     const bundle = buildFactoryInTestBundle(base);
-    assert.deepEqual(bundle.betaDispatch, { dispatched: [], skipped: [], manualCommands: [] });
+    assert.deepEqual(bundle.betaDispatch, {
+      dispatched: [],
+      skipped: [],
+      manualCommands: [],
+      reused: [],
+    });
   });
 
   it("keeps manualCommands keyed by platform when both natives are skipped", () => {
@@ -1079,6 +1087,44 @@ describe("buildFactoryInTestBundle", () => {
     );
     assert.equal(byId.desktop, "pnpm release:beta");
     assert.equal(byId.mobile, "pnpm release:beta:all");
+  });
+
+  it("passes reused betas through, shaped (ADR-0081)", () => {
+    const from = "9248da9a0c630a0836ff781b224dc1d2a34faff7";
+    const bundle = buildFactoryInTestBundle({
+      ...base,
+      betaDispatch: {
+        dispatched: [{ id: "desktop" }],
+        skipped: [],
+        manualCommands: [],
+        reused: [
+          {
+            id: "mobile",
+            fromSha: from,
+            builds: [
+              { platform: "android", build: "152" },
+              { platform: "ios", build: 147 },
+            ],
+          },
+        ],
+      },
+    });
+    assert.deepEqual(bundle.betaDispatch.reused, [
+      {
+        id: "mobile",
+        fromSha: from,
+        builds: [
+          { platform: "android", build: "152" },
+          { platform: "ios", build: "147" },
+        ],
+      },
+    ]);
+    // An older bash that sends no `reused` still gets the field.
+    const legacy = buildFactoryInTestBundle({
+      ...base,
+      betaDispatch: { dispatched: [], skipped: [], manualCommands: [] },
+    });
+    assert.deepEqual(legacy.betaDispatch.reused, []);
   });
 
   it("coerces legacy string manualCommands rather than dropping them", () => {
@@ -1567,6 +1613,90 @@ describe("factory-bundle CLI", () => {
   });
 });
 
+describe("shapeReusedBetas / reusedBetaNote (ADR-0081)", () => {
+  const from = "9248da9a0c630a0836ff781b224dc1d2a34faff7";
+
+  it("keeps a known lane with a full SHA, once, and only its own platforms", () => {
+    assert.deepEqual(
+      shapeReusedBetas([
+        {
+          id: "mobile",
+          fromSha: from,
+          builds: [
+            { platform: "ios", build: "147" },
+            { platform: "macos", build: "80" },
+            { platform: "android", build: "15x" },
+            { platform: "android", build: "" },
+            null,
+          ],
+        },
+        { id: "mobile", fromSha: "b".repeat(40), builds: [] },
+        { id: "desktop", fromSha: from },
+        { id: "web", fromSha: from, builds: [] },
+        { id: "desktop", fromSha: from.slice(0, 12), builds: [] },
+        { id: "desktop", fromSha: from.toUpperCase(), builds: [] },
+        "mobile",
+      ]),
+      [
+        { id: "mobile", fromSha: from, builds: [{ platform: "ios", build: "147" }] },
+        { id: "desktop", fromSha: from, builds: [] },
+      ],
+    );
+    for (const bad of [null, undefined, "x", {}, 7]) assert.deepEqual(shapeReusedBetas(bad), []);
+  });
+
+  it("names the build it keeps, by platform for mobile", () => {
+    assert.equal(
+      reusedBetaNote({
+        id: "mobile",
+        fromSha: from,
+        builds: [
+          { platform: "android", build: "152" },
+          { platform: "ios", build: "147" },
+        ],
+      }),
+      "No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build. " +
+        "Android: Play's internal track serves only its newest upload, so check that the installed build " +
+        "number is 152. If Play shows a newer build, this card's Android build is no longer installable " +
+        "from Play; test iOS from TestFlight and ask in a comment for the Android build.",
+    );
+    assert.equal(
+      reusedBetaNote({
+        id: "desktop",
+        fromSha: from,
+        builds: [{ platform: "macos", build: "80" }],
+      }),
+      "No macOS change since build 80 (`9248da9a0c63`); keep testing that build.",
+    );
+  });
+
+  it("warns about Play's newest-upload-only track for mobile, never for macOS", () => {
+    // TestFlight keeps older builds; Play's internal track does not.
+    const caveat = reusedAndroidCaveat({
+      id: "mobile",
+      fromSha: from,
+      builds: [{ platform: "ios", build: "147" }],
+    });
+    assert.match(caveat, /^Android: Play's internal track serves only its newest upload/);
+    assert.match(caveat, /installed build number is the one an earlier comment gives\./);
+    assert.match(caveat, /test iOS from TestFlight and ask in a comment for the Android build\.$/);
+    assert.equal(reusedAndroidCaveat({ id: "desktop", fromSha: from, builds: [] }), "");
+    assert.ok(
+      reusedBetaNote({ id: "mobile", fromSha: from, builds: [] }).endsWith(
+        ` gives its build number. ${reusedAndroidCaveat({ id: "mobile", fromSha: from, builds: [] })}`,
+      ),
+    );
+  });
+
+  it("points at the earlier comment when no build number was found", () => {
+    assert.equal(
+      reusedBetaNote({ id: "desktop", fromSha: from, builds: [] }),
+      "No macOS change since the beta built from `9248da9a0c63`; keep testing that build. " +
+        "An earlier comment on this issue gives its build number.",
+    );
+  });
+});
+
 // ── Incremental scenario rewrite (ADR-0082) ────────────────────────────────
 
 const SHA_OLD = "1".repeat(40);
@@ -1944,6 +2074,22 @@ describe("buildFactoryInTestBundle — incremental mode (ADR-0082)", () => {
     ],
     diff: "diff --git a/apps/web/a.ts b/apps/web/a.ts\n+v2",
   };
+
+  it("carries the reused betas (ADR-0081) in the delta mode as in the full one", () => {
+    const reused = [
+      {
+        id: "mobile",
+        fromSha: "9248da9a0c630a0836ff781b224dc1d2a34faff7",
+        builds: [{ platform: "android", build: "152" }],
+      },
+    ];
+    const betaDispatch = { dispatched: [], skipped: [], manualCommands: [], reused };
+    for (const scenarioMode of [delta, null]) {
+      const b = buildFactoryInTestBundle({ issue, prDiff: "+d", betaDispatch, scenarioMode });
+      assert.equal(b.prDiffMode, scenarioMode ? "delta" : "full");
+      assert.deepEqual(b.betaDispatch.reused, reused);
+    }
+  });
 
   it("sends the prior scenario and the delta instead of the whole diff", () => {
     const b = buildFactoryInTestBundle({ issue, prDiff: "+the whole diff", scenarioMode: delta });

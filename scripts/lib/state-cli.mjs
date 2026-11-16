@@ -124,7 +124,8 @@
 //                                    intestScenarioRounds,
 //                                    intestBetaSha, intestBetaAt,
 //                                    intestBetaLanes, intestBetaAttempts,
-//                                    intestBetaLaneAt,
+//                                    intestBetaLaneAt, intestBetaBuilt,
+//                                    intestBetaBuiltAt, intestBetaReused,
 //                                    lastReviewSha, crConvergedSha,
 //                                    crConvergedAt, crCoverageSha, crCoverage,
 //                                    crLastCoveredSha, crCliRuns,
@@ -141,6 +142,11 @@
 //                                    verifyReportSha, verifyBounces,
 //                                    verifyCrNote, verifyReportPosts}.
 //                                    Empty/`null` clears the field.
+//   factory:set-issue-fields <issue> <field> <value> [<field> <value> …]
+//                                    The same for several fields in ONE
+//                                    load-modify-save: every field is checked
+//                                    first, so the file gets all of them or,
+//                                    on any error, none.
 //   factory:get-issue <issue>       Print issues[<n>] as JSON (empty record
 //                                    if absent).
 //
@@ -287,6 +293,7 @@ import {
   resetIssueAttempts,
   getIssue,
   setIssueField,
+  setIssueFields,
   getCrCli,
   crCliUsage,
   isCrCliPaused,
@@ -774,6 +781,20 @@ async function main(argv) {
       await saveFactoryState(state, file);
       return { ok: true, issueNumber: String(issueNumber), field, value: newValue };
     }
+    case "factory:set-issue-fields": {
+      const [issueNumber, ...rest] = positional;
+      if (!issueNumber || rest.length === 0 || rest.length % 2 !== 0) {
+        throw new Error(
+          "factory:set-issue-fields requires <issue> <field> <value> [<field> <value> …]",
+        );
+      }
+      const pairs = [];
+      for (let i = 0; i < rest.length; i += 2) pairs.push([rest[i], rest[i + 1]]);
+      const state = await loadFactoryState(file);
+      const fields = setIssueFields(state, issueNumber, pairs);
+      await saveFactoryState(state, file);
+      return { ok: true, issueNumber: String(issueNumber), fields };
+    }
     case "factory:get-issue": {
       const issueNumber = positional[0];
       if (!issueNumber) throw new Error("factory:get-issue requires <issue>");
@@ -1046,6 +1067,7 @@ async function main(argv) {
           "factory:reset-attempts <issue>|" +
           "factory:get-attempts <issue>|" +
           "factory:set-issue-field <issue> <field> <value>|" +
+          "factory:set-issue-fields <issue> <field> <value> [<field> <value> …]|" +
           "factory:get-issue <issue>|" +
           "record-release-attempt <issue> <platform> ok|fail|" +
           "reset-release-attempts <issue>|" +
