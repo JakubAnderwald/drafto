@@ -36,9 +36,12 @@ holds the logic, identical on both apps.
 
 - **Marking a day.** `syncDatabase()` starts `markAppOpened(db)` on entry,
   before the in-flight latch, and doesn't wait for it there, so coalescing and
-  `resetSyncState()` behave as before. Every sync marks today. The login and
-  foreground syncs start even without a network and then fail, which is how
-  days spent offline get queued.
+  `resetSyncState()` behave as before. A sync marks today only when it starts
+  while the app is in front (`AppState.currentState` is `active`). Reconnect and
+  retry syncs also run in the background, and the macOS app keeps running after
+  its window is closed, so those mark nothing; their ping still sends the days
+  already queued. The login and foreground syncs start even without a network
+  and then fail, which is how days spent offline get queued.
 - **The queue.** The days live in WatermelonDB's `localStorage` under one key,
   `drafto_activity_days`, as `{ days, lastSent }`. It keeps the 30 newest days
   at most (`ACTIVITY_QUEUE_MAX_DAYS` in `@drafto/shared`). Today isn't added

@@ -11,9 +11,10 @@ import type { ActivityRpcClient } from "@drafto/shared";
 
 /**
  * Activity days (ADR-0085, docs/features/offline-sync.md): the UTC days on
- * which this device opened Drafto. Each sync marks today, and a sync that gets
- * through sends every queued day to `record_activity`, so days opened offline
- * still count. Nothing else is recorded: no note, screen or action.
+ * which this device opened Drafto. A sync started while the app is in front
+ * marks today, and any sync that gets through sends every queued day to
+ * `record_activity`, so days opened offline still count. Nothing else is
+ * recorded: no note, screen or action.
  *
  * The queue lives in WatermelonDB's localStorage, not in AsyncStorage or the
  * keychain, because `unsafeResetDatabase` (sign-out, a different user signing

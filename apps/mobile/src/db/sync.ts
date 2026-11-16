@@ -1,3 +1,4 @@
+import { AppState } from "react-native";
 import { synchronize } from "@nozbe/watermelondb/sync";
 
 import type { Database as WMDatabase } from "@nozbe/watermelondb";
@@ -382,11 +383,23 @@ export function resetSyncState(): void {
   invalidateActivityDays();
 }
 
+/**
+ * Whether the user has Drafto in front. Only a sync started then counts as
+ * opening the app (ADR-0085). Reconnect and retry syncs also run while the app
+ * sits in the background, and on macOS the app keeps running after its window
+ * is closed, so counting those would mark days nobody opened Drafto.
+ */
+function isAppInFront(): boolean {
+  return AppState.currentState === "active";
+}
+
 export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
-  // Every sync attempt, offline ones included, counts as opening the app
-  // today (ADR-0085). Started before the latch check and not awaited here, so
-  // coalescing and resetSyncState work as before; the ping below awaits it.
-  const opened = markAppOpened(db);
+  // A sync started while the app is in front, offline ones included, counts as
+  // opening the app today (ADR-0085). A background sync marks nothing, but its
+  // ping below still sends the days already queued. Started before the latch
+  // check and not awaited here, so coalescing and resetSyncState work as
+  // before; the ping below awaits it.
+  const opened = isAppInFront() ? markAppOpened(db) : Promise.resolve();
   if (inFlightSync) {
     return inFlightSync;
   }

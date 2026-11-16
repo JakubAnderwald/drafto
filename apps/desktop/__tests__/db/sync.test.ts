@@ -1,3 +1,5 @@
+import { AppState } from "react-native";
+
 const mockSynchronize = jest.fn().mockResolvedValue(undefined);
 const mockSupabaseFrom = jest.fn();
 const mockSupabaseRpc = jest.fn();
@@ -591,6 +593,8 @@ describe("activity ping after a successful sync (ADR-0085)", () => {
   }
 
   let warnSpy: jest.SpyInstance;
+  // The preset's AppState mock, put back after each test.
+  const appStateBefore = AppState.currentState;
 
   beforeEach(() => {
     // Fake only Date, so "today" is fixed while promises and timers run as usual.
@@ -620,11 +624,14 @@ describe("activity ping after a successful sync (ADR-0085)", () => {
     mockSupabaseRpc.mockResolvedValue({ data: null, error: null });
     resetSyncState();
     warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    // The user has the app in front unless a test says otherwise.
+    AppState.currentState = "active";
   });
 
   afterEach(() => {
     jest.useRealTimers();
     warnSpy.mockRestore();
+    AppState.currentState = appStateBefore;
   });
 
   it("records today as desktop-macos once synchronize() has succeeded", async () => {
@@ -662,6 +669,33 @@ describe("activity ping after a successful sync (ADR-0085)", () => {
     await syncDatabase(db);
     await syncDatabase(db);
     expect(pings()).toEqual([ping([TODAY]), ping([TODAY]), ping([TODAY])]);
+  });
+
+  it.each(["background", "inactive", "unknown"] as const)(
+    "marks no day for a sync started while the app is %s",
+    async (state) => {
+      // A reconnect or retry sync while the app sits behind other windows, or
+      // (macOS) keeps running with its window closed: nobody opened Drafto.
+      AppState.currentState = state;
+      const db = makeDb();
+      await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+      expect(pings()).toEqual([]);
+
+      AppState.currentState = "active";
+      await syncDatabase(db);
+      expect(pings()).toEqual([ping([TODAY])]);
+    },
+  );
+
+  it("sends days queued in front with a sync that runs in the background", async () => {
+    const db = makeDb();
+    mockSynchronize.mockRejectedValueOnce(new Error("Network request failed"));
+    await expect(syncDatabase(db)).rejects.toThrow(SyncNetworkError);
+
+    // The network comes back after the user has switched away.
+    AppState.currentState = "background";
+    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    expect(pings()).toEqual([ping([TODAY])]);
   });
 
   it("pings once a day, and again on the next UTC day", async () => {
