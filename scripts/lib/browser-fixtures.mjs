@@ -84,7 +84,19 @@ export function parseFixtureSpecs(text) {
       }
       const n = Number(notes[1]);
       if (n < 1 || n > 20) throw new FixtureSpecError(`${name}: notes must be 1 to 20`);
-      specs.push({ name, kind: "enex", notes: n, imageBytes: parseSize(image[1]) });
+      const imageBytes = parseSize(image[1]);
+      // The cap is on the file, not each image: base64 makes every image a
+      // third bigger (#794's notes=3 image=2.5MB came to 10,487,070 bytes,
+      // and file_upload refused it).
+      const size = enexSize(n, imageBytes);
+      if (size > MAX_FIXTURE_BYTES) {
+        throw new FixtureSpecError(
+          `${name}: would be ${(size / 1024 / 1024).toFixed(2)} MB with its images base64-encoded ` +
+            `(a third bigger), over the ${MAX_FIXTURE_BYTES / 1024 / 1024} MB one upload takes: ` +
+            `use fewer notes or smaller images`,
+        );
+      }
+      specs.push({ name, kind: "enex", notes: n, imageBytes });
     } else {
       specs.push({ name, kind: ext === "jpeg" ? "jpg" : ext, bytes: parseSize(rest) });
     }
@@ -106,7 +118,17 @@ export function paddedImage(kind, bytes) {
 }
 
 function enexFile(notes, imageBytes) {
-  const image = paddedImage("jpg", imageBytes).toString("base64");
+  return enexXml(notes, paddedImage("jpg", imageBytes).toString("base64"));
+}
+
+/** The byte size enexFile(notes, imageBytes) comes to, without building it. */
+export function enexSize(notes, imageBytes) {
+  const imageLength = Math.max(imageBytes, TINY_JPEG.length);
+  // All of it is ASCII, so characters are bytes.
+  return enexXml(notes, "").length + notes * 4 * Math.ceil(imageLength / 3);
+}
+
+function enexXml(notes, image) {
   const items = [];
   for (let i = 1; i <= notes; i++) {
     items.push(

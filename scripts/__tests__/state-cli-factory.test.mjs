@@ -421,6 +421,29 @@ describe("factory:set-issue-field / get-issue", () => {
     assert.equal(r.status, 0, r.stderr);
     assert.equal(readState().issues["42"].branchUpdates, null);
   });
+
+  it("accepts and resets the incremental scenario rounds (ADR-0082)", () => {
+    let r = run([
+      "factory:set-issue-field",
+      "42",
+      "intestScenarioRounds",
+      "2",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readState().issues["42"].intestScenarioRounds, "2");
+    r = run([
+      "factory:set-issue-field",
+      "42",
+      "intestScenarioRounds",
+      "",
+      "--state-file",
+      stateFile,
+    ]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readState().issues["42"].intestScenarioRounds, null);
+  });
 });
 
 describe("factory:cr-cli-* (CodeRabbit CLI lane, ADR-0036)", () => {

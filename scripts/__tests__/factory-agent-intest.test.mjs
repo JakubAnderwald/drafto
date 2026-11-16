@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   readFileSync,
+  readdirSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
   rmSync,
+  statSync,
   utimesSync,
   existsSync,
   realpathSync,
@@ -149,29 +151,37 @@ describe("intest_handoff — failure degrades, never escalates", () => {
 
   it("falls back to a deterministic comment on timeout, error, or no marker", () => {
     // One fallback per failure path: missing prompt, issue fetch, bundle build,
-    // non-zero exit, session limit, and a missing marker after a clean exit.
+    // session limit, and no scenario for the head after the run. A timeout or
+    // an error exit goes through that last check too (ADR-0082): the run may
+    // have posted before it died.
     const calls = body.match(/intest_fallback_comment/g) || [];
-    assert.ok(calls.length >= 6, `expected a fallback on every failure path, got ${calls.length}`);
+    assert.ok(calls.length >= 5, `expected a fallback on every failure path, got ${calls.length}`);
     assert.match(body, /exit_code -eq 124/);
     assert.match(body, /check_session_limit/);
+    assert.match(body, /action="exit-\$exit_code"/);
   });
 
   it("forwards its coverage-note argument to every fallback and to the bundle", () => {
     assert.match(body, /local cr_note="\$\{10:-\}"/);
     const calls = body.match(/intest_fallback_comment [^\n]*/g) || [];
-    assert.ok(calls.length >= 6);
+    assert.ok(calls.length >= 5);
     for (const call of calls) {
       assert.match(call, /"\$\{beta_json:-\}" "\$cr_note"$/, `fallback without the note: ${call}`);
     }
-    assert.match(body, /"\$head_sha" "\$comments_json" "\$cr_note"\); then/);
+    assert.match(body, /"\$head_sha" "\$comments_json" "\$cr_note" "\$scenario_cfg"\); then/);
     const bundle = fnBody("build_intest_bundle");
     assert.match(bundle, /local cr_coverage_note="\$\{12:-\}"/);
     assert.match(bundle, /--arg crCoverageNote "\$cr_coverage_note"/);
     assert.match(bundle, /crCoverageNote: \$crCoverageNote,/);
   });
 
-  it("trusts the posted marker over the model's directive line", () => {
-    assert.match(body, /issue_has_marker "\$issue_num" "drafto-factory-test-scenario"/);
+  it("trusts the posted comment for exactly this head over the model's directive line", () => {
+    // Every older scenario carries drafto-factory-test-scenario too, so a run
+    // that exited 0 without posting used to count as posted (ADR-0082).
+    assert.doesNotMatch(body, /issue_has_marker "\$issue_num" "drafto-factory-test-scenario"/);
+    assert.match(body, /posted=\$\(scenario_comment_state "\$comments_after" "\$head_sha"\)/);
+    const state = fnBody("scenario_comment_state");
+    assert.match(state, /scenarioCommentState/);
   });
 
   it("records the head SHA on EVERY path that posts a comment", () => {
@@ -180,13 +190,15 @@ describe("intest_handoff — failure degrades, never escalates", () => {
     // re-post the same comment every 5-minute tick — issue spam.
     const posts = (body.match(/intest_fallback_comment/g) || []).length;
     const records = (body.match(/intest_record_comment_sha/g) || []).length;
-    assert.ok(posts >= 6, `expected a fallback on every failure path, got ${posts}`);
-    // Five early-return paths pair 1:1 with a recorder; the sixth (marker
-    // missing after a clean exit) falls through to the recorder at the tail,
-    // which also covers the success path.
+    assert.ok(posts >= 5, `expected a fallback on every failure path, got ${posts}`);
+    // Four early-return paths pair 1:1 with a recorder; the fifth (no scenario
+    // for the head after the run) falls through to the recorder at the tail,
+    // which also covers the success path. The one extra recorder is the skip
+    // for a head that already has its scenario (ADR-0082), which posts nothing
+    // but must still stop the sweep re-firing.
     assert.equal(
       records,
-      posts,
+      posts + 1,
       `every posting path must record the SHA (${posts} posts vs ${records} records)`,
     );
     // No `return 0` may sit between a fallback post and its recorder.
@@ -219,8 +231,9 @@ describe("intest_handoff — failure degrades, never escalates", () => {
 
   it("prints the bundle to stdout only under --dry-run (bundles carry PII)", () => {
     assert.match(body, /DRY_RUN" -eq 1/);
-    const dryRunSection = body.slice(body.indexOf('DRY_RUN" -eq 1'));
+    const dryRunSection = body.slice(body.indexOf("DRY-RUN: In Test bundle"));
     assert.match(dryRunSection.slice(0, 400), /echo "\$bundle"/);
+    assert.equal(body.split('echo "$bundle"').length - 1, 1, "the bundle is printed once");
   });
 });
 
@@ -258,7 +271,10 @@ gh() { echo "diff --git a/apps/web/x.ts b/apps/web/x.ts"; }
 build_intest_bundle() { echo '{"bundle":true}'; }
 check_session_limit() { return 1; }
 pause_for_session_limit() { :; }
-issue_has_marker() { return 0; }
+# No scenario for the head before the run (the writer runs), one after it.
+scenario_comment_state() {
+  if [[ -f ${JSON.stringify(join(dir, "asked"))} ]]; then echo scenario; else : >${JSON.stringify(join(dir, "asked"))}; echo none; fi
+}
 intest_fallback_comment() { echo "fallback" >>${JSON.stringify(events)}; }
 intest_record_comment_sha() { echo "recorded $2" >>${JSON.stringify(events)}; }
 node() {
@@ -2372,5 +2388,459 @@ describe("beta reuse wiring (ADR-0081)", () => {
     const report = fnBody("verify_compose_report");
     assert.match(report, /intest_reused_builds/);
     assert.match(report, /--beta-reused "\$beta_reused"/);
+  });
+});
+
+// ── Incremental scenario rewrite (ADR-0082) ────────────────────────────────
+
+describe("scenario knobs (ADR-0082)", () => {
+  const block = (() => {
+    const start = script.indexOf(
+      'FACTORY_SCENARIO_INCREMENTAL="${FACTORY_SCENARIO_INCREMENTAL:-1}"',
+    );
+    const endMarker = "  FACTORY_SCENARIO_FULL_EVERY=4\nfi\n";
+    const end = script.indexOf(endMarker, start);
+    assert.ok(start !== -1 && end !== -1, "could not find the scenario knobs");
+    return script.slice(start, end + endMarker.length);
+  })();
+  const knobs = (env) => {
+    const r = spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -u\n${block}\necho "$FACTORY_SCENARIO_INCREMENTAL $FACTORY_SCENARIO_DELTA_MAX_LINES $FACTORY_SCENARIO_FULL_EVERY"`,
+      ],
+      { encoding: "utf8", env: { PATH: process.env.PATH, ...env } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    return { values: r.stdout.trim(), warnings: r.stderr };
+  };
+
+  it("defaults to incremental, 800 lines, a full rewrite every 4 rounds", () => {
+    assert.deepEqual(knobs({}), { values: "1 800 4", warnings: "" });
+  });
+
+  it("takes valid overrides, 0 switching the incremental mode off", () => {
+    const r = knobs({
+      FACTORY_SCENARIO_INCREMENTAL: "0",
+      FACTORY_SCENARIO_DELTA_MAX_LINES: "1500",
+      FACTORY_SCENARIO_FULL_EVERY: "2",
+    });
+    assert.equal(r.values, "0 1500 2");
+  });
+
+  it("warns and falls back to the default on an invalid value", () => {
+    const r = knobs({
+      FACTORY_SCENARIO_INCREMENTAL: "yes",
+      FACTORY_SCENARIO_DELTA_MAX_LINES: "0",
+      FACTORY_SCENARIO_FULL_EVERY: "-1",
+    });
+    assert.equal(r.values, "1 800 4");
+    for (const name of [
+      "FACTORY_SCENARIO_INCREMENTAL",
+      "FACTORY_SCENARIO_DELTA_MAX_LINES",
+      "FACTORY_SCENARIO_FULL_EVERY",
+    ]) {
+      assert.match(r.warnings, new RegExp(`WARNING: invalid ${name}=`));
+    }
+  });
+
+  it("keeps the stored diffs under the log dir, reaped at 30 days and with a merged card", () => {
+    assert.match(script, /^SCENARIO_DIFF_DIR="\$LOG_DIR\/scenario"$/m);
+    assert.match(
+      script,
+      /find "\$SCENARIO_DIFF_DIR" -maxdepth 1 -type f \\\( -name '\*\.diff' -o -name '\*\.json' -o -name '\*\.json\.tmp' \\\) -mtime \+30 -delete/,
+    );
+    assert.match(
+      fnBody("release_slot_and_worktree"),
+      /\[\[ "\$known_state" == "MERGED" \]\] && scenario_diff_prune "\$issue_num"/,
+    );
+  });
+});
+
+describe("intest_handoff — exact-SHA check, writer skip and incremental mode (real bash, ADR-0082)", () => {
+  const SHA_OLD = "1".repeat(40);
+  const HEAD = "2".repeat(40);
+  const ISSUE = 794;
+  const extract = (name) => {
+    const m = script.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?\\n\\}`, "m"));
+    assert.ok(m, `could not extract ${name}`);
+    return m[0];
+  };
+  const FNS = [
+    "build_intest_bundle",
+    "intest_fallback_comment",
+    "intest_record_comment_sha",
+    "scenario_comment_state",
+    "scenario_diff_store",
+    "scenario_diff_prune",
+    "pr_head_oid",
+    "intest_reused_builds",
+    "intest_handoff",
+  ];
+  const scenarioBody = (sha, steps = "1. Open /notes — expected: the list loads.") =>
+    `🏭 **Ready to test — In Test.**\n\n## Test scenario\n\n### Web\n\n${steps}\n\n<!-- drafto-factory-in-test -->\n<!-- drafto-factory-test-scenario -->\n<!-- drafto-factory-scenario-sha:${sha} -->`;
+  const owner = (id, body, createdAt = "2026-11-10T00:00:00Z") => ({
+    id,
+    user: { login: "JakubAnderwald" },
+    body,
+    createdAt,
+    authorAssociation: "OWNER",
+  });
+  const fileDiff = (file, line) =>
+    `diff --git a/${file} b/${file}\nindex 1111111..2222222 100644\n--- a/${file}\n+++ b/${file}\n@@ -1,2 +1,3 @@\n keep\n+${line}\n keep`;
+
+  // Runs the real intest_handoff. gh, the issue reads and run-claude.mjs are
+  // stubbed; factory-bundle.mjs and state-cli.mjs are real.
+  function run({
+    comments = [],
+    prDiff = fileDiff("apps/web/a.ts", "v2"),
+    claude = "post",
+    stored = {},
+    rounds = null,
+    incremental = "1",
+    fullEvery = "4",
+    maxLines = "800",
+    dryRun = 0,
+    platforms = '{"mobile":false,"desktop":false,"web":true}',
+    headAfterDiff = HEAD,
+    commentsFailAfterRun = false,
+  } = {}) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "factory-scenario-delta-")));
+    const logDir = join(dir, "logs", "factory");
+    const scenarioDir = join(logDir, "scenario");
+    mkdirSync(scenarioDir, { recursive: true });
+    for (const [sha, { diff, plats }] of Object.entries(stored)) {
+      const base = join(scenarioDir, `${ISSUE}-${sha.slice(0, 12)}`);
+      writeFileSync(`${base}.diff`, diff);
+      writeFileSync(`${base}.json`, JSON.stringify({ headSha: sha, platforms: plats }));
+    }
+    const commentsFile = join(dir, "comments.json");
+    writeFileSync(commentsFile, JSON.stringify(comments));
+    const stateFile = join(dir, "state.json");
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        issues: { [ISSUE]: rounds === null ? {} : { intestScenarioRounds: rounds } },
+      }),
+    );
+    writeFileSync(join(dir, "pr.diff"), prDiff);
+    const promptFile = join(dir, "prompt.md");
+    writeFileSync(promptFile, "prompt");
+    const harness = `
+set -euo pipefail
+SCRIPT_DIR=${JSON.stringify(resolve(HERE, ".."))}
+REPO_ROOT=${JSON.stringify(dir)}
+LOG_DIR=${JSON.stringify(logDir)}
+SCENARIO_DIFF_DIR=${JSON.stringify(scenarioDir)}
+LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
+STATE_FILE=${JSON.stringify(stateFile)}
+CALLS=${JSON.stringify(join(dir, "calls.log"))}
+COMMENTS_FILE=${JSON.stringify(commentsFile)}
+DRY_RUN=${dryRun}
+INTEST_PROMPT_FILE=${JSON.stringify(promptFile)}
+INTEST_TIMEOUT_SEC=60
+FACTORY_PLAN_EFFORT=xhigh
+FACTORY_SCENARIO_INCREMENTAL=${incremental}
+FACTORY_SCENARIO_DELTA_MAX_LINES=${maxLines}
+FACTORY_SCENARIO_FULL_EVERY=${fullEvery}
+SUPPORT_ALLOWLIST="a@example.com"
+OAUTH_USER_EMAIL="support@example.com"
+PHASE=C
+HEAD=${HEAD}
+HEAD_AFTER_DIFF=${JSON.stringify(headAfterDiff)}
+COMMENTS_FAIL_AFTER_RUN=${commentsFailAfterRun ? 1 : 0}
+CLAUDE_MODE=${claude}
+touch "$CALLS"
+log() { echo "LOG: $*" >>"$LOG_FILE"; }
+logerr() { echo "ERR: $*" >>"$LOG_FILE"; }
+fetch_issue_record() { echo '{"number":${ISSUE},"title":"quota","body":"","labels":[]}'; }
+fetch_issue_comments() {
+  [[ "$COMMENTS_FAIL_AFTER_RUN" == 1 && -f "$REPO_ROOT/claude.input" ]] && return 1
+  cat "$COMMENTS_FILE"
+}
+extract_plan_comment() { echo null; }
+check_session_limit() { return 1; }
+pause_for_session_limit() { :; }
+gh() {
+  echo "gh $1 $2" >>"$CALLS"
+  case "$1 $2" in
+    "pr diff") cat ${JSON.stringify(join(dir, "pr.diff"))} ;;
+    "pr view") echo "$HEAD_AFTER_DIFF" ;;
+    "issue comment")
+      local body="" prev="" a
+      for a in "$@"; do [[ "$prev" == "--body" ]] && body="$a"; prev="$a"; done
+      jq -c --arg b "$body" '. + [{id: (length + 100), user: {login: "JakubAnderwald"}, body: $b,
+        createdAt: "2026-11-16T00:00:00Z", authorAssociation: "OWNER"}]' "$COMMENTS_FILE" \\
+        >"$COMMENTS_FILE.tmp" && mv "$COMMENTS_FILE.tmp" "$COMMENTS_FILE"
+      ;;
+  esac
+}
+node() {
+  if [[ "\${1:-}" == */run-claude.mjs ]]; then
+    echo "claude" >>"$CALLS"
+    printf '%s' "$3" >"$REPO_ROOT/claude.input"
+    case "$CLAUDE_MODE" in
+      silent) return 0 ;;
+      post|post-then-timeout)
+        gh issue comment ${ISSUE} --body "$(printf '## Test scenario\\n\\n### Web\\n\\n1. new step\\n\\n<!-- drafto-factory-in-test -->\\n<!-- drafto-factory-test-scenario -->\\n<!-- drafto-factory-scenario-sha:%s -->' "$HEAD")"
+        [[ "$CLAUDE_MODE" == "post" ]] || return 124
+        echo "issue=${ISSUE} action=commented comment=https://example.invalid/c"
+        return 0 ;;
+      timeout) return 124 ;;
+      *) return 1 ;;
+    esac
+  fi
+  command node "$@"
+}
+${FNS.map(extract).join("\n")}
+intest_handoff ${ISSUE} 802 '{"number":802,"url":"u","headRef":"factory/issue-${ISSUE}","state":"OPEN"}' "https://preview.example" "" "$HEAD" "apps/web/a.ts" '${platforms}' "" ""
+`;
+    try {
+      const r = spawnSync("bash", ["-c", harness], { encoding: "utf8", env: { ...process.env } });
+      const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
+      const input = read(join(dir, "claude.input"));
+      const json = /```json\n([\s\S]*)\n```/.exec(input);
+      const files = readdirSafe(scenarioDir);
+      const stored = Object.fromEntries(
+        files.map((name) => [
+          name,
+          {
+            mode: (statSync(join(scenarioDir, name)).mode & 0o777).toString(8),
+            text: readFileSync(join(scenarioDir, name), "utf8"),
+          },
+        ]),
+      );
+      return {
+        status: r.status,
+        stderr: r.stderr,
+        stdout: r.stdout,
+        calls: read(join(dir, "calls.log")),
+        log: read(join(dir, "agent.log")),
+        comments: JSON.parse(read(commentsFile)),
+        state: JSON.parse(read(stateFile)).issues[ISSUE],
+        bundle: json ? JSON.parse(json[1]) : null,
+        files,
+        modeOf: (name) => stored[name]?.mode,
+        readStored: (name) => stored[name]?.text,
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const readdirSafe = (d) => (existsSync(d) ? readdirSync(d).sort() : []);
+  const fallbacks = (r) =>
+    r.comments.filter((c) => c.body.includes("drafto-factory-scenario-fallback"));
+
+  it("posts the fallback when a clean run posts nothing, though an older scenario exists", () => {
+    // The bug: issue_has_marker matched the older scenario's test-scenario
+    // marker, so the head was left with no scenario and no fallback.
+    const r = run({ comments: [owner(1, scenarioBody(SHA_OLD))], claude: "silent" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.calls, /^claude$/m);
+    assert.equal(fallbacks(r).length, 1);
+    assert.ok(fallbacks(r)[0].body.includes(`<!-- drafto-factory-scenario-sha:${HEAD} -->`));
+    assert.match(
+      r.log,
+      /no test scenario for 222222222222 found \(action=none\); posting fallback/,
+    );
+    assert.equal(r.state.intestCommentSha, HEAD);
+  });
+
+  it("doesn't post a second fallback for a head that already has one", () => {
+    const prior = owner(
+      1,
+      `fallback\n<!-- drafto-factory-scenario-fallback -->\n<!-- drafto-factory-scenario-sha:${HEAD} -->`,
+    );
+    const r = run({ comments: [prior], claude: "silent" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.calls, /^claude$/m, "a fallback-only head still gets the writer");
+    assert.equal(fallbacks(r).length, 1);
+    assert.match(r.log, /its fallback comment is already posted/);
+  });
+
+  it("skips the writer when a real scenario for exactly this head is posted", () => {
+    const r = run({ comments: [owner(1, scenarioBody(HEAD))] });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.calls, /claude|pr diff|issue comment/);
+    assert.match(
+      r.log,
+      /a test scenario for 222222222222 is already posted; not invoking the writer/,
+    );
+    assert.equal(r.state.intestCommentSha, HEAD);
+    assert.equal(r.comments.length, 1);
+  });
+
+  it("doesn't skip for someone else's comment that copies the marker", () => {
+    const spoof = { ...owner(1, scenarioBody(HEAD)), authorAssociation: "NONE" };
+    const r = run({ comments: [spoof] });
+    assert.match(r.calls, /^claude$/m);
+  });
+
+  it("writes the first scenario in full mode and stores the diff (mode 600) for the next head", () => {
+    const r = run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.bundle.prDiffMode, "full");
+    assert.equal(r.bundle.prDiffModeReason, "no-prior-scenario");
+    assert.match(r.bundle.prDiffEnveloped, /\+v2/);
+    assert.deepEqual(r.files, [`${ISSUE}-222222222222.diff`, `${ISSUE}-222222222222.json`]);
+    assert.equal(r.modeOf(`${ISSUE}-222222222222.diff`), "600");
+    assert.equal(r.modeOf(`${ISSUE}-222222222222.json`), "600");
+    assert.match(r.readStored(`${ISSUE}-222222222222.diff`), /\+v2/);
+    assert.deepEqual(JSON.parse(r.readStored(`${ISSUE}-222222222222.json`)), {
+      headSha: HEAD,
+      platforms: { mobile: false, desktop: false, web: true },
+    });
+    assert.equal(r.state.intestScenarioRounds, null);
+    assert.equal(fallbacks(r).length, 0);
+  });
+
+  const webPlats = { mobile: false, desktop: false, web: true };
+  const prior = () => ({
+    comments: [owner(1, scenarioBody(SHA_OLD))],
+    stored: { [SHA_OLD]: { diff: fileDiff("apps/web/a.ts", "v1"), plats: webPlats } },
+  });
+
+  it("sends only the delta and the prior scenario when the head moves, and counts the round", () => {
+    const r = run({ ...prior(), rounds: "1" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.bundle.prDiffMode, "delta");
+    assert.equal(r.bundle.prDiffEnveloped, "");
+    assert.equal(r.bundle.priorScenarioSha, SHA_OLD);
+    assert.match(r.bundle.priorScenarioEnveloped, /^<prior-scenario>[\s\S]*### Web/);
+    assert.deepEqual(r.bundle.deltaFiles, [{ path: "apps/web/a.ts", status: "changed" }]);
+    assert.match(r.bundle.deltaDiffEnveloped, /\+v2/);
+    assert.match(r.log, /scenario for 222222222222 in delta mode \(1 file\(s\)/);
+    assert.equal(r.state.intestScenarioRounds, "2");
+    // The new scenario builds on this head's diff only.
+    assert.deepEqual(r.files, [`${ISSUE}-222222222222.diff`, `${ISSUE}-222222222222.json`]);
+  });
+
+  it("rewrites from the whole diff every FACTORY_SCENARIO_FULL_EVERY rounds, and resets the count", () => {
+    const r = run({ ...prior(), rounds: "4", fullEvery: "4" });
+    assert.equal(r.bundle.prDiffMode, "full");
+    assert.equal(r.bundle.prDiffModeReason, "full-every-4");
+    assert.equal(r.state.intestScenarioRounds, null);
+  });
+
+  it("uses the whole diff when the platforms changed or the delta is too large", () => {
+    const plat = run({ ...prior(), platforms: '{"mobile":true,"desktop":false,"web":true}' });
+    assert.equal(plat.bundle.prDiffModeReason, "platforms-changed");
+    const big = run({ ...prior(), maxLines: "3" });
+    assert.equal(big.bundle.prDiffModeReason, "delta-over-3-lines");
+  });
+
+  it("is the full mode, with nothing stored, when switched off", () => {
+    const r = run({ ...prior(), incremental: "0", rounds: "2" });
+    assert.equal(r.bundle.prDiffMode, "full");
+    assert.equal(r.bundle.prDiffModeReason, "");
+    assert.deepEqual(r.files, [`${ISSUE}-111111111111.diff`, `${ISSUE}-111111111111.json`]);
+    assert.equal(r.state.intestScenarioRounds, "2", "the count is left alone while off");
+  });
+
+  it("keeps the prior diff when the run falls back, so the next head can still use it", () => {
+    const r = run({ ...prior(), claude: "silent", rounds: "1" });
+    assert.equal(fallbacks(r).length, 1);
+    assert.equal(r.state.intestScenarioRounds, "1");
+    assert.ok(r.files.includes(`${ISSUE}-111111111111.diff`));
+  });
+
+  it("treats a run that posted and then timed out as posted: no fallback, the round counts", () => {
+    const r = run({ ...prior(), claude: "post-then-timeout", rounds: "1" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fallbacks(r).length, 0);
+    assert.match(r.log, /claude timed out writing the In Test scenario/);
+    assert.match(r.log, /test scenario posted \(action=exit-124, delta mode\)/);
+    assert.equal(r.state.intestScenarioRounds, "2");
+    assert.equal(r.state.intestCommentSha, HEAD);
+  });
+
+  it("still posts the fallback after a timeout that posted nothing, but only once per head", () => {
+    const first = run({ claude: "timeout" });
+    assert.equal(fallbacks(first).length, 1);
+    assert.match(
+      first.log,
+      /no test scenario for 222222222222 found \(action=exit-124\); posting fallback/,
+    );
+    const again = run({ comments: first.comments, claude: "timeout" });
+    assert.equal(fallbacks(again).length, 1, "no second fallback for the same head");
+  });
+
+  it("keeps no diff, and runs in full mode, when the head moved while the diff was read", () => {
+    // gh pr diff reads whatever the head is then: a newer head's diff must
+    // never be filed under this head's SHA, nor compared as if it were.
+    for (const headAfterDiff of ["3".repeat(40), ""]) {
+      const r = run({ ...prior(), headAfterDiff, rounds: "1" });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.bundle.prDiffMode, "full");
+      assert.match(r.log, /after reading its diff, not 2{40}; not keeping the diff \(full mode\)/);
+      assert.deepEqual(r.files, [`${ISSUE}-111111111111.diff`, `${ISSUE}-111111111111.json`]);
+      assert.equal(
+        r.state.intestScenarioRounds,
+        "1",
+        "a full run that wasn't counted leaves the count",
+      );
+    }
+  });
+
+  it("leaves the head unrecorded, with no fallback, when the comments can't be read after the run", () => {
+    const r = run({ ...prior(), commentsFailAfterRun: true, rounds: "1" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.calls, /^claude$/m);
+    assert.equal(fallbacks(r).length, 0);
+    assert.match(r.log, /leaving 222222222222 unrecorded so the next tick looks again/);
+    assert.equal(r.state.intestCommentSha ?? null, null);
+    assert.equal(r.state.intestScenarioRounds, "1");
+  });
+
+  it("prints the delta bundle under --dry-run without storing anything", () => {
+    const r = run({ ...prior(), dryRun: 1 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).prDiffMode, "delta");
+    assert.doesNotMatch(r.calls, /claude/);
+    assert.deepEqual(r.files, [`${ISSUE}-111111111111.diff`, `${ISSUE}-111111111111.json`]);
+  });
+});
+
+describe("scenario_diff_prune (real bash)", () => {
+  it("removes an issue's stored diffs, keeping one head's, and never another issue's", () => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-scenario-prune-"));
+    try {
+      for (const name of [
+        "794-111111111111.diff",
+        "794-111111111111.json",
+        "794-222222222222.diff",
+        "794-222222222222.json",
+        "79-333333333333.diff",
+        "7940-444444444444.diff",
+      ]) {
+        writeFileSync(join(dir, name), "x");
+      }
+      const fn = script.match(/^scenario_diff_prune\(\) \{[\s\S]*?\n\}/m)[0];
+      const prune = (args) => {
+        const r = spawnSync(
+          "bash",
+          [
+            "-c",
+            `set -euo pipefail\nSCENARIO_DIFF_DIR=${JSON.stringify(dir)}\n${fn}\nscenario_diff_prune ${args}`,
+          ],
+          {
+            encoding: "utf8",
+          },
+        );
+        assert.equal(r.status, 0, r.stderr);
+        return readdirSync(dir).sort();
+      };
+      assert.deepEqual(prune(`794 ${"2".repeat(40)}`), [
+        "79-333333333333.diff",
+        "794-222222222222.diff",
+        "794-222222222222.json",
+        "7940-444444444444.diff",
+      ]);
+      assert.deepEqual(prune("794"), ["79-333333333333.diff", "7940-444444444444.diff"]);
+      assert.deepEqual(prune("not-a-number"), ["79-333333333333.diff", "7940-444444444444.diff"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

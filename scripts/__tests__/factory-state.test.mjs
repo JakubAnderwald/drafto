@@ -377,6 +377,17 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["802"].renumberErrors, null);
   });
 
+  it("tracks intestScenarioRounds (ADR-0082) and clears it", () => {
+    // --watch writes it under `|| true`: a rejected write would leave the count
+    // at zero, and FACTORY_SCENARIO_FULL_EVERY would never send the whole diff.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 794).intestScenarioRounds, null);
+    setIssueField(s, 794, "intestScenarioRounds", "3");
+    assert.equal(s.issues["794"].intestScenarioRounds, "3");
+    setIssueField(s, 794, "intestScenarioRounds", "");
+    assert.equal(s.issues["794"].intestScenarioRounds, null);
+  });
+
   it("tracks migrationApprovedVouched (ADR-0078) and clears it", () => {
     // A rejected write would fail silently in bash (`|| true`), and the label
     // would never be tied to the SQL it was first seen with.
