@@ -622,8 +622,10 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
   });
 
   it("gives the implementer an empty reply directory before its run", () => {
+    // Skipped only when resuming a session (ADR-0084): the killed run's
+    // replies are that same session's, and the resumed run finishes them.
     const reset = script.indexOf(
-      '    reset_reply_dir "$ISSUE_NUM"\n    log "Invoking claude for #$ISSUE_NUM (--implement',
+      '    if [[ "$IMPL_RESUMED" -eq 0 ]]; then\n      reset_reply_dir "$ISSUE_NUM"\n    fi\n    log "Invoking claude for #$ISSUE_NUM (--implement',
     );
     assert.ok(reset !== -1, "reset_reply_dir must come right before the implement run");
   });

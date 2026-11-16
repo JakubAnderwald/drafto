@@ -112,6 +112,39 @@ if ! [[ "$WATCH_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
   WATCH_TIMEOUT_SEC=1800
 fi
 
+# Implement deadline + resume (ADR-0084). Every --implement run gets a claude
+# --session-id and a "Run-time facts" block with its deadlines. A fresh run that
+# hits the wall cap, or stops itself with action=incomplete, is recorded as
+# resumable, and the next attempt resumes that session (--resume) when
+# scripts/lib/implement-resume.mjs says it is safe; at most once per timeout
+# chain. FACTORY_IMPLEMENT_RESUME=0 turns resuming off (the deadline facts
+# stay). The soft deadline is the cap minus FACTORY_IMPLEMENT_SOFT_MARGIN_MIN;
+# the margin is clamped to the cap minus 5 minutes, so a short cap still leaves
+# 5 minutes of work before the soft deadline. A record older than FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN is not resumed. At the
+# cap, claude gets FACTORY_IMPLEMENT_TERM_GRACE_SEC between SIGTERM and SIGKILL
+# to write the interrupted tool call to its transcript.
+FACTORY_IMPLEMENT_RESUME="${FACTORY_IMPLEMENT_RESUME:-1}"
+case "$FACTORY_IMPLEMENT_RESUME" in
+  0|1) : ;;
+  *) echo "WARNING: invalid FACTORY_IMPLEMENT_RESUME='$FACTORY_IMPLEMENT_RESUME'; defaulting to 1" >&2
+     FACTORY_IMPLEMENT_RESUME=1 ;;
+esac
+FACTORY_IMPLEMENT_SOFT_MARGIN_MIN="${FACTORY_IMPLEMENT_SOFT_MARGIN_MIN:-15}"
+if ! [[ "$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "WARNING: invalid FACTORY_IMPLEMENT_SOFT_MARGIN_MIN='$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN'; defaulting to 15" >&2
+  FACTORY_IMPLEMENT_SOFT_MARGIN_MIN=15
+fi
+FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN="${FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN:-360}"
+if ! [[ "$FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN='$FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN'; defaulting to 360" >&2
+  FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN=360
+fi
+FACTORY_IMPLEMENT_TERM_GRACE_SEC="${FACTORY_IMPLEMENT_TERM_GRACE_SEC:-30}"
+if ! [[ "$FACTORY_IMPLEMENT_TERM_GRACE_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_IMPLEMENT_TERM_GRACE_SEC='$FACTORY_IMPLEMENT_TERM_GRACE_SEC'; defaulting to 30" >&2
+  FACTORY_IMPLEMENT_TERM_GRACE_SEC=30
+fi
+
 # ── Claude background-task wait ─────────────────────────────────────────────
 # In `-p` (print) mode, claude waits only 600s for background tasks (workflow
 # agents, background subagents) after its final turn, then kills them and
@@ -2005,6 +2038,147 @@ implement_park_blocked() {
   log "Issue #$issue_num: $reason → Blocked; slot $slot released"
 }
 
+# ── Implement deadline + session resume (ADR-0084) ──────────────────────────
+# implement_runtime_facts <start-epoch> <resumed 0|1> <worktree-cli add JSON>
+#   <worktree path> — the "Run-time facts" JSON the implementer gets after its
+# bundle: its deadlines (the cap from <start-epoch>; the soft deadline
+# FACTORY_IMPLEMENT_SOFT_MARGIN_MIN before it, the margin clamped to the cap
+# minus 5 minutes) and what an earlier attempt left in the worktree. The
+# prompt's Time budget section documents every key, and a test pins them to it.
+# Prints nothing on failure; the caller then leaves the block out.
+implement_runtime_facts() {
+  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" cap_min margin max_margin branch base unpushed uncommitted
+  cap_min=$(( IMPLEMENT_TIMEOUT_SEC / 60 ))
+  margin="$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN"
+  max_margin=$(( cap_min - 5 ))
+  [[ "$max_margin" -ge 0 ]] || max_margin=0
+  [[ "$margin" -le "$max_margin" ]] || margin="$max_margin"
+  # Unpushed: ahead of the PR branch on origin when it has one, else of main.
+  branch=$(echo "$wt_json" | jq -r '.branch // ""' 2>/dev/null || echo "")
+  base="origin/main"
+  if [[ -n "$branch" ]] && git -C "$wt_path" rev-parse --verify -q "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    base="refs/remotes/origin/$branch"
+  fi
+  unpushed=$(git -C "$wt_path" rev-list --count "$base..HEAD" 2>/dev/null || echo "")
+  [[ "$unpushed" =~ ^[0-9]+$ ]] || unpushed="null"
+  uncommitted=$(git -C "$wt_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ' || echo "")
+  [[ "$uncommitted" =~ ^[0-9]+$ ]] || uncommitted="null"
+  jq -n --argjson start "$start" --argjson cap "$IMPLEMENT_TIMEOUT_SEC" --argjson margin "$margin" \
+    --argjson resumed "$resumed" --argjson unpushed "$unpushed" --argjson uncommitted "$uncommitted" \
+    --argjson wt "${wt_json:-null}" '{
+      capMinutes: ($cap / 60 | floor),
+      startedAt: ($start | todate),
+      softDeadlineAt: ($start + $cap - $margin * 60 | todate),
+      hardDeadlineAt: ($start + $cap | todate),
+      resumed: ($resumed == 1),
+      worktree: {
+        reused: ($wt.reused == true),
+        leftoversRef: ($wt.leftoversRef // null),
+        unpushedCommits: $unpushed,
+        uncommittedChanges: $uncommitted
+      }
+    }' 2>>"$LOG_FILE" || true
+}
+
+# implement_resume_decide <issue> <worktree path> <worktree-cli add JSON>
+#   <prior-pr JSON> <plan comment JSON> <revision comments JSON> — at an
+# implement start, decide whether this run resumes the session a stopped run
+# recorded (implement-resume.mjs decide), and clear that record whatever the
+# answer, so a timeout chain resumes at most once. Sets:
+#   IMPL_TASK_KEY       "plan:<id>|rev:<ids>", for implement_mark_resumable
+#   IMPL_RESUMED        1 when resuming, else 0
+#   IMPL_SESSION_FLAG   --resume or --session-id
+#   IMPL_SESSION_ID     the recorded session, or a new uuid
+#   IMPL_RESUME_PRE_HEAD  the stopped run's PR head before it ("" = it had no PR)
+# A resume needs the record cleared first: if the clear fails, the run is
+# fresh. Returns 1 only when no session id could be made at all.
+implement_resume_decide() {
+  local issue_num="$1" wt_path="$2" wt_json="$3" prior_pr="$4" plan_json="$5" revisions="$6"
+  local record head pr_state decision resume_sid="" reason detail
+  IMPL_RESUMED=0
+  IMPL_SESSION_FLAG="--session-id"
+  IMPL_RESUME_PRE_HEAD=""
+  IMPL_SESSION_ID=$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]') || IMPL_SESSION_ID=""
+  if ! [[ "$IMPL_SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    IMPL_SESSION_ID=$(node -e 'process.stdout.write(require("node:crypto").randomUUID())' 2>>"$LOG_FILE") || IMPL_SESSION_ID=""
+  fi
+  if ! [[ "$IMPL_SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    log "ERROR: #$issue_num: could not make a claude session id (uuidgen and node both failed)"
+    return 1
+  fi
+  IMPL_TASK_KEY=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" task-key \
+    --plan-id "$(echo "$plan_json" | jq -r '.id // ""' 2>/dev/null || echo "")" \
+    --rev-ids "$(echo "$revisions" | jq -r '[.[]?.id | tostring] | join(",")' 2>/dev/null || echo "")" \
+    2>>"$LOG_FILE") || IMPL_TASK_KEY=""
+  record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE") || record=""
+  head=$(git -C "$wt_path" rev-parse HEAD 2>>"$LOG_FILE") || head=""
+  pr_state=$(echo "$prior_pr" | jq -r '.state // ""' 2>/dev/null || echo "")
+  decision=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" decide --record "${record:-null}" \
+    --worktree "$wt_json" --head "$head" --task-key "$IMPL_TASK_KEY" --pr-state "$pr_state" \
+    --enabled "$FACTORY_IMPLEMENT_RESUME" --max-age-min "$FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN" \
+    2>>"$LOG_FILE") || decision=""
+  if [[ "$(echo "$decision" | jq -r '.resume // false' 2>/dev/null || echo false)" == "true" ]]; then
+    resume_sid=$(echo "$decision" | jq -r '.sessionId // ""' 2>/dev/null || echo "")
+    IMPL_RESUME_PRE_HEAD=$(echo "$decision" | jq -r '.preHead // ""' 2>/dev/null || echo "")
+  fi
+  if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:implement-resume-clear "$issue_num" \
+      --session-id "${resume_sid:-$IMPL_SESSION_ID}" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    if [[ -n "$resume_sid" ]]; then
+      log "WARNING: #$issue_num: could not clear the resume record; running a fresh session so it can't be resumed twice"
+      resume_sid=""
+      IMPL_RESUME_PRE_HEAD=""
+    fi
+  fi
+  if [[ -n "$resume_sid" ]]; then
+    IMPL_RESUMED=1
+    IMPL_SESSION_FLAG="--resume"
+    IMPL_SESSION_ID="$resume_sid"
+    log "Issue #$issue_num: resume session $IMPL_SESSION_ID (worktree head ${head:0:12} unchanged; PR head before the first run: ${IMPL_RESUME_PRE_HEAD:-none})"
+  else
+    reason=$(echo "$decision" | jq -r '.reason // "decision failed"' 2>/dev/null || echo "decision failed")
+    detail=$(echo "$decision" | jq -r '.detail // ""' 2>/dev/null || echo "")
+    log "Issue #$issue_num: fresh session $IMPL_SESSION_ID (no resume: ${reason:-decision failed}${detail:+, $detail})"
+  fi
+  return 0
+}
+
+# implement_mark_resumable <issue> <worktree path> <session> <task key>
+#   <pre-head> <pre-head known 0|1> <why> — record that this run's session may
+# be resumed by the next attempt (a fresh run that hit the wall cap or stopped
+# with action=incomplete). Not when resuming is off, nor when the PR head
+# before the run is unknown: a resumed run inherits that head as its baseline.
+implement_mark_resumable() {
+  local issue_num="$1" wt_path="$2" session="$3" key="$4" pre_head="$5" pre_known="$6" why="$7" head
+  [[ "$FACTORY_IMPLEMENT_RESUME" == "1" ]] || return 0
+  if [[ "$pre_known" != "1" ]]; then
+    log "Issue #$issue_num: session $session not resumable ($why): the PR head before the run is unknown"
+    return 0
+  fi
+  head=$(git -C "$wt_path" rev-parse HEAD 2>>"$LOG_FILE") || head=""
+  if node "$SCRIPT_DIR/lib/state-cli.mjs" factory:implement-resume-set "$issue_num" \
+      --session "$session" --head "$head" --key "$key" --pre-head "$pre_head" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
+    log "Issue #$issue_num: recorded resumable session $session ($why; worktree head ${head:0:12})"
+  else
+    log "WARNING: #$issue_num: could not record session $session as resumable ($why); the next attempt runs fresh"
+  fi
+}
+
+# implement_resume_never_started <session> <since-iso> <start-epoch> — exit 0
+# when a resumed run ended within 180 s without its session answering once
+# (implement-resume.mjs started): the resume never got going, so it spends no
+# attempt and the next tick runs fresh (its record is already cleared). Exit 1
+# otherwise, and on any doubt, so the attempt is spent as before.
+implement_resume_never_started() {
+  local session="$1" since="$2" start="$3" out
+  [[ "$start" =~ ^[0-9]+$ ]] || return 1
+  [[ $(( $(date +%s) - start )) -lt 180 ]] || return 1
+  out=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" started --session-id "$session" \
+    --since "$since" 2>>"$LOG_FILE") || return 1
+  [[ "$(echo "$out" | jq -r '.started' 2>/dev/null || echo "")" == "false" ]]
+}
+
 # implement_migration_claim_check <issue> <pr-num> <head-sha> <new-since>
 #   <claimed-json> — the --implement post-check for migration versions
 # (ADR-0079), run after the parity post-check. The bundle gave the implementer
@@ -3235,16 +3409,20 @@ log_worktree_leftovers() {
 # release sequentially under one mutex, pausing here also stops the rest of the
 # tick at the top-of-script pause gate.
 #
-# check_session_limit <cwd> <since-iso>
+# check_session_limit <cwd> <since-iso> [<session-id>]
 #   Exit 0 (and set SESSION_LIMIT_RESET_AT / SESSION_LIMIT_REASON) when the
-#   newest claude transcript for <cwd> ended in a limit error newer than
-#   <since-iso>. Exit 1 on anything else — fail-open to the normal retry path.
+#   claude transcript ended in a limit error newer than <since-iso>: the
+#   session's own transcript when <session-id> is given (--implement names its
+#   session, ADR-0084), else the newest one for <cwd>. Exit 1 on anything
+#   else — fail-open to the normal retry path.
 check_session_limit() {
-  local cwd="$1" since="$2" out
+  local cwd="$1" since="$2" session="${3:-}" out
   SESSION_LIMIT_RESET_AT=""
   SESSION_LIMIT_REASON=""
+  # ${session:+…} adds the flag pair only when there is an id: plain words, no
+  # array (bash 3.2 under set -u).
   out=$(node "$SCRIPT_DIR/lib/session-limit.mjs" check --cwd "$cwd" --since "$since" \
-    --fallback-min "$FACTORY_LIMIT_FALLBACK_MIN" 2>>"$LOG_FILE") || return 1
+    --fallback-min "$FACTORY_LIMIT_FALLBACK_MIN" ${session:+--session-id "$session"} 2>>"$LOG_FILE") || return 1
   SESSION_LIMIT_RESET_AT=$(echo "$out" | jq -r '.resetAt // empty' 2>/dev/null || echo "")
   SESSION_LIMIT_REASON=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null || echo "")
   [[ -n "$SESSION_LIMIT_RESET_AT" ]]
@@ -7656,6 +7834,16 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
       PROMPT_TEXT=$(cat "$PROMPT_FILE")
     fi
   fi
+  # A resumed session (ADR-0084) gets this short note instead of the prompt and
+  # bundle it already holds. Missing → resuming is off for this tick.
+  RESUME_PROMPT_TEXT=""
+  if [[ "$PHASE" != "A" && "$DRY_RUN" -eq 0 ]]; then
+    RESUME_PROMPT_TEXT=$(cat "$SCRIPT_DIR/factory-implement-resume-prompt.md" 2>/dev/null || echo "")
+    if [[ -z "$RESUME_PROMPT_TEXT" && "$FACTORY_IMPLEMENT_RESUME" == "1" ]]; then
+      log "WARNING: factory-implement-resume-prompt.md is missing or empty; not resuming sessions this tick"
+      FACTORY_IMPLEMENT_RESUME=0
+    fi
+  fi
 
   # Cards coming back with an open PR (revisions from In Test, retries) before
   # fresh ones, so a freed slot finishes work before it starts more (ADR-0070).
@@ -7900,21 +8088,61 @@ Drag it back to **Ready** so the factory can plan it first.
       fi
     fi
 
-    # Invoke claude inside the worktree with the implementer prompt + bundle.
-    CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
-      "$PROMPT_TEXT" "$BUNDLE")
-    reset_reply_dir "$ISSUE_NUM"
+    # Session resume (ADR-0084): resume the session a fresh run left at the
+    # wall cap (or at action=incomplete) when nothing it relied on changed, and
+    # clear that record either way. A resumed run keeps the stopped run's PR
+    # head as its baseline, so work it pushed before the cap still counts as
+    # this run's when the post-checks compare heads.
+    if ! implement_resume_decide "$ISSUE_NUM" "$WT_PATH" "$WT_JSON" "$PRIOR_PR" \
+        "$PLAN_COMMENT_JSON" "$REVISION_COMMENTS"; then
+      log "ERROR: #$ISSUE_NUM: no claude session id; keeping slot $SLOT for retry"
+      continue
+    fi
+    if [[ "$IMPL_RESUMED" -eq 1 ]]; then
+      PRE_HEAD_OID="$IMPL_RESUME_PRE_HEAD"
+      PRE_HEAD_KNOWN=1
+    fi
+
+    # Invoke claude inside the worktree with the implementer prompt + bundle
+    # (or, resuming, the short resume note), then the run-time facts: the
+    # deadlines from now and what an earlier attempt left in the worktree.
+    IMPL_START_EPOCH=$(date +%s)
+    IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH")
+    IMPL_FACTS_BLOCK=""
+    if [[ -n "$IMPL_FACTS" ]]; then
+      IMPL_FACTS_BLOCK=$(printf '\n## Run-time facts\n\n```json\n%s\n```\n' "$IMPL_FACTS")
+    else
+      log "WARNING: #$ISSUE_NUM: could not build the run-time facts; the implementer runs without its deadlines"
+    fi
+    if [[ "$IMPL_RESUMED" -eq 1 ]]; then
+      CLAUDE_INPUT=$(printf '%s\n%s\n' "$RESUME_PROMPT_TEXT" "$IMPL_FACTS_BLOCK")
+    else
+      CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n%s\n' \
+        "$PROMPT_TEXT" "$BUNDLE" "$IMPL_FACTS_BLOCK")
+    fi
+    # A resumed session keeps the replies its killed run already wrote.
+    if [[ "$IMPL_RESUMED" -eq 0 ]]; then
+      reset_reply_dir "$ISSUE_NUM"
+    fi
     log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
-    ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" \
-        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config ) \
-        >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+    ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" \
+        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config \
+        "$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID" ) >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 124 ]]; then
       log "WARNING: claude timed out (>${IMPLEMENT_TIMEOUT_SEC}s) for #$ISSUE_NUM; keeping slot for retry"
+      # Whatever it printed before the kill, before the file goes.
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
       rm -f "$CLAUDE_OUTPUT_FILE"
+      # A fresh run's session may be resumed by the next attempt (ADR-0084).
+      # A resumed one never is: one resume per timeout chain.
+      if [[ "$IMPL_RESUMED" -eq 0 ]]; then
+        implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+          "$PRE_HEAD_OID" "$PRE_HEAD_KNOWN" "timed out"
+      fi
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
     elif [[ $EXIT_CODE -ne 0 ]]; then
@@ -7923,7 +8151,7 @@ Drag it back to **Ready** so the factory can plan it first.
       # Session limit? Pause until reset instead of burning the retry budget.
       # Keep the slot + worktree (as the timeout branch does) so the resumed
       # tick reuses the warm worktree; the card stays In Progress.
-      if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO"; then
+      if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO" "$IMPL_SESSION_ID"; then
         rm -f "$CLAUDE_OUTPUT_FILE"
         log "Issue #$ISSUE_NUM: session limit — keeping slot $SLOT + worktree; card stays In Progress for resume"
         pause_for_session_limit
@@ -7931,6 +8159,14 @@ Drag it back to **Ready** so the factory can plan it first.
         exit 0
       fi
       rm -f "$CLAUDE_OUTPUT_FILE"
+      # A resume that never got going (the CLI or the API refused the restored
+      # session) is the factory's failure, not the card's: no attempt, and the
+      # next tick runs fresh, its record already cleared.
+      if [[ "$IMPL_RESUMED" -eq 1 ]] \
+         && implement_resume_never_started "$IMPL_SESSION_ID" "$CLAUDE_START_ISO" "$IMPL_START_EPOCH"; then
+        log "Issue #$ISSUE_NUM: resumed session $IMPL_SESSION_ID never started (exit $EXIT_CODE); no attempt spent, the next tick runs a fresh session"
+        continue
+      fi
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
     fi
@@ -7939,6 +8175,11 @@ Drag it back to **Ready** so the factory can plan it first.
     SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
     rm -f "$CLAUDE_OUTPUT_FILE"
     if [[ -z "$SUMMARY_LINE" ]]; then
+      if [[ "$IMPL_RESUMED" -eq 1 ]] \
+         && implement_resume_never_started "$IMPL_SESSION_ID" "$CLAUDE_START_ISO" "$IMPL_START_EPOCH"; then
+        log "Issue #$ISSUE_NUM: resumed session $IMPL_SESSION_ID never started (no summary line); no attempt spent, the next tick runs a fresh session"
+        continue
+      fi
       log "WARNING: no well-formed summary line from claude for #$ISSUE_NUM; keeping slot for retry"
       node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       continue
@@ -8095,6 +8336,18 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
         ;;
       blocked)
         implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "implementer returned blocked"
+        ;;
+      incomplete)
+        # The implementer reached its soft deadline with work left and stopped
+        # cleanly, its work committed locally (ADR-0084). Like a timeout: the
+        # slot and worktree stay, the attempt is spent, and a fresh run's
+        # session is recorded for the next attempt to resume.
+        log "Issue #$ISSUE_NUM: implementer stopped at its soft deadline (action=incomplete); keeping slot $SLOT for retry"
+        if [[ "$IMPL_RESUMED" -eq 0 ]]; then
+          implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+            "$PRE_HEAD_OID" "$PRE_HEAD_KNOWN" "action=incomplete"
+        fi
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         ;;
       declined)
         # Revision feedback the implementer declined as outside the approved

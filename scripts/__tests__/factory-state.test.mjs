@@ -39,6 +39,9 @@ import {
   finishVerifyRun,
   verifyIssueRecords,
   resetIssueVerify,
+  IMPLEMENT_RESUME_ISSUE_FIELDS,
+  setImplementResume,
+  clearImplementResume,
 } from "../lib/factory-state.mjs";
 
 let workdir;
@@ -912,5 +915,111 @@ describe("verification stage (ADR-0053): verify ledger", () => {
 describe("DEFAULT_FACTORY_STATE_PATH", () => {
   it("points at <repo>/logs/factory-state.json", () => {
     assert.match(DEFAULT_FACTORY_STATE_PATH, /[\/\\]logs[\/\\]factory-state\.json$/);
+  });
+});
+
+// ADR-0084: a fresh --implement run that hit the wall cap records its session
+// for the next run to resume. The record is all-or-nothing.
+describe("implement resume record", () => {
+  const SESSION = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  const NEXT = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
+  const HEAD = "a".repeat(40);
+  const PRE = "b".repeat(40);
+  const NOW = "2026-11-16T12:00:00Z";
+
+  it("has the six documented fields, frozen, null on a fresh issue and settable", () => {
+    assert.deepEqual(
+      [...IMPLEMENT_RESUME_ISSUE_FIELDS],
+      [
+        "implementSessionId",
+        "implementResumeSession",
+        "implementResumeHead",
+        "implementResumeKey",
+        "implementResumePreHead",
+        "implementResumeAt",
+      ],
+    );
+    assert.throws(() => IMPLEMENT_RESUME_ISSUE_FIELDS.push("x"), TypeError);
+    const s = emptyFactoryState();
+    const issue = getIssue(s, 7);
+    for (const f of IMPLEMENT_RESUME_ISSUE_FIELDS) assert.equal(issue[f], null, f);
+    // The operator's escape hatch: the generic setter accepts every one.
+    for (const f of IMPLEMENT_RESUME_ISSUE_FIELDS) {
+      assert.equal(setIssueField(s, 7, f, "x"), "x", f);
+      assert.equal(setIssueField(s, 7, f, ""), null, f);
+    }
+  });
+
+  it("setImplementResume writes the whole record, stamped with now", () => {
+    const s = emptyFactoryState();
+    const rec = setImplementResume(s, 7, {
+      session: SESSION,
+      head: HEAD,
+      key: "plan:1|rev:",
+      preHead: PRE,
+      now: NOW,
+    });
+    assert.deepEqual(rec, {
+      implementResumeSession: SESSION,
+      implementResumeHead: HEAD,
+      implementResumeKey: "plan:1|rev:",
+      implementResumePreHead: PRE,
+      implementResumeAt: "2026-11-16T12:00:00.000Z",
+    });
+    assert.equal(s.issues["7"].implementResumeSession, SESSION);
+  });
+
+  it("stores no pre-head for a run that had no PR", () => {
+    const s = emptyFactoryState();
+    for (const preHead of ["", null, undefined]) {
+      const rec = setImplementResume(s, 7, {
+        session: SESSION,
+        head: HEAD,
+        key: "k",
+        preHead,
+        now: NOW,
+      });
+      assert.equal(rec.implementResumePreHead, null);
+    }
+  });
+
+  it("refuses a half-usable record, leaving the state untouched", () => {
+    const ok = { session: SESSION, head: HEAD, key: "k", preHead: "", now: NOW };
+    const bad = [
+      [{ session: "nope" }, /session id/],
+      [{ head: "" }, /head/],
+      [{ head: "abc" }, /head/],
+      [{ key: "" }, /task key/],
+      [{ key: "  " }, /task key/],
+      [{ preHead: "xyz" }, /pre-head/],
+      [{ now: "garbage" }, /now/],
+    ];
+    for (const [over, re] of bad) {
+      const s = emptyFactoryState();
+      assert.throws(() => setImplementResume(s, 7, { ...ok, ...over }), re);
+      assert.equal(s.issues["7"], undefined, JSON.stringify(over));
+    }
+  });
+
+  it("clearImplementResume nulls the record, keeps the rest, and notes the new session", () => {
+    const s = emptyFactoryState();
+    setImplementResume(s, 7, { session: SESSION, head: HEAD, key: "k", preHead: PRE, now: NOW });
+    bumpIssueAttempts(s, 7);
+    const cleared = clearImplementResume(s, 7, { sessionId: NEXT });
+    assert.deepEqual(cleared, [
+      "implementResumeSession",
+      "implementResumeHead",
+      "implementResumeKey",
+      "implementResumePreHead",
+      "implementResumeAt",
+    ]);
+    const issue = s.issues["7"];
+    for (const f of IMPLEMENT_RESUME_ISSUE_FIELDS.slice(1)) assert.equal(issue[f], null, f);
+    assert.equal(issue.implementSessionId, NEXT);
+    assert.equal(issue.attempts, 1);
+    // Nothing left to clear; without a session id the noted one stays.
+    assert.deepEqual(clearImplementResume(s, 7), []);
+    assert.equal(issue.implementSessionId, NEXT);
+    assert.throws(() => clearImplementResume(s, 7, { sessionId: "nope" }), /session id/);
   });
 });

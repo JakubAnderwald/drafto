@@ -281,7 +281,7 @@ describe("implementer prompt — declined revisions and operator steps (ADR-0058
   });
 
   it("documents action=declined in the directive line", () => {
-    assert.match(flat, /action=<implemented\|noop\|declined\|blocked>/);
+    assert.match(flat, /action=<implemented\|noop\|declined\|blocked\|incomplete>/);
     assert.match(flat, /`action=declined` — revision runs only/);
     assert.match(
       flat,
@@ -299,5 +299,137 @@ describe("implementer prompt — declined revisions and operator steps (ADR-0058
     // The key stays an operator secret: the prompt names where it lives only to
     // say the implementer must not go looking or run these itself.
     assert.match(flat, /\(don't look for it yourself, and don't run these\)/);
+  });
+});
+
+// ADR-0084: #794's timed-out run scheduled a 31-minute wakeup to wait on a
+// review Workflow 6 minutes before its cap. The agent didn't know its deadline.
+// Bash now appends the deadlines as "Run-time facts", and the prompt must say
+// what each key means and what to do with it.
+describe("implementer prompt — time budget (ADR-0084)", () => {
+  const agent = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "..", "factory-agent.sh"),
+    "utf8",
+  );
+  const factsFn = agent.match(/^implement_runtime_facts\(\) \{[\s\S]*?\n\}/m);
+
+  it("documents every key implement_runtime_facts emits", () => {
+    assert.ok(factsFn, "implement_runtime_facts not found in factory-agent.sh");
+    const keys = [...factsFn[0].matchAll(/^\s+([a-zA-Z]+): /gm)].map((m) => m[1]);
+    assert.deepEqual(keys, [
+      "capMinutes",
+      "startedAt",
+      "softDeadlineAt",
+      "hardDeadlineAt",
+      "resumed",
+      "worktree",
+      "reused",
+      "leftoversRef",
+      "unpushedCommits",
+      "uncommittedChanges",
+    ]);
+    const section = prompt.slice(prompt.indexOf("## Time budget"), prompt.indexOf("## Tools"));
+    for (const key of keys) {
+      assert.match(section, new RegExp("`" + key + "`"), `Time budget must explain ${key}`);
+    }
+  });
+
+  it("tells the agent where the facts are, now that the bundle isn't the last json block", () => {
+    assert.match(
+      flat,
+      /A second, smaller ` ```json ` block follows it, under \*\*Run-time facts\*\*/,
+    );
+    assert.doesNotMatch(flat, /look for the last fenced/);
+  });
+
+  it("checks the clock before anything long, and never waits past the soft deadline", () => {
+    assert.match(
+      flat,
+      /Check the time with `date -u` before you start a Workflow, a background agent, a long test run or a `ScheduleWakeup`/,
+    );
+    assert.match(flat, /Never wait past `softDeadlineAt`/);
+    assert.match(flat, /Don't start a Workflow with less than about 20 minutes left/);
+    // date is not pnpm or git, so the Bash allowlist must name it.
+    assert.match(flat, /`git log`, and `date -u` \(see \*\*Time budget\*\*\)/);
+  });
+
+  it("commits wip locally, unpushed, through the hooks", () => {
+    assert.match(flat, /commit what you have locally as `chore\(wip\): <what>` and don't push it/);
+    assert.match(flat, /never use `--no-verify`/);
+    // commitlint (config-conventional) rejects a `wip` type in the commit-msg hook.
+    assert.doesNotMatch(prompt, /`wip\(/);
+  });
+
+  it("stops at the soft deadline with action=incomplete", () => {
+    assert.match(flat, /end with `issue=<n> action=incomplete pr=<url\|->`/);
+    assert.match(flat, /`action=incomplete` — you reached `softDeadlineAt` with work left/);
+    assert.match(
+      flat,
+      /Not for work you can't finish for any other reason: that is `action=blocked`/,
+    );
+    assert.match(flat, /With `action=incomplete`, the PR's URL when one exists, else `-`/);
+  });
+
+  it("starts a fresh run by looking at what an earlier attempt left", () => {
+    assert.match(
+      flat,
+      /an earlier attempt on this card that ran out of time may have left `chore\(wip\)` commits it never pushed/,
+    );
+    assert.match(
+      flat,
+      /before you change anything, run `git status` and `git log --oneline origin\/main\.\.HEAD`/,
+    );
+    assert.doesNotMatch(flat, /On a fresh implementation it is branched from `origin\/main`;/);
+  });
+});
+
+describe("resume prompt (ADR-0084)", () => {
+  const resumePath = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "factory-implement-resume-prompt.md",
+  );
+  const resume = readFileSync(resumePath, "utf8");
+  const rflat = resume.replace(/\s+/g, " ");
+
+  it("says why the session stopped and that waited-on work is gone", () => {
+    assert.match(
+      rflat,
+      /bash killed it at the wall-clock cap, or you ended it yourself with `action=incomplete`/,
+    );
+    assert.match(rflat, /any Workflow or background agent you were waiting on is gone/);
+  });
+
+  it("keeps every original rule and bundle in force", () => {
+    assert.match(rflat, /Everything in your original instructions still applies/);
+    assert.match(rflat, /the tools and the \*\*Refuse\*\* list/);
+    assert.match(rflat, /Reply files you already wrote to `bundle\.replyDir` are still there/);
+  });
+
+  it("points at the new deadlines and the time budget", () => {
+    assert.match(
+      rflat,
+      /The \*\*Run-time facts\*\* block below has the new `softDeadlineAt` and `hardDeadlineAt`/,
+    );
+    // The section it names must exist in the main prompt.
+    assert.match(prompt, /^## Time budget$/m);
+  });
+
+  it("checks the worktree before trusting memory, and re-runs what was cut off", () => {
+    assert.match(rflat, /Run `git status` and `git log --oneline origin\/main\.\.HEAD`/);
+    assert.match(rflat, /Re-run anything that was interrupted/);
+    assert.match(
+      rflat,
+      /Don't restart an unfinished Workflow or background agent unless more than about 20 minutes are left/,
+    );
+  });
+
+  it("uses the same directive line, incomplete included, and says there is no second resume", () => {
+    assert.match(
+      resume,
+      /issue=<n> action=<implemented\|noop\|declined\|blocked\|incomplete> pr=<url\|->/,
+    );
+    assert.match(rflat, /Bash will not resume this session again/);
+    assert.match(rflat, /check that `git rev-parse HEAD` equals the PR's `headRefOid`/);
   });
 });

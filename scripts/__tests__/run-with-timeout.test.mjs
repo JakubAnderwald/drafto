@@ -126,6 +126,36 @@ describe("runWithTimeout (mocked spawn)", () => {
     assert.equal(result.timedOut, true);
   });
 
+  it("takes the grace window from CLAUDE_CALL_KILL_GRACE_SEC when none is passed", async () => {
+    // --implement sets it to 30 s (ADR-0084) so claude can record the killed
+    // tool call before the SIGKILL. Here 1 s: SIGTERM at the cap, no SIGKILL
+    // half a second later, SIGKILL once the second has passed.
+    const saved = process.env.CLAUDE_CALL_KILL_GRACE_SEC;
+    process.env.CLAUDE_CALL_KILL_GRACE_SEC = "1";
+    try {
+      const scenario = { spawnCalls: [], children: [] };
+      const promise = lib.runWithTimeout({
+        command: "claude",
+        timeoutMs: 100,
+        spawn: makeSpawn(scenario),
+      });
+      setTimeout(() => {
+        const c = scenario.children[0];
+        assert.deepEqual(c.killSignals, ["SIGTERM"], "still inside the 1 s grace window");
+      }, 600);
+      setTimeout(() => {
+        const c = scenario.children[0];
+        assert.deepEqual(c.killSignals, ["SIGTERM", "SIGKILL"]);
+        c.emit("exit", null, "SIGKILL");
+      }, 1500);
+      const result = await promise;
+      assert.equal(result.exitCode, 124);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CALL_KILL_GRACE_SEC;
+      else process.env.CLAUDE_CALL_KILL_GRACE_SEC = saved;
+    }
+  });
+
   it("returns 127 when spawn itself fails (e.g. ENOENT)", async () => {
     const scenario = { spawnCalls: [], children: [] };
     const promise = lib.runWithTimeout({
@@ -156,5 +186,24 @@ describe("runWithTimeout (mocked spawn)", () => {
     await promise;
     assert.equal(scenario.spawnCalls[0].cmd, "pnpm");
     assert.deepEqual(scenario.spawnCalls[0].args, ["install", "--frozen-lockfile", "--offline"]);
+  });
+});
+
+describe("resolveKillGraceMs (pure)", () => {
+  it("defaults to 5 s when CLAUDE_CALL_KILL_GRACE_SEC is unset or empty", () => {
+    assert.equal(lib.resolveKillGraceMs({}), 5000);
+    assert.equal(lib.resolveKillGraceMs({ CLAUDE_CALL_KILL_GRACE_SEC: "" }), 5000);
+    assert.equal(lib.KILL_GRACE_MS, 5000);
+  });
+
+  it("reads whole seconds", () => {
+    assert.equal(lib.resolveKillGraceMs({ CLAUDE_CALL_KILL_GRACE_SEC: "30" }), 30000);
+    assert.equal(lib.resolveKillGraceMs({ CLAUDE_CALL_KILL_GRACE_SEC: " 7 " }), 7000);
+  });
+
+  it("falls back to 5 s on anything but a positive integer", () => {
+    for (const raw of ["0", "-1", "1.5", "abc", "08", "30s"]) {
+      assert.equal(lib.resolveKillGraceMs({ CLAUDE_CALL_KILL_GRACE_SEC: raw }), 5000, raw);
+    }
   });
 });

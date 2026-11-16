@@ -15,7 +15,8 @@
 // Behaviour:
 //   - On normal child exit: propagate the child's exit code unchanged.
 //   - On wall-time cap (CLAUDE_CALL_TIMEOUT_SEC, default 180): SIGTERM the
-//     child, escalate to SIGKILL after 5 s, and exit 124 (matches `timeout(1)`).
+//     child, escalate to SIGKILL after CLAUDE_CALL_KILL_GRACE_SEC (default 5 s;
+//     see run-with-timeout.mjs), and exit 124 (matches `timeout(1)`).
 //   - All argv after the script name is forwarded verbatim to `claude`.
 //
 // stdio is `inherit`ed so the bash caller's existing redirects keep working.

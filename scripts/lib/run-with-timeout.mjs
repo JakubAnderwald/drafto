@@ -16,7 +16,11 @@
 //   - Normal child exit: propagate the child's exit code unchanged.
 //   - Wall-time cap (timeoutMs): SIGTERM the child, escalate to SIGKILL after a
 //     grace window, and resolve exit code 124 (matches coreutils `timeout(1)`
-//     so a bash caller can branch on it).
+//     so a bash caller can branch on it). The grace window is 5 s unless the
+//     env sets CLAUDE_CALL_KILL_GRACE_SEC: --implement gives claude 30 s
+//     (FACTORY_IMPLEMENT_TERM_GRACE_SEC), so it can write the interrupted tool
+//     call to its transcript before the SIGKILL and the session can be resumed
+//     (ADR-0084).
 //   - spawn() failure (e.g. ENOENT): resolve exit code 127.
 //
 // stdio is `inherit`ed so the caller's existing redirects keep working.
@@ -30,6 +34,16 @@ export const TIMEOUT_EXIT_CODE = 124;
 export const SPAWN_FAILURE_EXIT_CODE = 127;
 export const USAGE_EXIT_CODE = 2;
 
+// Pure: the SIGTERM → SIGKILL grace window from CLAUDE_CALL_KILL_GRACE_SEC
+// (whole seconds), or KILL_GRACE_MS when it is unset or not a positive integer.
+// It is read wherever runWithTimeout is not given one, so the bash caller sets
+// it for one call with an inline env prefix.
+export function resolveKillGraceMs(env = process.env) {
+  const raw = env.CLAUDE_CALL_KILL_GRACE_SEC;
+  if (raw == null || !/^[1-9][0-9]*$/.test(String(raw).trim())) return KILL_GRACE_MS;
+  return Number.parseInt(String(raw).trim(), 10) * 1000;
+}
+
 // Core: spawn `command` with `args`, kill it after `timeoutMs`, return a
 // promise resolving to {exitCode, timedOut, signal}. exitCode is the raw child
 // exit code on normal exit; on timeout it's TIMEOUT_EXIT_CODE (124). Tests
@@ -38,7 +52,7 @@ export function runWithTimeout({
   command,
   args = [],
   timeoutMs,
-  killGraceMs = KILL_GRACE_MS,
+  killGraceMs = resolveKillGraceMs(),
   label = "run-with-timeout",
   spawn = nodeSpawn,
 } = {}) {

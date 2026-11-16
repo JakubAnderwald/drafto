@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import {
   projectSlugForCwd,
   findLatestTranscript,
+  findTranscriptById,
+  projectsDirFor,
   detectSessionLimit,
   parseResetTime,
 } from "../lib/session-limit.mjs";
@@ -399,5 +401,148 @@ describe("findLatestTranscript + CLI", () => {
       assert.equal(out.source, "fallback");
       assert.equal(out.resetAt, "2026-07-21T09:30:00.000Z");
     });
+  });
+});
+
+// ADR-0084: --implement names its claude session (--session-id / --resume), so
+// the limit check reads that session's own transcript instead of guessing by
+// mtime, and verify-lane's lookup by id moved here.
+describe("findTranscriptById + check --session-id", () => {
+  const SESSION = "11111111-2222-4333-8444-555555555555";
+  const OTHER = "99999999-8888-4777-8666-555555555555";
+  const cwd = "/Volumes/x/worktrees/factory-issue-7";
+
+  function withProjectsDir(fn) {
+    const base = mkdtempSync(path.join(tmpdir(), "session-limit-id-"));
+    try {
+      return fn(base);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+
+  function put(base, dirName, name, content, mtime) {
+    const dir = path.join(base, dirName);
+    mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, name);
+    writeFileSync(p, content);
+    if (mtime) utimesSync(p, mtime, mtime);
+    return p;
+  }
+
+  function runCli(args) {
+    return spawnSync("node", [CLI, ...args], { encoding: "utf8" });
+  }
+
+  const limit = (ts) => assistantText(LIMIT_TEXT, { isApiErrorMessage: true, timestamp: ts });
+
+  it("finds <id>.jsonl in any project dir, and nothing for a non-id", () => {
+    withProjectsDir((base) => {
+      put(base, "-elsewhere", `${OTHER}.jsonl`, "{}");
+      const p = put(base, "-private-var-real-path", `${SESSION}.jsonl`, "{}");
+      assert.equal(findTranscriptById(SESSION, { projectsDir: base }), p);
+      assert.equal(findTranscriptById("not-a-uuid", { projectsDir: base }), null);
+      assert.equal(findTranscriptById(SESSION, { projectsDir: path.join(base, "none") }), null);
+      assert.equal(
+        findTranscriptById("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", { projectsDir: base }),
+        null,
+      );
+    });
+  });
+
+  it("defaults to $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects", () => {
+    assert.equal(projectsDirFor({ CLAUDE_CONFIG_DIR: "/cfg", HOME: "/h" }), "/cfg/projects");
+    assert.equal(projectsDirFor({ HOME: "/h" }), "/h/.claude/projects");
+    withProjectsDir((base) => {
+      const p = put(base, path.join(".claude", "projects", "-x"), `${SESSION}.jsonl`, "{}");
+      assert.equal(findTranscriptById(SESSION, { env: { HOME: base } }), p);
+    });
+  });
+
+  it("check reads the named session even when a newer transcript in the cwd says otherwise", () => {
+    withProjectsDir((base) => {
+      const slug = projectSlugForCwd(cwd);
+      put(
+        base,
+        slug,
+        `${SESSION}.jsonl`,
+        limit("2026-07-21T07:11:15Z"),
+        new Date("2026-07-21T07:12:00Z"),
+      );
+      put(
+        base,
+        slug,
+        `${OTHER}.jsonl`,
+        assistantText("finished cleanly", { timestamp: "2026-07-21T07:30:00Z" }),
+        new Date("2026-07-21T07:30:00Z"),
+      );
+      const common = [
+        "check",
+        "--cwd",
+        cwd,
+        "--projects-dir",
+        base,
+        "--now",
+        "2026-07-21T05:41:00Z",
+      ];
+      // Without an id the newest (clean) transcript wins: not limited.
+      assert.equal(runCli(common).status, 1);
+      const named = runCli([...common, "--session-id", SESSION]);
+      assert.equal(named.status, 0, named.stderr);
+      const out = JSON.parse(named.stdout);
+      assert.equal(out.transcript, path.join(base, slug, `${SESSION}.jsonl`));
+      // --now is the clock the reset is computed against.
+      assert.equal(out.resetAt, "2026-07-21T08:32:00.000Z");
+      // And the other way round: the named session ended cleanly.
+      assert.equal(runCli([...common, "--session-id", OTHER]).status, 1);
+    });
+  });
+
+  it("check falls back to the newest transcript in the cwd when the id has none", () => {
+    withProjectsDir((base) => {
+      put(
+        base,
+        projectSlugForCwd(cwd),
+        `${OTHER}.jsonl`,
+        limit("2026-07-21T07:11:15Z"),
+        new Date("2026-07-21T07:12:00Z"),
+      );
+      const r = runCli([
+        "check",
+        "--cwd",
+        cwd,
+        "--projects-dir",
+        base,
+        "--session-id",
+        SESSION,
+        "--since",
+        "2026-07-21T07:00:00Z",
+        "--now",
+        "2026-07-21T05:41:00Z",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      // …and --since still keeps a stale one out.
+      const stale = runCli([
+        "check",
+        "--cwd",
+        cwd,
+        "--projects-dir",
+        base,
+        "--session-id",
+        SESSION,
+        "--since",
+        "2026-07-21T09:00:00Z",
+      ]);
+      assert.equal(stale.status, 1);
+    });
+  });
+
+  it("check fails open on a malformed --session-id or --now", () => {
+    const bad = runCli(["check", "--cwd", cwd, "--session-id", "nope"]);
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /invalid --session-id/);
+    const now = runCli(["check", "--cwd", cwd, "--now", "nope"]);
+    assert.equal(now.status, 1);
+    assert.match(now.stderr, /invalid --now/);
   });
 });

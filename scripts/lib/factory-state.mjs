@@ -245,6 +245,17 @@ function emptyIssue() {
     planProbeQueuedAt: null, // when it was pushed (ISO): the anchor for the preview wait and the deadline
     planProbeAttempts: null, // "<probe sha>:<count>": browser runner sessions spent on it
     planProbeFoldAttempts: null, // "<probe id>:<count>": replans run to fold its result into the plan
+    // --implement session resume (ADR-0084). implementSessionId is the claude
+    // session of the latest implement run, for finding its transcript. The
+    // implementResume* keys are one record: a run that hit the wall cap, or
+    // stopped with action=incomplete, left a session the next run may resume.
+    // Every implement start clears it, so a timeout chain resumes at most once.
+    implementSessionId: null, // claude session id of the latest --implement run
+    implementResumeSession: null, // session id the next run may resume
+    implementResumeHead: null, // worktree HEAD when that run stopped
+    implementResumeKey: null, // "plan:<commentId>|rev:<sorted revision comment ids>"
+    implementResumePreHead: null, // the PR head before that run (null: it had no PR)
+    implementResumeAt: null, // when the record was made (ISO): FACTORY_IMPLEMENT_RESUME_MAX_AGE_MIN counts from it
   };
 }
 
@@ -601,6 +612,18 @@ export const PLAN_PROBE_ISSUE_FIELDS = Object.freeze([
   "planProbeFoldAttempts",
 ]);
 
+// The --implement resume record (ADR-0084), documented in emptyIssue. One list
+// feeds the setter allowlist and clearImplementResume, so a key added later
+// can't be writable yet survive a clear.
+export const IMPLEMENT_RESUME_ISSUE_FIELDS = Object.freeze([
+  "implementSessionId",
+  "implementResumeSession",
+  "implementResumeHead",
+  "implementResumeKey",
+  "implementResumePreHead",
+  "implementResumeAt",
+]);
+
 // Allowed issue fields a CLI caller may mutate. Restricting the set keeps
 // bash callers from accidentally polluting the schema with typo'd field
 // names (e.g. `lastPanAt`).
@@ -680,6 +703,10 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // Plan-stage browser probe keys. A rejected planProbeStatus would leave a
   // probe queued (and its branch live) or replan every tick to fold it in.
   ...PLAN_PROBE_ISSUE_FIELDS,
+  // --implement resume record (ADR-0084). Written through
+  // factory:implement-resume-set / -clear, which keep the record whole; the
+  // generic setter is the operator's escape hatch (e.g. clearing one by hand).
+  ...IMPLEMENT_RESUME_ISSUE_FIELDS,
 ]);
 
 export function setIssueField(state, issueNumber, field, value) {
@@ -694,6 +721,62 @@ export function setIssueField(state, issueNumber, field, value) {
     issue[field] = String(value);
   }
   return issue[field];
+}
+
+// ── --implement session resume (ADR-0084) ───────────────────────────────────
+//
+// A run that hit the wall cap, or stopped with action=incomplete, records its
+// session here; the next run resumes it only when implement-resume.mjs's
+// decideResume says that is safe. The record is all-or-nothing: set writes
+// every key, clear nulls every key, so a half-written record can't be resumed.
+
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+export function setImplementResume(state, issueNumber, { session, head, key, preHead, now }) {
+  if (!SESSION_ID_RE.test(String(session ?? ""))) {
+    throw new Error(`setImplementResume: invalid session id ${JSON.stringify(session)}`);
+  }
+  if (!SHA_RE.test(String(head ?? ""))) {
+    throw new Error(`setImplementResume: invalid head ${JSON.stringify(head)}`);
+  }
+  if (typeof key !== "string" || key.trim() === "") {
+    throw new Error("setImplementResume: empty task key");
+  }
+  const pre = preHead == null ? "" : String(preHead);
+  if (pre !== "" && !SHA_RE.test(pre)) {
+    throw new Error(`setImplementResume: invalid pre-head ${JSON.stringify(preHead)}`);
+  }
+  if (Number.isNaN(Date.parse(String(now ?? "")))) {
+    throw new Error(`setImplementResume: invalid now ${JSON.stringify(now)}`);
+  }
+  const issue = getIssue(state, issueNumber);
+  issue.implementResumeSession = String(session);
+  issue.implementResumeHead = String(head);
+  issue.implementResumeKey = key;
+  issue.implementResumePreHead = pre === "" ? null : pre;
+  issue.implementResumeAt = new Date(Date.parse(now)).toISOString();
+  return Object.fromEntries(
+    IMPLEMENT_RESUME_ISSUE_FIELDS.filter((f) => f !== "implementSessionId").map((f) => [
+      f,
+      issue[f],
+    ]),
+  );
+}
+
+// Forget the resume record (the five implementResume* keys). With <sessionId>,
+// also note it as the session of the run now starting (implementSessionId).
+// Returns the keys that held a value.
+export function clearImplementResume(state, issueNumber, { sessionId = null } = {}) {
+  if (sessionId != null && !SESSION_ID_RE.test(String(sessionId))) {
+    throw new Error(`clearImplementResume: invalid session id ${JSON.stringify(sessionId)}`);
+  }
+  const issue = getIssue(state, issueNumber);
+  const keys = IMPLEMENT_RESUME_ISSUE_FIELDS.filter((f) => f !== "implementSessionId");
+  const cleared = keys.filter((f) => issue[f] != null && issue[f] !== "");
+  for (const f of keys) issue[f] = null;
+  if (sessionId != null) issue.implementSessionId = String(sessionId);
+  return cleared;
 }
 
 // ── CodeRabbit CLI lane ledger (ADR-0036) ───────────────────────────────────

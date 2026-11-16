@@ -42,7 +42,6 @@ import {
   classifyRun,
   countToolUses,
   curlConfigText,
-  findTranscript,
   laneEnv,
   main,
   makeRunId,
@@ -57,6 +56,8 @@ import {
   worktreePathFor,
   writeCurlConfigs,
 } from "../lib/verify-lane.mjs";
+// verify-lane reads transcripts through session-limit.mjs since ADR-0084.
+import { findTranscriptById } from "../lib/session-limit.mjs";
 import {
   attachVerifyRun,
   emptyFactoryState,
@@ -1662,10 +1663,10 @@ describe("transcripts", () => {
       path.join(dir, `${SESSION}.jsonl`),
       lines.map((l) => JSON.stringify(l)).join("\n") + "\nnot json\n",
     );
-    const p = findTranscript(SESSION, { env: { HOME: home } });
+    const p = findTranscriptById(SESSION, { env: { HOME: home } });
     assert.equal(p, path.join(dir, `${SESSION}.jsonl`));
     assert.equal(countToolUses(readFileSync(p, "utf8")), 2);
-    assert.equal(findTranscript("not-a-uuid", { env: { HOME: home } }), null);
+    assert.equal(findTranscriptById("not-a-uuid", { env: { HOME: home } }), null);
   });
 });
 
