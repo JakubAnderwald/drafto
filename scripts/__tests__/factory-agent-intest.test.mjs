@@ -11,11 +11,13 @@ import {
   statSync,
   utimesSync,
   existsSync,
+  chmodSync,
   realpathSync,
 } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { buildBody } from "../comment-intest-build.mjs";
 
 // Tests for the In Review → In Test hand-off: the stage that writes the human
 // test scenario and posts it as the In Test comment.
@@ -287,6 +289,7 @@ node() {
     *) command node "$@" ;;
   esac
 }
+${fnBody("intest_reused_builds")}
 ${fnBody("intest_handoff")}
 intest_handoff 12 34 '{}' https://drafto-x.vercel.app '' ${SHA} 'apps/web/x.ts' web '' ''
 echo "rc=$?"
@@ -1003,6 +1006,8 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
     laneStartedAgoMin = null,
     path = process.env.PATH,
     env = {},
+    extraState = {},
+    exitMtime = null,
   }) => {
     const dir = mkdtempSync(join(tmpdir(), "drafto-outcome-"));
     const stateFile = join(dir, "state.json");
@@ -1026,6 +1031,7 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
                     .toISOString()
                     .replace(/\.\d+Z$/, "Z"),
                 }),
+            ...extraState,
           },
         },
       }),
@@ -1037,12 +1043,16 @@ describe("intest_check_lane_outcomes (extracted, real bash)", () => {
       utimesSync(base, old, old);
     }
     if (exitContent !== undefined) writeFileSync(`${base}.exit`, exitContent);
+    if (exitContent !== undefined && exitMtime !== null) {
+      utimesSync(`${base}.exit`, exitMtime, exitMtime);
+    }
     for (const [name, body] of Object.entries(decoys ?? {})) writeFileSync(join(dir, name), body);
     const snippet = `
 set -uo pipefail
 eval "$(awk '/^iso_age_min\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^lane_attempt_of\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^lane_attempt_set\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
+eval "$(awk '/^lane_exit_epoch\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^kill_lane_holding_log\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 eval "$(awk '/^intest_check_lane_outcomes\(\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 log() { echo "[log] $*"; }
@@ -1496,6 +1506,65 @@ cat "$STATE_FILE"
     assert.equal(r.status, 0, r.stderr);
     rmSync(r.dir, { recursive: true, force: true });
   });
+
+  // ADR-0081: the last successful build per lane is what a later head reuses.
+  it("records a succeeded lane's commit as its last successful build", () => {
+    const finished = 1_700_000_000;
+    const r = run({
+      exitContent: "0\n",
+      exitMtime: finished,
+      extraState: { intestBetaBuilt: "desktop:old", intestBetaBuiltAt: "desktop:5" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const issue = JSON.parse(readFileSync(r.stateFile, "utf8")).issues["463"];
+    assert.equal(issue.intestBetaBuilt, "desktop:old,mobile:abc123");
+    // When it finished (its .exit's mtime): reuse stops once it is too old.
+    assert.equal(issue.intestBetaBuiltAt, `desktop:5,mobile:${finished}`);
+    assert.equal(issue.intestBetaLanes, "mobile", "still suppressed");
+    rmSync(r.dir, { recursive: true, force: true });
+    for (const [exitContent, dryRun] of [
+      ["1\n", 0],
+      [undefined, 0],
+      ["0\n", 1],
+    ]) {
+      const no = run({ exitContent, dryRun });
+      const st = JSON.parse(readFileSync(no.stateFile, "utf8")).issues["463"];
+      assert.equal(st.intestBetaBuilt ?? null, null, `${exitContent} dry=${dryRun}`);
+      rmSync(no.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a lane reused from an earlier build: it has no log for this head", () => {
+    // Without the skip, a reused lane with no log and an old dispatch stamp
+    // reads as killed before it could write, and is rebuilt.
+    const r = run({
+      exitContent: undefined,
+      writeLog: false,
+      dispatchedAgoMin: 500,
+      dryRun: 0,
+      attempts: "",
+      extraState: { intestBetaReused: "mobile:abc123" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /re-arming|left no log/);
+    assert.doesNotMatch(r.agentLog, /issue comment/);
+    const issue = JSON.parse(readFileSync(r.stateFile, "utf8")).issues["463"];
+    assert.equal(issue.intestBetaLanes, "mobile");
+    rmSync(r.dir, { recursive: true, force: true });
+  });
+
+  it("still reads the outcome of a lane dispatched for this head, whatever intestBetaReused says", () => {
+    // A lane with an attempt on record was really built here; a stale reuse
+    // entry must not hide its failure.
+    const r = run({
+      exitContent: "1\n",
+      dryRun: 0,
+      extraState: { intestBetaReused: "mobile:abc123" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /re-arming attempt 2/);
+    rmSync(r.dir, { recursive: true, force: true });
+  });
 });
 
 describe("intest_check_lane_outcomes — wiring and reporting", () => {
@@ -1712,6 +1781,863 @@ describe("In Test knobs", () => {
   });
 });
 
+// ADR-0081: a new PR head reuses a lane's last successful pre-merge beta when
+// nothing that lane builds from changed since. The real functions run in bash
+// with state-cli and dispatch-release.mjs real; gh answers the compare API from
+// canned responses, through the caller's own --jq.
+describe("beta reuse across heads (ADR-0081, real bash)", () => {
+  const OLD = "a".repeat(40);
+  const PREV = "b".repeat(40);
+  const HEAD = "c".repeat(40);
+  const STUBS = `
+logerr() { echo "$*" >> "$LOG_FILE"; }
+log() { echo "$*" >> "$LOG_FILE"; }
+gh() {
+  echo "gh $*" >> "$CALLS"
+  [[ "$1" == "api" ]] || return 0
+  local expr="" prev="" a key
+  for a in "$@"; do [[ "$prev" == "--jq" ]] && expr="$a"; prev="$a"; done
+  key="\${2##*/compare/}"
+  [[ -f "$RESP_DIR/$key.json" ]] || { echo "gh: Not Found (HTTP 404)" >&2; return 1; }
+  jq -r "$expr" < "$RESP_DIR/$key.json"
+}
+intest_beta_gate() { echo "lanes=$GATE_LANES skipped="; }
+hosted_config_gate_pr() { return 0; }
+ensure_beta_build_root() { echo "root $1" >> "$CALLS"; echo "/tmp/root-$1"; }
+claim_beta_build_root() { :; }
+release_beta_build_root() { :; }
+node() {
+  if [[ "$1" == */dispatch-release.mjs && "$2" == dispatch-premerge ]]; then
+    local only="" prev="" a
+    for a in "$@"; do [[ "$prev" == "--only" ]] && only="$a"; prev="$a"; done
+    echo "dispatch-premerge --only $only" >> "$CALLS"
+    jq -nc --arg o "$only" '{dispatched: [$o | split(",")[] | {id: ., pid: 4242}], failed: [], skipped: []}'
+    return 0
+  fi
+  command node "$@"
+}
+`;
+  const FNS = [
+    "lane_attempt_of",
+    "lane_attempt_set",
+    "lane_exit_epoch",
+    "intest_reuse_fresh",
+    "intest_reused_json",
+    "intest_beta_reuse_decide",
+    "intest_reused_valid",
+    "intest_reused_drop_stale",
+    "intest_dispatch_betas",
+  ];
+  // "mobile:<sha>,…" → the same lanes, finished <daysAgo> days ago.
+  const builtAt = (csv, daysAgo = 0.05) =>
+    csv
+      .split(",")
+      .map((p) => `${p.split(":")[0]}:${Math.floor(Date.now() / 1000 - daysAgo * 86400)}`)
+      .join(",");
+
+  // compare: {"<from>...<to>": response JSON}; exits: {"<file name>": content}.
+  function run(
+    call,
+    {
+      state = {},
+      compare = {},
+      exits = {},
+      exitTimes = {},
+      lanes = "mobile",
+      knob = "1",
+      maxDays = "60",
+      dryRun = 0,
+      ticks = 1,
+      lockState = false,
+    } = {},
+  ) {
+    const dir = mkdtempSync(join(tmpdir(), "drafto-reuse-"));
+    // Its own directory, so lockState can make every save fail.
+    const stateDir = join(dir, "st");
+    mkdirSync(stateDir);
+    const stateFile = join(stateDir, "state.json");
+    const respDir = join(dir, "resp");
+    mkdirSync(respDir);
+    // A recorded build is a fresh one unless the case says otherwise.
+    const issue =
+      state.intestBetaBuilt && !("intestBetaBuiltAt" in state)
+        ? { ...state, intestBetaBuiltAt: builtAt(state.intestBetaBuilt) }
+        : state;
+    writeFileSync(stateFile, JSON.stringify({ issues: { 463: issue } }));
+    if (lockState) chmodSync(stateDir, 0o555);
+    for (const [key, body] of Object.entries(compare)) {
+      writeFileSync(join(respDir, `${key}.json`), JSON.stringify(body));
+    }
+    for (const [name, body] of Object.entries(exits)) {
+      writeFileSync(join(dir, name), body);
+      if (exitTimes[name]) utimesSync(join(dir, name), exitTimes[name], exitTimes[name]);
+    }
+    const snippet = `
+set -euo pipefail
+${FNS.map((f) => `eval "$(awk '/^${f}\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"`).join("\n")}
+${STUBS}
+SCRIPT_DIR="${resolve(HERE, "..")}"
+STATE_FILE=${JSON.stringify(stateFile)}
+LOG_DIR=${JSON.stringify(dir)}
+LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
+CALLS=${JSON.stringify(join(dir, "calls"))}
+RESP_DIR=${JSON.stringify(respDir)}
+GATE_LANES=${JSON.stringify(lanes)}
+DRY_RUN=${dryRun}
+REPO_ROOT=${JSON.stringify(dir)}
+FACTORY_INTEST_BETA_REUSE=${JSON.stringify(knob)}
+FACTORY_INTEST_BETA_REUSE_MAX_DAYS=${JSON.stringify(maxDays)}
+touch "$CALLS" "$LOG_FILE"
+state() { command node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 463 --state-file "$STATE_FILE"; }
+for _tick in $(seq ${ticks}); do
+${call}
+done
+`;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
+    const out = {
+      status: r.status,
+      stdout: r.stdout,
+      stderr: r.stderr,
+      log: read("agent.log"),
+      calls: read("calls"),
+      issue: JSON.parse(readFileSync(stateFile, "utf8")).issues["463"],
+    };
+    chmodSync(stateDir, 0o755);
+    rmSync(dir, { recursive: true, force: true });
+    assert.equal(out.status, 0, `${out.stderr}\n--- log ---\n${out.log}`);
+    return out;
+  }
+  const decide = (lanes = "mobile") =>
+    `echo "RESULT=$(intest_beta_reuse_decide 463 ${HEAD} ${lanes} "$(state)")"`;
+  const result = (r) => r.stdout.match(/^RESULT=(.*)$/m)?.[1];
+  const ahead = (...files) => ({
+    status: "ahead",
+    files: files.map((f) => (typeof f === "string" ? { filename: f } : f)),
+  });
+  const compares = (r) => r.calls.split("\n").filter((l) => /^gh api .*\/compare\//.test(l));
+
+  describe("intest_beta_reuse_decide", () => {
+    it("reuses a lane when nothing it builds from changed, and records the decision", () => {
+      const r = run(decide(), {
+        state: { intestBetaBuilt: `mobile:${OLD}`, intestBetaSha: PREV, intestBetaLanes: "mobile" },
+        compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md", "apps/web/b.ts", "supabase/x.sql") },
+      });
+      assert.equal(result(r), `mobile:${OLD}`);
+      assert.match(r.log, new RegExp(`beta lane mobile reused from ${OLD.slice(0, 12)}`));
+      assert.equal(r.issue.intestBetaSha, HEAD);
+      assert.equal(r.issue.intestBetaReused, `mobile:${OLD}`);
+      // The previous head's lanes and budget go with it.
+      assert.equal(r.issue.intestBetaLanes ?? null, null);
+      assert.equal(r.issue.intestBetaAttempts ?? null, null);
+    });
+
+    it("rebuilds on a change to the lane's inputs, and records that too", () => {
+      const r = run(decide(), {
+        state: { intestBetaBuilt: `mobile:${OLD}`, intestBetaSha: PREV },
+        compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md", "pnpm-lock.yaml") },
+      });
+      assert.equal(result(r), "");
+      assert.match(r.log, /beta lane mobile needs a new build .*\(rebuild pnpm-lock\.yaml\)/);
+      assert.equal(r.issue.intestBetaSha, HEAD, "decided once for this head");
+      assert.equal(r.issue.intestBetaReused ?? null, null);
+    });
+
+    it("counts a file renamed out of the lane's app", () => {
+      const r = run(decide(), {
+        state: { intestBetaBuilt: `mobile:${OLD}` },
+        compare: {
+          [`${OLD}...${HEAD}`]: ahead({
+            filename: "docs/old-screen.md",
+            previous_filename: "apps/mobile/src/old-screen.md.tsx",
+          }),
+        },
+      });
+      assert.equal(result(r), "");
+    });
+
+    it("falls back to a rebuild on a rebase, too many files or an API error", () => {
+      const many = ahead(...Array.from({ length: 300 }, (_, i) => `docs/${i}.md`));
+      for (const [name, compare, why] of [
+        ["diverged", { [`${OLD}...${HEAD}`]: { status: "diverged", files: [] } }, /'diverged'/],
+        ["behind", { [`${OLD}...${HEAD}`]: { status: "behind", files: [] } }, /'behind'/],
+        ["300 files", { [`${OLD}...${HEAD}`]: many }, /with 300 file\(s\)/],
+        ["404", {}, /couldn't compare/],
+      ]) {
+        const r = run(decide(), { state: { intestBetaBuilt: `mobile:${OLD}` }, compare });
+        assert.equal(result(r), "", name);
+        assert.match(r.log, why, name);
+        assert.equal(r.issue.intestBetaSha, HEAD, `${name}: decided once`);
+      }
+      // 299 docs files are still a reuse.
+      const ok = run(decide(), {
+        state: { intestBetaBuilt: `mobile:${OLD}` },
+        compare: {
+          [`${OLD}...${HEAD}`]: ahead(...Array.from({ length: 299 }, (_, i) => `docs/${i}.md`)),
+        },
+      });
+      assert.equal(result(ok), `mobile:${OLD}`);
+    });
+
+    it("accepts an identical tree, and a build of the head itself without calling the API", () => {
+      const r = run(decide(), {
+        state: { intestBetaBuilt: `mobile:${OLD}` },
+        compare: { [`${OLD}...${HEAD}`]: { status: "identical", files: [] } },
+      });
+      assert.equal(result(r), `mobile:${OLD}`);
+      const self = run(decide(), {
+        state: { intestBetaBuilt: `mobile:${HEAD}`, intestBetaSha: PREV },
+      });
+      assert.equal(result(self), `mobile:${HEAD}`);
+      assert.deepEqual(compares(self), []);
+    });
+
+    it("decides each lane on its own", () => {
+      const r = run(decide("mobile,desktop"), {
+        state: { intestBetaBuilt: `mobile:${OLD},desktop:${PREV}` },
+        compare: {
+          [`${OLD}...${HEAD}`]: ahead("apps/desktop/src/a.ts"),
+          [`${PREV}...${HEAD}`]: ahead("apps/desktop/src/a.ts"),
+        },
+      });
+      assert.equal(result(r), `mobile:${OLD}`);
+      assert.match(r.log, /beta lane desktop needs a new build .*apps\/desktop\/src\/a\.ts/);
+    });
+
+    it("adopts the previous head's lane that finished after the last outcome check", () => {
+      const finished = Math.floor(Date.now() / 1000) - 3600;
+      const r = run(decide(), {
+        state: {
+          intestBetaSha: PREV,
+          intestBetaLanes: "mobile",
+          intestBetaAttempts: "mobile:2",
+        },
+        exits: { [`beta-lane-mobile-463-${PREV.slice(0, 12)}-a2.log.exit`]: "0\n" },
+        exitTimes: { [`beta-lane-mobile-463-${PREV.slice(0, 12)}-a2.log.exit`]: finished },
+        compare: { [`${PREV}...${HEAD}`]: ahead("docs/a.md") },
+      });
+      assert.equal(result(r), `mobile:${PREV}`);
+      assert.equal(r.issue.intestBetaBuilt, `mobile:${PREV}`);
+      assert.equal(r.issue.intestBetaBuiltAt, `mobile:${finished}`, "when its .exit was written");
+      // A failed or unfinished one is not a build.
+      for (const exits of [
+        { [`beta-lane-mobile-463-${PREV.slice(0, 12)}-a2.log.exit`]: "1\n" },
+        {},
+      ]) {
+        const no = run(decide(), {
+          state: { intestBetaSha: PREV, intestBetaLanes: "mobile", intestBetaAttempts: "mobile:2" },
+          exits,
+        });
+        assert.equal(result(no), "");
+        assert.equal(no.issue.intestBetaBuilt ?? null, null);
+        assert.deepEqual(compares(no), []);
+        assert.equal(no.issue.intestBetaSha, PREV, "nothing compared, nothing recorded");
+      }
+    });
+
+    it("does nothing without a successful build, with the knob off, or for a bad SHA", () => {
+      for (const [opts, call] of [
+        [{ state: {} }, decide()],
+        [{ state: { intestBetaBuilt: `mobile:${OLD}` }, knob: "0" }, decide()],
+        [{ state: { intestBetaBuilt: `desktop:${OLD}` } }, decide()],
+        [
+          { state: { intestBetaBuilt: `mobile:${OLD}` } },
+          `echo "RESULT=$(intest_beta_reuse_decide 463 abc mobile "$(state)")"`,
+        ],
+      ]) {
+        const r = run(call, opts);
+        assert.equal(result(r), "", JSON.stringify(opts));
+        assert.deepEqual(compares(r), [], JSON.stringify(opts));
+        assert.equal(r.issue.intestBetaSha ?? null, null, JSON.stringify(opts));
+      }
+    });
+
+    it("never reuses a build past FACTORY_INTEST_BETA_REUSE_MAX_DAYS, or of unknown age", () => {
+      const docsOnly = { [`${OLD}...${HEAD}`]: ahead("docs/a.md") };
+      for (const [why, opts] of [
+        [
+          "61 days old",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 61),
+            },
+          },
+        ],
+        ["unknown age", { state: { intestBetaBuilt: `mobile:${OLD}`, intestBetaBuiltAt: null } }],
+        [
+          "another lane's age",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`desktop:${OLD}`),
+            },
+          },
+        ],
+        [
+          "8 days old, limit 7",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 8),
+            },
+            maxDays: "7",
+          },
+        ],
+      ]) {
+        const r = run(decide(), { ...opts, compare: docsOnly });
+        assert.equal(result(r), "", why);
+        assert.match(
+          r.log,
+          /beta from aaaaaaaaaaaa is over \d+ days old, or of unknown age; building it again/,
+          why,
+        );
+        assert.deepEqual(compares(r), [], `${why}: no API call for a build it won't reuse`);
+        assert.equal(r.issue.intestBetaSha, HEAD, `${why}: decided once`);
+      }
+      for (const [why, opts] of [
+        [
+          "59 days old",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 59),
+            },
+          },
+        ],
+        [
+          "6 days old, limit 7",
+          {
+            state: {
+              intestBetaBuilt: `mobile:${OLD}`,
+              intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 6),
+            },
+            maxDays: "7",
+          },
+        ],
+      ]) {
+        assert.equal(result(run(decide(), { ...opts, compare: docsOnly })), `mobile:${OLD}`, why);
+      }
+    });
+
+    it("records nothing, and says so, when its one state write fails", () => {
+      const r = run(
+        `if intest_beta_reuse_decide 463 ${HEAD} mobile "$(state)" >/dev/null; then echo RC=0; else echo RC=1; fi`,
+        {
+          state: {
+            intestBetaBuilt: `mobile:${OLD}`,
+            intestBetaSha: PREV,
+            intestBetaLanes: "mobile",
+          },
+          compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md") },
+          lockState: true,
+        },
+      );
+      assert.match(r.stdout, /^RC=1$/m);
+      assert.match(
+        r.log,
+        /couldn't record the beta reuse decision for cccccccccccc; dispatching nothing this tick/,
+      );
+      // All or nothing: the previous head's record is untouched.
+      assert.equal(r.issue.intestBetaSha, PREV);
+      assert.equal(r.issue.intestBetaLanes, "mobile");
+      assert.equal(r.issue.intestBetaReused ?? null, null);
+    });
+
+    it("writes nothing under --dry-run", () => {
+      const r = run(decide(), {
+        state: { intestBetaBuilt: `mobile:${OLD}`, intestBetaSha: PREV },
+        compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md") },
+        dryRun: 1,
+      });
+      assert.equal(result(r), `mobile:${OLD}`);
+      assert.equal(r.issue.intestBetaSha, PREV);
+      assert.equal(r.issue.intestBetaReused ?? null, null);
+    });
+  });
+
+  describe("intest_dispatch_betas", () => {
+    const dispatch = `echo "OUT=$(intest_dispatch_betas 463 802 ${HEAD} '{"mobile":true,"desktop":true}')"`;
+    const out = (r) => [...r.stdout.matchAll(/^OUT=(.*)$/gm)].map((m) => JSON.parse(m[1]));
+
+    it("builds nothing when every lane is reused, and asks the API once per head", () => {
+      const r = run(dispatch, {
+        state: { intestBetaBuilt: `mobile:${OLD}`, intestBetaSha: PREV, intestBetaLanes: "mobile" },
+        compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md") },
+        ticks: 3,
+      });
+      const outs = out(r);
+      assert.equal(outs.length, 3);
+      for (const o of outs) {
+        assert.deepEqual(o.dispatched, []);
+        assert.deepEqual(o.reused, [{ id: "mobile", fromSha: OLD, builds: [] }]);
+      }
+      assert.equal(compares(r).length, 1, "later ticks read the decision back");
+      assert.doesNotMatch(r.calls, /^root |dispatch-premerge/m);
+      assert.equal(r.issue.intestBetaReused, `mobile:${OLD}`);
+      assert.equal(r.issue.intestBetaLanes ?? null, null);
+    });
+
+    it("dispatches only the lane that changed, and keeps the reuse on record", () => {
+      const r = run(dispatch, {
+        lanes: "mobile,desktop",
+        state: { intestBetaBuilt: `mobile:${OLD},desktop:${OLD}`, intestBetaSha: PREV },
+        compare: { [`${OLD}...${HEAD}`]: ahead("apps/desktop/src/a.ts") },
+        ticks: 2,
+      });
+      const [first, second] = out(r);
+      assert.deepEqual(
+        first.dispatched.map((d) => d.id),
+        ["desktop"],
+      );
+      assert.deepEqual(
+        first.reused.map((d) => d.id),
+        ["mobile"],
+      );
+      assert.match(r.calls, /^dispatch-premerge --only desktop$/m);
+      assert.equal((r.calls.match(/dispatch-premerge/g) || []).length, 1);
+      assert.deepEqual(second.dispatched, [{ id: "desktop", alreadyRunning: true }]);
+      assert.deepEqual(
+        second.reused.map((d) => d.id),
+        ["mobile"],
+      );
+      assert.equal(r.issue.intestBetaLanes, "desktop");
+      assert.equal(r.issue.intestBetaReused, `mobile:${OLD}`);
+      assert.equal(r.issue.intestBetaSha, HEAD);
+      assert.equal(compares(r).length, 1);
+    });
+
+    it("rebuilds as before with the knob off, and clears a stale reuse", () => {
+      const r = run(dispatch, {
+        knob: "0",
+        state: {
+          intestBetaBuilt: `mobile:${OLD}`,
+          intestBetaSha: HEAD,
+          intestBetaReused: `mobile:${OLD}`,
+        },
+        compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md") },
+      });
+      const [o] = out(r);
+      assert.deepEqual(
+        o.dispatched.map((d) => d.id),
+        ["mobile"],
+      );
+      assert.deepEqual(o.reused, []);
+      assert.deepEqual(compares(r), []);
+      assert.equal(r.issue.intestBetaReused ?? null, null);
+      assert.equal(r.issue.intestBetaLanes, "mobile");
+    });
+
+    it("starts nothing when the reuse decision couldn't be recorded", () => {
+      const r = run(dispatch, {
+        lanes: "mobile,desktop",
+        state: { intestBetaBuilt: `mobile:${OLD}`, intestBetaSha: PREV },
+        compare: { [`${OLD}...${HEAD}`]: ahead("docs/a.md") },
+        lockState: true,
+      });
+      const [o] = out(r);
+      assert.deepEqual(o.dispatched, []);
+      assert.deepEqual(
+        o.reused.map((d) => d.id),
+        ["mobile"],
+      );
+      assert.deepEqual(o.skipped, [
+        { id: "desktop", reason: "state-write-failed, retrying next tick" },
+      ]);
+      assert.doesNotMatch(r.calls, /^root |dispatch-premerge/m);
+      assert.equal(r.issue.intestBetaSha, PREV);
+    });
+
+    it("rebuilds a reused lane once its build grows too old, or stops being the last one", () => {
+      for (const [why, state] of [
+        [
+          "61 days old",
+          { intestBetaBuilt: `mobile:${OLD}`, intestBetaBuiltAt: builtAt(`mobile:${OLD}`, 61) },
+        ],
+        ["a newer build since", { intestBetaBuilt: `mobile:${PREV}` }],
+      ]) {
+        const r = run(dispatch, {
+          state: {
+            ...state,
+            intestBetaSha: HEAD,
+            intestBetaReused: `mobile:${OLD}`,
+            intestBetaLanes: "",
+          },
+        });
+        const [o] = out(r);
+        assert.deepEqual(
+          o.dispatched.map((d) => d.id),
+          ["mobile"],
+          why,
+        );
+        assert.deepEqual(o.reused, [], why);
+        assert.match(
+          r.log,
+          /reused mobile beta from aaaaaaaaaaaa is over 60 days old or no longer its last build/,
+          why,
+        );
+        assert.equal(r.issue.intestBetaReused ?? null, null, why);
+        assert.equal(r.issue.intestBetaLanes, "mobile", why);
+      }
+      // Still fresh: kept, nothing built.
+      const kept = run(dispatch, {
+        state: {
+          intestBetaBuilt: `mobile:${OLD}`,
+          intestBetaSha: HEAD,
+          intestBetaReused: `mobile:${OLD}`,
+          intestBetaLanes: "",
+        },
+      });
+      assert.deepEqual(
+        out(kept)[0].reused.map((d) => d.id),
+        ["mobile"],
+      );
+      assert.doesNotMatch(kept.calls, /dispatch-premerge/);
+    });
+
+    it("reports a reused lane only while the gate still lets it through", () => {
+      const r = run(dispatch, {
+        lanes: "mobile",
+        state: {
+          intestBetaSha: HEAD,
+          intestBetaReused: `mobile:${OLD},desktop:${OLD}`,
+          intestBetaBuilt: `mobile:${OLD},desktop:${OLD}`,
+          intestBetaLanes: "",
+        },
+      });
+      const [o] = out(r);
+      assert.deepEqual(
+        o.reused.map((d) => d.id),
+        ["mobile"],
+      );
+      assert.deepEqual(o.dispatched, []);
+    });
+  });
+});
+
+describe("reused beta build numbers and the fallback line (ADR-0081, real bash)", () => {
+  const FROM = "9248da9a0c630a0836ff781b224dc1d2a34faff7";
+  const S12 = FROM.slice(0, 12);
+  // The lane's own notice, from comment-intest-build.mjs, so a change to its
+  // wording that the parser below can't read fails here.
+  const notice = (platform, build, sha12 = S12, authorAssociation = "OWNER") => ({
+    authorAssociation,
+    body: buildBody({
+      platform,
+      build,
+      track: "TestFlight",
+      pr: 802,
+      sha: `${sha12}${"0".repeat(28)}`,
+    }),
+  });
+  const bash = (script, env = {}) => {
+    const r = spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+${["intest_reused_json", "intest_reused_builds", "intest_fallback_comment"]
+  .map((f) => `eval "$(awk '/^${f}\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"`)
+  .join("\n")}
+LOG_FILE=/dev/null
+# The comment body is gh's last argument; its output goes to $LOG_FILE.
+gh() { local last=""; for last in "$@"; do :; done; printf '%s' "$last" >"$BODY_FILE"; }
+BODY_FILE=$(mktemp)
+${script}
+if [[ -s "$BODY_FILE" ]]; then cat "$BODY_FILE"; fi
+rm -f "$BODY_FILE"`,
+      ],
+      { encoding: "utf8", env: { ...process.env, ...env } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout;
+  };
+  const builds = (beta, comments) =>
+    JSON.parse(
+      bash('intest_reused_builds "$BETA" "$COMMENTS"', {
+        BETA: JSON.stringify(beta),
+        COMMENTS: JSON.stringify(comments),
+      }),
+    );
+
+  it("fills each reused lane's build numbers from the factory's own notices", () => {
+    const beta = {
+      dispatched: [],
+      reused: [
+        { id: "mobile", fromSha: FROM, builds: [] },
+        { id: "desktop", fromSha: FROM, builds: [] },
+      ],
+    };
+    const out = builds(beta, [
+      notice("ios", 146),
+      notice("android", 151),
+      notice("ios", 147), // the retry's notice wins
+      notice("android", 152),
+      notice("macos", 80),
+      notice("android", 999, "ffffffffffff"), // another commit
+      notice("ios", 666, S12, "NONE"), // not the factory: anyone can comment
+      { authorAssociation: "OWNER", body: `iOS build 5 @ \`${S12}\`, no marker` },
+    ]);
+    assert.deepEqual(out.reused, [
+      {
+        id: "mobile",
+        fromSha: FROM,
+        builds: [
+          { platform: "android", build: "152" },
+          { platform: "ios", build: "147" },
+        ],
+      },
+      { id: "desktop", fromSha: FROM, builds: [{ platform: "macos", build: "80" }] },
+    ]);
+    assert.deepEqual(out.dispatched, []);
+  });
+
+  it("leaves the payload alone without reused lanes, or when the comments are bad", () => {
+    const plain = { dispatched: [{ id: "mobile" }], skipped: [], manualCommands: [] };
+    assert.deepEqual(builds(plain, [notice("ios", 1)]), plain);
+    const out = bash('intest_reused_builds "$BETA" "not json"', {
+      BETA: JSON.stringify({ reused: [{ id: "mobile", fromSha: FROM, builds: [] }] }),
+    });
+    assert.deepEqual(JSON.parse(out).reused[0].builds, []);
+  });
+
+  it("hands the scenario writer the build numbers (real intest_handoff, dry run)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "drafto-reuse-handoff-"));
+    try {
+      const promptFile = join(dir, "prompt.md");
+      writeFileSync(promptFile, "prompt");
+      const comments = JSON.stringify([notice("ios", 147), notice("android", 152)]);
+      const beta = JSON.stringify({
+        dispatched: [],
+        skipped: [],
+        manualCommands: [],
+        reused: [{ id: "mobile", fromSha: FROM, builds: [] }],
+      });
+      const r = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+${["build_intest_bundle", "intest_reused_builds", "intest_handoff"]
+  .map((f) => `eval "$(awk '/^${f}\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"`)
+  .join("\n")}
+SCRIPT_DIR="${resolve(HERE, "..")}"
+LOG_FILE=/dev/null
+REPO_ROOT="${dir}"
+DRY_RUN=1
+INTEST_PROMPT_FILE="${promptFile}"
+SUPPORT_ALLOWLIST="a@example.com"
+OAUTH_USER_EMAIL="support@example.com"
+PHASE="C"
+log() { :; }
+fetch_issue_record() { echo '{"number":794,"title":"t","body":"","labels":[]}'; }
+fetch_issue_comments() { printf '%s' "$COMMENTS"; }
+extract_plan_comment() { echo null; }
+gh() { :; }
+intest_handoff 794 802 '{"number":802,"url":"u","headRef":"h","state":"OPEN"}' "" "" ${"c".repeat(40)} "apps/mobile/a.ts" '{"mobile":true}' "$BETA" ""`,
+        ],
+        { encoding: "utf8", env: { ...process.env, COMMENTS: comments, BETA: beta } },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(JSON.parse(r.stdout).betaDispatch.reused, [
+        {
+          id: "mobile",
+          fromSha: FROM,
+          builds: [
+            { platform: "android", build: "152" },
+            { platform: "ios", build: "147" },
+          ],
+        },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("turns intestBetaReused into the reused list, keeping only the gated lanes", () => {
+    const csv = `mobile:${FROM},desktop:${FROM},bogus`;
+    assert.deepEqual(JSON.parse(bash(`intest_reused_json "${csv}"`)), [
+      { id: "mobile", fromSha: FROM, builds: [] },
+      { id: "desktop", fromSha: FROM, builds: [] },
+    ]);
+    assert.deepEqual(JSON.parse(bash(`intest_reused_json "${csv}" desktop`)), [
+      { id: "desktop", fromSha: FROM, builds: [] },
+    ]);
+    assert.deepEqual(JSON.parse(bash(`intest_reused_json "${csv}" ""`)), []);
+    assert.deepEqual(JSON.parse(bash('intest_reused_json ""')), []);
+  });
+
+  it("renders the same line as the scenario bundle and the verification report", async () => {
+    const { reusedBetaNote } = await import("../lib/factory-bundle.mjs");
+    // Every shape of build list, so the jq and JS sentences, the Android caveat
+    // included, can't drift apart.
+    for (const builds of [
+      [
+        { platform: "android", build: "152" },
+        { platform: "ios", build: "147" },
+      ],
+      [{ platform: "ios", build: "147" }],
+      [{ platform: "android", build: "152" }],
+      [],
+    ]) {
+      const variants = [
+        { id: "mobile", fromSha: FROM, builds },
+        {
+          id: "desktop",
+          fromSha: FROM,
+          builds: builds.length ? [{ platform: "macos", build: "80" }] : [],
+        },
+      ];
+      const out = bash(
+        `intest_fallback_comment 794 802 "" "" ${"c".repeat(40)} '{"web":false,"mobile":true,"desktop":true}' "$BETA"`,
+        { BETA: JSON.stringify({ dispatched: [], reused: variants }) },
+      );
+      assert.ok(out.includes(`- **iOS / Android** — ${reusedBetaNote(variants[0])}\n`), out);
+      assert.ok(out.includes(`- **macOS** — ${reusedBetaNote(variants[1])}\n`), out);
+      assert.match(
+        out,
+        /\*\*iOS \/ Android\*\* — .*Play's internal track serves only its newest upload/,
+      );
+      assert.doesNotMatch(out.split("- **macOS** — ")[1], /Play/);
+    }
+    const reused = [
+      {
+        id: "mobile",
+        fromSha: FROM,
+        builds: [
+          { platform: "android", build: "152" },
+          { platform: "ios", build: "147" },
+        ],
+      },
+      { id: "desktop", fromSha: FROM, builds: [] },
+    ];
+    const body = bash(
+      `intest_fallback_comment 794 802 "" "" ${"c".repeat(40)} '{"web":false,"mobile":true,"desktop":true}' "$BETA"`,
+      { BETA: JSON.stringify({ dispatched: [], skipped: [], manualCommands: [], reused }) },
+    );
+    assert.ok(body.includes(`- **iOS / Android** — ${reusedBetaNote(reused[0])}\n`), body);
+    assert.ok(body.includes(`- **macOS** — ${reusedBetaNote(reused[1])}\n`), body);
+    assert.match(body, /No macOS change since the beta built from `9248da9a0c63`/);
+    assert.doesNotMatch(
+      body,
+      /building now|no TestFlight build was dispatched|run the branch locally/,
+    );
+    // A lane built for this commit still reads as building now.
+    const dispatched = bash(
+      `intest_fallback_comment 794 802 "" "" ${"c".repeat(40)} '{"web":false,"mobile":true,"desktop":true}' "$BETA"`,
+      {
+        BETA: JSON.stringify({ dispatched: [{ id: "mobile" }], reused: [reused[1]] }),
+      },
+    );
+    assert.match(dispatched, /\*\*iOS \/ Android\*\* — beta builds are building now/);
+    assert.ok(dispatched.includes(`- **macOS** — ${reusedBetaNote(reused[1])}\n`));
+  });
+});
+
+describe("beta reuse wiring (ADR-0081)", () => {
+  it("defines a validated kill switch, on by default, that fails off", () => {
+    assert.match(script, /^FACTORY_INTEST_BETA_REUSE="\$\{FACTORY_INTEST_BETA_REUSE:-1\}"$/m);
+    assert.match(script, /invalid FACTORY_INTEST_BETA_REUSE='[^']*'; turning beta reuse off/);
+    for (const fn of ["intest_beta_reuse_decide", "intest_dispatch_betas"]) {
+      assert.match(fnBody(fn), /\$\{FACTORY_INTEST_BETA_REUSE:-1\}/, fn);
+    }
+  });
+
+  it("decides reuse only for a new head, before choosing what to dispatch", () => {
+    const body = fnBody("intest_dispatch_betas");
+    const reset = body.indexOf('if [[ -z "$sha" || "$prior_sha" != "$sha" ]]; then');
+    const decideAt = body.indexOf("intest_beta_reuse_decide");
+    const fi = body.indexOf("\n  fi\n", reset);
+    const loop = body.indexOf('for want in $(echo "$lanes"');
+    assert.ok(reset !== -1 && reset < decideAt && decideAt < fi && fi < loop);
+    assert.match(body, /\[\[ ",\$reused_csv," == \*",\$want:"\* \]\]/);
+  });
+
+  it("rewrites intestBetaReused with every dispatch it records", () => {
+    const body = fnBody("intest_dispatch_betas");
+    const shaWrite = body.indexOf('intestBetaSha "$sha"');
+    const reusedWrite = body.indexOf('intestBetaReused "$reused_csv"');
+    const elseIdx = body.indexOf("leaving retry armed");
+    // Before the SHA: the field is only read under a matching SHA.
+    assert.ok(reusedWrite !== -1 && reusedWrite < shaWrite && shaWrite < elseIdx);
+  });
+
+  it("records a reuse decision in one state write, all of it or none", () => {
+    const body = fnBody("intest_beta_reuse_decide");
+    assert.equal(body.split("state-cli.mjs").length - 1, 1, "exactly one state-cli call");
+    assert.match(body, /factory:set-issue-fields "\$issue_num" "\$\{fields\[@\]\}"/);
+    assert.match(
+      body,
+      /fields\+=\(intestBetaLanes "" intestBetaAttempts "" intestBetaReused "\$reused" intestBetaSha "\$sha"\)/,
+    );
+    // Its failure is acted on, never swallowed.
+    assert.doesNotMatch(body, /--state-file "\$STATE_FILE" >>"\$LOG_FILE" 2>&1 \|\| true/);
+    // The dispatch's own record of what it started is one write too.
+    const dispatch = fnBody("intest_dispatch_betas");
+    assert.equal(
+      (dispatch.match(/factory:set-issue-fields? /g) || []).length,
+      1,
+      "the success branch writes once",
+    );
+    assert.match(
+      dispatch,
+      /factory:set-issue-fields "\$issue_num" \\\n\s+intestBetaReused "\$reused_csv"/,
+    );
+  });
+
+  it("defines a validated maximum age for a reused build, 60 days by default", () => {
+    assert.match(
+      script,
+      /^FACTORY_INTEST_BETA_REUSE_MAX_DAYS="\$\{FACTORY_INTEST_BETA_REUSE_MAX_DAYS:-60\}"$/m,
+    );
+    const block = script.slice(
+      script.indexOf('FACTORY_INTEST_BETA_REUSE_MAX_DAYS="'),
+      script.indexOf("fi\n", script.indexOf('FACTORY_INTEST_BETA_REUSE_MAX_DAYS="')) + 3,
+    );
+    for (const [value, want] of [
+      ["", "60"],
+      ["7", "7"],
+      ["0", "60"],
+      ["-3", "60"],
+      ["sixty", "60"],
+    ]) {
+      const r = spawnSync(
+        "bash",
+        ["-c", `set -u\n${block}\necho "$FACTORY_INTEST_BETA_REUSE_MAX_DAYS"`],
+        {
+          encoding: "utf8",
+          env: { PATH: process.env.PATH, FACTORY_INTEST_BETA_REUSE_MAX_DAYS: value },
+        },
+      );
+      assert.equal(r.stdout.trim(), want, value);
+      if (want !== value && value !== "")
+        assert.match(r.stderr, /invalid FACTORY_INTEST_BETA_REUSE_MAX_DAYS/);
+    }
+  });
+
+  it("reports the reused lanes on every path that reports a dispatch", () => {
+    const body = fnBody("intest_dispatch_betas");
+    // Every jq that prints the payload after the decision carries them.
+    const after = body.slice(body.indexOf("reused_json=$(intest_reused_json"));
+    const outputs = after.match(/manualCommands: (?:\$manual|\[\])[^}]*\}/g) || [];
+    assert.equal(outputs.length, 6, outputs.join("\n"));
+    for (const o of outputs) assert.match(o, /reused: \$reused/);
+  });
+
+  it("gives the scenario writer and the report the build numbers", () => {
+    const handoff = fnBody("intest_handoff");
+    const fetchAt = handoff.indexOf("comments_json=$(fetch_issue_comments");
+    const fillAt = handoff.indexOf(
+      'beta_json=$(intest_reused_builds "$beta_json" "$comments_json")',
+    );
+    const bundleAt = handoff.indexOf("build_intest_bundle");
+    assert.ok(fetchAt !== -1 && fetchAt < fillAt && fillAt < bundleAt);
+    const report = fnBody("verify_compose_report");
+    assert.match(report, /intest_reused_builds/);
+    assert.match(report, /--beta-reused "\$beta_reused"/);
+  });
+});
+
 // ── Incremental scenario rewrite (ADR-0082) ────────────────────────────────
 
 describe("scenario knobs (ADR-0082)", () => {
@@ -1796,6 +2722,7 @@ describe("intest_handoff — exact-SHA check, writer skip and incremental mode (
     "scenario_diff_store",
     "scenario_diff_prune",
     "pr_head_oid",
+    "intest_reused_builds",
     "intest_handoff",
   ];
   const scenarioBody = (sha, steps = "1. Open /notes — expected: the list loads.") =>

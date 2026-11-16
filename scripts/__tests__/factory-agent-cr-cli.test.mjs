@@ -663,6 +663,7 @@ describe("intest_handoff carries the coverage note apart from advisory (real hel
       // One line per argument, so an empty or space-carrying argument is visible.
       `intest_fallback_comment() { printf '%s\\n' "$#" "$@" > "${argsFile}"; }`,
       extract("build_intest_bundle"),
+      extract("intest_reused_builds"),
       extract("scenario_comment_state"),
       extract("intest_handoff"),
       `intest_handoff 7 70 '{"number":70,"url":"u","headRef":"h","state":"OPEN"}' "" "SonarCloud" ${SHA} "apps/web/a.ts" '{"web":true}' "" "$NOTE"`,

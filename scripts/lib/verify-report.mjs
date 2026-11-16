@@ -93,7 +93,8 @@
 // CLI:
 //   node verify-report.mjs render --issue <n> --pr <n> --sha <40-hex>
 //        --scenario-file <f|""> --platforms '{"web":…,"mobile":…,"desktop":…[,"webViaShared":…]}'
-//        --beta-lanes <csv> --shell-state <state> --shell-dir <dir|"">
+//        --beta-lanes <csv> [--beta-reused '[{"id":…,"fromSha":…,"builds":[…]}]']
+//        --shell-state <state> --shell-dir <dir|"">
 //        --browser-state <state> --browser-dir <dir|"">
 //        --gaps '[{"lane":…,"reason":…} | {"lane":…,"token":…}]' --cr-note <text|"">
 //        --account-file <f|""> --bypass-file <f|""> --signin-key-file <f|"">
@@ -122,7 +123,13 @@ import {
   parseRunnerOutput,
   scanForSecrets,
 } from "./browser-report.mjs";
-import { extractScenarioSections, shapePlatforms } from "./factory-bundle.mjs";
+import {
+  extractScenarioSections,
+  reusedBetaNote,
+  reusedBuildsText,
+  shapePlatforms,
+  shapeReusedBetas,
+} from "./factory-bundle.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { FENCE_LINE, closeFences, fenceStep } from "./markdown-fence.mjs";
 import { parseFlags } from "./parse-flags.mjs";
@@ -668,11 +675,21 @@ function withheldNotice(lane) {
 
 // ── body sections ───────────────────────────────────────────────────────────
 
-function platformHow(platform, betaLanes) {
+function platformHow(platform, betaLanes, betaReused = []) {
   const name = platform === "mobile" ? "iOS / Android" : "macOS";
-  return betaLanes.includes(platform)
-    ? `on the ${name} beta for this commit (a follow-up comment gives the build number)`
-    : "on a build of this branch (no beta was dispatched; the scenario says how to get one)";
+  if (betaLanes.includes(platform)) {
+    return `on the ${name} beta for this commit (a follow-up comment gives the build number)`;
+  }
+  // ADR-0081: an earlier commit's beta that nothing since has changed.
+  const reused = betaReused.find((r) => r.id === platform);
+  if (reused) {
+    const builds = reusedBuildsText(reused);
+    return (
+      `on the ${name} beta built from \`${reused.fromSha.slice(0, 12)}\`` +
+      `${builds ? ` (${builds})` : ""}, which nothing since has changed`
+    );
+  }
+  return "on a build of this branch (no beta was dispatched; the scenario says how to get one)";
 }
 
 // The manual step for a browser lane that ended `skipped:already-run`: the In
@@ -690,7 +707,7 @@ export const EARLIER_RUN_STEP =
 export const WEB_VIA_SHARED_NOTE =
   "web changes come through `packages/shared/`, which the web app imports (no `apps/web/` files changed)";
 
-function laneTable(shell, browser, platforms, betaLanes) {
+function laneTable(shell, browser, platforms, betaLanes, betaReused = []) {
   const rows = [];
   for (const lane of [shell, browser]) {
     const verdict = lane.effective ? lane.effective.toUpperCase() : "—";
@@ -706,9 +723,14 @@ function laneTable(shell, browser, platforms, betaLanes) {
     rows.push([lane.meta.label, lane.status, verdict, note]);
   }
 
+  // A lane reused from an earlier commit's beta (ADR-0081) names that build.
+  const reusedNote = (id) => {
+    const r = betaReused.find((x) => x.id === id);
+    return r ? reusedBetaNote(r) : null;
+  };
   const mobileNote = betaLanes.includes("mobile")
     ? "beta dispatched for this commit; run the iOS / Android steps on it"
-    : "no beta was dispatched; the scenario says how to get a build";
+    : (reusedNote("mobile") ?? "no beta was dispatched; the scenario says how to get a build");
   rows.push(
     platforms.mobile
       ? ["iOS / Android", "manual", "—", mobileNote]
@@ -720,7 +742,7 @@ function laneTable(shell, browser, platforms, betaLanes) {
     macNotes.push(
       betaLanes.includes("desktop")
         ? "beta dispatched for this commit; run the macOS steps on it"
-        : "no beta was dispatched; the scenario says how to get a build",
+        : (reusedNote("desktop") ?? "no beta was dispatched; the scenario says how to get a build"),
     );
   }
   if (shell.parsed?.report && !shell.withheld) {
@@ -745,7 +767,8 @@ function laneTable(shell, browser, platforms, betaLanes) {
   return [
     "| Lane | Status | Verdict | Note |",
     "|---|---|---|---|",
-    ...rows.map(([a, b, c, d]) => `| ${a} | ${b} | ${c} | ${cell(d, 400)} |`),
+    // Room for a reused mobile beta's note with its Android caveat (ADR-0081).
+    ...rows.map(([a, b, c, d]) => `| ${a} | ${b} | ${c} | ${cell(d, 600)} |`),
   ];
 }
 
@@ -810,7 +833,8 @@ function renderItem(n, { first, rest }) {
   return [`${n}. ${head}`, ...lines].join("\n");
 }
 
-function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
+function manualSteps({ shell, browser, sections, platforms, betaLanes, betaReused }) {
+  const how = (platform) => platformHow(platform, betaLanes, betaReused);
   // { first, rest, reserved, trusted }: reserved items are never cut by the
   // cap; trusted ones are composed here from safe parts and render as is.
   const all = [];
@@ -888,12 +912,12 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
     }
     if (MOBILE_HEADING.test(s.heading)) {
       hasMobile = true;
-      add(`Run the **${h}** steps in the test scenario ${platformHow("mobile", betaLanes)}.`, {
+      add(`Run the **${h}** steps in the test scenario ${how("mobile")}.`, {
         reserved: true,
       });
     } else if (DESKTOP_HEADING.test(s.heading)) {
       hasDesktop = true;
-      add(`Run the **${h}** steps in the test scenario ${platformHow("desktop", betaLanes)}.`, {
+      add(`Run the **${h}** steps in the test scenario ${how("desktop")}.`, {
         reserved: true,
       });
     } else {
@@ -902,14 +926,14 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes }) {
   }
   if (platforms.mobile && !hasMobile) {
     add(
-      `Test the iOS / Android changes by hand ${platformHow("mobile", betaLanes)}: ` +
+      `Test the iOS / Android changes by hand ${how("mobile")}: ` +
         "the test scenario has no iOS / Android section.",
       { reserved: true },
     );
   }
   if (platforms.desktop && !hasDesktop) {
     add(
-      `Test the macOS changes by hand ${platformHow("desktop", betaLanes)}: ` +
+      `Test the macOS changes by hand ${how("desktop")}: ` +
         "the test scenario has no macOS section.",
       { reserved: true },
     );
@@ -1084,6 +1108,8 @@ function normaliseBetaLanes(lanes) {
  *   the verification variant: webViaShared marks web reached only through
  *   packages/shared/
  * @param {string[]|string} o.betaLanes dispatched beta lane ids (mobile, desktop)
+ * @param {object[]} [o.betaReused] lanes reused from an earlier commit's beta
+ *   (ADR-0081), [{id, fromSha, builds: [{platform, build}]}]; a dispatched lane wins
  * @param {string|null} o.scenario the scenario comment body, or null
  * @param {{state:string,dir?:string,text?:string|null}} o.shell
  * @param {{state:string,dir?:string,text?:string|null}} o.browser
@@ -1099,6 +1125,7 @@ export function composeVerifyReport({
   pr,
   platforms: rawPlatforms,
   betaLanes: rawBetaLanes,
+  betaReused: rawBetaReused = [],
   scenario = null,
   shell: shellInput,
   browser: browserInput,
@@ -1109,6 +1136,7 @@ export function composeVerifyReport({
   if (!FULL_SHA.test(String(sha ?? ""))) throw new Error(`invalid sha: ${sha}`);
   const platforms = normalisePlatforms(rawPlatforms);
   const betaLanes = normaliseBetaLanes(rawBetaLanes);
+  const betaReused = shapeReusedBetas(rawBetaReused).filter((r) => !betaLanes.includes(r.id));
   const scenarioBody = typeof scenario === "string" && scenario.trim() ? scenario : null;
   const sections = scenarioBody ? extractScenarioSections(scenarioBody) : [];
   const hasWebSection = sections.some((s) => s.heading === "Web");
@@ -1160,7 +1188,7 @@ export function composeVerifyReport({
     "",
     EVIDENCE_LINE,
     "",
-    ...laneTable(shell, browser, platforms, betaLanes),
+    ...laneTable(shell, browser, platforms, betaLanes, betaReused),
     "",
     "**Assessment**",
     "",
@@ -1168,7 +1196,7 @@ export function composeVerifyReport({
     "",
     "**Steps for you to do manually**",
     "",
-    ...manualSteps({ shell, browser, sections, platforms, betaLanes }),
+    ...manualSteps({ shell, browser, sections, platforms, betaLanes, betaReused }),
     "",
     "**Coverage gaps**",
     "",
@@ -1298,6 +1326,7 @@ export function render(argv) {
     pr,
     platforms,
     betaLanes: flags["beta-lanes"] ?? "",
+    betaReused: jsonFlag(flags, "beta-reused", [], (v) => Array.isArray(v)),
     scenario: readOptional(flags["scenario-file"]),
     shell: lane("shell"),
     browser: lane("browser"),
@@ -1315,7 +1344,7 @@ export function render(argv) {
 
 const USAGE =
   "Usage: verify-report.mjs render --issue <n> --pr <n> --sha <40-hex> --scenario-file <f> " +
-  "--platforms <json> --beta-lanes <csv> --shell-state <state> --shell-dir <dir> " +
+  "--platforms <json> --beta-lanes <csv> [--beta-reused <json>] --shell-state <state> --shell-dir <dir> " +
   "--browser-state <state> --browser-dir <dir> --gaps <json> --cr-note <text> " +
   "--account-file <f> --bypass-file <f> --signin-key-file <f> --out <body-file>\n";
 

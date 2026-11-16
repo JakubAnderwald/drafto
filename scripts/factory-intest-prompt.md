@@ -100,7 +100,12 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
     "dispatched": [ { "id": "mobile", "command": "pnpm release:beta:all" } ],
     "skipped":    [ { "id": "desktop", "reason": "..." } ],
     // Keyed by platform — match on `id`, never on list order.
-    "manualCommands": [ { "id": "desktop", "command": "cd \"$(git rev-parse --show-toplevel)\" && ... && DRAFTO_INTEST_ISSUE=<n> pnpm release:beta" } ]
+    "manualCommands": [ { "id": "desktop", "command": "cd \"$(git rev-parse --show-toplevel)\" && ... && DRAFTO_INTEST_ISSUE=<n> pnpm release:beta" } ],
+    // Lanes NOT rebuilt for this head: nothing they build from changed since an
+    // earlier commit's beta, so that build is still current. `builds` holds the
+    // numbers that build's notices gave (mobile: android, ios; desktop: macos),
+    // and may be empty.
+    "reused": [ { "id": "mobile", "fromSha": "9248da9a0c63...", "builds": [ { "platform": "android", "build": "152" }, { "platform": "ios", "build": "147" } ] } ]
   },
   "config": { "phase": "C", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },
@@ -272,6 +277,27 @@ Compose it in Markdown from the bundle's facts. Structure:
   - each entry in `betaDispatch.dispatched` → say a beta build is building now
     from PR #`<n>` at `<first 12 chars of headSha>`, and that a follow-up comment
     reports the build number when it lands (~20-40 min).
+  - each entry in `betaDispatch.reused` → no new build: nothing that platform
+    builds from changed since an earlier commit's beta, so that build is still
+    the one to test. Write one line like this example. `<builds>` lists
+    `builds` in order joined with " / " (`Android build <n>` and
+    `iOS build <n>` for mobile, `build <n>` for desktop), and `<sha12>` is the
+    first 12 chars of `fromSha`:
+
+    ```text
+    No mobile change since Android build 152 / iOS build 147 (`9248da9a0c63`); keep testing that build. Android: Play's internal track serves only its newest upload, so check that the installed build number is 152. If Play shows a newer build, this card's Android build is no longer installable from Play; test iOS from TestFlight and ask in a comment for the Android build.
+    ```
+
+    For mobile, always keep the second part, the Android caveat, with the
+    `android` entry's number. With no `android` entry, write "check that the
+    installed build number is the one an earlier comment gives" instead. For
+    `desktop` it reads "No macOS change since build 80 (`<sha12>`); keep
+    testing that build." with no caveat: TestFlight keeps older builds. With
+    `builds` empty, write "No mobile change since the beta built from
+    `<sha12>`; keep testing that build." and add that an earlier comment on
+    this issue gives its build number. Only `builds` holds build numbers:
+    never compute or guess one.
+
   - each entry in `betaDispatch.skipped` → say that platform was **not**
     auto-built, give the reason, and include the command from the
     `betaDispatch.manualCommands` entry whose `id` matches that platform.
@@ -279,7 +305,7 @@ Compose it in Markdown from the bundle's facts. Structure:
     under a macOS heading. When both `mobile` and `desktop` are skipped, say
     to run the two commands **one after the other, never at the same time**:
     they build in the same worktree.
-  - if a native platform is in `platforms` but appears in neither list, say it
+  - if a native platform is in `platforms` but appears in none of these lists, say it
     must be run locally from the branch. For **mobile**, give: a worktree +
     `pnpm install` + `bash scripts/worktree-bootstrap.sh`, then a debug build
     on a simulator or emulator, linking the absolute URL
@@ -434,7 +460,10 @@ In this mode:
    scenario: the title line (`stage`), the head SHA in the build notes, "How
    to get a build" (`betaDispatch`, `previewUrl`), the advisory note and the
    `crCoverageNote` note. What the prior scenario says about builds, previews,
-   checks or its own SHA is stale.
+   checks or its own SHA is stale. That includes `betaDispatch.reused`: write
+   each reused lane's line, with the mobile Android caveat, exactly as "How to
+   get a build" says, even where the prior scenario said a build was building
+   or named another build.
 4. **Run `gh pr diff <n>` only when the delta reaches areas the prior
    scenario doesn't cover**: a screen, flow or platform path no step tests yet,
    where you need the surrounding change to write the steps. Also when
