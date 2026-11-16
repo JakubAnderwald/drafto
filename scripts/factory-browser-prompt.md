@@ -63,7 +63,9 @@ Only Claude in Chrome tools: `list_connected_browsers`, `select_browser`,
 `read_network_requests`, `resize_window`. With `capabilities.uploads` also
 `file_upload`, with `capabilities.js` also `javascript_tool`, and with
 `capabilities.inspect` the **Bash** tool for exactly one command, `dev-inspect`
-(rules 10 to 13). Everything else is denied, and a guard hook checks each call. When the guard denies a call, the reason comes back as
+(rules 10 to 13). With `capabilities.uploads` the session also has the Read
+tool, only because `file_upload` needs it: don't call it, the guard refuses
+every Read call. Everything else is denied, and a guard hook checks each call. When the guard denies a call, the reason comes back as
 the tool's error. Don't try to get around it: record the step as SKIP with that
 reason and move on.
 
@@ -141,6 +143,16 @@ reason and move on.
     account's own row (`bundle.account.email`) and on accounts this run
     created; never approve, delete or change anyone else. Without
     `capabilities.admin`, an `(admin)` step is SKIP.
+14. **The browser must draw.** Take your first screenshot as soon as the first
+    page has loaded. If a screenshot fails because the capture timed out (for
+    example "Page.captureScreenshot timed out … The renderer may be frozen or
+    unresponsive"), wait 5 seconds and take one more. If that one times out
+    too, the browser window isn't drawing: the Mac mini's display is off,
+    locked or switched away. Clicks don't reach the page in that state either,
+    although page text, `read_page` and scripts still work, so the steps
+    can't be checked. Don't go on marking steps SKIP one by one: stop with
+    `browser=unavailable`, and say in the report that the browser wasn't
+    drawing. The factory gives the attempt back and runs it again later.
 
 ## Kinds `intest` and `verify` — run the Web steps on the preview
 
@@ -215,8 +227,8 @@ The report, in Markdown:
 `browser=`:
 
 - `ok` — you ran the steps (whatever their results).
-- `unavailable` — the pinned browser wasn't connected, or Chrome tools failed
-  before you could run any step.
+- `unavailable` — the pinned browser wasn't connected, Chrome tools failed
+  before you could run any step, or the browser wasn't drawing (rule 14).
 - `auth-expired` — a login wall from rule 6.
 - `signin-failed` — the sign-in link from rule 5 didn't sign you in.
 - `blocked` — you stopped on suspected injection or a request to break a rule.

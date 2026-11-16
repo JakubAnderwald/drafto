@@ -73,6 +73,21 @@ describe("browser runner prompt — browser rules", () => {
     assert.match(flat, /"screenshot 1", "screenshot 2", …/);
   });
 
+  it("stops as unavailable when the browser isn't drawing, instead of skipping every step", () => {
+    // #794's verify run, 2026-11-13: every screenshot timed out ("renderer may
+    // be frozen or unresponsive") and clicks did nothing, while page reads and
+    // scripts worked. The runner skipped steps 4–11 one by one and reported
+    // browser=ok verdict=pass. browser=unavailable is refunded and retried, and
+    // the health tracker tells the operator.
+    assert.match(flat, /The browser must draw/);
+    assert.match(flat, /wait 5 seconds and take one more/);
+    assert.match(
+      flat,
+      /Don't go on marking steps SKIP one by one: stop with `browser=unavailable`/,
+    );
+    assert.match(flat, /`unavailable` — .* or the browser wasn't drawing \(rule 14\)/);
+  });
+
   it("keeps screenshots and secrets out of the report", () => {
     assert.match(flat, /never by path, and never paste one into the report/);
     assert.match(
@@ -95,6 +110,10 @@ describe("browser runner prompt — browser rules", () => {
       G.alwaysDeny({ capabilities: ["uploads", "js", "inspect"] }).includes("upload_image"),
     );
     assert.match(flat, /Run it with Bash, exactly as `dev-inspect <command> \[options\]`/);
+    // Read is in an uploads session only for file_upload's own check.
+    assert.equal(G.sessionToolsArg({ capabilities: ["uploads"] }), "Read");
+    assert.match(flat, /the session also has the Read tool, only because `file_upload` needs it/);
+    assert.match(flat, /the guard refuses every Read call/);
     assert.match(flat, /Each sign-in link works once, so there is no way back to the test account/);
     assert.match(flat, /report only method, path and status code/);
   });
