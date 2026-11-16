@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { after } from "next/server";
 import { z } from "zod";
 import { authenticateMcpRequest } from "@/lib/api/mcp-auth";
 import {
@@ -15,12 +16,13 @@ import {
   renameNotebook,
   deleteNotebook,
 } from "@/lib/api/mcp-tools";
+import { removeUserOrphanedAttachments } from "@/lib/storage/remove-orphaned-attachments";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 
 function createMcpServer(supabase: SupabaseClient<Database>, userId: string): McpServer {
   const server = new McpServer(
-    { name: "drafto", version: "1.1.0" },
+    { name: "drafto", version: "1.1.1" },
     { capabilities: { tools: {} } },
   );
 
@@ -111,7 +113,13 @@ function createMcpServer(supabase: SupabaseClient<Database>, userId: string): Mc
     "delete_notebook",
     "Delete an empty notebook (refuses if it still holds non-trashed notes)",
     { notebook_id: z.string().uuid().describe("The notebook ID to delete") },
-    ({ notebook_id }) => deleteNotebook(supabase, userId, notebook_id),
+    async ({ notebook_id }) => {
+      const result = await deleteNotebook(supabase, userId, notebook_id);
+      // The notebook's trashed notes went with it (ON DELETE CASCADE); remove their
+      // files once the response is sent.
+      if (!result.isError) after(() => removeUserOrphanedAttachments(userId, "web-mcp"));
+      return result;
+    },
   );
 
   return server;

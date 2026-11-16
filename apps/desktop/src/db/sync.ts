@@ -139,13 +139,37 @@ async function assertAuthenticatedSession(): Promise<void> {
   if (!data.session) throw new Error("Sync aborted: no authenticated session");
 }
 
-type LocalSyncState = { id: string; remoteId?: string | null; _status?: string };
+type LocalSyncState = {
+  id: string;
+  remoteId?: string | null;
+  _status?: string;
+  /** Attachments only: the Attachment model's `uploadStatus`. */
+  uploadStatus?: string;
+};
+
+/**
+ * Whether detection may treat a local record as one the server could have
+ * deleted. An attachment's row is inserted only once its file has uploaded:
+ * the upload queue inserts it, and pushAttachmentChanges pushes only `uploaded`
+ * records. synchronize() still marks every local change it fetched as synced
+ * after a push, including the attachments pushAttachmentChanges filtered out.
+ * So a `pending`, `failed` or `quota_exceeded` (#794) attachment can be
+ * `synced` with no server row behind it, and must never be read as deleted on
+ * the server: that would destroy a queued upload, or the local copy of one the
+ * quota refused. A `quota_exceeded` attachment never has a row. A `pending` or
+ * `failed` one has a row only after a partial success (row inserted, local
+ * status not yet `uploaded`), and the queue's retry then marks it `uploaded`.
+ */
+function canExistOnServer(record: LocalSyncState, table: SyncTable): boolean {
+  return table !== "attachments" || record.uploadStatus === "uploaded";
+}
 
 /**
  * Returns the local IDs of synced records whose remote row is missing from
  * `serverIds`, i.e. rows deleted on the server since the last pull. Unsynced
  * local records (created/updated offline) won't exist on the server yet and
- * must not be flagged as deleted before the push phase runs.
+ * must not be flagged as deleted before the push phase runs. Neither may an
+ * attachment that hasn't uploaded (see canExistOnServer).
  *
  * Fail-safe: an empty server ID set while synced local records exist is
  * treated as suspicious rather than as "everything was deleted". RLS returns
@@ -167,7 +191,7 @@ function detectServerDeletions(
   serverIds: readonly string[],
   table: SyncTable,
 ): string[] {
-  const synced = localRecords.filter((r) => r._status === "synced");
+  const synced = localRecords.filter((r) => r._status === "synced" && canExistOnServer(r, table));
   if (synced.length === 0) return [];
   if (serverIds.length === 0) {
     console.warn(

@@ -1,4 +1,5 @@
 import React from "react";
+import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage } from "@drafto/shared";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
 import NetInfo from "@react-native-community/netinfo";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
@@ -6,6 +7,7 @@ import { renderHook, act, waitFor } from "@testing-library/react-native";
 import { syncDatabase } from "@/db/sync";
 import { processPendingUploads } from "@/lib/data/attachment-queue";
 import { ensureLocalIdentity } from "@/lib/data/local-identity";
+import { fetchStorageUsage } from "@/lib/data/storage-usage";
 import { useAuth } from "@/providers/auth-provider";
 import {
   AUTO_SYNC_DEBOUNCE_MS,
@@ -66,6 +68,10 @@ jest.mock("@/lib/data/local-identity", () => ({
   ensureLocalIdentity: jest.fn(),
 }));
 
+jest.mock("@/lib/data/storage-usage", () => ({
+  fetchStorageUsage: jest.fn(),
+}));
+
 jest.mock("@/lib/performance", () => ({
   measureAsync: jest.fn((_label: string, work: () => unknown) => work()),
 }));
@@ -85,6 +91,7 @@ jest.mock("@/components/toast", () => ({
 const mockSyncDatabase = syncDatabase as jest.Mock;
 const mockProcessPendingUploads = processPendingUploads as jest.Mock;
 const mockEnsureLocalIdentity = ensureLocalIdentity as jest.Mock;
+const mockFetchStorageUsage = fetchStorageUsage as jest.Mock;
 const mockUseAuth = useAuth as jest.Mock;
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -105,7 +112,7 @@ describe("DatabaseProvider cross-account sync guard", () => {
     jest.clearAllMocks();
     mockUseAuth.mockReturnValue({ user: TEST_USER });
     mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
-    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0, storageFull: 0 });
     mockEnsureLocalIdentity.mockResolvedValue("ready");
   });
 
@@ -154,7 +161,7 @@ describe("DatabaseProvider cross-account sync guard", () => {
 
     expect(mockSyncDatabase).not.toHaveBeenCalled();
     expect(mockProcessPendingUploads).not.toHaveBeenCalled();
-    expect(uploadResult).toEqual({ uploaded: 0, failed: 0 });
+    expect(uploadResult).toEqual({ uploaded: 0, failed: 0, storageFull: 0 });
     errorSpy.mockRestore();
   });
 
@@ -271,7 +278,7 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     jest.clearAllMocks();
     mockUseAuth.mockReturnValue({ user: TEST_USER });
     mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
-    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0, storageFull: 0 });
     mockEnsureLocalIdentity.mockResolvedValue("ready");
     mockHasUnsyncedChanges.mockResolvedValue(false);
     mockDirtyCounts.clear();
@@ -295,8 +302,8 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     const first = deferred<{ remoteChangeCount: number }>();
     mockSyncDatabase.mockReturnValueOnce(first.promise);
     mockProcessPendingUploads
-      .mockResolvedValueOnce({ uploaded: 1, failed: 0 })
-      .mockResolvedValueOnce({ uploaded: 0, failed: 1 });
+      .mockResolvedValueOnce({ uploaded: 1, failed: 0, storageFull: 0 })
+      .mockResolvedValueOnce({ uploaded: 0, failed: 1, storageFull: 0 });
     const { result } = renderHook(() => useDatabase(), { wrapper });
     await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
 
@@ -308,7 +315,7 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
 
     await act(async () => {
       first.resolve({ remoteChangeCount: 0 });
-      await expect(joined).resolves.toEqual({ uploaded: 1, failed: 1 });
+      await expect(joined).resolves.toEqual({ uploaded: 1, failed: 1, storageFull: 0 });
     });
     expect(mockSyncDatabase).toHaveBeenCalledTimes(2);
     expect(result.current.isSyncing).toBe(false);
@@ -754,5 +761,70 @@ describe("DatabaseProvider sync scheduling (ADR-0048)", () => {
     await advance(AUTO_SYNC_DEBOUNCE_MS * 2);
 
     expect(mockHasUnsyncedChanges).not.toHaveBeenCalled();
+  });
+});
+
+describe("DatabaseProvider storage-full toast (issue #794)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseAuth.mockReturnValue({ user: TEST_USER });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0, storageFull: 0 });
+    mockEnsureLocalIdentity.mockResolvedValue("ready");
+    mockFetchStorageUsage.mockResolvedValue(null);
+  });
+
+  it("says storage is full when a sync's uploads were refused for the quota", async () => {
+    const usage = {
+      usedBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+    };
+    mockFetchStorageUsage.mockResolvedValue(usage);
+    mockProcessPendingUploads.mockResolvedValueOnce({ uploaded: 1, failed: 0, storageFull: 2 });
+
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith(
+        storageFullMessage(usage.usedBytes, usage.quotaBytes),
+        "warning",
+      ),
+    );
+    expect(mockShowToast).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+  });
+
+  it("still says so when the usage can't be read", async () => {
+    mockProcessPendingUploads.mockResolvedValueOnce({ uploaded: 0, failed: 0, storageFull: 1 });
+
+    renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith(storageFullMessage(null, null), "warning"),
+    );
+  });
+
+  it("reports the storage-full count to the sync's caller", async () => {
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+    mockProcessPendingUploads.mockResolvedValueOnce({ uploaded: 0, failed: 1, storageFull: 1 });
+
+    let uploadResult;
+    await act(async () => {
+      uploadResult = await result.current.sync();
+    });
+
+    expect(uploadResult).toEqual({ uploaded: 0, failed: 1, storageFull: 1 });
+  });
+
+  it("stays quiet when nothing was refused", async () => {
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+
+    expect(mockFetchStorageUsage).not.toHaveBeenCalled();
+    expect(mockShowToast).not.toHaveBeenCalled();
   });
 });

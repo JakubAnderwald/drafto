@@ -392,7 +392,7 @@ describe("pullChanges guards against an empty RLS result", () => {
         makeDb({
           notebooks: [synced("nb-1"), synced("nb-2")],
           notes: [synced("n-1")],
-          attachments: [synced("att-1")],
+          attachments: [{ ...synced("att-1"), uploadStatus: "uploaded" }],
         }),
       );
 
@@ -448,6 +448,39 @@ describe("pullChanges guards against an empty RLS result", () => {
       );
 
       expect(result.changes.notes.deleted).toEqual(["local-3"]);
+    });
+
+    it("flags only an uploaded attachment, never one whose row hasn't reached the server", async () => {
+      // synchronize() marks every pushed local change synced, including the
+      // attachments pushAttachmentChanges filters out, so a pending, failed or
+      // quota_exceeded record (#794) is synced with no server row behind it.
+      mockServerIds({ attachments: ["att-1"] });
+      const attachment = (id: string, uploadStatus: string) => ({ ...synced(id), uploadStatus });
+
+      const result = await pull(
+        makeDb({
+          attachments: [
+            attachment("att-1", "uploaded"),
+            attachment("att-2", "uploaded"),
+            attachment("att-3", "pending"),
+            attachment("att-4", "failed"),
+            attachment("att-5", "quota_exceeded"),
+          ],
+        }),
+      );
+
+      expect(result.changes.attachments.deleted).toEqual(["att-2"]);
+    });
+
+    it("does not warn about an empty attachments table when no local attachment has uploaded", async () => {
+      mockServerIds({});
+
+      const result = await pull(
+        makeDb({ attachments: [{ ...synced("att-1"), uploadStatus: "quota_exceeded" }] }),
+      );
+
+      expect(result.changes.attachments.deleted).toEqual([]);
+      expect(warnSpy).not.toHaveBeenCalled();
     });
 
     it("does not warn when an empty server table matches an empty local table", async () => {

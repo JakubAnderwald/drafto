@@ -64,6 +64,7 @@ describe("Auth middleware", () => {
       "/api/health",
       "/api/webhooks/new-signup",
       "/api/account",
+      "/api/cron/cleanup-trash",
       "/account/delete",
       "/privacy",
       "/support",
@@ -111,6 +112,21 @@ describe("Auth middleware", () => {
       new NextRequest(new URL("/api/account", "http://localhost:3000"), {
         method: "DELETE",
         headers: { Authorization: "Bearer native-access-token" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  it("passes Vercel Cron's cookie-less GET /api/cron/cleanup-trash through to the route", async () => {
+    // Vercel Cron sends the cron secret as a bearer token and no cookie; the route checks it.
+    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+    const response = await updateSession(
+      new NextRequest(new URL("/api/cron/cleanup-trash", "http://localhost:3000"), {
+        headers: { Authorization: "Bearer cron-secret" },
       }),
     );
 

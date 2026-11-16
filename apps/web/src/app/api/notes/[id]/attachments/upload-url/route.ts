@@ -1,10 +1,12 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedNoteOwner, errorResponse, successResponse } from "@/lib/api/utils";
+import { getStorageUsage, storageQuotaExceededResponse } from "@/lib/api/storage-quota";
 import {
   MAX_FILE_SIZE,
   BUCKET_NAME,
   FILE_TOO_LARGE_MESSAGE,
   buildAttachmentStoragePath,
+  wouldExceedQuota,
 } from "@drafto/shared";
 
 interface RouteParams {
@@ -38,6 +40,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   }
   if (typeof mimeType !== "string" || mimeType.length === 0) {
     return errorResponse("mimeType is required", 400);
+  }
+
+  // Refuse an upload that would go over the user's storage quota before handing out
+  // a URL. If the usage can't be read, let it through: the attachments trigger still
+  // refuses the row at confirm.
+  const usage = await getStorageUsage(supabase);
+  if (usage && wouldExceedQuota(usage, fileSize)) {
+    return storageQuotaExceededResponse(usage);
   }
 
   const { fileName, filePath } = buildAttachmentStoragePath(rawFileName, user.id, noteId);

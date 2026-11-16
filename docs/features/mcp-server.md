@@ -62,7 +62,7 @@ Notes on the implementation:
 - Every handler scopes its Supabase query with `.eq("user_id", userId)` because auth uses the service-role client (see auth model).
 - `search_notes` deliberately uses a direct `ilike` rather than the `search_notes` RPC — the RPC relies on `auth.uid()`, which is not set for service-role clients. This is documented in the comment at the top of `searchNotes`.
 - `read_note` and `create_note` / `update_note` are the only tools that cross the BlockNote <-> Markdown boundary.
-- `rename_notebook` and `delete_notebook` mirror `PATCH` / `DELETE /api/notebooks/[id]`. Both run an explicit owner-scoped existence check first, because an `UPDATE` / `DELETE` on a missing or not-owned row affects 0 rows without raising a Supabase error — without the pre-check the tool would falsely report success. `delete_notebook` also mirrors the web route's guard refusing to delete a notebook that still holds non-trashed notes.
+- `rename_notebook` and `delete_notebook` mirror `PATCH` / `DELETE /api/notebooks/[id]`. Both run an explicit owner-scoped existence check first, because an `UPDATE` / `DELETE` on a missing or not-owned row affects 0 rows without raising a Supabase error — without the pre-check the tool would falsely report success. `delete_notebook` also mirrors the web route's guard refusing to delete a notebook that still holds non-trashed notes. Like the web route, once the notebook is deleted it removes the caller's attachment files whose note is gone (its trashed notes cascade with it), in `after()` with the service role (see [notes-and-notebooks.md](./notes-and-notebooks.md)).
 - Attachment upload and permanent _note_ delete are **not** exposed as tools by design (see ADR 0017).
 
 ## Auth model

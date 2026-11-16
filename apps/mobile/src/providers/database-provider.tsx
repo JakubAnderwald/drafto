@@ -4,12 +4,13 @@ import type { Database } from "@nozbe/watermelondb";
 import { Q } from "@nozbe/watermelondb";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
 import NetInfo from "@react-native-community/netinfo";
-import { hasLocalEdit } from "@drafto/shared";
+import { hasLocalEdit, storageFullMessage } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 import { processPendingUploads } from "@/lib/data/attachment-queue";
 import type { UploadResult } from "@/lib/data/attachment-queue";
+import { fetchStorageUsage } from "@/lib/data/storage-usage";
 import { ensureLocalIdentity } from "@/lib/data/local-identity";
 import { measureAsync } from "@/lib/performance";
 import { useAuth } from "@/providers/auth-provider";
@@ -35,6 +36,10 @@ export const PENDING_REFRESH_DEBOUNCE_MS = 500;
  */
 const MAX_FOLLOW_UP_PASSES = 3;
 const SYNCED_TABLES = ["notebooks", "notes", "attachments"] as const;
+
+function noUploads(): UploadResult {
+  return { uploaded: 0, failed: 0, storageFull: 0 };
+}
 
 interface DatabaseContextValue {
   database: Database;
@@ -157,7 +162,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     // provider, so screens are interactive while ensureLocalIdentity is still
     // resolving. Syncing before it reports "ready" would push the previous
     // user's rows under this session — the leak the guard exists to prevent.
-    if (!identityReadyRef.current) return Promise.resolve({ uploaded: 0, failed: 0 });
+    if (!identityReadyRef.current) return Promise.resolve(noUploads());
     if (inFlightSyncRef.current) {
       // Join instead of dropping the call: the caller's write may have missed
       // the running pass, so the run checks for it before settling.
@@ -169,10 +174,19 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     const isCurrentSession = () => sessionRef.current === session;
 
     const runPass = async (): Promise<SyncPassOutcome> => {
-      let uploadResult: UploadResult = { uploaded: 0, failed: 0 };
+      let uploadResult: UploadResult = noUploads();
       try {
         // Upload any queued attachments before syncing metadata
         uploadResult = await processPendingUploads();
+        // Attachments refused for the storage quota (issue #794) are not
+        // retried, so this is said once, on the pass that refused them. Read
+        // the usage alongside the sync rather than holding it up.
+        if (uploadResult.storageFull > 0) {
+          void fetchStorageUsage().then((usage) => {
+            if (!isCurrentSession()) return;
+            showToast(storageFullMessage(usage?.usedBytes, usage?.quotaBytes), "warning");
+          });
+        }
 
         const result = await measureAsync("sync", () => syncDatabase(database));
         if (!isCurrentSession()) return { ok: false, pending: false, uploadResult };
@@ -215,7 +229,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
 
     const run = (async (): Promise<UploadResult> => {
       setIsSyncing(true);
-      const total: UploadResult = { uploaded: 0, failed: 0 };
+      const total: UploadResult = noUploads();
       let followUps = 0;
       try {
         for (;;) {
@@ -224,6 +238,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
           const pass = await runPass();
           total.uploaded += pass.uploadResult.uploaded;
           total.failed += pass.uploadResult.failed;
+          total.storageFull += pass.uploadResult.storageFull;
           // A run whose session has ended stops before touching the flags
           // below: they belong to the new session's run now.
           if (!isCurrentSession()) break;

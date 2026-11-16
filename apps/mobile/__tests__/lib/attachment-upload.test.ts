@@ -60,6 +60,11 @@ jest.mock("@/lib/supabase", () => ({
 
 jest.mock("@/lib/generate-id", () => ({ generateId: () => "mock-id" }));
 
+// Unknown usage: the storage-quota pre-check (issue #794) is skipped.
+jest.mock("@/lib/data/storage-usage", () => ({
+  fetchStorageUsage: jest.fn(async () => null),
+}));
+
 import { uploadAttachment, processPendingUploads } from "@/lib/data/attachment-queue";
 import type { Attachment } from "@/db";
 
@@ -162,7 +167,7 @@ describe("uploadAttachment", () => {
     finishUpload({ error: null });
 
     await expect(direct).resolves.toBe(true);
-    await expect(sync).resolves.toEqual({ uploaded: 1, failed: 0 });
+    await expect(sync).resolves.toEqual({ uploaded: 1, failed: 0, storageFull: 0 });
     expect(mockUpload).toHaveBeenCalledTimes(1);
   });
 
@@ -173,7 +178,11 @@ describe("uploadAttachment", () => {
     // ...and the direct upload completed before the sync's loop reached it.
     await expect(uploadAttachment(attachment)).resolves.toBe(true);
 
-    await expect(processPendingUploads()).resolves.toEqual({ uploaded: 1, failed: 0 });
+    await expect(processPendingUploads()).resolves.toEqual({
+      uploaded: 1,
+      failed: 0,
+      storageFull: 0,
+    });
 
     expect(mockUpload).toHaveBeenCalledTimes(1);
     expect(fields.uploadStatus).toBe("uploaded");
@@ -215,7 +224,7 @@ describe("uploadAttachment", () => {
     releaseWriter();
 
     await expect(direct).resolves.toBe(true);
-    await expect(sync).resolves.toEqual({ uploaded: 1, failed: 0 });
+    await expect(sync).resolves.toEqual({ uploaded: 1, failed: 0, storageFull: 0 });
     expect(fields.uploadStatus).toBe("uploaded");
     expect(fields.localUri).toBeNull();
     expect(mockUpload).toHaveBeenCalledTimes(1);
