@@ -308,7 +308,10 @@ Compose it in Markdown from the bundle's facts. Structure:
     `## Test scenario`, one bullet per file: `- <name> <size>` (B, KB or MB,
     at most 10 MB; `.jpg`, `.png` or `.txt`), `- <name>.enex notes=<N> image=<size>` for an
     Evernote export with one image per note, or `- sample.enex` for the repo's
-    sample export. A Web step names the file it uploads;
+    sample export. The whole `.enex` must stay under 10 MB too, and each image
+    takes a third more room inside it (base64), so keep notes × image under
+    7 MB (`notes=3 image=2MB` fits, `notes=3 image=2.5MB` doesn't). A Web step
+    names the file it uploads;
   - **do a step as the admin**: start the step with `(admin)`, and put the
     admin steps **last**: each sign-in link works once, so the runner can't
     go back to the test account after them (the test account's own row is
