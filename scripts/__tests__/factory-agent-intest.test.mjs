@@ -224,6 +224,120 @@ describe("intest_handoff — failure degrades, never escalates", () => {
   });
 });
 
+describe("intest_handoff — the scenario writer's claude call (extracted, real bash)", () => {
+  // The model knob block (ADR-0080), so a run with `model` set goes through the
+  // same validation the factory does at startup.
+  const modelKnobs = script.match(/^MODEL_KNOB_RE=[\s\S]*?^ {2}FACTORY_INTEST_MODEL=""\nfi\n/m);
+  const SHA = "c".repeat(40);
+
+  // Runs the REAL intest_handoff with its collaborators stubbed, and returns
+  // the argv run-claude.mjs got (NUL-separated, since the prompt is multi-line).
+  // `model` undefined: FACTORY_INTEST_MODEL is unset altogether and the knob
+  // block left out, so the function itself must cope under `set -u`.
+  function runHandoff({ model } = {}) {
+    assert.ok(modelKnobs, "model knob block not found");
+    const dir = mkdtempSync(join(tmpdir(), "intest-handoff-"));
+    const argsFile = join(dir, "args.bin");
+    const events = join(dir, "events.txt");
+    const prompt = join(dir, "prompt.md");
+    writeFileSync(prompt, "# In Test scenario prompt\n");
+    const snippet = `set -euo pipefail
+${model === undefined ? "" : modelKnobs[0]}
+LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
+SCRIPT_DIR=${JSON.stringify(resolve(HERE, ".."))}
+REPO_ROOT=${JSON.stringify(dir)}
+INTEST_PROMPT_FILE=${JSON.stringify(prompt)}
+INTEST_TIMEOUT_SEC=600
+FACTORY_PLAN_EFFORT=xhigh
+DRY_RUN=0
+log() { echo "[log] $*"; }
+fetch_issue_record() { echo '{"number":12}'; }
+fetch_issue_comments() { echo '[]'; }
+extract_plan_comment() { echo null; }
+gh() { echo "diff --git a/apps/web/x.ts b/apps/web/x.ts"; }
+build_intest_bundle() { echo '{"bundle":true}'; }
+check_session_limit() { return 1; }
+pause_for_session_limit() { :; }
+issue_has_marker() { return 0; }
+intest_fallback_comment() { echo "fallback" >>${JSON.stringify(events)}; }
+intest_record_comment_sha() { echo "recorded $2" >>${JSON.stringify(events)}; }
+node() {
+  case "$1" in
+    */run-claude.mjs)
+      shift
+      printf '%s\\0' "$@" >${JSON.stringify(argsFile)}
+      echo "pwd:$(pwd) timeout:$CLAUDE_CALL_TIMEOUT_SEC" >>${JSON.stringify(events)}
+      echo "issue=12 action=commented comment=https://github.com/x"
+      return 0 ;;
+    *) command node "$@" ;;
+  esac
+}
+${fnBody("intest_handoff")}
+intest_handoff 12 34 '{}' https://drafto-x.vercel.app '' ${SHA} 'apps/web/x.ts' web '' ''
+echo "rc=$?"
+`;
+    const env = { PATH: process.env.PATH, HOME: dir, TMPDIR: dir };
+    if (model !== undefined) env.FACTORY_INTEST_MODEL = model;
+    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env });
+    const args = existsSync(argsFile)
+      ? readFileSync(argsFile, "utf8").split("\0").slice(0, -1)
+      : null;
+    const log = existsSync(events) ? readFileSync(events, "utf8") : "";
+    rmSync(dir, { recursive: true, force: true });
+    return { r, args, events: log, dir };
+  }
+
+  it("passes no --model when FACTORY_INTEST_MODEL is unset or empty", () => {
+    for (const model of [undefined, ""]) {
+      const { r, args, events, dir } = runHandoff({ model });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /^rc=0$/m);
+      assert.ok(args, "run-claude.mjs was not called");
+      assert.deepEqual(args.slice(2), [
+        "--dangerously-skip-permissions",
+        "--effort",
+        "xhigh",
+        "--no-chrome",
+        "--strict-mcp-config",
+      ]);
+      assert.equal(args[0], "-p");
+      assert.match(args[1], /# In Test scenario prompt[\s\S]*"bundle":true/);
+      assert.match(r.stdout, /In Test scenario, cap 600s, effort=xhigh, model=default\)/);
+      assert.match(events, new RegExp(`pwd:${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      assert.match(events, /timeout:600/);
+      assert.match(events, new RegExp(`recorded ${SHA}`));
+      assert.doesNotMatch(events, /fallback/);
+      assert.equal(r.stderr, "");
+    }
+  });
+
+  it("passes --model right after --strict-mcp-config when FACTORY_INTEST_MODEL is set", () => {
+    const { r, args } = runHandoff({ model: "claude-sonnet-5-5" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(args, "run-claude.mjs was not called");
+    assert.deepEqual(args.slice(2), [
+      "--dangerously-skip-permissions",
+      "--effort",
+      "xhigh",
+      "--no-chrome",
+      "--strict-mcp-config",
+      "--model",
+      "claude-sonnet-5-5",
+    ]);
+    assert.match(r.stdout, /effort=xhigh, model=claude-sonnet-5-5\)/);
+  });
+
+  it("drops an invalid FACTORY_INTEST_MODEL at startup, so it never reaches the call", () => {
+    const { r, args } = runHandoff({ model: "--chrome" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /invalid FACTORY_INTEST_MODEL='--chrome'/);
+    assert.ok(args, "run-claude.mjs was not called");
+    assert.ok(!args.includes("--model"));
+    assert.ok(!args.includes("--chrome"));
+    assert.equal(args.at(-1), "--strict-mcp-config");
+  });
+});
+
 describe("intest_fallback_comment — always usable", () => {
   const body = fnBody("intest_fallback_comment");
 

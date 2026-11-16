@@ -414,12 +414,25 @@ describe("browser-guard: decidePre rules, in order", () => {
 
   test("1. a non-Chrome tool is not this guard's business", () => {
     const d = decidePre({
-      tool: "Read",
-      input: { file_path: "/etc/hosts" },
+      tool: "Grep",
+      input: { pattern: "x" },
       config: CONFIG,
       state: unselected,
     });
     assert.equal(d.allow, true);
+  });
+
+  test("1. Read is always denied: it is in an uploads session only for file_upload's check", () => {
+    for (const config of [CONFIG, { ...CONFIG, capabilities: ["uploads"], fixturesDir: "/r/f" }]) {
+      const d = decidePre({
+        tool: "Read",
+        input: { file_path: "/r/f/small.jpg" },
+        config,
+        state: unselected,
+      });
+      assert.equal(d.allow, false);
+      assert.match(d.reason, /reads no files/);
+    }
   });
 
   test("1. Bash is denied unless the run has the inspect capability (ADR-0073)", () => {
