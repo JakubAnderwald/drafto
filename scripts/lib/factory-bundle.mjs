@@ -71,8 +71,7 @@
 //                   plus "replyMarkers": [{ "commentId", "marker" }], one
 //                   drafto-factory-plan-reply-<id> per trigger comment that
 //                   needs an answer, and "replyDir", where the planner writes
-//                   the replies; "splitDir", <replyDir>/split, only while
-//                   splitting is on (ADR-0083))
+//                   the replies)
 //   }
 //
 // `replan` is set only when the bash side detected unacked OWNER comments
@@ -480,13 +479,6 @@ function shapeReplyDir(dir) {
     : null;
 }
 
-// Where the planner writes the sub-card specs when the operator asks for a
-// split (ADR-0083): `split` inside the reply dir, and nowhere else. Bash sends
-// it only while splitting is switched on (FACTORY_PLAN_SPLIT=1).
-function shapeSplitDir(dir, replyDir) {
-  return replyDir && dir === `${replyDir}/split` ? dir : null;
-}
-
 // The size marker every plan carries (ADR-0083), re-emitted on every replan:
 // <!-- drafto-factory-plan-size:<class>:<estLines> -->. <class> is S, M, L or
 // XL; <estLines> is the planner's best estimate of the lines the PR adds.
@@ -528,8 +520,6 @@ function shapeReplan(replan) {
   const triggerIds = Array.isArray(replan.triggerCommentIds)
     ? replan.triggerCommentIds.filter((id) => id !== null && id !== undefined && id !== "")
     : [];
-  const replyDir = shapeReplyDir(replan.replyDir);
-  const splitDir = shapeSplitDir(replan.splitDir, replyDir);
   return {
     planCommentId,
     planCommentUrl: replan.planCommentUrl ?? "",
@@ -539,10 +529,7 @@ function shapeReplan(replan) {
     planCommentBodyEnveloped: envelopeBody(replan.planCommentBody ?? "", "prior-plan"),
     triggerCommentIds: triggerIds,
     replyMarkers: shapeReplyMarkers(replan.replyMarkers, FACTORY_PLAN_REPLY_PREFIX),
-    replyDir,
-    // Present only while splitting is on: its absence tells the planner a
-    // split request can't be honoured.
-    ...(splitDir ? { splitDir } : {}),
+    replyDir: shapeReplyDir(replan.replyDir),
   };
 }
 

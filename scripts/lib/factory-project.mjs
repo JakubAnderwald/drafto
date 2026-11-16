@@ -38,11 +38,6 @@
 //        a caller check a column exists (e.g. "Testing") before moving a card
 //        there, so set-status can't throw and strand the card.
 //
-//   itemForIssue(projectId, issueNumber, {repo}) → itemId | null (read-only)
-//        The board item of one issue, or null when it isn't on this board.
-//        Used when the factory files cards itself (a split, ADR-0083) and
-//        must then set their Status.
-//
 //   exportStatuses(projectId) → [{itemId, issueNumber, status, type}] (read-only)
 //        Every item on the board, any repo or content type, sorted by
 //        issueNumber then itemId. A backup taken before a board migration
@@ -62,16 +57,12 @@
 //                      [--repo <owner/name>] [--limit <n>]
 //   set-status --item-id <id> --status <name> [--project-id <id>]
 //              [--owner <login>] [--title <title>]
-//   item-for-issue --issue <n> [--repo <owner/name>] [--project-id <id>]
-//                  [--owner <login>] [--title <title>]
 //
 // All subcommands print JSON to stdout and exit 0; errors print
 // `{"error": "..."}` to stderr and exit non-zero — same shape as
-// github-sync.mjs / state-cli.mjs. The exceptions are has-status-option, which
-// prints {"name", "present"} and exits 1 when the option is absent, and
-// item-for-issue, which prints {"issueNumber", "itemId"} and exits 1 when the
-// issue isn't on the board, so bash can branch on the exit code (non-zero =
-// absent or the lookup failed).
+// github-sync.mjs / state-cli.mjs. The one exception is has-status-option:
+// it prints {"name", "present"} and exits 1 when the option is absent, so
+// bash can branch on the exit code (non-zero = absent or the lookup failed).
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -436,42 +427,6 @@ export async function hasStatusOption(projectId, name) {
   return Object.prototype.hasOwnProperty.call(meta.optionsByName, name);
 }
 
-// Read from the issue's side (its projectItems), so one query answers it
-// whatever the size of the board.
-const ITEM_FOR_ISSUE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    issue(number: $number) {
-      projectItems(first: 50) { nodes { id project { id } } }
-    }
-  }
-}`;
-
-export async function itemForIssue(projectId, issueNumber, { repo = DEFAULT_REPO } = {}) {
-  if (!projectId) throw new Error("itemForIssue requires projectId");
-  if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
-    throw new Error("itemForIssue requires a positive issue number");
-  }
-  const [owner, name, extra] = String(repo).split("/");
-  if (!owner || !name || extra !== undefined) throw new Error(`itemForIssue: bad repo ${repo}`);
-  const raw = await runGh([
-    "api",
-    "graphql",
-    "-f",
-    `query=${ITEM_FOR_ISSUE_QUERY}`,
-    "-f",
-    `owner=${owner}`,
-    "-f",
-    `name=${name}`,
-    "-F",
-    `number=${issueNumber}`,
-  ]);
-  const data = JSON.parse(raw);
-  if (data?.errors?.length) throw new Error(`itemForIssue failed: ${JSON.stringify(data.errors)}`);
-  const nodes = data?.data?.repository?.issue?.projectItems?.nodes ?? [];
-  const hit = nodes.find((n) => n?.project?.id === projectId && typeof n?.id === "string");
-  return hit ? hit.id : null;
-}
-
 // Pure: shape item nodes from EXPORT_QUERY into the backup rows. Unlike
 // shapeItems this keeps every item (any repo, PRs, drafts, no Status) — a
 // migration that clears a Status clears it on all of them.
@@ -631,22 +586,6 @@ async function main(argv) {
         statusName: flags.status,
       });
     }
-    case "item-for-issue": {
-      const issueNumber = Number(flags.issue);
-      if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
-        throw new Error("item-for-issue requires --issue <n>");
-      }
-      const projectId = await resolveProjectId({
-        projectId: flags["project-id"],
-        owner: flags.owner,
-        title: flags.title,
-      });
-      const itemId = await itemForIssue(projectId, issueNumber, {
-        repo: flags.repo ?? DEFAULT_REPO,
-      });
-      if (!itemId) process.exitCode = 1;
-      return { issueNumber, itemId };
-    }
     case "--help":
     case "-h":
     case undefined:
@@ -656,8 +595,7 @@ async function main(argv) {
           "has-status-option --name <option> [--project-id <id>] [--owner <login>] [--title <title>]|" +
           "export-statuses [--project-id <id>] [--owner <login>] [--title <title>]|" +
           "query-status-items --status <name> [--project-id <id>] [--owner <login>] [--title <title>] [--repo <owner/name>] [--limit <n>]|" +
-          "set-status --item-id <id> --status <name> [--project-id <id>] [--owner <login>] [--title <title>]|" +
-          "item-for-issue --issue <n> [--repo <owner/name>] [--project-id <id>] [--owner <login>] [--title <title>]>\n",
+          "set-status --item-id <id> --status <name> [--project-id <id>] [--owner <login>] [--title <title>]>\n",
       );
       return null;
     default:

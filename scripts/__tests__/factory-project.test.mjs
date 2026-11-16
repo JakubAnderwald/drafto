@@ -541,56 +541,6 @@ describe("hasStatusOption (mocked gh)", () => {
   });
 });
 
-// A split files new cards and then sets their Status (ADR-0083), so it needs
-// each new issue's item id on this board.
-describe("itemForIssue (mocked gh)", () => {
-  const items = (nodes) => ghResp({ data: { repository: { issue: { projectItems: { nodes } } } } });
-
-  it("returns the item on this board, read from the issue's side", async () => {
-    lib._setExecFileForTests(
-      makeExecFile([
-        {
-          match: (cmd) => cmd === "gh",
-          response: items([
-            { id: "PVTI_other", project: { id: "PVT_other" } },
-            { id: "PVTI_ours", project: { id: "PVT_xyz" } },
-          ]),
-        },
-      ]),
-    );
-    assert.equal(await lib.itemForIssue("PVT_xyz", 901), "PVTI_ours");
-    const args = execCalls[0].args;
-    assert.ok(args.includes("owner=JakubAnderwald"));
-    assert.ok(args.includes("name=drafto"));
-    assert.ok(args.includes("number=901"));
-    assert.ok(!args.some((a) => /\bmutation\b/.test(a)), "read-only");
-  });
-
-  it("returns null when the issue isn't on this board", async () => {
-    lib._setExecFileForTests(
-      makeExecFile([
-        {
-          match: (cmd) => cmd === "gh",
-          response: items([{ id: "PVTI_other", project: { id: "PVT_other" } }]),
-        },
-      ]),
-    );
-    assert.equal(await lib.itemForIssue("PVT_xyz", 901), null);
-  });
-
-  it("throws on GraphQL errors and on bad arguments", async () => {
-    lib._setExecFileForTests(
-      makeExecFile([
-        { match: (cmd) => cmd === "gh", response: ghResp({ errors: [{ message: "nope" }] }) },
-      ]),
-    );
-    await assert.rejects(() => lib.itemForIssue("PVT_xyz", 901), /itemForIssue failed/);
-    await assert.rejects(() => lib.itemForIssue("", 901), /requires projectId/);
-    await assert.rejects(() => lib.itemForIssue("PVT_xyz", 0), /positive issue number/);
-    await assert.rejects(() => lib.itemForIssue("PVT_xyz", 1, { repo: "a/b/c" }), /bad repo/);
-  });
-});
-
 // EXPORT_QUERY reads the Status by field name (aliased `status`), so a node
 // carries it directly instead of in a fieldValues page.
 function itemNode(id, content, status) {
@@ -727,10 +677,6 @@ let out;
 if (q.includes("fields(first")) {
   out = { data: { node: { fields: { nodes: [{ __typename: "ProjectV2SingleSelectField", id: "F2", name: "Status",
     options: [{ id: "O_REVIEW", name: "In Review" }, { id: "O_TEST", name: "In Test" }] }] } } } };
-} else if (q.includes("projectItems(first")) {
-  const num = (args.find((a) => a.startsWith("number=")) || "").slice(7);
-  out = { data: { repository: { issue: { projectItems: { nodes:
-    num === "901" ? [{ id: "PVTI_901", project: { id: "PVT_1" } }] : [] } } } } };
 } else if (q.includes("items(first")) {
   out = { data: { node: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
     { id: "PVTI_2", content: { __typename: "Issue", number: 9 },
@@ -778,18 +724,6 @@ fs.writeSync(1, JSON.stringify(out));
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /requires --name/);
     assert.equal(r.calls.length, 0);
-  });
-
-  it("item-for-issue prints the item id, and exits 1 when the issue isn't on the board", () => {
-    const hit = runCli(["item-for-issue", "--issue", "901", "--project-id", "PVT_1"]);
-    assert.equal(hit.status, 0, hit.stderr);
-    assert.deepEqual(JSON.parse(hit.stdout), { issueNumber: 901, itemId: "PVTI_901" });
-    const miss = runCli(["item-for-issue", "--issue", "902", "--project-id", "PVT_1"]);
-    assert.equal(miss.status, 1);
-    assert.deepEqual(JSON.parse(miss.stdout), { issueNumber: 902, itemId: null });
-    const bad = runCli(["item-for-issue", "--issue", "x", "--project-id", "PVT_1"]);
-    assert.notEqual(bad.status, 0);
-    assert.equal(bad.calls.length, 0);
   });
 
   it("export-statuses prints every item as sorted JSON and sends no mutation", () => {
