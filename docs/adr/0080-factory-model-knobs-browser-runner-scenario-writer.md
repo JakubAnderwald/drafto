@@ -20,8 +20,8 @@ Neither stage writes code. A cheaper model may do both well enough. Nobody can t
 1. **Two env knobs, both empty by default.** `FACTORY_BROWSER_MODEL` sets the model of the browser runner, for all three of its kinds. `FACTORY_INTEST_MODEL` sets the model of the scenario writer, for In Test and Testing. Empty passes no `--model` flag at all, so the call is exactly what it was before this ADR. Merging this changes nothing until the plist sets a knob.
 2. **Strict validation at startup.** A value must match `^(claude-[a-z0-9-]+|opus|sonnet|haiku|fable)(\[1m\])?$`: one of the CLI's aliases or a full `claude-…` name, optionally with the `[1m]` suffix. Anything else prints a warning on stderr, which lands in the launchd log, and the knob falls back to empty. The pattern rejects spaces and a leading dash, so a value can't add a flag to the call.
 3. **`--model` goes in through an optional array.** Each call site builds `model_args=(--model "$KNOB")` only when the knob is set and expands it as `${model_args[@]+"${model_args[@]}"}`. That is the form bash 3.2 accepts for an empty array under `set -u`. Its position is pinned by the tests:
-   - in the browser runner, after `--chrome` and before `--effort`, so the call still ends in `--effort "$FACTORY_PLAN_EFFORT" )`;
-   - in the scenario writer, after `--strict-mcp-config`, so `--effort … --no-chrome --strict-mcp-config` stays adjacent.
+   - in the browser runner, right before `--effort` (so after `--chrome`), and the call still ends in `--effort "$FACTORY_PLAN_EFFORT" )`;
+   - in the scenario writer, right after `--strict-mcp-config`, so `--effort … --no-chrome --strict-mcp-config` stays adjacent.
 4. **Effort is unchanged.** Both stages still run at `FACTORY_PLAN_EFFORT`. A model change and an effort change are separate trials.
 5. **Each call logs its model.** The "Invoking" log line of both stages gains `model=<value>`, or `model=default` when the knob is empty. That lets the trial match each report to the model that wrote it.
 
@@ -40,6 +40,10 @@ The rollout is an operator step after merge, never automatic:
   - the browser runner records an `error` result, which spends the attempt, so each head loses both of its browser attempts.
 
   The smoke test above exists to catch this. A weaker model may also write thinner scenarios or miss a UI fault. Both outputs are evidence, never a gate: a human still tests at In Test.
+
+  Session-limit handling stays model-blind. `check_session_limit` matches a "session", "usage", "weekly" or "N-hour" limit in the transcript, whatever the model. If a stage on a knob's model hits a limit that only that model has, there are two outcomes. When the message matches, the whole factory pauses until the reset, including the stages on the default model. When it doesn't, the call counts as a plain error, as with a typo above. Emptying the knob ends both. Model-aware limit handling is left for a later change, if the trial shows it is needed.
+
+  A rejected value warns only in the launchd log, because the knobs are checked before `log()` exists, as every other knob is. The factory log shows it only as `model=default` on the next `Invoking` line.
 
 - **Neutral**: Every other call keeps the CLI default model: planning, the code review, `--implement`, `--watch` fix passes, and the verification shell lane (`verify-lane.mjs`, which reads only `FACTORY_PLAN_EFFORT`). Extending the knobs to them is a separate decision. The factory still has seven `claude -p` calls.
 

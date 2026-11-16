@@ -65,9 +65,10 @@
 # + dynamic multi-agent workflows); --watch fix passes run at xhigh
 # (FACTORY_WATCH_EFFORT, ADR-0076); the read-only stages (--plan/replan, the
 # code review, the scenario writer, the browser runner, the verification shell
-# lane) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below. The browser runner and the
-# scenario writer can also run on another model (FACTORY_BROWSER_MODEL /
-# FACTORY_INTEST_MODEL, ADR-0080); see the model block after it.
+# lane) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below. The
+# browser runner and the scenario writer can also run on another model
+# (FACTORY_BROWSER_MODEL / FACTORY_INTEST_MODEL, ADR-0080); see the model
+# block after it.
 
 set -euo pipefail
 

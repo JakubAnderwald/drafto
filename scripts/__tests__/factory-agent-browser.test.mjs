@@ -579,7 +579,7 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
     }
   });
 
-  it("passes --model after --chrome and before --effort when FACTORY_BROWSER_MODEL is set", () => {
+  it("passes --model right before --effort when FACTORY_BROWSER_MODEL is set", () => {
     const { r, dir, callLog } = run({ model: "claude-sonnet-5-5" });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /rc=0 result=ran /);
@@ -589,8 +589,8 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
     assert.ok(i > 1, "missing --model");
     assert.equal(args[i + 1], "claude-sonnet-5-5");
     assert.equal(args.lastIndexOf("--model"), i, "--model only once");
-    assert.ok(i < args.indexOf("--effort"), "--model sits before --effort");
-    assert.deepEqual(args.slice(-2), ["--effort", "xhigh"]);
+    // Right before --effort, which still ends the call.
+    assert.deepEqual(args.slice(-4), ["--model", "claude-sonnet-5-5", "--effort", "xhigh"]);
     assert.match(r.stdout, /model=claude-sonnet-5-5\)/);
     rmSync(dir, { recursive: true, force: true });
   });
