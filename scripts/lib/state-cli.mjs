@@ -121,6 +121,7 @@
 //                                    lastWatchAt, lastReleaseAt, lastBeta,
 //                                    lastProd, lastStatus, lastError,
 //                                    lastFeedbackAt, intestCommentSha,
+//                                    intestScenarioRounds,
 //                                    intestBetaSha, intestBetaAt,
 //                                    intestBetaLanes, intestBetaAttempts,
 //                                    intestBetaLaneAt,

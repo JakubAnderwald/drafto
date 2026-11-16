@@ -163,6 +163,11 @@ function emptyIssue() {
     // commits, so an In Test → feedback → In Test round trip gets a fresh
     // scenario and a fresh beta build. See ADR-0030.
     intestCommentSha: null, // head SHA the last In Test comment was written for
+    // Incremental scenario rounds (ADR-0082): scenarios posted in the delta
+    // mode since the last full one (decimal string). At
+    // FACTORY_SCENARIO_FULL_EVERY the next run sends the whole PR diff again,
+    // and a full run clears it.
+    intestScenarioRounds: null,
     intestBetaSha: null, // head SHA beta lanes were last dispatched for
     intestBetaAt: null,
     intestBetaLanes: null,
@@ -650,6 +655,9 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // bash write is `|| true`, so a rejected field fails silently and the factory
   // would re-post the scenario comment and re-dispatch beta builds every tick.
   "intestCommentSha",
+  // Incremental scenario rounds (ADR-0082). A rejected write leaves the count
+  // at zero, so the scenario would never be rewritten from the whole diff.
+  "intestScenarioRounds",
   "intestBetaSha",
   "intestBetaAt",
   "intestBetaLanes",
