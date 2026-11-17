@@ -46,10 +46,11 @@
 # Each mode acquires its own PID-file lock so multiple modes can run
 # back-to-back in one launchd tick without contending. --implement and
 # --watch additionally track per-issue worktree slots (slot0|slot1) in
-# logs/factory-state.json. Their locks are different, so the two can run at
-# once and pick the same free slot. There is no per-slot file lock:
-# slot_acquire reads factory:slot-acquire's answer and defers a card whose
-# slot another issue took (#466).
+# logs/factory-state.json. factory-agent-loop.sh runs the modes one after
+# another under one mutex, but their locks are different, so a mode run by
+# hand can overlap the loop's. There is no per-slot file lock: slot_acquire
+# reads factory:slot-acquire's answer and defers a card whose slot is in use
+# (#466).
 #
 # Phase gate: --phase A|B|C|D. Refusing to operate outside the requested
 # phase is the prompt's job (the bundle includes config.phase); bash
@@ -2858,25 +2859,28 @@ slot_for_issue() {
 # <pid>. Exit 0 when the slot is now this issue's, 1 to defer the card this
 # tick (the reason is logged). factory:slot-acquire exits 0 even when it
 # refuses (#466), so its JSON decides. It refuses when the slot's recorded pid
-# is alive. --implement and --watch hold different mode locks and can run at
-# once, so a refusal is either a slot another issue just took (defer), or
-# this issue's own slot, recorded by an earlier run. That run is still
-# working on it only when its pid is a detached implement run
-# (`implement-lane.mjs _supervise`, ADR-0085): defer. Any other pid (an
-# earlier tick's still finishing other cards, or a pid reused since) is taken
-# over with --force, which is what the refusal-blind callers used to get.
+# is alive. factory-agent-loop.sh runs the modes one after another under one
+# mutex, so a live pid means a mode run by hand alongside it, a pid reused
+# since, or a detached implement run (ADR-0085). A refusal defers the card
+# when the slot is another issue's, or when it's this issue's and the pid is
+# still working on it: a detached implement run (`implement-lane.mjs
+# _supervise`) or another factory-agent.sh process. Any other pid is stale
+# for this slot (reused, or this process), so the slot is taken back with
+# --force true. That is what the refusal-blind callers used to get.
 slot_acquire() {
-  local slot="$1" issue="$2" pid="$3" out holder holder_pid holder_cmd
+  local slot="$1" issue="$2" pid="$3" out fields ok reason holder holder_pid holder_cmd
   if ! out=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$slot" "$issue" "$pid" \
       --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
     log "WARNING: slot-acquire $slot for #$issue failed; deferring"
     return 1
   fi
   printf '%s\n' "$out" >>"$LOG_FILE"
-  [[ "$(jq -r '.ok // false' <<<"$out" 2>/dev/null || echo false)" == "true" ]] && return 0
-  holder=$(jq -r '.occupiedBy.issueNumber // ""' <<<"$out" 2>/dev/null || echo "")
-  holder_pid=$(jq -r '.occupiedBy.pid // ""' <<<"$out" 2>/dev/null || echo "")
-  if [[ "$(jq -r '.reason // ""' <<<"$out" 2>/dev/null || echo "")" != "slot-occupied" || -z "$holder" ]]; then
+  # One parse; the unit separator keeps empty fields apart (a tab would not).
+  fields=$(jq -r '[(.ok == true), (.reason // ""), (.occupiedBy.issueNumber // ""), (.occupiedBy.pid // "")]
+    | map(tostring) | join("\u001f")' <<<"$out" 2>/dev/null) || fields=""
+  IFS=$'\x1f' read -r ok reason holder holder_pid <<<"$fields" || true
+  [[ "$ok" == "true" ]] && return 0
+  if [[ "$reason" != "slot-occupied" || -z "$holder" ]]; then
     log "WARNING: slot-acquire $slot for #$issue was refused (unreadable answer); deferring"
     return 1
   fi
@@ -2885,21 +2889,25 @@ slot_acquire() {
     return 1
   fi
   holder_cmd=""
-  if [[ "$holder_pid" =~ ^[0-9]+$ ]]; then
+  if [[ "$holder_pid" =~ ^[0-9]+$ && "$holder_pid" != "$$" ]]; then
     holder_cmd=$(ps -o command= -p "$holder_pid" 2>/dev/null || true)
   fi
   if [[ "$holder_cmd" == *"implement-lane.mjs _supervise"* ]]; then
     log "Issue #$issue: slot $slot is held by its own running implement (pid $holder_pid); deferring to a later tick"
     return 1
   fi
-  log "Issue #$issue: slot $slot is recorded for this issue (pid ${holder_pid:-none}), which is not a running implement; taking it over"
+  if [[ "$holder_cmd" == *"factory-agent.sh"* ]]; then
+    log "Issue #$issue: slot $slot is held by another running factory-agent.sh for this issue (pid $holder_pid); deferring to a later tick"
+    return 1
+  fi
+  log "Issue #$issue: slot $slot is recorded for this issue (pid ${holder_pid:-none}), which isn't working on it; taking it over"
   if ! out=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$slot" "$issue" "$pid" --force true \
       --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
     log "WARNING: slot-acquire --force $slot for #$issue failed; deferring"
     return 1
   fi
   printf '%s\n' "$out" >>"$LOG_FILE"
-  if [[ "$(jq -r '.ok // false' <<<"$out" 2>/dev/null || echo false)" != "true" ]]; then
+  if [[ "$(jq -r '.ok == true' <<<"$out" 2>/dev/null || echo false)" != "true" ]]; then
     log "WARNING: slot-acquire --force $slot for #$issue was refused; deferring"
     return 1
   fi

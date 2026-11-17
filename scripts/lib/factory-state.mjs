@@ -527,9 +527,10 @@ export function getSlot(state, slotIndex) {
 }
 
 // Returns true if slot is unoccupied OR its recorded pid is no longer alive.
-// There is no per-slot file lock: factory-agent.sh's --implement and --watch
-// can run at once, and its slot_acquire reads factory:slot-acquire's refusal
-// (ok:false, exit 0) to defer a card whose slot another issue holds (#466).
+// There is no per-slot file lock. factory-agent-loop.sh runs the modes one
+// after another under one mutex; for a mode run by hand alongside it,
+// factory-agent.sh's slot_acquire reads factory:slot-acquire's refusal
+// (ok:false, exit 0) and defers a card whose slot is in use (#466).
 export function isSlotFree(state, slotIndex, { isPidAlive } = {}) {
   const slot = getSlot(state, slotIndex);
   // Explicit null checks (vs `!slot.pid`) so a hypothetical pid 0 — the kernel

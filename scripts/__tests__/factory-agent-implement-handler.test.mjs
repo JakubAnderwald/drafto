@@ -511,7 +511,10 @@ describe("implement_handle_result: blocked, incomplete, declined", () => {
 
 // ── slot_acquire (#466) ─────────────────────────────────────────────────────
 
-function runSlotAcquire(state, args, { nodeStub = "" } = {}) {
+// Runs under /bin/bash (the Mac mini's 3.2), from a file named
+// factory-agent.sh as the real one is. `claimFirst` records the slot for #7
+// under this very process before slot_acquire runs.
+function runSlotAcquire(state, args, { nodeStub = "", claimFirst = false } = {}) {
   const dir = tempDir();
   const stateFile = join(dir, "state.json");
   const logFile = join(dir, "log");
@@ -522,9 +525,14 @@ function runSlotAcquire(state, args, { nodeStub = "" } = {}) {
     'log() { printf "%s\\n" "$*" >>"$LOG_FILE"; }',
     nodeStub,
     SLOT_ACQUIRE,
+    claimFirst
+      ? 'node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire 0 7 "$$" --state-file "$STATE_FILE" >/dev/null'
+      : "",
     `if slot_acquire ${args.map((a) => `'${a}'`).join(" ")}; then echo ACQUIRED; else echo DEFERRED; fi`,
   ].join("\n");
-  const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+  const agent = join(dir, "factory-agent.sh");
+  writeFileSync(agent, snippet);
+  const r = spawnSync("/bin/bash", [agent], { encoding: "utf8" });
   return {
     ...r,
     log: read(logFile),
@@ -563,18 +571,45 @@ describe("slot_acquire", () => {
     assert.deepEqual(r.state.slots["0"], held);
   });
 
-  it("takes back its own slot from a live pid that isn't a detached implement run", () => {
-    // The test runner is alive and is not `implement-lane.mjs _supervise`:
-    // an earlier tick still finishing other cards, or a reused pid.
+  it("takes back its own slot from a live pid that isn't working on it", () => {
+    // The test runner is alive, and is neither a detached implement run nor
+    // factory-agent.sh: a pid reused since the slot was recorded.
     const r = runSlotAcquire(slotState({ pid: process.pid, issueNumber: "7", acquiredAt: "x" }), [
       "0",
       "7",
       "123",
     ]);
     assert.match(r.stdout, /^ACQUIRED$/m);
-    assert.match(r.log, /is not a running implement; taking it over/);
+    assert.match(r.log, /which isn't working on it; taking it over/);
     assert.equal(r.state.slots["0"].pid, 123);
     assert.equal(r.state.slots["0"].issueNumber, "7");
+  });
+
+  it("takes back its own slot recorded under this very process", () => {
+    const r = runSlotAcquire(null, ["0", "7", "123"], { claimFirst: true });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^ACQUIRED$/m);
+    assert.match(r.log, /taking it over/);
+    assert.equal(r.state.slots["0"].pid, 123);
+  });
+
+  it("defers when another factory-agent.sh process holds its own slot", async () => {
+    // A mode run by hand alongside the loop's, working on the same card.
+    const child = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)", "factory-agent.sh", "--watch"],
+      { stdio: "ignore" },
+    );
+    try {
+      await new Promise((ok) => setTimeout(ok, 200));
+      const held = { pid: child.pid, issueNumber: "7", acquiredAt: "x" };
+      const r = runSlotAcquire(slotState(held), ["0", "7", "123"]);
+      assert.match(r.stdout, /^DEFERRED$/m);
+      assert.match(r.log, /held by another running factory-agent\.sh for this issue \(pid \d+\)/);
+      assert.deepEqual(r.state.slots["0"], held);
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 
   it("takes back its own slot recorded without a pid", () => {
