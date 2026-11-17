@@ -187,7 +187,7 @@ describe("POST /api/mcp", () => {
           body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
         }),
       );
-      // Drop the activity-day task every authenticated call schedules (ADR 0085), so only the
+      // Drop the activity-day task every authenticated call schedules (ADR 0086), so only the
       // tool's own tasks are left.
       afterTasks.length = 0;
       const call = mockTool.mock.calls.find((c: unknown[]) => c[0] === "delete_notebook");
@@ -235,7 +235,7 @@ describe("POST /api/mcp", () => {
   });
 });
 
-describe("POST /api/mcp activity day (ADR 0085)", () => {
+describe("POST /api/mcp activity day (ADR 0086)", () => {
   const today = () => new Date().toISOString().slice(0, 10);
 
   function authenticatedRequest(): Request {

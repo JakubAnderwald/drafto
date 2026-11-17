@@ -6,7 +6,7 @@ import { recordActivity, utcDay } from "@drafto/shared";
 import { createClient } from "@/lib/supabase/client";
 
 /**
- * Prefix of the sessionStorage keys recording the activity day (ADR 0085): `<prefix>:<userId>`
+ * Prefix of the sessionStorage keys recording the activity day (ADR 0086): `<prefix>:<userId>`
  * holds the latest UTC day this browser tab recorded for that user. One key per user, so
  * signing in as another account in the same tab and back again doesn't send a day twice.
  * Written only after the server accepted the day, so a failed ping is retried on the next mount.
@@ -100,7 +100,7 @@ function untilNextUtcDay(now: number = Date.now()): number {
 
 /**
  * Records that the signed-in user opened Drafto today (UTC), from the web, at most once per
- * browser session per UTC day (ADR 0085). Only the day is sent: never a note, page or action.
+ * browser session per UTC day (ADR 0086). Only the day is sent: never a note, page or action.
  *
  * The ping runs in an effect, after render, and is never awaited. It runs again when the user
  * returns to the tab and at midnight UTC while the tab is in front, so a new day is recorded.

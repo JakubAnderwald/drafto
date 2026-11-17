@@ -78,7 +78,7 @@ describe("factory-agent.sh --implement verification", () => {
     assert.ok(parityAt < moveAt, "a violation must never reach In Review");
     assert.match(
       implementedArm,
-      /if ! implement_parity_gate "\$ITEM_ID" "\$ISSUE_NUM" "\$SLOT" "\$PR_NUM" \\\n\s*"\$AFFECTED" "\$PARITY_OVERRIDE"; then\n\s*continue\n\s*fi\n/,
+      /if ! implement_parity_gate "\$ITEM_ID" "\$ISSUE_NUM" "\$SLOT" "\$PR_NUM" \\\n\s*"\$AFFECTED" "\$PARITY_OVERRIDE"; then\n\s*return 0\n\s*fi\n/,
     );
     const gate = sliceBetween("implement_parity_gate() {", "\n}\n", "implement_parity_gate");
     assert.match(gate, /parity_violation "\$affected" "\$override" "\$diff_files"/);
@@ -93,7 +93,7 @@ describe("factory-agent.sh --implement verification", () => {
       "the head-unchanged arm",
     );
     assert.match(mismatch, /factory:bump-attempts/);
-    assert.match(mismatch, /continue/);
+    assert.match(mismatch, /return 0/);
     assert.doesNotMatch(
       mismatch,
       /lastFeedbackAt/,
@@ -116,7 +116,7 @@ describe("factory-agent.sh --implement verification", () => {
       "the unreadable-OID arm",
     );
     assert.match(unknown, /factory:bump-attempts/);
-    assert.match(unknown, /continue/);
+    assert.match(unknown, /return 0/);
     assert.doesNotMatch(unknown, /lastFeedbackAt/);
   });
 
@@ -141,7 +141,7 @@ describe("factory-agent.sh --implement verification", () => {
     );
     assert.match(guard, /"\$LOCAL_HEAD" != "\$PRE_HEAD_OID"/);
     assert.match(guard, /factory:bump-attempts/);
-    assert.match(guard, /continue/);
+    assert.match(guard, /return 0/);
     // Only "ahead of / diverged from" means unlanded work. A worktree merely
     // behind the PR head (someone else pushed) must not be treated as failure.
     assert.match(guard, /merge-base --is-ancestor "\$LOCAL_HEAD" "\$PRE_HEAD_OID"/);
@@ -173,7 +173,7 @@ describe("factory-agent.sh --implement verification", () => {
       assert.ok(m, `${arm} arm should check the PRE_HEAD_KNOWN flag`);
       const guard = m[0];
       assert.match(guard, /factory:bump-attempts/);
-      assert.match(guard, /continue/);
+      assert.match(guard, /return 0/);
       assert.doesNotMatch(guard, /lastFeedbackAt/);
       assert.doesNotMatch(guard, /transition_status/);
     });

@@ -562,7 +562,7 @@ describe("SyncNetworkError", () => {
 
 // Mirror of apps/mobile/__tests__/db/sync.test.ts's activity ping suite, minus
 // the mobile tags.
-describe("activity ping after a successful sync (ADR-0085)", () => {
+describe("activity ping after a successful sync (ADR-0086)", () => {
   const TODAY = "2026-11-13";
   const TOMORROW = "2026-11-14";
 

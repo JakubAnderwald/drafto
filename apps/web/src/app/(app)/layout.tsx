@@ -98,7 +98,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <>
-      {/* Records today's activity day from the browser (ADR 0085); renders nothing. */}
+      {/* Records today's activity day from the browser (ADR 0086); renders nothing. */}
       <ActivityPing userId={userId} />
       <AppShell
         initialNotebooks={notebooks ?? []}

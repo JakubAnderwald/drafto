@@ -133,20 +133,30 @@ function git(args, { cwd, allowFail = false, timeoutMs } = {}) {
   return res;
 }
 
-// Parse `git worktree list --porcelain` into [{path, head, branch}]. The
-// porcelain format is newline-delimited records separated by a blank line;
-// `branch` is a full ref (refs/heads/...) or absent for a detached HEAD.
+// Parse `git worktree list --porcelain` into [{path, head, branch, locked,
+// lockReason}]. The porcelain format is newline-delimited records separated
+// by a blank line; `branch` is a full ref (refs/heads/...) or absent for a
+// detached HEAD; `locked [<reason>]` marks a `git worktree lock`ed one.
 export function parseWorktreePorcelain(stdout) {
   const out = [];
   let cur = null;
   for (const line of String(stdout).split(/\r?\n/)) {
     if (line.startsWith("worktree ")) {
       if (cur) out.push(cur);
-      cur = { path: line.slice("worktree ".length), head: null, branch: null };
+      cur = {
+        path: line.slice("worktree ".length),
+        head: null,
+        branch: null,
+        locked: false,
+        lockReason: null,
+      };
     } else if (line.startsWith("HEAD ") && cur) {
       cur.head = line.slice("HEAD ".length);
     } else if (line.startsWith("branch ") && cur) {
       cur.branch = line.slice("branch ".length);
+    } else if ((line === "locked" || line.startsWith("locked ")) && cur) {
+      cur.locked = true;
+      cur.lockReason = line === "locked" ? null : line.slice("locked ".length);
     } else if (line === "" && cur) {
       out.push(cur);
       cur = null;
@@ -354,6 +364,18 @@ export function addWorktree({
   // path: --watch resumes in the same worktree --implement created. With
   // --fetch it is first brought level with origin, like the re-attach path.
   const existing = listWorktrees(root).find((w) => canonical(w.path) === canonical(wtPath));
+  // A locked worktree belongs to a detached implement run (ADR-0085), or did
+  // to one nothing has cleaned up after. It is never reused, nor synced: a
+  // second run, or a fast-forward, must not land beside a run that may still
+  // be working in it. The lock goes when that run is collected or stopped.
+  if (existing?.locked) {
+    throw new Error(
+      `worktree is locked${existing.lockReason ? ` (${existing.lockReason})` : ""}: ` +
+        `a detached implement run may still own it, so it is not reused. ` +
+        `Check \`node scripts/lib/implement-lane.mjs status\`; once nothing runs there, ` +
+        `\`git worktree unlock ${wtPath}\`.`,
+    );
+  }
   if (existing) {
     const sync = fetchRemote
       ? syncRegisteredWorktree(root, wtPath, branch)

@@ -47,6 +47,24 @@ describe("worktree-cli pure helpers", () => {
     assert.equal(parsed[1].path, "/repo/worktrees/factory-issue-7");
     assert.equal(parsed[1].branch, "refs/heads/factory/issue-7");
   });
+
+  it("reads a lock and its reason (ADR-0085)", () => {
+    const sample = [
+      "worktree /repo/worktrees/factory-issue-7",
+      "HEAD def456",
+      "branch refs/heads/factory/issue-7",
+      "locked implement run 20261117T100000Z-abc123",
+      "",
+      "worktree /repo/worktrees/factory-issue-8",
+      "HEAD abc",
+      "detached",
+      "locked",
+      "",
+    ].join("\n");
+    const [a, b] = parseWorktreePorcelain(sample);
+    assert.deepEqual([a.locked, a.lockReason], [true, "implement run 20261117T100000Z-abc123"]);
+    assert.deepEqual([b.locked, b.lockReason], [true, null]);
+  });
 });
 
 describe("worktree-cli against a real temp repo", () => {
@@ -82,6 +100,22 @@ describe("worktree-cli against a real temp repo", () => {
     const out = JSON.parse(res.stdout);
     assert.equal(out.reused, true);
     assert.equal(out.created, false);
+  });
+
+  it("refuses to reuse a locked worktree, without touching it (ADR-0085)", () => {
+    const add = runCli(["add", "--issue", "43", "--root", repo, "--base", "main"]);
+    assert.equal(add.status, 0, add.stderr);
+    const wt = JSON.parse(add.stdout).path;
+    gitIn(repo, ["worktree", "lock", "--reason", "implement run R1", wt]);
+    const again = runCli(["add", "--issue", "43", "--root", repo, "--base", "main", "--fetch"]);
+    assert.notEqual(again.status, 0);
+    assert.match(again.stderr, /worktree is locked \(implement run R1\)/);
+    gitIn(repo, ["worktree", "unlock", wt]);
+    const ok = runCli(["add", "--issue", "43", "--root", repo, "--base", "main"]);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(JSON.parse(ok.stdout).reused, true);
+    const rm = runCli(["remove", "--issue", "43", "--root", repo, "--force", "--delete-branch"]);
+    assert.equal(rm.status, 0, rm.stderr);
   });
 
   it("list reports only factory worktrees", () => {

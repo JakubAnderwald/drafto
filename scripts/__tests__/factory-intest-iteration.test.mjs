@@ -624,8 +624,15 @@ describe("factory-agent.sh structural wiring (In Test iteration)", () => {
   it("gives the implementer an empty reply directory before its run", () => {
     // Skipped only when resuming a session (ADR-0084): the killed run's
     // replies are that same session's, and the resumed run finishes them.
+    // The detached start (ADR-0085) sits between the two: it is the same run,
+    // started detached, and gets the same fresh reply directory.
     const reset = script.indexOf(
-      '    if [[ "$IMPL_RESUMED" -eq 0 ]]; then\n      reset_reply_dir "$ISSUE_NUM"\n    fi\n    log "Invoking claude for #$ISSUE_NUM (--implement',
+      '    if [[ "$IMPL_RESUMED" -eq 0 ]]; then\n      reset_reply_dir "$ISSUE_NUM"\n    fi\n' +
+        "    # FACTORY_IMPLEMENT_DETACHED=1: the same call, started detached; a later\n" +
+        "    # tick collects it (ADR-0085). Off, nothing below changes.\n" +
+        '    if [[ "$FACTORY_IMPLEMENT_DETACHED" == "1" ]]; then\n' +
+        "      implement_lane_start || true\n      continue\n    fi\n" +
+        '    log "Invoking claude for #$ISSUE_NUM (--implement',
     );
     assert.ok(reset !== -1, "reset_reply_dir must come right before the implement run");
   });
