@@ -29,7 +29,7 @@ import { isTerminalLaneState } from "../lib/verify-decide.mjs";
 //   8. the revision no-op path routes through verify_target_status and keeps
 //      its literal In Test move, but only for the head shown at In Test; any
 //      other head goes through the parity gate to In Review (#759);
-//   9. the Web lane's screenshots (ADR-0085) are published only for a browser
+//   9. the Web lane's screenshots (ADR-0086) are published only for a browser
 //      lane that reported, whose dry render withheld neither its text nor the
 //      body, and only after that render; the report is then composed again
 //      with them inside the lane's <details>, and any failure posts the dry
@@ -82,7 +82,7 @@ const REAL_HELPERS = [
   "ci_required_green",
   "browser_kind_enabled",
   "scenario_platforms",
-  // The Web lane's screenshots (verify_publish_screenshots, ADR-0085).
+  // The Web lane's screenshots (verify_publish_screenshots, ADR-0086).
   "evidence_ocr_bin",
   "browser_guard_log",
   "evidence_upload",
@@ -678,6 +678,8 @@ describe("revision_noop_route (real helpers): back to In Test only for the head 
     [
       ...ROUTE_FNS.map(extract),
       'revise_replies_check() { call "replies issue=$1 pr=$2 kind=$4"; }',
+      // No detached implement run holds the card (ADR-0085).
+      "implement_lane_stop() { return 0; }",
       "PHASE=C",
       'node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire 1 7 4242 --state-file "$STATE_FILE" >/dev/null',
       `revision_noop_route 7 ITEM 1 "$HEAD" "" 70 '${MARKERS}' "${MARK}" "${affected}" "${override}"`,
@@ -2563,7 +2565,7 @@ describe("packages/shared/ reaches the web app, for verification only (ADR-0053,
   });
 });
 
-describe("the Web lane's screenshots in the verification report (ADR-0085, real composer)", () => {
+describe("the Web lane's screenshots in the verification report (ADR-0086, real composer)", () => {
   const RUN_ID = "verify-20261021T000000";
   const COMMIT = "c".repeat(40);
   const SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -2701,7 +2703,7 @@ describe("the Web lane's screenshots in the verification report (ADR-0085, real 
         ),
       );
       assert.match(body, /\*\*Step 1\*\* · PASS · Open \/notebooks/, "under the step that took it");
-      assert.match(body, /Web screenshots are published in this report \(ADR-0085\)/);
+      assert.match(body, /Web screenshots are published in this report \(ADR-0086\)/);
       assert.doesNotMatch(body, /weren't published/);
       assert.match(body, /\*\*Verdict: PASS\*\*/);
       assert.match(r.log, /composed with the Web lane's screenshots/);

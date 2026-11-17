@@ -25,7 +25,7 @@ import {
 // a public GitHub comment. Its lanes run with the test password, the Vercel
 // bypass secret and the dev service-role key within reach, so these tests lock
 // in per-lane withholding and fail-closed scanning as much as the layout.
-// Since ADR-0085 the Web lane's published screenshots can be embedded too:
+// Since ADR-0086 the Web lane's published screenshots can be embedded too:
 // only inside that lane's <details>, never cut, never for a lane that was
 // withheld or didn't report, never for the shell lane (its output has no
 // provenance), and the footer says where the rest of the evidence stays.
@@ -183,7 +183,7 @@ const SHOT_BROWSER = {
 const LOCAL_BOTH =
   "<sub>Local evidence stays on the Mac mini (the repo is public): Repo & API `/ev/shell` · Web `/ev/browser`.";
 const WEB_PUBLISHED =
-  "<sub>Web screenshots are published in this report (ADR-0085): they show the dev test " +
+  "<sub>Web screenshots are published in this report (ADR-0086): they show the dev test " +
   "account on dev data. The rest of the Web lane's evidence stays on the Mac mini: `/ev/browser`.</sub>";
 
 // The Web lane's <details>, from its summary to its own closer (the body's
@@ -1512,7 +1512,7 @@ describe(`${COMMENT_MAX_CHARS}-character cap`, () => {
   });
 });
 
-describe("Web lane screenshots (ADR-0085)", () => {
+describe("Web lane screenshots (ADR-0086)", () => {
   it("embeds them inside the Web lane's <details>, after its text, under the rows that took them", () => {
     const r = compose({ browser: SHOT_BROWSER, images: { browser: upload() } });
     assert.deepEqual(r.images, { browser: 2 });
@@ -1903,7 +1903,7 @@ describe("verify-report CLI", () => {
     const body = readFileSync(files.out, "utf8");
     assert.ok(webLane(body).includes(imgTag(1)) && webLane(body).includes(imgTag(2)));
     assert.equal(imgCount(body), 2);
-    assert.match(body, /<sub>Web screenshots are published in this report \(ADR-0085\)/);
+    assert.match(body, /<sub>Web screenshots are published in this report \(ADR-0086\)/);
     assert.deepEqual(body.split("\n").slice(-2), [VERIFY_REPORT_MARKER, verifyShaMarker(SHA)]);
   });
 

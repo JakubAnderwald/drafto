@@ -85,7 +85,7 @@
 // bash scans for secrets before posting anything. That one call can be a
 // screenshot, so each copy is logged with onOrigin, from its own response's
 // Tab Context: only a copy of an owned tab on the allowed origin is ever
-// published (evidence-images.mjs, ADR-0085).
+// published (evidence-images.mjs, ADR-0086).
 //
 // The decision log never carries tool_input values that can hold a secret
 // (form_input's value, computer's text): it records the tool, the tabId, the
@@ -1188,7 +1188,7 @@ export function applyPost({
   if (name === "computer") {
     // Where the tab was when the screenshot was taken, from this response's
     // own Tab Context: only a shot of an owned tab on the allowed origin may
-    // be published (ADR-0085). A click's navigation can show up one call
+    // be published (ADR-0086). A click's navigation can show up one call
     // late, so a neutral, unknown or off-origin page records false.
     const tabUrl =
       isTabId(args.tabId) && owns(next, args.tabId) ? next.tabs[String(args.tabId)] : undefined;

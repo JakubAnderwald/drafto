@@ -57,6 +57,8 @@ logerr() { echo "LOGERR $*" >>"$CALLS"; }
 transition_status() { echo "MOVE $2 $3" >>"$CALLS"; }
 remove_worktree_for() { echo "RMWT $1" >>"$CALLS"; }
 release_slot_and_worktree() { echo "FREE $1" >>"$CALLS"; }
+# No detached implement run holds any card here (ADR-0085).
+implement_lane_stop() { return 0; }
 ${stubs}
 ${extract}
 ${body}

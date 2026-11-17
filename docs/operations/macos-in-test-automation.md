@@ -68,7 +68,7 @@ Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/`:
 
 ## Posting a run on the issue
 
-A finished run's report and screenshots can be posted on the card's issue, with each step's shots under it ([ADR-0085](../adr/0085-factory-test-run-screenshots-on-github.md)). It's an operator command. The factory never runs it, because the shots are of production.
+A finished run's report and screenshots can be posted on the card's issue, with each step's shots under it ([ADR-0086](../adr/0086-factory-test-run-screenshots-on-github.md)). It's an operator command. The factory never runs it, because the shots are of production.
 
 1. **Finish the run first.** If it stopped early, run the scenario with `--cleanup-only`. The command refuses while the run's `state.env` exists, because the throwaway account is still live.
 2. **List what it would publish.** From the factory checkout:

@@ -116,4 +116,5 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0082](./0082-incremental-in-test-scenario-rewrite.md)                         | Incremental In Test Scenario Rewrite                                            | Accepted           | 2026-11-16 |
 | [0083](./0083-planner-size-estimate-and-oversize-label.md)                     | Planner Size Estimate and Oversize Label                                        | Accepted           | 2026-11-16 |
 | [0084](./0084-factory-implement-deadline-and-resume.md)                        | Factory Implement Deadline and Session Resume                                   | Accepted           | 2026-11-16 |
-| [0085](./0085-factory-test-run-screenshots-on-github.md)                       | Factory Test-Run Screenshots on GitHub                                          | Accepted           | 2026-11-10 |
+| [0085](./0085-detached-implement-runs.md)                                      | Detached Implement Runs                                                         | Accepted           | 2026-11-17 |
+| [0086](./0086-factory-test-run-screenshots-on-github.md)                       | Factory Test-Run Screenshots on GitHub                                          | Accepted           | 2026-11-10 |
