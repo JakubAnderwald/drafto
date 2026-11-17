@@ -69,7 +69,14 @@ describe("implement_handle_result: where it lives", () => {
       section,
       /"\$IMPL_SESSION_FLAG" "\$IMPL_SESSION_ID" \) >"\$CLAUDE_OUTPUT_FILE" 2>>"\$LOG_FILE" \|\| EXIT_CODE=\$\?\n\n {4}implement_handle_result\n {2}done\n/,
     );
-    assert.equal(section.split(/\n\s*implement_handle_result\n/).length - 1, 1);
+    // Its only other caller is the detached-run collector (ADR-0085), with the
+    // globals restored from the run's meta.json.
+    assert.equal(section.split(/\n\s*implement_handle_result\n/).length - 1, 2);
+    const collect = fnText("implement_lane_collect_one");
+    assert.match(
+      collect,
+      /IMPL_END_EPOCH="\$ended_epoch"[\s\S]*\n {2}implement_handle_result\n {2}SESSION_LIMIT_NOW=""\n/,
+    );
   });
 
   it("has no `continue` left (it isn't in a loop) and still exits 0 at a session limit", () => {

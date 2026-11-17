@@ -96,6 +96,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ghTimeoutMs } from "./gh-timeout.mjs";
+import { freeDiskGb, memoryPressure } from "./host-resources.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import {
@@ -1045,19 +1046,10 @@ export function createDeps() {
         return false;
       }
     },
-    // macOS: 1 normal, 2 warn, 4 critical. null when it can't be read (fail open).
-    memoryPressure: async () => {
-      const r = await runCommand("sysctl", ["-n", "kern.memorystatus_vm_pressure_level"]);
-      const n = Number(r.stdout.trim());
-      return r.code === 0 && Number.isInteger(n) ? n : null;
-    },
-    // Whole GiB free on <dir>'s volume, or null.
-    freeDiskGb: async (dir) => {
-      const r = await runCommand("df", ["-Pk", dir]);
-      const row = r.code === 0 ? r.stdout.trim().split("\n")[1] : "";
-      const kb = Number(row?.split(/\s+/)[3]);
-      return Number.isFinite(kb) ? Math.floor(kb / 1024 / 1024) : null;
-    },
+    // macOS: 1 normal, 2 warn, 4 critical; whole GiB free on <dir>'s volume.
+    // Both null when unreadable (fail open). Shared with implement-lane.mjs.
+    memoryPressure: () => memoryPressure(),
+    freeDiskGb: (dir) => freeDiskGb(dir),
   };
 }
 

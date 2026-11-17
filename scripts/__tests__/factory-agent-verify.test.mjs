@@ -640,6 +640,8 @@ describe("revision_noop_route (real helpers): back to In Test only for the head 
     [
       ...ROUTE_FNS.map(extract),
       'revise_replies_check() { call "replies issue=$1 pr=$2 kind=$4"; }',
+      // No detached implement run holds the card (ADR-0085).
+      "implement_lane_stop() { return 0; }",
       "PHASE=C",
       'node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire 1 7 4242 --state-file "$STATE_FILE" >/dev/null',
       `revision_noop_route 7 ITEM 1 "$HEAD" "" 70 '${MARKERS}' "${MARK}" "${affected}" "${override}"`,
