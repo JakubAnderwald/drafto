@@ -86,14 +86,19 @@ function setup({ mode = "fresh", timeoutSec = 60, termGraceSec = 1, claudeMode =
   const bin = join(root, "bin");
   fs.mkdirSync(bin);
   fs.writeFileSync(join(bin, "claude"), FAKE_CLAUDE, { mode: 0o755 });
+  const wt = join(root, "wt");
   for (const tool of ["git", "gh"]) {
+    // git lists the worktree (unlocked) when start asks; every call is logged.
+    const list =
+      tool === "git"
+        ? `if [[ "$*" == "worktree list --porcelain" ]]; then printf 'worktree %s\\nHEAD abc\\n\\n' "${wt}"; fi\n`
+        : "";
     fs.writeFileSync(
       join(bin, tool),
-      `#!/bin/bash\nprintf '%s\\n' "$*" >>"${join(root, `${tool}-calls`)}"\nexit 0\n`,
+      `#!/bin/bash\nprintf '%s\\n' "$*" >>"${join(root, `${tool}-calls`)}"\n${list}exit 0\n`,
       { mode: 0o755 },
     );
   }
-  const wt = join(root, "wt");
   fs.mkdirSync(wt);
   const input = join(root, "input");
   fs.writeFileSync(input, "the implementer prompt\n\n## Run-time facts\n\n```json\n{}\n```\n");
@@ -232,7 +237,7 @@ describe("implement-lane supervisor (real detached spawn, fake claude)", () => {
     assert.equal(fs.statSync(t.stateFile).mtimeMs, mtimeAfterStart);
     assert.equal(fs.readFileSync(join(t.root, "git-calls"), "utf8"), gitAfterStart);
     assert.deepEqual(gitAfterStart.trim().split("\n"), [
-      `worktree unlock ${t.wt}`,
+      "worktree list --porcelain",
       `worktree lock --reason implement run ${out.runId} ${t.wt}`,
     ]);
     assert.equal(fs.existsSync(join(t.root, "gh-calls")), false);

@@ -212,11 +212,14 @@ describe("classifyRun: the status table", () => {
     deadlineAt: iso(NOW + 30 * 60_000),
     hardKillAt: iso(NOW + 35 * 60_000),
   };
-  const c = (run, files, alive, nowMs = NOW) =>
+  // reboot: the machine booted after the run's last heartbeat.
+  const c = (run, { reboot = false, ...files }, alive, nowMs = NOW) =>
     classifyRun({
       run: { ...base, ...run },
       metaProblem: null,
       exitProblem: null,
+      heartbeatMs: NOW - 600_000,
+      bootMs: reboot ? NOW - 60_000 : NOW - 86_400_000,
       ...files,
       alive,
       nowMs,
@@ -248,7 +251,10 @@ describe("classifyRun: the status table", () => {
       "running",
     ],
     ["overdue", { hardKillAt: iso(NOW - OVERDUE_AFTER_MS) }, {}, true, "overdue"],
-    ["lost", {}, {}, false, "lost"],
+    ["lost, after a reboot since its last heartbeat", {}, { reboot: true }, false, "lost"],
+    ["lost, cleared by an operator", {}, { cleared: true }, false, "lost"],
+    ["dead without exit.json and no reboot: cleanup unverified", {}, {}, false, "unverified"],
+    ["exit.json says the cleanup wasn't clean", {}, { unverified: true }, false, "unverified"],
     ["done", {}, { exit: exit(NOW - 1000) }, false, "done"],
     [
       "finishing: exit.json fresh, group still exiting",
@@ -424,11 +430,18 @@ describe("process groups: runGroups and the supervisor-proc helpers", () => {
 
 // ── the subcommands, with processes, git and spawning faked ─────────────────
 
-function fakeDeps({ rows = [], pressure = 1, spawnOk = true, spawnPid = 4242, gitCode = 0 } = {}) {
+function fakeDeps({
+  rows = [],
+  pressure = 1,
+  spawnOk = true,
+  spawnPid = 4242,
+  gitCode = 0,
+  lockedWorktrees = [],
+} = {}) {
   const calls = [];
   const tables = Array.isArray(rows[0]) ? [...rows] : null;
   let clock = NOW;
-  return {
+  const deps = {
     calls,
     env: { PATH: "/usr/bin:/bin" },
     fs,
@@ -438,9 +451,21 @@ function fakeDeps({ rows = [], pressure = 1, spawnOk = true, spawnPid = 4242, gi
       calls.push(`kill ${pid} ${sig}`);
       return true;
     },
+    // `worktree list` names deps.worktrees (start() sets the test's own), with
+    // the ones in <lockedWorktrees> locked; gitCode fails `worktree lock`.
+    worktrees: [],
     git: async (args) => {
       calls.push(`git ${args.join(" ")}`);
-      return { code: gitCode, stdout: "", stderr: gitCode ? "fatal: nope" : "" };
+      if (args[0] === "worktree" && args[1] === "list") {
+        const list = deps.worktrees
+          .map((w) => `worktree ${w}\nHEAD abc\n${lockedWorktrees.includes(w) ? "locked\n" : ""}`)
+          .join("\n");
+        return { code: 0, stdout: list + "\n", stderr: "" };
+      }
+      if (args[0] === "worktree" && args[1] === "lock" && gitCode) {
+        return { code: gitCode, stdout: "", stderr: "fatal: nope" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
     },
     spawnDetached: async (cmd, args, opts) => {
       calls.push(`spawn ${args.slice(1).join(" ")}`);
@@ -448,11 +473,13 @@ function fakeDeps({ rows = [], pressure = 1, spawnOk = true, spawnPid = 4242, gi
       return spawnOk ? { ok: true, pid: spawnPid } : { ok: false, reason: "ENOENT" };
     },
     memoryPressure: async () => pressure,
+    bootTimeMs: () => null,
     sleep: async (ms) => {
       clock += ms;
     },
     selfPids: [process.pid],
   };
+  return deps;
 }
 
 async function setup({ slotIssue = "7", runs = null, paused = false } = {}) {
@@ -486,7 +513,11 @@ async function setup({ slotIssue = "7", runs = null, paused = false } = {}) {
   return { dir, stateFile, wt, specFile, runRoot: join(dir, "logs", "implement"), spec };
 }
 
-const start = (env, deps) =>
+const start = (env, deps) => {
+  if (deps.worktrees.length === 0) deps.worktrees.push(env.wt);
+  return startCli(env, deps);
+};
+const startCli = (env, deps) =>
   main(
     [
       "start",
@@ -525,7 +556,7 @@ describe("start", () => {
     assert.deepEqual(meta.ctx, { itemId: "item-7", priorPr: "null" });
     assert.equal(Date.parse(meta.hardKillAt) - Date.parse(meta.deadlineAt), 300_000);
     assert.deepEqual(deps.calls.slice(0, 3), [
-      `git worktree unlock ${env.wt}`,
+      "git worktree list --porcelain",
       `git worktree lock --reason implement run ${out.runId} ${env.wt}`,
       `spawn _supervise --run-dir ${out.runDir}`,
     ]);
@@ -563,6 +594,32 @@ describe("start", () => {
     assert.deepEqual([s.slots[1].issueNumber, s.slots[1].pid], ["7", 99], "the slot is untouched");
     assert.equal(s.issues["7"], undefined, "no attempt is spent");
     assert.equal(deps.calls.at(-1), `git worktree unlock ${env.wt}`);
+  });
+
+  it("refuses a worktree that is already locked (owner unknown), before anything else", async () => {
+    const env = await setup();
+    const deps = fakeDeps({ lockedWorktrees: [] });
+    deps.worktrees.push(env.wt);
+    const locked = fakeDeps({ lockedWorktrees: [env.wt] });
+    locked.worktrees.push(env.wt);
+    const out = await start(env, locked);
+    assert.deepEqual([out.started, out.reason], [false, "worktree-locked"]);
+    assert.deepEqual(locked.calls, ["git worktree list --porcelain"], "no unlock, no spawn");
+    assert.deepEqual((await loadFactoryState(env.stateFile)).implement.runs, {});
+    void deps;
+  });
+
+  it("refuses a worktree another ledger run holds", async () => {
+    const env = await setup();
+    const st = JSON.parse(fs.readFileSync(env.stateFile, "utf8"));
+    st.implement.runs["8"] = { runId: "other", slot: 0, pid: 5, worktree: env.wt };
+    fs.writeFileSync(env.stateFile, JSON.stringify(st));
+    const deps = fakeDeps();
+    const spec = JSON.parse(fs.readFileSync(env.specFile, "utf8"));
+    fs.writeFileSync(env.specFile, JSON.stringify({ ...spec, maxRunning: "2" }));
+    const out = await start(env, deps);
+    assert.deepEqual([out.started, out.reason], [false, "worktree-held"]);
+    assert.deepEqual(deps.calls, []);
   });
 
   // The attach write fails after the supervisor has started (a corrupt state
@@ -614,20 +671,70 @@ describe("start", () => {
     const out = await start(env, deps);
     assert.deepEqual([out.started, out.stillAlive], [false, true]);
     assert.ok(deps.calls.includes("kill -4242 SIGKILL"));
-    assert.equal(
-      deps.calls.filter((c) => c === `git worktree unlock ${env.wt}`).length,
-      1,
-      "only the pre-lock unlock; the lock stays",
-    );
-    assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].pid, null);
+    assert.ok(!deps.calls.includes(`git worktree unlock ${env.wt}`), "the lock stays");
+    // The run stays in the ledger, pending its rollback, with the pid.
+    const run = (await loadFactoryState(env.stateFile)).implement.runs["7"];
+    assert.deepEqual([run.pid, run.rollbackPending], [4242, true]);
   });
 
-  it("a failed lock is reported, and the run still starts", async () => {
+  it("abandoned (finished during the spawn) and still alive: put back as rollback-pending", async () => {
+    const env = await setup();
+    const deps = fakeDeps();
+    let runDir = null;
+    deps.spawnDetached = async (cmd, args) => {
+      runDir = args.at(-1);
+      // An operator's kill --finish lands while the supervisor spawns.
+      const st = JSON.parse(fs.readFileSync(env.stateFile, "utf8"));
+      delete st.implement.runs["7"];
+      fs.writeFileSync(env.stateFile, JSON.stringify(st));
+      return { ok: true, pid: 4242 };
+    };
+    deps.table = () =>
+      runDir
+        ? parseProcessTable(`4242 1 4242 S node implement-lane.mjs _supervise --run-dir ${runDir}`)
+        : [];
+    const spec = JSON.parse(fs.readFileSync(env.specFile, "utf8"));
+    fs.writeFileSync(env.specFile, JSON.stringify({ ...spec, termGraceSec: "1" }));
+    const out = await start(env, deps);
+    assert.deepEqual([out.started, out.reason, out.stillAlive], [false, "abandoned", true]);
+    const run = (await loadFactoryState(env.stateFile)).implement.runs["7"];
+    assert.deepEqual(
+      [run.pid, run.rollbackPending, run.worktree, run.runDir],
+      [4242, true, env.wt, runDir],
+    );
+    assert.ok(!deps.calls.includes(`git worktree unlock ${env.wt}`), "the lock stays");
+    // While it is there, no new run starts for the card.
+    const again = await start(env, fakeDeps());
+    assert.deepEqual([again.started, again.reason], [false, "running"]);
+    // Status names it, held; once its supervisor is gone the collector drops it.
+    const st = await main(["status", "--state-file", env.stateFile], fakeDeps({ rows: [] }));
+    assert.deepEqual(
+      [st.runs[0].state, st.runs[0].rollbackPending, st.issues],
+      ["rollback", true, ["7"]],
+    );
+    const fin = await main(
+      [
+        "finish",
+        "--issue",
+        "7",
+        "--run-id",
+        run.runId,
+        "--outcome",
+        "rolled-back",
+        "--pid",
+        "4242",
+      ].concat(["--repo-root", "/repo", "--state-file", env.stateFile]),
+      fakeDeps({ rows: [] }),
+    );
+    assert.equal(fin.ok, true);
+  });
+
+  it("a lock that fails refuses the start, and drops the reservation", async () => {
     const env = await setup();
     const out = await start(env, fakeDeps({ gitCode: 128 }));
-    assert.equal(out.started, true);
-    assert.equal(out.locked, false);
-    assert.equal(out.lockError, "fatal: nope");
+    assert.deepEqual([out.started, out.reason], [false, "lock-failed"]);
+    assert.match(out.error, /fatal: nope/);
+    assert.deepEqual((await loadFactoryState(env.stateFile)).implement.runs, {});
   });
 
   it("refuses a missing worktree or empty input, and a bad spec", async () => {
@@ -675,7 +782,7 @@ function v1RunDir(
   if (exit) {
     fs.writeFileSync(
       join(runDir, "exit.json"),
-      JSON.stringify({ formatVersion: exitVersion, ...exit }),
+      JSON.stringify({ formatVersion: exitVersion, cleanup: "clean", ...exit }),
     );
   }
   return runDir;
@@ -761,11 +868,42 @@ describe("status", () => {
     const deadline = NOW - 600_000;
     fs.utimesSync(hb, new Date(deadline - 1800_000), new Date(deadline - 1800_000));
     const env = await setup({ runs: { 7: run(before, { deadlineAt: iso(deadline) }) } });
-    const lost = (await status(env, fakeDeps({ rows: [] }))).runs[0];
+    // A reboot since then: everything of it is certainly gone.
+    const rebooted = () => {
+      const d = fakeDeps({ rows: [] });
+      d.bootTimeMs = () => NOW - 1000;
+      return d;
+    };
+    const lost = (await status(env, rebooted())).runs[0];
     assert.deepEqual([lost.state, lost.collect.interrupted], ["lost", true]);
     fs.utimesSync(hb, new Date(deadline + 5000), new Date(deadline + 5000));
-    const late = (await status(env, fakeDeps({ rows: [] }))).runs[0];
+    const late = (await status(env, rebooted())).runs[0];
     assert.equal(late.collect.exitCode, 124, "still beating at the deadline: killed at the cap");
+    // No reboot (or boot time unknown): its supervisor died without cleaning
+    // up, so the run isn't collectable until a person has checked.
+    const held = (await status(env, fakeDeps({ rows: [] }))).runs[0];
+    assert.deepEqual([held.state, held.live, held.collect], ["unverified", true, undefined]);
+  });
+
+  it("an exit.json whose cleanup wasn't clean, with no leftover.json, is unverified", async () => {
+    const root = tempDir();
+    const runDir = v1RunDir(root, { exit: { exitCode: 0, cleanup: "unverified" } });
+    const env = await setup({ runs: { 7: run(runDir) } });
+    const st = (await status(env, fakeDeps({ rows: [] }))).runs[0];
+    assert.equal(st.state, "unverified");
+  });
+
+  it("clear: refused without --confirm 1 or while alive; then lifts unverified", async () => {
+    const root = tempDir();
+    const runDir = v1RunDir(root, { exit: { exitCode: 0, cleanup: "unverified" } });
+    const env = await setup({ runs: { 7: run(runDir) } });
+    const clear = (rows, extra = []) =>
+      main(["clear", "--issue", "7", ...extra, "--state-file", env.stateFile], fakeDeps({ rows }));
+    assert.equal((await clear([])).reason, "confirm-required");
+    assert.equal((await clear(parseProcessTable(sup), ["--confirm", "1"])).reason, "still-alive");
+    assert.equal((await clear([], ["--confirm", "1", "--note", "checked ps"])).ok, true);
+    const st = (await status(env, fakeDeps({ rows: [] }))).runs[0];
+    assert.equal(st.state, "done");
   });
 
   it("formatVersion 2 run files read as unreadable", async () => {
@@ -864,6 +1002,32 @@ describe("trackRun: a cancellation keeps the groups it found", () => {
       observeRun(t, ps([`104 1 104 ${T2} S new`, `107 104 104 ${T2} S new-member`])),
       [],
     );
+  });
+
+  it("a known worker that moves to a new group takes that group with it", () => {
+    const t = trackRun(
+      RUN,
+      ps([
+        sup,
+        `102 100 102 ${T1} S claude --session-id ${SID}`,
+        `120 102 102 ${T1} S node worker`,
+      ]),
+    );
+    assert.ok(t.known.has(120));
+    // claude has exited; the worker called setsid: its own group, launchd's child.
+    const moved = ps([`120 1 120 ${T1} S node worker`]);
+    assert.deepEqual(observeRun(t, moved), [120]);
+    assert.deepEqual(observeRun(t, moved), [120], "and keeps it");
+  });
+
+  it("a known process never drags in our own group, nor a rejected id", () => {
+    const self = `500 1 500 ${T1} S bash factory-agent.sh`;
+    const t = trackRun(
+      RUN,
+      ps([sup, self, `102 100 102 ${T1} S claude --session-id ${SID}`, `120 102 102 ${T1} S w`]),
+      { selfPids: [500] },
+    );
+    assert.deepEqual(observeRun(t, ps([self, `120 1 500 ${T1} S w`])), []);
   });
 
   it("children of a group that still matches stay discoverable, in groups of their own", () => {
@@ -1259,6 +1423,58 @@ describe("runSupervise: what the run left behind", () => {
       left.groups.map((g) => g.pgid),
       [9001],
     );
+  });
+
+  it("every ps read fails: cleanup-unverified, and status and finish keep the run", async () => {
+    const { runDir } = await supervise({ table: () => null });
+    const left = JSON.parse(fs.readFileSync(join(runDir, "leftover.json"), "utf8"));
+    assert.deepEqual([left.formatVersion, left.state, left.groups], [1, "cleanup-unverified", []]);
+    assert.ok(fs.existsSync(join(runDir, "exit.json")));
+    // The ledger's view of that run: not done, held, and never finished.
+    const env = await setup({
+      runs: {
+        7: {
+          runId: "20261117T100000Z-abc123",
+          slot: 1,
+          pid: 4243,
+          sessionId: SID,
+          runDir,
+          worktree: "/wt",
+          deadlineAt: iso(Date.now() + 3600_000),
+        },
+      },
+    });
+    const st = await main(["status", "--state-file", env.stateFile], fakeDeps({ rows: [] }));
+    assert.deepEqual([st.runs[0].state, st.runs[0].live], ["unverified", true]);
+    assert.deepEqual(st.live, ["7"]);
+    const deps = fakeDeps({ rows: [] });
+    const fin = await main(
+      ["finish", "--issue", "7", "--run-id", "20261117T100000Z-abc123", "--outcome", "x"].concat([
+        "--repo-root",
+        "/repo",
+        "--state-file",
+        env.stateFile,
+      ]),
+      deps,
+    );
+    assert.deepEqual([fin.ok, fin.reason], [false, "cleanup-unverified"]);
+    assert.ok(!deps.calls.some((c) => c.startsWith("git")), "no unlock");
+    const k = await main(
+      [
+        "kill",
+        "--issue",
+        "7",
+        "--finish",
+        "1",
+        "--repo-root",
+        "/repo",
+        "--state-file",
+        env.stateFile,
+      ],
+      fakeDeps({ rows: [] }),
+    );
+    assert.deepEqual([k.ok, k.reason], [false, "cleanup-unverified"]);
+    assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].pid, 4243);
   });
 
   it("nothing left behind: no leftover.json", async () => {

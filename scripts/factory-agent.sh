@@ -9196,11 +9196,18 @@ implement_lane_collect_one() {
   alive=$(jq -r '.alive == true' <<<"$run")
   [[ "$issue" =~ ^[0-9]+$ ]] || return 0
   case "$state" in
+    unverified)
+      # The supervisor couldn't inspect what the run left behind (ps failed
+      # while it ran): held until a person has looked (runbook, "Detached
+      # implement runs"). Fail closed: no collect, no new start, lock kept.
+      log "WARNING: #$issue: detached implement run $run_id ended with its cleanup unverified (leftover.json); the card stays held until it is checked by hand"
+      IMPLEMENT_LIVE_ISSUES+="$issue "
+      return 0 ;;
     starting|running)
       IMPLEMENT_LIVE_ISSUES+="$issue "
       log "Issue #$issue: detached implement run $run_id is $state (pid $(jq -r '.pid // "none"' <<<"$run"), deadline $(jq -r '.deadlineAt // "none"' <<<"$run"))"
       return 0 ;;
-    draining|overdue|unattached|unreadable)
+    draining|overdue|unattached|unreadable|rollback)
       if [[ "$alive" == "true" ]]; then
         log "Issue #$issue: detached implement run $run_id is $state; stopping it"
         if ! stop_out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" kill --issue "$issue" \
@@ -9224,12 +9231,13 @@ implement_lane_collect_one() {
   run_pid=$(jq -r '.pid // "none"' <<<"$run")
   case "$state" in
     done|lost) ;;
-    unattached|unreadable)
-      # No result to trust: never attached (the tick died mid-start: no
-      # attempt, that was the factory's failure), or run files this code can't
-      # read (another formatVersion, or corrupt). That one spends the attempt,
-      # so a card whose every run ends that way still reaches Blocked.
-      log "WARNING: #$issue: detached implement run $run_id is $state ($(jq -r '.problem // "never attached"' <<<"$run")); dropping it unread"
+    unattached|unreadable|rollback)
+      # No result to trust: never attached (the tick died mid-start), or a
+      # start's rollback that couldn't confirm its supervisor gone (no attempt
+      # for either: the factory's failure), or run files this code can't read
+      # (another formatVersion, or corrupt). That one spends the attempt, so a
+      # card whose every run ends that way still reaches Blocked.
+      log "WARNING: #$issue: detached implement run $run_id is $state ($(jq -r '.problem // (if .rollbackPending then "a start rolled back" else "never attached" end)' <<<"$run")); dropping it unread"
       # Charged only once the run is really dropped: a refused finish (it is
       # alive after all, a leftover the supervisor recorded is, or the ledger
       # moved) keeps the card held and charges nothing this tick.

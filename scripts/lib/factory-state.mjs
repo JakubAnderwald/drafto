@@ -467,6 +467,7 @@ function mergeImplementRun(r) {
     hardKillAt: strOrNull(r.hardKillAt),
     runDir: strOrNull(r.runDir),
     worktree: strOrNull(r.worktree),
+    rollbackPending: r.rollbackPending === true,
   };
 }
 
@@ -1531,4 +1532,32 @@ export function finishImplementRun(state, issue, runId) {
   }
   delete impl.runs[key];
   return { ok: true, runId: String(runId), issue: key, run };
+}
+
+// A start that couldn't confirm its supervisor is gone keeps (or puts back)
+// the run in the ledger as rollbackPending, with the supervisor's pid: the
+// card stays held, its worktree locked, and a later tick's collector stops the
+// supervisor and drops the run. false: the ledger holds another run for the
+// card, which then owns it.
+export function markImplementRollback(state, issue, runId, record = {}) {
+  const impl = getImplement(state);
+  const key = String(issue);
+  const cur = impl.runs[key];
+  if (cur && cur.runId !== String(runId)) return false;
+  impl.runs[key] = {
+    ...(cur ?? {
+      runId: String(runId),
+      slot: Number.isInteger(record.slot) ? record.slot : null,
+      sessionId: strOrNull(record.sessionId),
+      mode: strOrNull(record.mode),
+      startedAt: strOrNull(record.startedAt),
+      deadlineAt: strOrNull(record.deadlineAt),
+      hardKillAt: strOrNull(record.hardKillAt),
+      runDir: strOrNull(record.runDir),
+      worktree: strOrNull(record.worktree),
+    }),
+    pid: Number.isInteger(record.pid) ? record.pid : (cur?.pid ?? null),
+    rollbackPending: true,
+  };
+  return true;
 }

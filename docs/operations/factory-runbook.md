@@ -1341,7 +1341,7 @@ node scripts/lib/implement-lane.mjs status | jq
 node scripts/lib/state-cli.mjs factory:implement-status | jq
 ```
 
-States: `starting` (not attached yet), `running`, `draining` (ended, but something it started still runs), `overdue` (past `hardKillAt`), `done`, `lost` (died with no `exit.json`), `unattached` (the tick died mid-start), `unreadable` (run files of another format). The next tick stops `draining` and `overdue` runs and collects them, and drops dead `unattached` and `unreadable` runs unread; see the attempt rule below.
+States: `starting` (not attached yet), `running`, `draining` (ended, but something it started still runs), `overdue` (past `hardKillAt`), `done`, `lost` (died with no `exit.json`, with a reboot since its last heartbeat), `unattached` (the tick died mid-start), `rollback` (a start that couldn't confirm its supervisor gone), `unreadable` (run files of another format), `unverified` (nothing proves everything the run started is gone: the supervisor couldn't read the process table, or died without `exit.json` and no reboot since). The next tick stops `draining`, `overdue` and live `rollback` runs, collects the ended ones, and drops dead `unattached`, `rollback` and `unreadable` runs unread; see the attempt rule below. An `unverified` run keeps its card held and its worktree locked until you clear it (below).
 
 **Stopping a run.** This stops it and drops it from the ledger without collecting its result:
 
@@ -1349,7 +1349,19 @@ States: `starting` (not attached yet), `running`, `draining` (ended, but somethi
 node scripts/lib/implement-lane.mjs kill --issue <n> --finish 1 --outcome stopped
 ```
 
-It sends SIGTERM to the run's process groups (the supervisor's, and claude's own below it), waits a minute, then SIGKILL. With `ok:false` and `state:"alive"` something survived even that; with `state:"unknown"` `ps` failed. **`leftover.json`.** When claude has ended, the supervisor stops any process group the run left behind (a test runner that left claude's group and ignored SIGTERM), retrying a few times. If `ps` keeps failing, or a group survives even SIGKILL, it writes those groups' identities (pgid and start time) to `leftover.json`. Until they are gone, `status` keeps the run alive (`draining`), `kill` goes on stopping them, and `finish` refuses, so the worktree stays locked and the card held. A `leftover.json` that can't be read reads as `unreadable`, and the run is never dropped on its own: look at the processes yourself (`ps -o pid,pgid,lstart,command -g <pgid>`), then move the file aside and run `kill --issue <n> --finish 1` again. Don't `kill -9` the supervisor by hand: claude leads a process group of its own and would be left running. Dragging the card out of In Progress / In Review / Testing does the same stop on the next `--watch` sweep, which then frees the slot.
+It sends SIGTERM to the run's process groups (the supervisor's, and claude's own below it), waits a minute, then SIGKILL. With `ok:false` and `state:"alive"` something survived even that; with `state:"unknown"` `ps` failed. **`leftover.json`.** When claude has ended, the supervisor stops any process group the run left behind (a test runner that left claude's group and ignored SIGTERM), retrying a few times. If `ps` keeps failing, or a group survives even SIGKILL, it writes those groups' identities (pgid and start time) to `leftover.json`. Until they are gone, `status` keeps the run alive (`draining`), `kill` goes on stopping them, and `finish` refuses, so the worktree stays locked and the card held. A `leftover.json` that can't be read reads as `unreadable`, and the run is never dropped on its own: look at the processes yourself (`ps -o pid,pgid,lstart,command -g <pgid>`), then clear the run (below) and run `kill --issue <n> --finish 1` again.
+
+**Clearing a run by hand.** For an `unverified` run, or an unreadable `leftover.json`, check the processes yourself first: `ps -axo pid,ppid,pgid,lstart,command | grep -E '<sessionId>|<runId>'`, and the groups in `leftover.json` if there is one. Then record that nothing is left:
+
+```bash
+node scripts/lib/implement-lane.mjs clear --issue <n> --confirm 1 --note "checked ps"
+```
+
+It writes `cleared.json` in the run dir. It refuses while anything the factory can see of the run is still alive. The next `--implement` tick then collects or drops the run as usual.
+
+**A locked worktree no run owns.** A start, and `worktree-cli add`, refuse a worktree that is already `git worktree lock`ed: `worktree is locked (implement run <runId>)`, or `the detached implement run failed to start (worktree-locked)`. Check `implement-lane.mjs status` first; if no run holds the card and nothing runs in the worktree, `git worktree unlock <path>`.
+
+Don't `kill -9` the supervisor by hand: claude leads a process group of its own and would be left running. Dragging the card out of In Progress / In Review / Testing does the same stop on the next `--watch` sweep, which then frees the slot.
 
 **Resuming by hand.** The run's session id is in `status` (`sessionId`) and in `implementSessionId` on the card's record. First add the `factory-pause` label to the card, whichever of In Progress, In Review or Testing it is in: the factory works every card in those columns, and without the label it can start its own implement run or a `--watch` fix pass in the same worktree while you work there. An interactive `claude --resume` is never counted as the run, so nothing else makes the factory wait. Then continue the session only once `status` no longer lists the card (the run was collected, or stopped with `--finish 1`). Remove `factory-pause` when you are done:
 

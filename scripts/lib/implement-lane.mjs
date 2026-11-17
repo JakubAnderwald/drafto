@@ -73,7 +73,7 @@
 // command line, or any live member of its group), every process group below
 // it, and any process whose command line carries the run's claude session id.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as nodeFs from "node:fs";
 import path from "node:path";
@@ -84,6 +84,7 @@ import { parseFlags } from "./parse-flags.mjs";
 import { SESSION_ID_RE } from "./session-limit.mjs";
 import { memoryPressure } from "./host-resources.mjs";
 import { descendants, groupRunState, isLiveRow, processTable } from "./supervisor-proc.mjs";
+import { parseWorktreePorcelain } from "./worktree-cli.mjs";
 import {
   acquireSlot,
   attachImplementRun,
@@ -92,6 +93,7 @@ import {
   getImplementRun,
   getSlot,
   isFactoryPaused,
+  markImplementRollback,
   loadFactoryState,
   reserveImplementRun,
   saveFactoryState,
@@ -120,6 +122,9 @@ const KILL_SETTLE_MS = 10 * 1000;
 // The supervisor touches <runDir>/heartbeat this often, so a run that dies
 // without exit.json can still be placed before or after its deadline.
 export const HEARTBEAT_MS = 30 * 1000;
+// leftover.json's state when the supervisor couldn't look at the process
+// table at all, so what the run left behind is unknown.
+export const UNVERIFIED = "cleanup-unverified";
 // How often the supervisor reads the process table to follow what the run
 // starts, and how long it gives leftovers between SIGTERM and SIGKILL.
 const FOLLOW_MS = 1000;
@@ -293,6 +298,14 @@ function realKill(pid, signal) {
   }
 }
 
+// When the machine last booted, in ms, or null. A run whose supervisor beat
+// last before it is certainly gone, with everything it started.
+export function bootTimeMs({ run = spawnSync } = {}) {
+  const r = run("sysctl", ["-n", "kern.boottime"], { encoding: "utf8" });
+  const m = /sec\s*=\s*(\d+)/.exec(String(r?.stdout ?? ""));
+  return r && r.status === 0 && m ? Number(m[1]) * 1000 : null;
+}
+
 export function createDeps() {
   return {
     env: process.env,
@@ -303,6 +316,7 @@ export function createDeps() {
     git: realGit,
     spawnDetached: realSpawnDetached,
     memoryPressure: () => memoryPressure(),
+    bootTimeMs: () => bootTimeMs(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     selfPids: [process.pid, process.ppid],
   };
@@ -395,13 +409,23 @@ function readRunFiles(fs, run) {
     heartbeatMs = null;
   }
   const leftover = leftoverOf(fs, run.runDir);
+  const cleared = clearedOf(fs, run.runDir);
+  // Cleanup the supervisor couldn't vouch for: it said so (leftover.json), or
+  // exit.json says it wasn't clean and no leftover.json made it to disk.
+  const unverifiedCleanup =
+    leftover.seed?.state === UNVERIFIED ||
+    (exit != null && exit.cleanup !== "clean" && leftover.seed == null && !leftover.problem);
   return {
     meta,
     metaProblem,
     exit,
-    exitProblem: exitProblem ?? leftover.problem,
+    // An operator's clear (implement-lane.mjs clear) lifts what can't be
+    // checked: an unreadable leftover.json and an unverified cleanup.
+    exitProblem: exitProblem ?? (cleared ? null : leftover.problem),
     heartbeatMs,
-    leftover: leftover.seed,
+    leftover: leftover.problem ? null : leftover.seed,
+    unverified: !cleared && unverifiedCleanup,
+    cleared,
   };
 }
 
@@ -424,8 +448,27 @@ export function leftoverOf(fs, runDir) {
   return { seed: r.value, problem: null };
 }
 
+// cleared.json: an operator checked by hand that nothing of the run is left
+// running (implement-lane.mjs clear), so what couldn't be verified is lifted.
+function clearedOf(fs, runDir) {
+  if (!runDir) return false;
+  const r = readJson(fs, path.join(runDir, "cleared.json"));
+  return !r.error && r.value?.formatVersion === FORMAT_VERSION;
+}
+
 // Pure: a run's state from its ledger record, run files and liveness.
-export function classifyRun({ run, metaProblem, exit, exitProblem, alive, nowMs }) {
+export function classifyRun({
+  run,
+  metaProblem,
+  exit,
+  exitProblem,
+  alive,
+  nowMs,
+  unverified = false,
+  cleared = false,
+  heartbeatMs = null,
+  bootMs = null,
+}) {
   const ms = (iso) => {
     const t = Date.parse(iso ?? "");
     return Number.isNaN(t) ? null : t;
@@ -434,6 +477,12 @@ export function classifyRun({ run, metaProblem, exit, exitProblem, alive, nowMs 
   const hardKill = ms(run.hardKillAt);
   const pastDeadline = deadline != null && nowMs >= deadline;
   const base = { alive, pastDeadline };
+  // A start that couldn't confirm its supervisor gone: never collected, only
+  // stopped and dropped (implement_lane_collect_one).
+  if (run.rollbackPending === true) return { ...base, state: "rollback" };
+  // The supervisor couldn't inspect what the run left behind: not done until
+  // a person has looked (the runbook's "Detached implement runs").
+  if (unverified) return { ...base, state: "unverified", problem: "cleanup unverified" };
   if (!Number.isInteger(run.pid)) {
     if (alive) return { ...base, state: "unattached" };
     const started = ms(run.startedAt);
@@ -450,7 +499,17 @@ export function classifyRun({ run, metaProblem, exit, exitProblem, alive, nowMs 
     if (ended != null && nowMs - ended >= DRAINING_AFTER_MS) return { ...base, state: "draining" };
     return { ...base, state: "running" };
   }
-  if (!alive) return { ...base, state: "lost" };
+  if (!alive) {
+    // The supervisor died without exit.json, so it never cleaned up after
+    // the run. Only a reboot since its last heartbeat proves everything it
+    // started is gone; otherwise, until a person has checked, unverified.
+    const rebooted =
+      Number.isFinite(bootMs) && Number.isFinite(heartbeatMs) && bootMs > heartbeatMs;
+    if (!rebooted && !cleared) {
+      return { ...base, state: "unverified", problem: "supervisor died without exit.json" };
+    }
+    return { ...base, state: "lost" };
+  }
   if (hardKill != null && nowMs - hardKill >= OVERDUE_AFTER_MS)
     return { ...base, state: "overdue" };
   return { ...base, state: "running" };
@@ -490,7 +549,7 @@ export function collectOutcome({ exit, pastDeadline }) {
 // A run counts as live (the card is off limits) while anything of it runs, or
 // while it is still being started.
 export function isLiveState(s) {
-  return s.alive || s.state === "starting";
+  return s.alive || s.state === "starting" || s.state === "unverified";
 }
 
 function describeRun(issue, run, files, cls, nowMs) {
@@ -513,6 +572,7 @@ function describeRun(issue, run, files, cls, nowMs) {
     pastDeadline: cls.pastDeadline,
     ...(cls.problem ? { problem: cls.problem } : {}),
     pid: run.pid,
+    ...(run.rollbackPending === true ? { rollbackPending: true } : {}),
     slot: run.slot,
     sessionId: run.sessionId,
     mode: run.mode,
@@ -560,11 +620,12 @@ export async function runStatus({ stateFile, issue = null }, deps) {
   const rows = deps.table();
   if (!rows) throw new Error("ps failed: can't tell whether the implement runs are alive");
   const nowMs = deps.nowMs();
+  const bootMs = deps.bootTimeMs ? deps.bootTimeMs() : null;
   const runs = entries.map(([n, run]) => {
     const files = readRunFiles(deps.fs, run);
     const alive =
       trackRun(run, rows, { selfPids: deps.selfPids, seed: files.leftover }).alive.length > 0;
-    return describeRun(n, run, files, classifyRun({ run, ...files, alive, nowMs }), nowMs);
+    return describeRun(n, run, files, classifyRun({ run, ...files, alive, nowMs, bootMs }), nowMs);
   });
   return {
     ok: true,
@@ -631,14 +692,27 @@ export function readSpec(fs, file) {
   };
 }
 
+// Lock <worktree> for run <runId>. Fail closed: a worktree already locked
+// (by a run nothing has cleaned up after: its owner is unknown), one git
+// doesn't list, a list that can't be read, or a lock that fails, all refuse
+// the start. Returns null, or the reason.
 async function lockWorktree(deps, repoRoot, worktree, runId) {
-  // A lock a crashed run left behind would make `lock` fail; this card's run
-  // is the only one that ever locks its worktree, and it is reserved now.
-  await deps.git(["worktree", "unlock", worktree], { cwd: repoRoot });
+  const list = await deps.git(["worktree", "list", "--porcelain"], { cwd: repoRoot });
+  if (list.code !== 0) return "lock-unknown";
+  const canon = (p) => {
+    try {
+      return deps.fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const entry = parseWorktreePorcelain(list.stdout).find((w) => canon(w.path) === canon(worktree));
+  if (!entry) return "not-a-worktree";
+  if (entry.locked) return "worktree-locked";
   const r = await deps.git(["worktree", "lock", "--reason", `implement run ${runId}`, worktree], {
     cwd: repoRoot,
   });
-  return r.code === 0 ? null : (r.stderr || r.stdout || "").trim().split("\n")[0] || "failed";
+  return r.code === 0 ? null : `lock-failed: ${(r.stderr || r.stdout || "").trim().split("\n")[0]}`;
 }
 
 async function unlockWorktree(deps, repoRoot, worktree) {
@@ -670,6 +744,12 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
     if (isFactoryPaused(s, now)) refused = "factory-paused";
     else if (String(getSlot(s, spec.slot).issueNumber ?? "") !== spec.issue)
       refused = "slot-not-held";
+    else if (
+      Object.entries(getImplement(s).runs).some(
+        ([n, r]) => n !== spec.issue && r.worktree === spec.worktree,
+      )
+    )
+      refused = "worktree-held";
     if (refused) return false;
     reservation = reserveImplementRun(s, {
       worktree: spec.worktree,
@@ -689,7 +769,16 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
 
   const runDir = runDirFor(runRoot, spec.issue, runId);
   let spawned = null;
-  let locked = false;
+  // The lock first, before anything else exists: nothing to roll back but the
+  // reservation if the worktree can't be locked.
+  const lockError = await lockWorktree(deps, repoRoot, spec.worktree, runId);
+  if (lockError) {
+    await mutateState(stateFile, (s) => finishImplementRun(s, spec.issue, runId).ok);
+    return refuse(lockError.startsWith("lock-failed") ? "lock-failed" : lockError, {
+      ...(lockError.startsWith("lock-failed") ? { error: lockError } : {}),
+    });
+  }
+  const locked = true;
   try {
     fs.mkdirSync(runRoot, { recursive: true, mode: 0o700 });
     fs.mkdirSync(runDir, { mode: 0o700 });
@@ -723,8 +812,6 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
       ctx: spec.ctx,
     };
     writeJsonAtomic(fs, path.join(runDir, "meta.json"), meta);
-    const lockError = await lockWorktree(deps, repoRoot, spec.worktree, runId);
-    locked = lockError == null;
     // The run id rides on the supervisor's command line (in --run-dir): status
     // and kill identify the live process by it, so a reused pid never counts.
     spawned = await deps.spawnDetached(
@@ -762,6 +849,16 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
         rollbackWaitMs(spec),
       );
       if (stop.state !== "gone") {
+        // Not confirmed gone: the run goes back into the ledger, pending its
+        // rollback, so the card stays held and the worktree locked until a
+        // later tick's collector has stopped it.
+        await markRollback(stateFile, spec, runId, {
+          pid: spawned.pid,
+          runDir,
+          deadlineAt,
+          hardKillAt,
+          startedAt,
+        });
         return refuse("abandoned", { runId, stillAlive: true, pid: spawned.pid });
       }
       if (locked) await unlockWorktree(deps, repoRoot, spec.worktree);
@@ -776,7 +873,6 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
       deadlineAt,
       hardKillAt,
       locked,
-      ...(lockError ? { lockError } : {}),
     };
   } catch (err) {
     // Roll back only once nothing of the run is left: a supervisor that did
@@ -789,6 +885,10 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
       rollbackWaitMs(spec),
     );
     if (stop.state !== "gone") {
+      await markRollback(stateFile, spec, runId, {
+        pid: spawned?.ok ? spawned.pid : null,
+        runDir,
+      });
       return refuse("start-failed", { error: err.message, runId, stillAlive: true });
     }
     try {
@@ -798,6 +898,25 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
     }
     if (locked) await unlockWorktree(deps, repoRoot, spec.worktree);
     return refuse("start-failed", { error: err.message, runId });
+  }
+}
+
+// Keep (or put back) the run in the ledger as rollbackPending. Best effort:
+// if even that write fails, the lock still stands, and the worktree-cli and
+// start refuse a locked worktree.
+async function markRollback(stateFile, spec, runId, extra) {
+  try {
+    await mutateState(stateFile, (s) =>
+      markImplementRollback(s, spec.issue, runId, {
+        slot: spec.slot,
+        sessionId: spec.sessionId,
+        mode: spec.mode,
+        worktree: spec.worktree,
+        ...extra,
+      }),
+    );
+  } catch {
+    /* the lock stays either way */
   }
 }
 
@@ -881,9 +1000,20 @@ export async function runSupervise(
   let tracker = null;
   let following = null;
   let followSoon = null;
+  // How the end-of-run cleanup went, for exit.json: "clean" only when the
+  // supervisor saw the run's process groups and saw them all gone.
+  let cleanup = "unverified";
+  let childRunning = false;
+  let psFailedWhileRunning = false;
+  let observedWhileRunning = false;
   const follow = () => {
     const rows = table();
-    if (!rows || !meta) return;
+    if (!meta) return;
+    if (!rows) {
+      if (childRunning) psFailedWhileRunning = true;
+      return;
+    }
+    if (childRunning) observedWhileRunning = true;
     if (!tracker) {
       tracker = trackRun({ runId: meta.runId, pid: process.pid, sessionId: meta.sessionId }, rows, {
         selfPids: [process.pid],
@@ -940,6 +1070,7 @@ export async function runSupervise(
         resolve({ code: 127, signal: null, error: `spawn failed: ${e.message}` });
         return;
       }
+      childRunning = true;
       following = setInterval(follow, FOLLOW_MS);
       followSoon = setTimeout(follow, 300);
       child.once("error", (e) =>
@@ -974,6 +1105,7 @@ export async function runSupervise(
         /* already closed */
       }
     }
+    childRunning = false;
     // Whatever the run left behind in a group of its own: stopped now.
     clearInterval(following);
     clearTimeout(followSoon);
@@ -987,6 +1119,24 @@ export async function runSupervise(
       if (!tracker)
         appendLog(fs, logFile, "ps never answered; what the run left behind is unknown");
     }
+    // No look at all while claude ran (every read failed), or none ever: what
+    // it started can't be known, so the cleanup can't be called clean.
+    const unverifiedNow = !tracker || (psFailedWhileRunning && !observedWhileRunning);
+    if (unverifiedNow) {
+      writeJsonAtomic(fs, path.join(runDir, "leftover.json"), {
+        formatVersion: FORMAT_VERSION,
+        runId: meta.runId,
+        state: UNVERIFIED,
+        at: new Date().toISOString(),
+        ...(tracker ? trackerIdentities(tracker) : { groups: [], members: [] }),
+      });
+      appendLog(
+        fs,
+        logFile,
+        "cleanup unverified: ps failed while the run lived; see leftover.json",
+      );
+    }
+    if (!unverifiedNow) cleanup = "clean";
     if (tracker && tracker.groups.size > 0) {
       appendLog(
         fs,
@@ -1013,7 +1163,8 @@ export async function runSupervise(
         await new Promise((r) => setTimeout(r, leftover.retryMs));
         left = await stopTracked(tracker, supDeps, leftover.waitMs);
       }
-      if (left.state !== "gone") {
+      if (left.state !== "gone" && !unverifiedNow) cleanup = "leftover";
+      if (left.state !== "gone" && !fs.existsSync(path.join(runDir, "leftover.json"))) {
         // Hand the cleanup on: status keeps the run alive while these are,
         // and kill / finish stop them before anything is unlocked.
         writeJsonAtomic(fs, path.join(runDir, "leftover.json"), {
@@ -1046,6 +1197,7 @@ export async function runSupervise(
         timedOut: exitCode === 124 || backstop,
         terminated,
         backstop,
+        cleanup,
         error,
         startedAt,
         endedAt: new Date().toISOString(),
@@ -1090,10 +1242,12 @@ export async function runFinish(
   if (expectPid !== undefined && before.pid !== expectPid) return refuse("pid-changed");
   // Including whatever the supervisor recorded it couldn't clean up.
   const leftover = leftoverOf(deps.fs, before.runDir);
-  if (leftover.problem) return refuse("leftover-unreadable");
+  const files = readRunFiles(deps.fs, before);
+  if (leftover.problem && !files.cleared) return refuse("leftover-unreadable");
+  if (files.unverified) return refuse(UNVERIFIED);
   const rows = deps.table();
   if (!rows) return refuse("unverifiable");
-  const tracked = trackRun(before, rows, { selfPids: deps.selfPids, seed: leftover.seed });
+  const tracked = trackRun(before, rows, { selfPids: deps.selfPids, seed: files.leftover });
   if (tracked.alive.length > 0) return refuse("still-alive");
   await unlockWorktree(deps, repoRoot, before.worktree);
   const result = await mutateState(stateFile, (s) => {
@@ -1234,7 +1388,13 @@ export function observeRun(tracker, rows) {
   while (grew) {
     grew = false;
     for (const r of live) {
-      if (knownRow(r)) continue;
+      if (knownRow(r)) {
+        // A known process now in another group (it called setsid, or its
+        // group was changed): that group is the run's too. Not our own, and
+        // never a dropped (rejected) id.
+        if (!tracker.groups.has(r.pgid) && track(r.pgid)) grew = true;
+        continue;
+      }
       const member = tracker.groups.has(r.pgid);
       const child = r.ppid > 1 && knownLive(r.ppid);
       if (!member && !child) continue;
@@ -1300,7 +1460,8 @@ export async function runKill(
   const run = getImplementRun(await loadFactoryState(stateFile), issue);
   if (!run) return { ok: true, issue: String(issue), state: "none" };
   const leftover = leftoverOf(deps.fs, run.runDir);
-  if (leftover.problem) {
+  const files = readRunFiles(deps.fs, run);
+  if (leftover.problem && !files.cleared) {
     return {
       ok: false,
       issue: String(issue),
@@ -1309,7 +1470,19 @@ export async function runKill(
       reason: leftover.problem,
     };
   }
-  const stop = await stopRun(run, deps, waitMs, { seed: leftover.seed });
+  const stop = await stopRun(run, deps, waitMs, { seed: files.leftover });
+  if (files.unverified) {
+    // Whatever it could see is stopped; what it couldn't is still unknown.
+    return {
+      ok: false,
+      issue: String(issue),
+      runId: run.runId,
+      state: "unknown",
+      reason: UNVERIFIED,
+      signalled: stop.signalled,
+      killed: stop.killed,
+    };
+  }
   const out = {
     issue: String(issue),
     runId: run.runId,
@@ -1326,6 +1499,34 @@ export async function runKill(
     deps,
   );
   return { ok: fin.ok, ...out, finished: fin.ok, ...(fin.ok ? {} : { reason: fin.reason }) };
+}
+
+// ── clear (an operator, by hand) ────────────────────────────────────────────
+// After checking by hand that nothing of <issue>'s run is running (ps, the
+// run's process groups), an operator records it: cleared.json in the run
+// dir. Lifts what the factory can't verify on its own (an unverified cleanup,
+// an unreadable leftover.json, a supervisor that died without exit.json);
+// anything a fresh look still finds alive keeps counting. Refused without
+// --confirm 1, and while anything of the run is found alive.
+export async function runClear({ stateFile, issue, confirm, note }, deps) {
+  if (!/^[1-9][0-9]*$/.test(String(issue ?? ""))) throw new Error(`invalid --issue: ${issue}`);
+  const run = getImplementRun(await loadFactoryState(stateFile), issue);
+  if (!run) return { ok: false, reason: "no-run", issue: String(issue) };
+  if (!confirm) return { ok: false, reason: "confirm-required", issue: String(issue) };
+  if (!run.runDir || !deps.fs.existsSync(run.runDir)) return { ok: false, reason: "no-run-dir" };
+  const rows = deps.table();
+  if (!rows) return { ok: false, reason: "unverifiable", issue: String(issue) };
+  const leftover = leftoverOf(deps.fs, run.runDir);
+  if (trackRun(run, rows, { selfPids: deps.selfPids, seed: leftover.seed }).alive.length > 0) {
+    return { ok: false, reason: "still-alive", issue: String(issue) };
+  }
+  writeJsonAtomic(deps.fs, path.join(run.runDir, "cleared.json"), {
+    formatVersion: FORMAT_VERSION,
+    runId: run.runId,
+    at: new Date(deps.nowMs()).toISOString(),
+    note: String(note),
+  });
+  return { ok: true, issue: String(issue), runId: run.runId };
 }
 
 // ── housekeeping ────────────────────────────────────────────────────────────
@@ -1421,6 +1622,11 @@ export async function main(argv, deps = createDeps()) {
         },
         deps,
       );
+    case "clear":
+      return runClear(
+        { stateFile, issue: flags.issue, confirm: flags.confirm === "1", note: flags.note ?? "" },
+        deps,
+      );
     case "housekeeping":
       return runHousekeeping(
         { stateFile, runRoot: flags["run-root"], maxAgeDays: flags["max-age-days"] ?? 30 },
@@ -1428,7 +1634,7 @@ export async function main(argv, deps = createDeps()) {
       );
     default:
       throw new Error(
-        `unknown subcommand: ${sub ?? "(none)"} (precheck|start|status|kill|finish|housekeeping)`,
+        `unknown subcommand: ${sub ?? "(none)"} (precheck|start|status|kill|finish|clear|housekeeping)`,
       );
   }
 }

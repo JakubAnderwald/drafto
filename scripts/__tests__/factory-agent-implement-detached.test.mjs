@@ -545,6 +545,49 @@ describe("implement_lane_collect: runs not (yet) ended, and failures", () => {
     assert.match(r.out, /live=\[ 7 \] collected=\[ \]/);
   });
 
+  it("a rollback-pending run, once dead, is dropped unread with no attempt", () => {
+    const env = collectEnv();
+    const r = runCollect(env, {
+      vars: {
+        FAKE_STATUS: statusOf(env, { state: "rollback", alive: false, rollbackPending: true }),
+      },
+    });
+    assert.match(r.calls, /^lane finish --issue 7 --run-id R1 --outcome rollback --pid 100/m);
+    assert.doesNotMatch(r.calls, /bump-attempts|^handler|^comments/m);
+    assert.match(r.log, /is rollback \(a start rolled back\); dropping it unread/);
+    assert.match(r.out, /collected=\[ 7 \]/);
+  });
+
+  it("a rollback-pending run still alive is stopped first (no --finish)", () => {
+    const env = collectEnv();
+    const r = runCollect(env, {
+      vars: {
+        FAKE_STATUS: statusOf(env, { state: "rollback", alive: true, rollbackPending: true }),
+        FAKE_STATUS_ISSUE: statusOf(env, {
+          state: "rollback",
+          alive: false,
+          rollbackPending: true,
+        }),
+      },
+    });
+    const lines = r.calls.trim().split("\n");
+    const at = (re) => lines.findIndex((l) => re.test(l));
+    assert.ok(
+      at(/^lane kill --issue 7 --repo-root --state-file$/) <
+        at(/^lane finish .*--outcome rollback/),
+    );
+  });
+
+  it("an unverified cleanup holds the card: no kill, no finish, no handler", () => {
+    const env = collectEnv();
+    const r = runCollect(env, {
+      vars: { FAKE_STATUS: statusOf(env, { state: "unverified", alive: false }) },
+    });
+    assert.doesNotMatch(r.calls, /lane (kill|finish)|^handler|bump-attempts/m);
+    assert.match(r.log, /cleanup unverified/);
+    assert.match(r.out, /live=\[ 7 \] collected=\[ \]/);
+  });
+
   it("re-reads the card first: factory-pause holds the result back", () => {
     const env = collectEnv();
     const r = runCollect(env, {
