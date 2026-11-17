@@ -89,6 +89,15 @@ describe("ledger: reserve, attach, finish (factory-state.mjs)", () => {
     assert.deepEqual(getImplement(s).runs, {});
   });
 
+  it("records the worktree and run dir at reserve, before anything is spawned", () => {
+    const s = emptyFactoryState();
+    reserve(s, { worktree: "/wt/7", runDir: "/runs/7-x" });
+    assert.deepEqual(
+      [getImplement(s).runs["7"].worktree, getImplement(s).runs["7"].runDir],
+      ["/wt/7", "/runs/7-x"],
+    );
+  });
+
   it("refuses a second run of the same card, and more than maxRunning runs", () => {
     const s = emptyFactoryState();
     reserve(s, { maxRunning: 2 });
@@ -355,6 +364,19 @@ describe("process groups: runGroups and the supervisor-proc helpers", () => {
     const rows = ps([`102 1 102 S claude -p input --resume ${SID}`]);
     assert.deepEqual(runGroups(RUN, rows), [102]);
     assert.deepEqual(runGroups({ ...RUN, sessionId: SID2 }, rows), []);
+  });
+
+  it("an operator's interactive `claude --resume <id>` (a shell's child) is never the run", () => {
+    const rows = ps(["500 1 500 Ss -zsh", `501 500 501 S+ claude --resume ${SID}`]);
+    assert.deepEqual(runGroups(RUN, rows), []);
+    assert.deepEqual(runGroups({ ...RUN, pid: null }, rows), []);
+  });
+
+  it("a prompt that mentions implement-lane.mjs doesn't hide an orphaned claude", () => {
+    const rows = ps([
+      `102 1 102 S claude -p "fix implement-lane.mjs _supervise" --session-id ${SID}`,
+    ]);
+    assert.deepEqual(runGroups(RUN, rows), [102]);
   });
 
   it("only a claude call carrying the id as its session flag counts, nothing that merely mentions it", () => {
@@ -642,6 +664,39 @@ describe("status", () => {
     });
   });
 
+  it("judges the deadline at the run's end, not at the collecting tick", async () => {
+    // Stopped at minute 10, collected after the deadline: interrupted, not 124.
+    const root = tempDir();
+    const env = await setup({
+      runs: {
+        7: run(
+          v1RunDir(root, {
+            exit: { exitCode: 143, terminated: true, endedAt: iso(NOW - 3600_000) },
+          }),
+          { deadlineAt: iso(NOW - 600_000), startedAt: iso(NOW - 4200_000) },
+        ),
+      },
+    });
+    const out = await status(env, fakeDeps({ rows: [] }));
+    assert.equal(out.runs[0].pastDeadline, true, "the tick is past it");
+    assert.equal(out.runs[0].collect.interrupted, true, "the run wasn't");
+  });
+
+  it("places a run that died without exit.json by its last heartbeat", async () => {
+    const root = tempDir();
+    const before = v1RunDir(root);
+    const hb = join(before, "heartbeat");
+    fs.writeFileSync(hb, "x");
+    const deadline = NOW - 600_000;
+    fs.utimesSync(hb, new Date(deadline - 1800_000), new Date(deadline - 1800_000));
+    const env = await setup({ runs: { 7: run(before, { deadlineAt: iso(deadline) }) } });
+    const lost = (await status(env, fakeDeps({ rows: [] }))).runs[0];
+    assert.deepEqual([lost.state, lost.collect.interrupted], ["lost", true]);
+    fs.utimesSync(hb, new Date(deadline + 5000), new Date(deadline + 5000));
+    const late = (await status(env, fakeDeps({ rows: [] }))).runs[0];
+    assert.equal(late.collect.exitCode, 124, "still beating at the deadline: killed at the cap");
+  });
+
   it("formatVersion 2 run files read as unreadable", async () => {
     const root = tempDir();
     const env = await setup({ runs: { 7: run(v1RunDir(root, { metaVersion: 2 })) } });
@@ -723,7 +778,9 @@ describe("kill and finish", () => {
   it("escalates to SIGKILL, and keeps the run in the ledger while anything is alive", async () => {
     const root = tempDir();
     const env = await setup({ runs: ledger(v1RunDir(root)) });
-    const live = parseProcessTable([sup, claude].join("\n"));
+    // claude orphaned (re-parented to launchd): found by its session id.
+    const orphan = `102 1 102 S claude --session-id ${SID}`;
+    const live = parseProcessTable([sup, orphan].join("\n"));
     const deps = fakeDeps({ rows: [live] });
     const out = await kill(env, deps, ["--finish", "1", "--wait-ms", "1000"]);
     assert.deepEqual([out.ok, out.state, out.killed], [false, "alive", true]);

@@ -105,7 +105,7 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 - **Plan-stage browser probe**: `FACTORY_PLAN_PROBE=0` in the plist (the default). On the next `--plan` tick, any queued probe is cancelled and its branch deleted. `FACTORY_PLAN_PROBE_SPIKE=0` keeps probes on but stops the planner's spike code from being built. Approving the plan also cancels a probe that is still running.
 - **Implement session resume**: `FACTORY_IMPLEMENT_RESUME=0` in the plist (default `1`). Every implement attempt then starts a fresh Claude session; the deadline facts in the prompt stay. To stop one card's next run from resuming, run `node scripts/lib/state-cli.mjs factory:implement-resume-clear <n>`.
 - **Detached implement runs**: `FACTORY_IMPLEMENT_DETACHED=0` in the plist (the default). New implement runs then run in the foreground again; runs already started are still collected. To stop one run, `node scripts/lib/implement-lane.mjs kill --issue <n> --finish 1 --outcome stopped`.
-- **Emergency stop**: `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist` on the Mac mini, or `kill` the active claude PID under `logs/factory.*.pid`.
+- **Emergency stop**: `launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist` on the Mac mini, or `kill` the active claude PID under `logs/factory.*.pid`. A detached implement run (`FACTORY_IMPLEMENT_DETACHED=1`) runs outside the launchd job and survives both: stop it with `node scripts/lib/implement-lane.mjs kill --issue <n> --finish 1 --outcome stopped` (`implement-lane.mjs status` lists them).
 
 ## Troubleshooting
 

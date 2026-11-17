@@ -183,6 +183,7 @@ fi
 # session-limit check and the never-started check read in place of "now".
 SESSION_LIMIT_NOW=""
 IMPL_END_EPOCH=""
+IMPL_END_ISO=""
 # The cards a detached run holds (" 12 34 "), and whether that could be read.
 IMPLEMENT_LIVE_ISSUES=" "
 IMPLEMENT_LIVE_KNOWN=1
@@ -8731,7 +8732,10 @@ implement_handle_result() {
     ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
     PR_URL=$(echo "$SUMMARY_LINE" | sed -E 's/.*pr=([^ ]+).*/\1/')
 
-    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # A collected detached run (ADR-0085) is marked at its own end, as a
+    # synchronous run is, not at the later tick that collected it: feedback
+    # posted in between stays newer than the mark and is picked up next.
+    NOW_ISO="${IMPL_END_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     # On a revision run, mark as consumed only the feedback this run was given.
     # A comment posted while it ran (a scenario run can take most of the cap)
     # stays newer than the mark, so the In Test sweep picks it up next instead
@@ -9049,8 +9053,10 @@ implement_lane_precheck() {
 # implement_lane_start — start this card's claude call detached, with the
 # claude input and the flags the synchronous call would use (implement-lane.mjs
 # buildImplementArgv; a test pins the two together). The slot passes to the
-# supervisor's pid. A start that fails spends no attempt and keeps the slot and
-# worktree for the next tick; a resume it couldn't start is recorded again.
+# supervisor's pid. A start that is refused (capacity, a race) spends no
+# attempt; one that fails with an error spends it. Either way the slot and
+# worktree stay for the next tick, and a resume that couldn't start is
+# recorded again.
 implement_lane_start() {
   local start_iso input spec ctx mode out run_id pid deadline reason lock_error
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -9084,13 +9090,45 @@ implement_lane_start() {
     return 0
   fi
   reason=$(jq -r '[.reason, .error] | map(select(. != null)) | join(": ")' <<<"$out" 2>/dev/null || echo "")
-  log "WARNING: #$ISSUE_NUM: the detached implement run didn't start (${reason:-no answer}); no attempt spent, keeping slot $SLOT + worktree for a later tick"
+  # A refusal (no room, the card already running, the slot or factory state
+  # changed under it) spends nothing. An error (the supervisor didn't spawn,
+  # the run dir couldn't be written, no answer at all) spends the attempt:
+  # it would otherwise repeat every tick, install included, and never reach
+  # Blocked.
+  case "$(jq -r '.reason // ""' <<<"$out" 2>/dev/null || echo "")" in
+    max-running|running|slot-not-held|factory-paused|abandoned)
+      log "Issue #$ISSUE_NUM: the detached implement run didn't start (${reason}); no attempt spent, keeping slot $SLOT + worktree for a later tick" ;;
+    *)
+      log "WARNING: #$ISSUE_NUM: the detached implement run failed to start (${reason:-no answer}); spending the attempt, keeping slot $SLOT + worktree"
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true ;;
+  esac
   # The start cleared the resume record; a resume that never ran keeps it.
   if [[ "$IMPL_RESUMED" -eq 1 ]]; then
     implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
       "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "detached start failed" "$IMPL_FEEDBACK_DIGEST"
   fi
   return 1
+}
+
+# implement_lane_card_check <issue> — where an ended run's card stands now,
+# re-read before its result is acted on: the tick that collects can come long
+# after the one that started it. Prints "ok" (open, in In Progress, In Review
+# or Testing, no factory-pause), "paused" (factory-pause is set), "left" (closed,
+# or in any other column) or "unknown" (the issue or its column can't be read).
+implement_lane_card_check() {
+  local view
+  if ! view=$(gh issue view "$1" --repo JakubAnderwald/drafto --json state,labels,projectItems 2>>"$LOG_FILE"); then
+    echo unknown
+    return 0
+  fi
+  jq -r '
+    if ((.labels // []) | map(.name) | index("factory-pause")) != null then "paused"
+    elif (.state // "") != "OPEN" then "left"
+    else ([(.projectItems // [])[] | select(.title == "Drafto Factory")] | .[0].status.name // "") as $col
+      | if $col == "" then "unknown"
+        elif ($col == "In Progress" or $col == "In Review" or $col == "Testing") then "ok"
+        else "left" end
+    end' <<<"$view" 2>/dev/null || echo unknown
 }
 
 # implement_lane_collect — at the top of every --implement tick, before the
@@ -9163,11 +9201,16 @@ implement_lane_collect_one() {
   case "$state" in
     done|lost) ;;
     unattached|unreadable)
-      # No result to trust: never attached (the tick died mid-start), or run
-      # files this code can't read (another formatVersion). Dropped, no attempt.
-      log "WARNING: #$issue: detached implement run $run_id is $state ($(jq -r '.problem // "never attached"' <<<"$run")); dropping it unread, no attempt spent"
+      # No result to trust: never attached (the tick died mid-start: no
+      # attempt, that was the factory's failure), or run files this code can't
+      # read (another formatVersion, or corrupt). That one spends the attempt,
+      # so a card whose every run ends that way still reaches Blocked.
+      log "WARNING: #$issue: detached implement run $run_id is $state ($(jq -r '.problem // "never attached"' <<<"$run")); dropping it unread"
       node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome "$state" \
         --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      if [[ "$state" == "unreadable" ]]; then
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$issue" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      fi
       IMPLEMENT_COLLECTED_ISSUES+="$issue "
       return 0 ;;
     *)
@@ -9175,6 +9218,27 @@ implement_lane_collect_one() {
       return 0 ;;
   esac
 
+  # The card as it is now. factory-pause holds the result back (the run
+  # stays in the ledger, the card held) until the label goes; a card moved
+  # out of the factory's columns, or closed, gets its run dropped unread, as
+  # the --watch sweep would have done.
+  case "$(implement_lane_card_check "$issue")" in
+    ok) ;;
+    paused)
+      log "Issue #$issue: factory-pause is set; leaving its ended detached implement run $run_id uncollected"
+      IMPLEMENT_LIVE_ISSUES+="$issue "
+      return 0 ;;
+    left)
+      log "Issue #$issue: the card left In Progress/In Review/Testing (or closed) since its detached implement run $run_id started; dropping the run unread"
+      node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome stopped \
+        --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      IMPLEMENT_COLLECTED_ISSUES+="$issue "
+      return 0 ;;
+    *)
+      log "WARNING: #$issue: couldn't read the card; collecting its detached implement run $run_id next tick"
+      IMPLEMENT_LIVE_ISSUES+="$issue "
+      return 0 ;;
+  esac
   run_dir=$(jq -r '.runDir // ""' <<<"$run")
   meta="$run_dir/meta.json"
   implement_lane_restore "$meta" "$issue" "$(jq -r '.slot // ""' <<<"$run")" "$(jq -r '.worktree // ""' <<<"$run")"
@@ -9218,10 +9282,12 @@ implement_lane_collect_one() {
   fi
   log "Issue #$ISSUE_NUM: collecting detached implement run $run_id (exit $EXIT_CODE, $why, ended ${ended_at:-unknown})"
   SESSION_LIMIT_NOW="$ended_at"
+  IMPL_END_ISO="$ended_at"
   IMPL_END_EPOCH="$ended_epoch"
   [[ "$IMPL_END_EPOCH" =~ ^[0-9]+$ ]] || IMPL_END_EPOCH=""
   implement_handle_result
   SESSION_LIMIT_NOW=""
+  IMPL_END_ISO=""
   IMPL_END_EPOCH=""
   return 0
 }

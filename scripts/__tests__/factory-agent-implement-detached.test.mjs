@@ -272,17 +272,18 @@ function runCollect(env, { ctx = {}, stdout = "", stderr = "", vars = {} } = {})
   const snippet = [
     "set -euo pipefail",
     `SCRIPT_DIR="${env.dir}"; STATE_FILE=/state.json; LOG_FILE="${env.log}"; REPO_ROOT=/repo`,
-    "IMPLEMENT_RUN_ROOT=/runs; SESSION_LIMIT_NOW=''; IMPL_END_EPOCH=''",
+    "IMPLEMENT_RUN_ROOT=/runs; SESSION_LIMIT_NOW=''; IMPL_END_EPOCH=''; IMPL_END_ISO=''",
     'rec() { printf "%s\\n" "$*" >>"$CALLS"; }',
     'log() { printf "%s\\n" "$*" >>"$LOG_FILE"; }',
     // node: the two fakes, by name; .cjs so `require` works in them.
     'node() { case "$1" in *implement-lane.mjs) shift; command node "$SCRIPT_DIR/lib/implement-lane.cjs" "$@" ;; *state-cli.mjs) shift; command node "$SCRIPT_DIR/lib/state-cli.cjs" "$@" ;; *) rec "node $*" ;; esac; }',
+    'implement_lane_card_check() { rec "card $1"; echo "${FAKE_CARD:-ok}"; }',
     'fetch_issue_comments() { rec "comments $1"; [[ "${FAKE_COMMENTS_RC:-0}" == 0 ]] && echo \'[{"id":1}]\'; }',
     'implement_mark_resumable() { rec "mark-resumable $1 $3 $5 $6 $7"; }',
-    'implement_handle_result() { rec "handler issue=$ISSUE_NUM item=$ITEM_ID slot=$SLOT wt=$WT_PATH exit=$EXIT_CODE pre=$PRE_HEAD_OID/$PRE_HEAD_KNOWN chain=$CHAIN_PRE_HEAD_OID/$CHAIN_PRE_HEAD_KNOWN resumed=$IMPL_RESUMED sid=$IMPL_SESSION_ID start=$CLAUDE_START_ISO/$IMPL_START_EPOCH now=$SESSION_LIMIT_NOW end=$IMPL_END_EPOCH rev=$IS_REVISION"; rec "handler-pr $PRIOR_PR"; rec "handler-bundle $BUNDLE"; rec "handler-markers $REPLY_MARKERS"; rec "handler-comments $COMMENTS_JSON"; rec "handler-out $(cat "$CLAUDE_OUTPUT_FILE")"; rm -f "$CLAUDE_OUTPUT_FILE"; }',
+    'implement_handle_result() { rec "handler issue=$ISSUE_NUM item=$ITEM_ID slot=$SLOT wt=$WT_PATH exit=$EXIT_CODE pre=$PRE_HEAD_OID/$PRE_HEAD_KNOWN chain=$CHAIN_PRE_HEAD_OID/$CHAIN_PRE_HEAD_KNOWN resumed=$IMPL_RESUMED sid=$IMPL_SESSION_ID start=$CLAUDE_START_ISO/$IMPL_START_EPOCH now=$SESSION_LIMIT_NOW end=$IMPL_END_EPOCH/$IMPL_END_ISO rev=$IS_REVISION"; rec "handler-pr $PRIOR_PR"; rec "handler-bundle $BUNDLE"; rec "handler-markers $REPLY_MARKERS"; rec "handler-comments $COMMENTS_JSON"; rec "handler-out $(cat "$CLAUDE_OUTPUT_FILE")"; rm -f "$CLAUDE_OUTPUT_FILE"; }',
     ...COLLECT_FNS,
     "rc=0; implement_lane_collect || rc=$?",
-    'echo "rc=$rc known=$IMPLEMENT_LIVE_KNOWN live=[$IMPLEMENT_LIVE_ISSUES] collected=[$IMPLEMENT_COLLECTED_ISSUES] now=[$SESSION_LIMIT_NOW] end=[$IMPL_END_EPOCH]"',
+    'echo "rc=$rc known=$IMPLEMENT_LIVE_KNOWN live=[$IMPLEMENT_LIVE_ISSUES] collected=[$IMPLEMENT_COLLECTED_ISSUES] now=[$SESSION_LIMIT_NOW] end=[$IMPL_END_EPOCH$IMPL_END_ISO]"',
   ].join("\n");
   const r = spawnSync("bash", ["-c", snippet], {
     encoding: "utf8",
@@ -354,7 +355,7 @@ describe("implement_lane_collect: a run that ended", () => {
       r.calls,
       new RegExp(
         `^handler issue=7 item=item-7 slot=1 wt=/wt/7 exit=0 pre=h0/1 chain=h0/1 resumed=0 sid=${SID} ` +
-          "start=2026-11-17T10:00:00Z/1763373600 now=2026-11-17T10:40:00Z end=1763376000 rev=1$",
+          "start=2026-11-17T10:00:00Z/1763373600 now=2026-11-17T10:40:00Z end=1763376000/2026-11-17T10:40:00Z rev=1$",
         "m",
       ),
     );
@@ -495,8 +496,11 @@ describe("implement_lane_collect: runs not (yet) ended, and failures", () => {
     assert.match(r.out, /live=\[ 7 \]/);
   });
 
-  for (const state of ["unattached", "unreadable"]) {
-    it(`an ${state} run that's dead is dropped unread: finished, no handler, no attempt`, () => {
+  for (const [state, spends] of [
+    ["unattached", false],
+    ["unreadable", true],
+  ]) {
+    it(`a dead ${state} run is dropped unread, no handler${spends ? ", attempt spent" : ", no attempt"}`, () => {
       const env = collectEnv();
       const r = runCollect(env, {
         vars: { FAKE_STATUS: statusOf(env, { state, alive: false, pid: null }) },
@@ -505,10 +509,43 @@ describe("implement_lane_collect: runs not (yet) ended, and failures", () => {
         r.calls,
         new RegExp(`^lane finish --issue 7 --run-id R1 --outcome ${state}`, "m"),
       );
-      assert.doesNotMatch(r.calls, /^handler|bump-attempts|mark-resumable/m);
+      assert.doesNotMatch(r.calls, /^handler|mark-resumable/m);
+      assert.equal(/state-cli factory:bump-attempts 7/.test(r.calls), spends);
       assert.match(r.out, /collected=\[ 7 \]/);
     });
   }
+
+  it("re-reads the card first: factory-pause holds the result back", () => {
+    const env = collectEnv();
+    const r = runCollect(env, {
+      ctx: FULL_CTX,
+      vars: { FAKE_STATUS: statusOf(env, DONE(0)), FAKE_CARD: "paused" },
+    });
+    assert.match(r.calls, /^card 7$/m);
+    assert.doesNotMatch(r.calls, /lane finish|^handler|^comments/m);
+    assert.match(r.out, /live=\[ 7 \] collected=\[ \]/);
+  });
+
+  it("re-reads the card first: one that left the factory's columns gets its run dropped unread", () => {
+    const env = collectEnv();
+    const r = runCollect(env, {
+      ctx: FULL_CTX,
+      vars: { FAKE_STATUS: statusOf(env, DONE(0)), FAKE_CARD: "left" },
+    });
+    assert.match(r.calls, /^lane finish --issue 7 --run-id R1 --outcome stopped/m);
+    assert.doesNotMatch(r.calls, /^handler|bump-attempts|^comments/m);
+    assert.match(r.out, /collected=\[ 7 \]/);
+  });
+
+  it("re-reads the card first: unreadable means next tick", () => {
+    const env = collectEnv();
+    const r = runCollect(env, {
+      ctx: FULL_CTX,
+      vars: { FAKE_STATUS: statusOf(env, DONE(0)), FAKE_CARD: "unknown" },
+    });
+    assert.doesNotMatch(r.calls, /lane finish|^handler/m);
+    assert.match(r.out, /live=\[ 7 \]/);
+  });
 
   it("a status failure returns 1 with the live set unknown", () => {
     const env = collectEnv();
@@ -619,21 +656,30 @@ describe("implement_lane_start", () => {
     assert.equal(r.spec.mode, "resume");
   });
 
-  it("a refused start spends no attempt and keeps the slot", () => {
-    const r = runStart({ answer: '{"started":false,"reason":"max-running"}' });
+  for (const reason of ["max-running", "running", "slot-not-held", "factory-paused", "abandoned"]) {
+    it(`a refused start (${reason}) spends no attempt and keeps the slot`, () => {
+      const r = runStart({ answer: `{"started":false,"reason":"${reason}"}` });
+      assert.equal(r.out, "rc=1");
+      assert.ok(
+        r.log.includes(`didn't start (${reason}); no attempt spent, keeping slot 1 + worktree`),
+        r.log,
+      );
+      assert.doesNotMatch(r.calls, /bump-attempts|slot-release|mark-resumable/);
+    });
+  }
+
+  it("a start that fails with an error spends the attempt (bounded), still keeping the slot", () => {
+    const r = runStart({ answer: '{"started":false,"reason":"start-failed","error":"EACCES"}' });
     assert.equal(r.out, "rc=1");
-    assert.match(
-      r.log,
-      /didn't start \(max-running\); no attempt spent, keeping slot 1 \+ worktree/,
-    );
-    assert.doesNotMatch(r.calls, /bump-attempts|slot-release|mark-resumable/);
+    assert.match(r.log, /failed to start \(start-failed: EACCES\); spending the attempt/);
+    assert.match(r.calls, /^node factory:bump-attempts 7 /m);
+    assert.doesNotMatch(r.calls, /slot-release/);
   });
 
   it("a resume that couldn't start is recorded again, so the next tick still resumes", () => {
     const r = runStart({ answer: "", resumed: 1 });
     assert.equal(r.out, "rc=1");
     assert.match(r.calls, new RegExp(`^mark-resumable 7 ${SID} c0 1 detached start failed$`, "m"));
-    assert.doesNotMatch(r.calls, /bump-attempts/);
   });
 });
 

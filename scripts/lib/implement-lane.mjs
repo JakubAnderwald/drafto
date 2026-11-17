@@ -114,6 +114,9 @@ export const DRAINING_AFTER_MS = MINUTE_MS;
 export const OVERDUE_AFTER_MS = 2 * MINUTE_MS;
 export const DEFAULT_STOP_WAIT_MS = 60 * 1000;
 const KILL_SETTLE_MS = 10 * 1000;
+// The supervisor touches <runDir>/heartbeat this often, so a run that dies
+// without exit.json can still be placed before or after its deadline.
+export const HEARTBEAT_MS = 30 * 1000;
 const POLL_MS = 250;
 export const RUN_ID_RE = /^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
 const RUN_DIR_NAME_RE = /^[1-9][0-9]*-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
@@ -298,15 +301,16 @@ export function createDeps() {
 
 // ── liveness ────────────────────────────────────────────────────────────────
 
-// A claude call (claude itself, or run-claude.mjs) for <sessionId>: the id as
-// the value of --session-id or --resume, on a command line that names claude.
-// Anything else that merely mentions the id (a pager on its transcript, a
-// state-cli call) is not the run and is never signalled.
+// An ORPHANED claude call for <sessionId>: a process re-parented to launchd
+// (ppid 1) after the supervisor and run-claude.mjs died, carrying the id as
+// the value of --session-id or --resume on a command line that names claude.
+// While its parents live, a run's claude is found down the process tree
+// instead. Only orphans: an operator's interactive `claude --resume <id>` has
+// a shell for a parent and is never counted as the run, nor signalled.
 export function sessionMatcher(sessionId) {
   if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) return () => false;
   const flag = new RegExp(`(?:^|\\s)--(?:session-id|resume)\\s+${sessionId}(?:\\s|$)`);
-  return (command) =>
-    flag.test(command) && /claude/.test(command) && !command.includes("implement-lane.mjs");
+  return (row) => row.ppid === 1 && flag.test(row.command) && /claude/.test(row.command);
 }
 
 // Every process group that belongs to <run> in the snapshot <rows>: the
@@ -333,7 +337,7 @@ export function runGroups(run, rows, { selfPids = [] } = {}) {
     ) {
       groups.add(r.pgid);
     }
-    if (isSession(r.command)) groups.add(r.pgid);
+    if (isSession(r)) groups.add(r.pgid);
   }
   // Down the tree from every member of every group found, until nothing new.
   let grew = true;
@@ -373,7 +377,13 @@ function readRunFiles(fs, run) {
   else if (!e.error && e.value?.formatVersion !== FORMAT_VERSION)
     exitProblem = `exit.json formatVersion ${JSON.stringify(e.value?.formatVersion)}`;
   else if (!e.error) exit = e.value;
-  return { meta, metaProblem, exit, exitProblem };
+  let heartbeatMs = null;
+  try {
+    heartbeatMs = fs.statSync(path.join(run.runDir, "heartbeat")).mtimeMs;
+  } catch {
+    heartbeatMs = null;
+  }
+  return { meta, metaProblem, exit, exitProblem, heartbeatMs };
 }
 
 // Pure: a run's state from its ledger record, run files and liveness.
@@ -475,17 +485,29 @@ function describeRun(issue, run, files, cls, nowMs) {
     worktree: run.worktree,
     exit,
     ...(cls.state === "done" || cls.state === "lost"
-      ? { collect: collectFields(exit, cls.pastDeadline, nowMs) }
+      ? { collect: collectFields(run, exit, files.heartbeatMs, nowMs) }
       : {}),
   };
 }
 
-function collectFields(exit, pastDeadline, nowMs) {
-  const outcome = collectOutcome({ exit, pastDeadline });
+// When the run ended, as best known: exit.json's endedAt; for a run that died
+// without one, the supervisor's last heartbeat plus its interval; failing
+// both, now. "Past the deadline" is judged at that moment, never at the
+// collecting tick's: a run killed at minute 10 and collected an hour later
+// was interrupted, not timed out.
+export function runEndMs({ exit, heartbeatMs, nowMs }) {
   const ended = Date.parse(exit?.endedAt ?? "");
-  const endedMs = Number.isNaN(ended) ? nowMs : ended;
+  if (!Number.isNaN(ended)) return ended;
+  if (Number.isFinite(heartbeatMs)) return Math.min(nowMs, heartbeatMs + HEARTBEAT_MS);
+  return nowMs;
+}
+
+function collectFields(run, exit, heartbeatMs, nowMs) {
+  const endedMs = runEndMs({ exit, heartbeatMs, nowMs });
+  const deadline = Date.parse(run.deadlineAt ?? "");
+  const pastDeadline = !Number.isNaN(deadline) && endedMs >= deadline;
   return {
-    ...outcome,
+    ...collectOutcome({ exit, pastDeadline }),
     endedAt: isoSeconds(endedMs),
     endedEpoch: Math.floor(endedMs / 1000),
   };
@@ -611,6 +633,8 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
       refused = "slot-not-held";
     if (refused) return false;
     reservation = reserveImplementRun(s, {
+      worktree: spec.worktree,
+      runDir: runDirFor(runRoot, spec.issue, runId),
       issue: spec.issue,
       runId,
       slot: spec.slot,
@@ -783,6 +807,17 @@ export async function runSupervise(
       /* gone */
     }
   };
+  const beat = () => {
+    try {
+      fs.writeFileSync(path.join(runDir, "heartbeat"), new Date().toISOString() + "\n", {
+        mode: 0o600,
+      });
+    } catch {
+      /* best effort */
+    }
+  };
+  beat();
+  const heartbeat = setInterval(beat, HEARTBEAT_MS);
   const handlers = {};
   for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) {
     handlers[sig] = () => onSignal(sig);
@@ -858,6 +893,7 @@ export async function runSupervise(
   } catch (e) {
     error = error ?? e.message;
   } finally {
+    clearInterval(heartbeat);
     clearTimeout(backstopTimer);
     clearTimeout(killTimer);
     try {

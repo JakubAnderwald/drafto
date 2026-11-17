@@ -68,14 +68,8 @@ export function supervisorRunState(inFlight) {
     .map((line) => /^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/.exec(line))
     .filter(Boolean)
     .map((m) => ({ pid: Number(m[1]), pgid: Number(m[2]), stat: m[3], command: m[4] }));
-  const live = (r) => !r.stat.startsWith("Z");
-  const leader = rows.find((r) => r.pid === pid);
-  // "(node)" / "[node]": our leader mid-exit, not a reused pid, so its group decides.
-  const argsUnreadable = (r) => /^(\(.*\)|\[.*\])$/.test(r.command.trim());
-  if (leader && live(leader) && !argsUnreadable(leader)) {
-    return leader.command.includes(inFlight.runId) ? "alive" : "gone";
-  }
-  return rows.some((r) => r.pgid === pid && live(r)) ? "alive" : "gone";
+  // One decision for every lane: groupRunState, below.
+  return groupRunState(rows, { pid, runId: inFlight.runId });
 }
 
 // Releasing a run in the ledger without stopping it would leave a vendor review
@@ -145,7 +139,7 @@ export function isLiveRow(row) {
   return Boolean(row) && !String(row.stat).startsWith("Z");
 }
 
-// The same decision as supervisorRunState, on a snapshot already taken:
+// supervisorRunState's decision (it calls this), on a snapshot already taken:
 // "alive" while the leader <pid> is alive with <runId> on its command line, or
 // (leader gone, a zombie, or mid-exit with unreadable args) while any live
 // process is still in its group; else "gone". A live leader WITHOUT the run id
@@ -154,6 +148,7 @@ export function isLiveRow(row) {
 export function groupRunState(rows, { pid, runId }) {
   if (!Number.isInteger(pid) || pid <= 0 || !runId) return "gone";
   const leader = rows.find((r) => r.pid === pid);
+  // "(node)" / "[node]": our leader mid-exit, not a reused pid, so its group decides.
   const argsUnreadable = (r) => /^(\(.*\)|\[.*\])$/.test(r.command.trim());
   if (leader && isLiveRow(leader) && !argsUnreadable(leader)) {
     return leader.command.includes(runId) ? "alive" : "gone";

@@ -1456,7 +1456,7 @@ export function getImplementRun(state, issue) {
 // until attachImplementRun.
 export function reserveImplementRun(
   state,
-  { issue, runId, slot, mode, sessionId, maxRunning, now } = {},
+  { issue, runId, slot, mode, sessionId, maxRunning, now, worktree = null, runDir = null } = {},
 ) {
   if (issue == null || !/^[1-9][0-9]*$/.test(String(issue))) {
     throw new Error(`reserveImplementRun: invalid <issue>: ${issue}`);
@@ -1491,8 +1491,10 @@ export function reserveImplementRun(
     startedAt: now,
     deadlineAt: null,
     hardKillAt: null,
-    runDir: null,
-    worktree: null,
+    // Known before anything is spawned, so a run dropped before its attach
+    // can still have its worktree unlocked and its run dir found.
+    runDir: strOrNull(runDir),
+    worktree: strOrNull(worktree),
   };
   return { ok: true, runId: String(runId) };
 }
