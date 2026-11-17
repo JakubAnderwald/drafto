@@ -154,6 +154,40 @@ if ! [[ "$FACTORY_IMPLEMENT_TERM_GRACE_SEC" =~ ^[1-9][0-9]*$ ]]; then
   FACTORY_IMPLEMENT_TERM_GRACE_SEC=30
 fi
 
+# Detached --implement runs (ADR-0085). FACTORY_IMPLEMENT_DETACHED=1 starts each
+# --implement claude call detached (scripts/lib/implement-lane.mjs) and lets the
+# tick go on to the other modes; a later tick collects the finished run and
+# hands it to the same implement_handle_result. 0, the default, runs it in the
+# foreground as before. Collection runs whatever the knob says, so a run started
+# before a flip back to 0 is still collected. FACTORY_IMPLEMENT_MAX_RUNNING (1 or
+# 2) caps the detached runs at once. FACTORY_IMPLEMENT_KILL_GRACE_SEC is how long
+# past its cap a run may take to end before its supervisor kills it.
+FACTORY_IMPLEMENT_DETACHED="${FACTORY_IMPLEMENT_DETACHED:-0}"
+case "$FACTORY_IMPLEMENT_DETACHED" in
+  0|1) : ;;
+  *) echo "WARNING: invalid FACTORY_IMPLEMENT_DETACHED='$FACTORY_IMPLEMENT_DETACHED'; defaulting to 0" >&2
+     FACTORY_IMPLEMENT_DETACHED=0 ;;
+esac
+FACTORY_IMPLEMENT_MAX_RUNNING="${FACTORY_IMPLEMENT_MAX_RUNNING:-1}"
+case "$FACTORY_IMPLEMENT_MAX_RUNNING" in
+  1|2) : ;;
+  *) echo "WARNING: invalid FACTORY_IMPLEMENT_MAX_RUNNING='$FACTORY_IMPLEMENT_MAX_RUNNING'; defaulting to 1" >&2
+     FACTORY_IMPLEMENT_MAX_RUNNING=1 ;;
+esac
+FACTORY_IMPLEMENT_KILL_GRACE_SEC="${FACTORY_IMPLEMENT_KILL_GRACE_SEC:-300}"
+if ! [[ "$FACTORY_IMPLEMENT_KILL_GRACE_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "WARNING: invalid FACTORY_IMPLEMENT_KILL_GRACE_SEC='$FACTORY_IMPLEMENT_KILL_GRACE_SEC'; defaulting to 300" >&2
+  FACTORY_IMPLEMENT_KILL_GRACE_SEC=300
+fi
+# Set only while a detached run is being collected: the run's end, which the
+# session-limit check and the never-started check read in place of "now".
+SESSION_LIMIT_NOW=""
+IMPL_END_EPOCH=""
+# The cards a detached run holds (" 12 34 "), and whether that could be read.
+IMPLEMENT_LIVE_ISSUES=" "
+IMPLEMENT_LIVE_KNOWN=1
+IMPLEMENT_COLLECTED_ISSUES=" "
+
 # ── Claude background-task wait ─────────────────────────────────────────────
 # In `-p` (print) mode, claude waits only 600s for background tasks (workflow
 # agents, background subagents) after its final turn, then kills them and
@@ -887,6 +921,9 @@ find "$LOG_DIR" -type f -name 'beta-lane-*.log.exit' -mtime +90 -delete 2>/dev/n
 # knows which dir still belongs to the in-flight run. A second sweep here would
 # be a second retention rule to keep in step with that one.
 CR_CLI_RUN_ROOT="$LOG_DIR/cr-cli"
+# Detached implement run dirs (ADR-0085): reaped by implement-lane.mjs
+# housekeeping on --implement ticks, which knows which ones the ledger holds.
+IMPLEMENT_RUN_ROOT="$LOG_DIR/implement"
 # Browser-runner run dirs (runner output, the guard's state, screenshots) and the
 # guard's per-session decision logs (ADR-0051), on the same 30-day window.
 find "$LOG_DIR/browser" -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {} + 2>/dev/null || true
@@ -2393,7 +2430,8 @@ implement_head_landed() {
 implement_resume_never_started() {
   local session="$1" since="$2" start="$3" out
   [[ "$start" =~ ^[0-9]+$ ]] || return 1
-  [[ $(( $(date +%s) - start )) -lt 180 ]] || return 1
+  # IMPL_END_EPOCH: a collected detached run's end (ADR-0085), else now.
+  [[ $(( ${IMPL_END_EPOCH:-$(date +%s)} - start )) -lt 180 ]] || return 1
   out=$(node "$SCRIPT_DIR/lib/implement-resume.mjs" started --session-id "$session" \
     --since "$since" 2>>"$LOG_FILE") || return 1
   [[ "$(echo "$out" | jq -r '.started' 2>/dev/null || echo "")" == "false" ]]
@@ -3603,12 +3641,73 @@ branch_keep_reason() {
   esac
 }
 
+# ── Detached implement runs: what the other modes need (ADR-0085) ─────────
+# Defined up here, before any mode runs, because the teardown helpers below
+# call implement_lane_stop from every mode.
+#
+# implement_lane_held_issues — set IMPLEMENT_LIVE_ISSUES to the cards that have
+# a detached implement run in the ledger (" 12 34 "): running, or finished and
+# not yet collected. --watch and --release leave those cards alone until
+# --implement has collected them; only that tick may act on a run's result.
+# When the ledger can't be read, IMPLEMENT_LIVE_KNOWN=0 and it returns 1.
+implement_lane_held_issues() {
+  local out issues
+  IMPLEMENT_LIVE_ISSUES=" "
+  IMPLEMENT_LIVE_KNOWN=1
+  if out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" status --state-file "$STATE_FILE" 2>>"$LOG_FILE") \
+     && issues=$(jq -r '.issues | if type == "array" then join(" ") else error("no issues") end' <<<"$out" 2>>"$LOG_FILE"); then
+    IMPLEMENT_LIVE_ISSUES=" $issues "
+    return 0
+  fi
+  IMPLEMENT_LIVE_KNOWN=0
+  log "WARNING: couldn't read the detached implement runs (implement-lane.mjs status); any card may be held by one this tick"
+  return 1
+}
+
+# implement_lane_holds <issue> — exit 0 when <issue> is in IMPLEMENT_LIVE_ISSUES.
+implement_lane_holds() {
+  [[ "$IMPLEMENT_LIVE_ISSUES" == *" $1 "* ]]
+}
+
+# implement_lane_stop <issue> <why> — stop <issue>'s detached implement run, if
+# it has one, and drop it from the ledger without handing its result to
+# implement_handle_result: the card left the columns the factory works, or its
+# worktree is going. SIGTERM, then SIGKILL a minute later (implement-lane.mjs
+# kill). Exit 0 when nothing of the run is left (or there was none); 1 when it
+# is still alive or that can't be told, and the caller then keeps the
+# worktree, which `git worktree lock` also guards while the run lives.
+implement_lane_stop() {
+  local issue="$1" why="${2:-worktree teardown}" out state run_id
+  if ! out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" kill --issue "$issue" --finish 1 --outcome stopped \
+      --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: issue #$issue: couldn't stop its detached implement run, if any ($why)"
+    return 1
+  fi
+  state=$(jq -r '.state // ""' <<<"$out" 2>/dev/null || echo "")
+  case "$state" in
+    none) return 0 ;;
+    gone)
+      run_id=$(jq -r '.runId // ""' <<<"$out" 2>/dev/null || echo "")
+      log "Issue #$issue: stopped detached implement run $run_id ($why); its result is not collected"
+      return 0 ;;
+    *)
+      log "WARNING: issue #$issue: its detached implement run is still running after SIGKILL, or ps failed (${state:-no answer}; $why)"
+      return 1 ;;
+  esac
+}
+
 # Remove the worktree for <issue>, deleting the local branch only when it no
-# longer backs a live PR. $2 optionally passes a known PR state.
+# longer backs a live PR. $2 optionally passes a known PR state. A detached
+# implement run working in it is stopped first, and while anything of it is
+# still alive the worktree stays (ADR-0085).
 remove_worktree_for() {
   local issue_num="$1"
   local known_state="${2:-}"
   local keep out
+  if ! implement_lane_stop "$issue_num" "worktree teardown"; then
+    log "Issue #$issue_num: a detached implement run may still be working in the worktree; not removing it this tick"
+    return 0
+  fi
   keep=$(branch_keep_reason "$issue_num" "$known_state")
   if [[ -n "$keep" ]]; then
     log "Issue #$issue_num: keeping branch factory/issue-$issue_num ($keep); removing worktree only"
@@ -3647,6 +3746,12 @@ release_slot_and_worktree() {
   local issue_num="$1"
   local known_state="${2:-}"
   local slot
+  # A detached implement run holds the slot while it runs (ADR-0085): stop it
+  # first, and keep the slot and worktree while anything of it is alive.
+  if ! implement_lane_stop "$issue_num" "slot release"; then
+    log "Issue #$issue_num: keeping its slot and worktree while its detached implement run may still be alive"
+    return 0
+  fi
   slot=$(slot_held_by_issue "$issue_num")
   if [[ -n "$slot" ]]; then
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$slot" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
@@ -3702,7 +3807,10 @@ log_worktree_leftovers() {
 #   claude transcript ended in a limit error newer than <since-iso>: the
 #   session's own transcript when <session-id> is given (--implement names its
 #   session, ADR-0084), else the newest one for <cwd>. Exit 1 on anything
-#   else — fail-open to the normal retry path.
+#   else — fail-open to the normal retry path. SESSION_LIMIT_NOW, when set, is
+#   the clock the reset time is read against: a collected detached run's end
+#   (ADR-0085), so "resets 10:30am" means the 10:30 after the run, not after
+#   the tick that collected it.
 check_session_limit() {
   local cwd="$1" since="$2" session="${3:-}" out
   SESSION_LIMIT_RESET_AT=""
@@ -3710,7 +3818,8 @@ check_session_limit() {
   # ${session:+…} adds the flag pair only when there is an id: plain words, no
   # array (bash 3.2 under set -u).
   out=$(node "$SCRIPT_DIR/lib/session-limit.mjs" check --cwd "$cwd" --since "$since" \
-    --fallback-min "$FACTORY_LIMIT_FALLBACK_MIN" ${session:+--session-id "$session"} 2>>"$LOG_FILE") || return 1
+    --fallback-min "$FACTORY_LIMIT_FALLBACK_MIN" ${session:+--session-id "$session"} \
+    ${SESSION_LIMIT_NOW:+--now "$SESSION_LIMIT_NOW"} 2>>"$LOG_FILE") || return 1
   SESSION_LIMIT_RESET_AT=$(echo "$out" | jq -r '.resetAt // empty' 2>/dev/null || echo "")
   SESSION_LIMIT_REASON=$(echo "$out" | jq -r '.reason // empty' 2>/dev/null || echo "")
   [[ -n "$SESSION_LIMIT_RESET_AT" ]]
@@ -8832,10 +8941,310 @@ still sees it. If this repeats until the retry budget is exhausted, the card mov
     esac
 }
 
+# ── Detached implement runs (ADR-0085) ──────────────────────────────────────
+# With FACTORY_IMPLEMENT_DETACHED=1 the loop body below does everything it
+# always did (slot, worktree, install, resume decision, the claude input), then
+# hands the claude call to implement_lane_start instead of running it, and goes
+# on to the next card. A later tick's implement_lane_collect hands the finished
+# run to implement_handle_result, with the loop body's globals restored from the
+# run's meta.json. Only the tick writes the state file, git and GitHub: the
+# detached supervisor runs claude and writes its own run dir, nothing else.
+
+# implement_lane_ctx <claude-start-iso> — the handler's input globals for this
+# run, as the JSON object implement-lane.mjs keeps in meta.json's `ctx`. All
+# strings, restored byte for byte. COMMENTS_JSON isn't kept (the collector
+# fetches the comments afresh), and of BUNDLE only .migrations, the one part
+# the handler reads.
+implement_lane_ctx() {
+  local migrations
+  migrations=$(jq -c '.migrations // null' <<<"$BUNDLE" 2>/dev/null) || migrations="null"
+  [[ -n "$migrations" ]] || migrations="null"
+  jq -n \
+    --arg itemId "$ITEM_ID" --arg itemLabels "$ITEM_LABELS" --arg slot "$SLOT" --arg wtPath "$WT_PATH" \
+    --arg claudeStartIso "$1" --arg implStartEpoch "$IMPL_START_EPOCH" \
+    --arg implResumed "$IMPL_RESUMED" --arg implSessionId "$IMPL_SESSION_ID" \
+    --arg implTaskKey "$IMPL_TASK_KEY" --arg implFeedbackDigest "$IMPL_FEEDBACK_DIGEST" \
+    --arg preHeadOid "$PRE_HEAD_OID" --arg preHeadKnown "$PRE_HEAD_KNOWN" \
+    --arg chainPreHeadOid "$CHAIN_PRE_HEAD_OID" --arg chainPreHeadKnown "$CHAIN_PRE_HEAD_KNOWN" \
+    --arg priorPr "$PRIOR_PR" --arg bundleMigrations "$migrations" \
+    --arg affected "$AFFECTED" --arg parityOverride "$PARITY_OVERRIDE" \
+    --arg isRevision "$IS_REVISION" --arg feedbackConsumedAt "$FEEDBACK_CONSUMED_AT" \
+    --arg replyMarkers "$REPLY_MARKERS" \
+    '{itemId: $itemId, itemLabels: $itemLabels, slot: $slot, wtPath: $wtPath,
+      claudeStartIso: $claudeStartIso, implStartEpoch: $implStartEpoch,
+      implResumed: $implResumed, implSessionId: $implSessionId,
+      implTaskKey: $implTaskKey, implFeedbackDigest: $implFeedbackDigest,
+      preHeadOid: $preHeadOid, preHeadKnown: $preHeadKnown,
+      chainPreHeadOid: $chainPreHeadOid, chainPreHeadKnown: $chainPreHeadKnown,
+      priorPr: $priorPr, bundleMigrations: $bundleMigrations,
+      affected: $affected, parityOverride: $parityOverride,
+      isRevision: $isRevision, feedbackConsumedAt: $feedbackConsumedAt,
+      replyMarkers: $replyMarkers}'
+}
+
+# implement_lane_ctx_get <meta.json> <key> <default> — one ctx value, or
+# <default> when the key is missing.
+implement_lane_ctx_get() {
+  jq -r --arg k "$2" --arg d "$3" '(.ctx[$k] // $d) | if type == "string" then . else tojson end' "$1" 2>/dev/null \
+    || printf '%s' "$3"
+}
+
+# implement_lane_restore <meta.json> <issue> <ledger slot> <ledger worktree> —
+# set implement_handle_result's input globals from the run's ctx. Anything
+# missing or malformed gets the value that makes the handler do least: a PR
+# head that was never read (PRE_HEAD_KNOWN=0) can't advance the card.
+implement_lane_restore() {
+  local meta="$1"
+  ISSUE_NUM="$2"
+  ITEM_ID=$(implement_lane_ctx_get "$meta" itemId "")
+  ITEM_LABELS=$(implement_lane_ctx_get "$meta" itemLabels "")
+  SLOT=$(implement_lane_ctx_get "$meta" slot "$3")
+  [[ "$SLOT" =~ ^[0-9]+$ ]] || SLOT="$3"
+  WT_PATH=$(implement_lane_ctx_get "$meta" wtPath "$4")
+  [[ -n "$WT_PATH" ]] || WT_PATH="$4"
+  CLAUDE_START_ISO=$(implement_lane_ctx_get "$meta" claudeStartIso "")
+  IMPL_START_EPOCH=$(implement_lane_ctx_get "$meta" implStartEpoch "0")
+  [[ "$IMPL_START_EPOCH" =~ ^[0-9]+$ ]] || IMPL_START_EPOCH=0
+  IMPL_RESUMED=$(implement_lane_ctx_get "$meta" implResumed "0")
+  [[ "$IMPL_RESUMED" == "1" ]] || IMPL_RESUMED=0
+  IMPL_SESSION_ID=$(implement_lane_ctx_get "$meta" implSessionId "")
+  IMPL_TASK_KEY=$(implement_lane_ctx_get "$meta" implTaskKey "")
+  IMPL_FEEDBACK_DIGEST=$(implement_lane_ctx_get "$meta" implFeedbackDigest "")
+  PRE_HEAD_OID=$(implement_lane_ctx_get "$meta" preHeadOid "")
+  PRE_HEAD_KNOWN=$(implement_lane_ctx_get "$meta" preHeadKnown "0")
+  [[ "$PRE_HEAD_KNOWN" == "1" ]] || PRE_HEAD_KNOWN=0
+  CHAIN_PRE_HEAD_OID=$(implement_lane_ctx_get "$meta" chainPreHeadOid "")
+  CHAIN_PRE_HEAD_KNOWN=$(implement_lane_ctx_get "$meta" chainPreHeadKnown "0")
+  [[ "$CHAIN_PRE_HEAD_KNOWN" == "1" ]] || CHAIN_PRE_HEAD_KNOWN=0
+  PRIOR_PR=$(implement_lane_ctx_get "$meta" priorPr "null")
+  [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
+  BUNDLE=$(jq -nc --argjson m "$(implement_lane_ctx_get "$meta" bundleMigrations "null")" '{migrations: $m}' 2>/dev/null) \
+    || BUNDLE='{}'
+  AFFECTED=$(implement_lane_ctx_get "$meta" affected "")
+  PARITY_OVERRIDE=$(implement_lane_ctx_get "$meta" parityOverride "")
+  IS_REVISION=$(implement_lane_ctx_get "$meta" isRevision "0")
+  [[ "$IS_REVISION" == "1" ]] || IS_REVISION=0
+  FEEDBACK_CONSUMED_AT=$(implement_lane_ctx_get "$meta" feedbackConsumedAt "")
+  REPLY_MARKERS=$(implement_lane_ctx_get "$meta" replyMarkers "[]")
+  [[ -n "$REPLY_MARKERS" ]] || REPLY_MARKERS="[]"
+}
+
+# implement_lane_precheck <issue> — exit 0 when a detached run may start now:
+# fewer than FACTORY_IMPLEMENT_MAX_RUNNING in the ledger and no memory
+# pressure. Checked before the worktree and the install, so a card that can't
+# start doesn't pay for them. implement-lane.mjs start checks the count again.
+implement_lane_precheck() {
+  local issue="$1" out reason
+  if ! out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" precheck --max-running "$FACTORY_IMPLEMENT_MAX_RUNNING" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: #$issue: the detached implement precheck failed; deferring to a later tick"
+    return 1
+  fi
+  [[ "$(jq -r '.ok == true' <<<"$out" 2>/dev/null || echo false)" == "true" ]] && return 0
+  reason=$(jq -r '.reason // "unknown"' <<<"$out" 2>/dev/null || echo unknown)
+  log "Issue #$issue: not starting a detached implement run now ($reason; max $FACTORY_IMPLEMENT_MAX_RUNNING); deferring to a later tick"
+  return 1
+}
+
+# implement_lane_start — start this card's claude call detached, with the
+# claude input and the flags the synchronous call would use (implement-lane.mjs
+# buildImplementArgv; a test pins the two together). The slot passes to the
+# supervisor's pid. A start that fails spends no attempt and keeps the slot and
+# worktree for the next tick; a resume it couldn't start is recorded again.
+implement_lane_start() {
+  local start_iso input spec ctx mode out run_id pid deadline reason lock_error
+  start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  mode="fresh"
+  [[ "$IMPL_SESSION_FLAG" == "--resume" ]] && mode="resume"
+  input=$(mktemp -t factory-impl-input.XXXXXX)
+  spec=$(mktemp -t factory-impl-spec.XXXXXX)
+  printf '%s' "$CLAUDE_INPUT" >"$input"
+  out=""
+  if ctx=$(implement_lane_ctx "$start_iso" 2>>"$LOG_FILE") \
+     && jq -n --arg issue "$ISSUE_NUM" --arg slot "$SLOT" --arg worktree "$WT_PATH" --arg inputFile "$input" \
+          --arg effort "$FACTORY_EFFORT" --arg mode "$mode" --arg sessionId "$IMPL_SESSION_ID" \
+          --arg timeoutSec "$IMPLEMENT_TIMEOUT_SEC" --arg termGraceSec "$FACTORY_IMPLEMENT_TERM_GRACE_SEC" \
+          --arg killGraceSec "$FACTORY_IMPLEMENT_KILL_GRACE_SEC" --arg maxRunning "$FACTORY_IMPLEMENT_MAX_RUNNING" \
+          --argjson ctx "$ctx" \
+          '{issue: $issue, slot: ($slot | tonumber), worktree: $worktree, inputFile: $inputFile,
+            effort: $effort, mode: $mode, sessionId: $sessionId, timeoutSec: $timeoutSec,
+            termGraceSec: $termGraceSec, killGraceSec: $killGraceSec, maxRunning: $maxRunning,
+            ctx: $ctx}' >"$spec" 2>>"$LOG_FILE"; then
+    out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" start --spec-file "$spec" --run-root "$IMPLEMENT_RUN_ROOT" \
+      --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" 2>>"$LOG_FILE") || out=""
+  fi
+  rm -f "$input" "$spec"
+  if [[ "$(jq -r '.started == true' <<<"$out" 2>/dev/null || echo false)" == "true" ]]; then
+    run_id=$(jq -r '.runId // ""' <<<"$out")
+    pid=$(jq -r '.pid // ""' <<<"$out")
+    deadline=$(jq -r '.deadlineAt // ""' <<<"$out")
+    log "Issue #$ISSUE_NUM: started detached implement run $run_id (pid $pid, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s until $deadline, effort=$FACTORY_EFFORT, $IMPL_SESSION_FLAG $IMPL_SESSION_ID); a later tick collects it"
+    lock_error=$(jq -r '.lockError // ""' <<<"$out")
+    [[ -z "$lock_error" ]] || log "WARNING: #$ISSUE_NUM: couldn't git-worktree-lock $WT_PATH ($lock_error); the run goes on"
+    return 0
+  fi
+  reason=$(jq -r '[.reason, .error] | map(select(. != null)) | join(": ")' <<<"$out" 2>/dev/null || echo "")
+  log "WARNING: #$ISSUE_NUM: the detached implement run didn't start (${reason:-no answer}); no attempt spent, keeping slot $SLOT + worktree for a later tick"
+  # The start cleared the resume record; a resume that never ran keeps it.
+  if [[ "$IMPL_RESUMED" -eq 1 ]]; then
+    implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+      "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "detached start failed" "$IMPL_FEEDBACK_DIGEST"
+  fi
+  return 1
+}
+
+# implement_lane_collect — at the top of every --implement tick, before the
+# board query and whatever FACTORY_IMPLEMENT_DETACHED says: hand every detached
+# run that has ended to implement_handle_result, stop the ones that overran,
+# and set IMPLEMENT_LIVE_ISSUES (still running) and IMPLEMENT_COLLECTED_ISSUES
+# (collected now), which the loop skips this tick. Returns 1 when the runs
+# can't be read; the caller then skips the tick.
+implement_lane_collect() {
+  local out count idx
+  IMPLEMENT_LIVE_ISSUES=" "
+  IMPLEMENT_COLLECTED_ISSUES=" "
+  IMPLEMENT_LIVE_KNOWN=1
+  node "$SCRIPT_DIR/lib/implement-lane.mjs" housekeeping --run-root "$IMPLEMENT_RUN_ROOT" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  if ! out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" status --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    IMPLEMENT_LIVE_KNOWN=0
+    return 1
+  fi
+  count=$(jq '.runs | length' <<<"$out" 2>/dev/null || echo "")
+  if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+    IMPLEMENT_LIVE_KNOWN=0
+    return 1
+  fi
+  for ((idx=0; idx<count; idx++)); do
+    implement_lane_collect_one "$(jq -c ".runs[$idx]" <<<"$out")"
+  done
+  return 0
+}
+
+# implement_lane_collect_one <status run JSON> — one ledger run (see
+# implement_lane_collect). A run that ended goes: comments fetched afresh,
+# stdout into a temp file, stderr into the log, then `finish` (the ledger drops
+# it, the worktree is unlocked) BEFORE the handler, so a tick that dies in the
+# handler can't hand the same run over twice. A run that was interrupted
+# before its deadline (a reboot, a SIGTERM from outside) isn't the card's
+# failure: it is recorded as resumable and spends no attempt, unless it was
+# itself a resume (bounded: then the attempt is spent).
+implement_lane_collect_one() {
+  local run="$1" issue run_id state run_dir alive meta stop_out interrupted why ended_at ended_epoch fin
+  issue=$(jq -r '.issue // ""' <<<"$run")
+  run_id=$(jq -r '.runId // ""' <<<"$run")
+  state=$(jq -r '.state // ""' <<<"$run")
+  alive=$(jq -r '.alive == true' <<<"$run")
+  [[ "$issue" =~ ^[0-9]+$ ]] || return 0
+  case "$state" in
+    starting|running)
+      IMPLEMENT_LIVE_ISSUES+="$issue "
+      log "Issue #$issue: detached implement run $run_id is $state (pid $(jq -r '.pid // "none"' <<<"$run"), deadline $(jq -r '.deadlineAt // "none"' <<<"$run"))"
+      return 0 ;;
+    draining|overdue|unattached|unreadable)
+      if [[ "$alive" == "true" ]]; then
+        log "Issue #$issue: detached implement run $run_id is $state; stopping it"
+        if ! stop_out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" kill --issue "$issue" \
+            --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" 2>>"$LOG_FILE") \
+           || [[ "$(jq -r '.state // ""' <<<"$stop_out" 2>/dev/null)" != "gone" ]]; then
+          log "WARNING: #$issue: detached implement run $run_id is still alive after SIGKILL (or ps failed); leaving it for the next tick"
+          IMPLEMENT_LIVE_ISSUES+="$issue "
+          return 0
+        fi
+        if ! run=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" status --issue "$issue" --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
+            | jq -ce '.runs[0]' 2>>"$LOG_FILE"); then
+          IMPLEMENT_LIVE_ISSUES+="$issue "
+          return 0
+        fi
+        state=$(jq -r '.state // ""' <<<"$run")
+      fi
+      ;;
+  esac
+  case "$state" in
+    done|lost) ;;
+    unattached|unreadable)
+      # No result to trust: never attached (the tick died mid-start), or run
+      # files this code can't read (another formatVersion). Dropped, no attempt.
+      log "WARNING: #$issue: detached implement run $run_id is $state ($(jq -r '.problem // "never attached"' <<<"$run")); dropping it unread, no attempt spent"
+      node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome "$state" \
+        --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      IMPLEMENT_COLLECTED_ISSUES+="$issue "
+      return 0 ;;
+    *)
+      IMPLEMENT_LIVE_ISSUES+="$issue "
+      return 0 ;;
+  esac
+
+  run_dir=$(jq -r '.runDir // ""' <<<"$run")
+  meta="$run_dir/meta.json"
+  implement_lane_restore "$meta" "$issue" "$(jq -r '.slot // ""' <<<"$run")" "$(jq -r '.worktree // ""' <<<"$run")"
+  if ! COMMENTS_JSON=$(fetch_issue_comments "$ISSUE_NUM"); then
+    log "WARNING: fetch_issue_comments failed for #$ISSUE_NUM; collecting its detached implement run $run_id next tick"
+    IMPLEMENT_LIVE_ISSUES+="$issue "
+    return 0
+  fi
+  interrupted=$(jq -r '.collect.interrupted == true' <<<"$run")
+  why=$(jq -r '.collect.why // ""' <<<"$run")
+  EXIT_CODE=$(jq -r '.collect.exitCode // 1' <<<"$run")
+  [[ "$EXIT_CODE" =~ ^[0-9]+$ ]] || EXIT_CODE=1
+  ended_at=$(jq -r '.collect.endedAt // ""' <<<"$run")
+  ended_epoch=$(jq -r '.collect.endedEpoch // ""' <<<"$run")
+  CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
+  cat "$run_dir/stdout.txt" >"$CLAUDE_OUTPUT_FILE" 2>/dev/null || true
+  if [[ -s "$run_dir/stderr.txt" ]]; then
+    log "Issue #$ISSUE_NUM: detached implement run $run_id stderr follows"
+    cat "$run_dir/stderr.txt" >>"$LOG_FILE" 2>/dev/null || true
+  fi
+  if ! fin=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$ISSUE_NUM" --run-id "$run_id" \
+      --outcome collected --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" 2>>"$LOG_FILE") \
+     || [[ "$(jq -r '.ok == true' <<<"$fin" 2>/dev/null || echo false)" != "true" ]]; then
+    log "WARNING: #$ISSUE_NUM: couldn't finish detached implement run $run_id (${fin:-no answer}); not collecting it this tick"
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    IMPLEMENT_LIVE_ISSUES+="$issue "
+    return 0
+  fi
+  IMPLEMENT_COLLECTED_ISSUES+="$issue "
+  if [[ "$interrupted" == "true" ]]; then
+    log "Issue #$ISSUE_NUM: detached implement run $run_id was interrupted before its deadline ($why); keeping slot $SLOT for retry"
+    cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+      "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "interrupted" "$IMPL_FEEDBACK_DIGEST"
+    if [[ "$IMPL_RESUMED" -eq 1 ]]; then
+      log "Issue #$ISSUE_NUM: it was already a resume; spending the attempt so repeated interruptions reach Blocked"
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+    fi
+    return 0
+  fi
+  log "Issue #$ISSUE_NUM: collecting detached implement run $run_id (exit $EXIT_CODE, $why, ended ${ended_at:-unknown})"
+  SESSION_LIMIT_NOW="$ended_at"
+  IMPL_END_EPOCH="$ended_epoch"
+  [[ "$IMPL_END_EPOCH" =~ ^[0-9]+$ ]] || IMPL_END_EPOCH=""
+  implement_handle_result
+  SESSION_LIMIT_NOW=""
+  IMPL_END_EPOCH=""
+  return 0
+}
+
 # Phase A: post a one-time stub comment per In Progress card (observation
 # mode). Phase B+: the real engine — slot → worktree → Claude → PR → parity
 # post-check → In Review, with the slot + worktree persisting for --watch.
 if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
+  # Detached runs first (ADR-0085), before the board query and whatever
+  # FACTORY_IMPLEMENT_DETACHED says: collect the ones that ended, and learn
+  # which cards one still holds. If that can't be read, no card is safe to
+  # start, so the tick ends here.
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    IMPLEMENT_LIVE_KNOWN=1
+    implement_lane_held_issues || true
+  else
+    implement_lane_collect || true
+  fi
+  if [[ "$IMPLEMENT_LIVE_KNOWN" -ne 1 ]]; then
+    log "WARNING: couldn't read the detached implement runs (implement-lane.mjs status); skipping this --implement tick"
+    log "=== factory-agent --implement completed in $(( $(date +%s) - START_TIME ))s ==="
+    exit 0
+  fi
   if ! INPROG_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
       --status "In Progress" 2>>"$LOG_FILE"); then
     log "WARNING: query-status-items In Progress failed (transient?); skipping this --implement tick"
@@ -8931,6 +9340,17 @@ See \`docs/operations/factory-runbook.md\` for phase-promotion criteria.
     fi
 
     # ── Phase B+: real implementation ──
+    # A card a detached implement run still holds, or whose run was collected
+    # this tick, waits for the next tick (ADR-0085). First, before the retry
+    # budget, disk and plan checks, and whatever FACTORY_IMPLEMENT_DETACHED says.
+    if implement_lane_holds "$ISSUE_NUM"; then
+      log "Issue #$ISSUE_NUM: its detached implement run is still going; skipping this tick"
+      continue
+    fi
+    if [[ "$IMPLEMENT_COLLECTED_ISSUES" == *" $ISSUE_NUM "* ]]; then
+      log "Issue #$ISSUE_NUM: its detached implement run was collected this tick; the next attempt waits for the next tick"
+      continue
+    fi
     log "Issue #$ISSUE_NUM: implementing (phase=$PHASE)"
 
     # Retry budget — park over-budget cards in Blocked for a human.
@@ -8955,6 +9375,13 @@ the card back to **In Progress** to retry.
         # whose PR is still open. Release it here instead.
         release_slot_and_worktree "$ISSUE_NUM"
       fi
+      continue
+    fi
+
+    # Detached runs (ADR-0085): room for one more, before the worktree and
+    # the install are paid for.
+    if [[ "$FACTORY_IMPLEMENT_DETACHED" == "1" && "$DRY_RUN" -eq 0 ]] \
+       && ! implement_lane_precheck "$ISSUE_NUM"; then
       continue
     fi
 
@@ -9173,6 +9600,12 @@ Drag it back to **Ready** so the factory can plan it first.
     if [[ "$IMPL_RESUMED" -eq 0 ]]; then
       reset_reply_dir "$ISSUE_NUM"
     fi
+    # FACTORY_IMPLEMENT_DETACHED=1: the same call, started detached; a later
+    # tick collects it (ADR-0085). Off, nothing below changes.
+    if [[ "$FACTORY_IMPLEMENT_DETACHED" == "1" ]]; then
+      implement_lane_start || true
+      continue
+    fi
     log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -9271,6 +9704,13 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     if [[ "$STILL_ACTIVE" != "true" ]]; then
       log "Slot $SLOT: issue #$SLOT_ISSUE left In Progress/In Review/Testing (now: ${SLOT_COLUMN:-unknown}, $ISSUE_STATE); releasing slot + worktree"
       if [[ "$DRY_RUN" -eq 0 ]]; then
+        # A detached implement run still working for it (ADR-0085) is stopped
+        # first, before the slot goes: while anything of it is alive, the slot
+        # and the worktree stay, and the next sweep tries again.
+        if ! implement_lane_stop "$SLOT_ISSUE" "card left In Progress/In Review/Testing"; then
+          log "Slot $SLOT: keeping slot + worktree for #$SLOT_ISSUE while its detached implement run may still be alive"
+          continue
+        fi
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-release "$SLOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
         # Not necessarily done with the issue: a card in In Test, or moved to
         # Blocked by a retry-exhausted path, still has an OPEN PR, so the branch
@@ -9312,6 +9752,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
   log "--watch (phase=$PHASE): $REVIEW_COUNT In Review item(s)"
   # CI gate reads branch-protection required contexts (advisory bots ignored).
   fetch_required_contexts
+  # Cards a detached implement run still holds (ADR-0085): not touched here
+  # until --implement has collected the run. If that can't be read, no fix
+  # pass starts this tick (one could push beside a running implement).
+  if [[ "$REVIEW_COUNT" -gt 0 ]]; then implement_lane_held_issues || true; fi
 
   WATCH_PROMPT_TEXT=""
   if [[ "$DRY_RUN" -eq 0 && "$REVIEW_COUNT" -gt 0 ]]; then WATCH_PROMPT_TEXT=$(cat "$WATCH_PROMPT_FILE"); fi
@@ -9327,6 +9771,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
 
     if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
       log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"; continue
+    fi
+
+    if implement_lane_holds "$ISSUE_NUM"; then
+      log "Issue #$ISSUE_NUM: a detached implement run is still running or uncollected; skipping until --implement collects it"; continue
     fi
 
     PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
@@ -9426,6 +9874,10 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     fi
 
     if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 || "$CONFLICTING" -eq 1 ]]; then
+      if [[ "$IMPLEMENT_LIVE_KNOWN" -eq 0 ]]; then
+        log "Issue #$ISSUE_NUM: PR #$PR_NUM needs a fix pass, but the detached implement runs couldn't be read; no fix pass this tick"
+        continue
+      fi
       if [[ "$CONFLICTING" -eq 1 ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM conflicts with main → conflict pass"
       elif [[ "$FAILING" -gt 0 ]]; then
@@ -10306,6 +10758,9 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
   # protection isn't readable.
   fetch_required_contexts
   log "--release: required CI contexts: $(echo "$REQUIRED_CONTEXTS_JSON" | jq -c . 2>/dev/null || echo '[]')"
+  # Cards a detached implement run still holds (ADR-0085) don't merge until
+  # --implement has collected the run; unreadable, none merges this tick.
+  if [[ "$APPROVED_COUNT" -gt 0 ]]; then implement_lane_held_issues || true; fi
 
   for ((IDX=0; IDX<APPROVED_COUNT; IDX++)); do
     ITEM=$(echo "$APPROVED_JSON" | jq ".[${IDX}]")
@@ -10318,6 +10773,13 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
 
     if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
       log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"; continue
+    fi
+
+    if [[ "$IMPLEMENT_LIVE_KNOWN" -eq 0 ]]; then
+      log "Issue #$ISSUE_NUM: the detached implement runs couldn't be read; not merging this tick"; continue
+    fi
+    if implement_lane_holds "$ISSUE_NUM"; then
+      log "Issue #$ISSUE_NUM: Approved, but a detached implement run is still running or uncollected; not merging this tick"; continue
     fi
 
     PR_OBJ=$(find_prior_pr "$ISSUE_NUM")

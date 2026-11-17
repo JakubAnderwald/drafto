@@ -263,6 +263,15 @@
 //                                    now starting. Clearing by hand stops the
 //                                    next run from resuming.
 //
+// Detached --implement runs (ADR-0085). implement-lane.mjs reserves, attaches
+// and finishes runs through factory-state.mjs directly; `implement-lane.mjs
+// status` adds liveness, and `implement-lane.mjs kill` stops one.
+//
+//   factory:implement-status        Print the ledger ({runs: {"<issue>": {runId,
+//                                    slot, pid, sessionId, mode, startedAt,
+//                                    deadlineAt, hardKillAt, runDir,
+//                                    worktree}}}). Read-only.
+//
 // Nightly beta-release retry counters (ADR-0042). These live in
 // logs/support-release-state.json — written only by nightly-support.sh, so they
 // never race support-agent.sh's every-minute writes to support-state.json — and
@@ -296,7 +305,6 @@
 //
 // Exit non-zero with a single-line JSON {"error": "..."} to stderr on failure.
 
-import { spawnSync } from "node:child_process";
 import { loadState, saveState, DEFAULT_STATE_PATH } from "./state.mjs";
 import {
   loadFactoryState,
@@ -336,119 +344,22 @@ import {
   resetIssuePlanProbe,
   setImplementResume,
   clearImplementResume,
+  getImplement,
 } from "./factory-state.mjs";
 import { bumpNotification, bumpCounters } from "./policy.mjs";
-import { isManualReviewCommand } from "./coderabbit-review.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 import { isMainModule } from "./is-main.mjs";
 // A bash caller interpolating an unset value can hand us "", "null" or
 // "undefined"; none is a real Zoho id or subject, so they count as absent.
 import { isAbsentValue, normaliseRouteValue } from "./route-value.mjs";
 import { resolveIssueRoute } from "./github-sync.mjs";
+// Liveness and stopping of a lane's detached supervisor (moved, ADR-0085).
+import { isPidAlive, stopSupervisor } from "./supervisor-proc.mjs";
 
 // The release-attempt subcommands load support-release.mjs (and with it the
 // beta dispatcher) only when they run: support-agent.sh calls this CLI every
 // minute, and its state updates must not depend on the release code loading.
 const loadReleaseModule = () => import("./support-release.mjs");
-
-function isPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // ESRCH = no such process; EPERM = process exists but we can't signal it
-    // (still counts as alive for liveness purposes).
-    return err.code === "EPERM";
-  }
-}
-
-// Does anything in process group <pgid> still exist (zombies included)? EPERM
-// means it exists but isn't ours to signal.
-function processGroupExists(pgid) {
-  try {
-    process.kill(-pgid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-
-// Is the in-flight run still running — the supervisor OR anything in its process
-// group? The supervisor leads its own group, and the CodeRabbit CLI (or, for the
-// verification lane, the claude session) it spawned lives in that group and can
-// outlive it (it may ignore SIGTERM, or be mid-shutdown), so a dead supervisor
-// alone doesn't prove the work is gone. One process-table snapshot decides:
-//   - leader alive (not a zombie) → "alive" if its command carries the runId,
-//     else "gone" (a reused pid: POSIX never reuses a pid still in use as a
-//     process group id, so our group can't exist alongside it);
-//   - leader alive but ps can't read its args (it prints the bare process name:
-//     "(node)" on macOS, "[node]" with Linux procps, for one that is mid-exit) →
-//     treated as exiting, so its group decides, below, as it will a moment later
-//     when the leader is a zombie; the dying leader still counts as a live
-//     member until then;
-//   - leader exited or an unreaped zombie → "alive" while any non-zombie process
-//     still has pgid == pid (the CLI it started), else "gone".
-// "unknown" when ps fails while the pid or its group still exists.
-function supervisorRunState(inFlight) {
-  const pid = inFlight?.pid;
-  // A manual `coderabbit-cli.mjs review` holds the lane from its own process:
-  // it is not a group leader and its run id never reaches argv, so it is alive
-  // exactly while that pid is a `review` of the recorded PR.
-  if (inFlight?.manual) {
-    if (!Number.isInteger(pid) || pid <= 0 || !isPidAlive(pid)) return "gone";
-    const ps = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
-    if (ps.status !== 0) return isPidAlive(pid) ? "unknown" : "gone";
-    return isManualReviewCommand(ps.stdout.trim(), inFlight.pr) ? "alive" : "gone";
-  }
-  if (!Number.isInteger(pid) || pid <= 0) return "gone";
-  const ps = spawnSync("ps", ["-axo", "pid=,pgid=,stat=,command="], { encoding: "utf8" });
-  if (ps.status !== 0) {
-    return isPidAlive(pid) || processGroupExists(pid) ? "unknown" : "gone";
-  }
-  const rows = String(ps.stdout ?? "")
-    .split("\n")
-    .map((line) => /^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/.exec(line))
-    .filter(Boolean)
-    .map((m) => ({ pid: Number(m[1]), pgid: Number(m[2]), stat: m[3], command: m[4] }));
-  const live = (r) => !r.stat.startsWith("Z");
-  const leader = rows.find((r) => r.pid === pid);
-  // "(node)" / "[node]": our leader mid-exit, not a reused pid, so its group decides.
-  const argsUnreadable = (r) => /^(\(.*\)|\[.*\])$/.test(r.command.trim());
-  if (leader && live(leader) && !argsUnreadable(leader)) {
-    return leader.command.includes(inFlight.runId) ? "alive" : "gone";
-  }
-  return rows.some((r) => r.pgid === pid && live(r)) ? "alive" : "gone";
-}
-
-// Releasing a run in the ledger without stopping it would leave a vendor review
-// running that nothing collects, and the gate free to start a second one — which
-// the vendor refuses while the first is connected. (For the verification lane:
-// a second test run on top of the first, on a Mac mini already short of RAM.)
-// So the release only happens once the run is verifiably gone: SIGTERM its
-// process group (the supervisor was spawned detached, so -pid reaches its child
-// too), then wait, bounded, until no live member of the group is left. Returns
-// {state, signalled, killed}: `signalled` = SIGTERM was sent; `killed` = sent
-// AND the group is now gone, so a group that shrugged off the signal never
-// reads as killed.
-async function stopSupervisor(inFlight, { waitMs }) {
-  const initial = supervisorRunState(inFlight);
-  if (initial !== "alive") return { state: initial, signalled: false, killed: false };
-  try {
-    // A manual review traps SIGTERM itself (stops its CLI child, frees the
-    // lane); the factory's supervisor is a group leader, so -pid reaches its CLI.
-    process.kill(inFlight.manual ? inFlight.pid : -inFlight.pid, "SIGTERM");
-  } catch {
-    // Fall through to the wait: it reports whatever state the group is in.
-  }
-  const deadline = Date.now() + waitMs;
-  let state = supervisorRunState(inFlight);
-  while (state === "alive" && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    state = supervisorRunState(inFlight);
-  }
-  return { state, signalled: true, killed: state === "gone" };
-}
 
 async function main(argv) {
   const [sub, ...rest] = argv;
@@ -1052,6 +963,10 @@ async function main(argv) {
       const cleared = clearImplementResume(state, issueNumber, { sessionId });
       if (cleared.length > 0 || sessionId != null) await saveFactoryState(state, file);
       return { ok: true, issueNumber, cleared, implementSessionId: sessionId };
+    }
+    case "factory:implement-status": {
+      const state = await loadFactoryState(file);
+      return getImplement(state);
     }
     case "record-release-attempt": {
       const issueNumber = positional[0];

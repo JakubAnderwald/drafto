@@ -51,8 +51,12 @@
 //                          deadlineAt, runDir, worktree },   // one run at a time, globally
 //       pausedUntil:  ISO|null,           // lane-only pause. Never pauses the factory.
 //       pausedReason: string|null
-//     }
-//   }
+//     },
+//     implement: {                         // detached --implement runs (ADR-0085)
+//       runs: { "<issue>": { runId, slot, pid, sessionId, mode, startedAt,
+//                            deadlineAt, hardKillAt, runDir, worktree } }
+//     }                                    // written only by the tick, never by
+//   }                                      // the detached supervisor
 //
 // Atomic writes use the same temp-file + rename pattern as state.mjs. **Callers
 // must serialize** loadFactoryState → mutate → saveFactoryState; the only
@@ -91,6 +95,7 @@ export function emptyFactoryState() {
     crCli: emptyCrCli(),
     browser: emptyBrowser(),
     verify: emptyVerify(),
+    implement: emptyImplement(),
   };
 }
 
@@ -104,6 +109,15 @@ export function emptyCrCli() {
 // per-card cap lives on the issue record (verifyShellAttempts).
 export function emptyVerify() {
   return { inFlight: null, pausedUntil: null, pausedReason: null };
+}
+
+// Ledger of detached --implement runs (ADR-0085), one per card at most, keyed
+// by issue number. implement-lane.mjs reserves a run before it spawns anything,
+// attaches the supervisor's pid once it has started, and finishes the run when
+// the tick has collected it (or stopped it). Only the factory tick writes it:
+// the supervisor never touches this file.
+export function emptyImplement() {
+  return { runs: {} };
 }
 
 // Health of the locked-down browser runner (browser-health.mjs, ADR-0051).
@@ -334,6 +348,7 @@ function mergeWithDefaults(parsed) {
     crCli: mergeCrCli(parsed.crCli),
     browser: mergeBrowser(parsed.browser),
     verify: mergeVerify(parsed.verify),
+    implement: mergeImplement(parsed.implement),
   };
 }
 
@@ -419,6 +434,39 @@ function mergeVerifyInFlight(f) {
     deadlineAt: strOrNull(f.deadlineAt),
     runDir: strOrNull(f.runDir),
     worktree: strOrNull(f.worktree),
+  };
+}
+
+function mergeImplement(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return emptyImplement();
+  const rawRuns =
+    raw.runs && typeof raw.runs === "object" && !Array.isArray(raw.runs) ? raw.runs : {};
+  const runs = {};
+  for (const [issue, run] of Object.entries(rawRuns)) {
+    const merged = mergeImplementRun(run);
+    if (merged && /^[1-9][0-9]*$/.test(issue)) runs[issue] = merged;
+  }
+  // Unknown keys pass through, as for verify: an older copy of this file must
+  // not erase a newer one's ledger fields.
+  return { ...raw, runs };
+}
+
+function mergeImplementRun(r) {
+  // No runId → it can never be finished (finish matches on it).
+  if (!r || typeof r !== "object" || Array.isArray(r)) return null;
+  if (typeof r.runId !== "string" || r.runId === "") return null;
+  return {
+    ...r,
+    runId: r.runId,
+    slot: Number.isInteger(r.slot) ? r.slot : null,
+    pid: Number.isInteger(r.pid) ? r.pid : null,
+    sessionId: strOrNull(r.sessionId),
+    mode: strOrNull(r.mode),
+    startedAt: strOrNull(r.startedAt),
+    deadlineAt: strOrNull(r.deadlineAt),
+    hardKillAt: strOrNull(r.hardKillAt),
+    runDir: strOrNull(r.runDir),
+    worktree: strOrNull(r.worktree),
   };
 }
 
@@ -1376,4 +1424,109 @@ export function resetIssuePlanProbe(state, issueNumber) {
   const cleared = PLAN_PROBE_ISSUE_FIELDS.filter((f) => issue[f] != null && issue[f] !== "");
   for (const f of cleared) issue[f] = null;
   return { ok: true, cleared };
+}
+
+// ── Detached --implement runs (ADR-0085) ────────────────────────────────────
+
+const IMPLEMENT_MODES = new Set(["fresh", "resume"]);
+
+// Shallow, IN-PLACE normalisation, as getVerify: callers hold the returned
+// object across several helper calls.
+export function getImplement(state) {
+  const cur = state.implement;
+  if (!cur || typeof cur !== "object" || Array.isArray(cur)) {
+    state.implement = emptyImplement();
+    return state.implement;
+  }
+  if (!cur.runs || typeof cur.runs !== "object" || Array.isArray(cur.runs)) cur.runs = {};
+  return cur;
+}
+
+export function implementRunCount(state) {
+  return Object.keys(getImplement(state).runs).length;
+}
+
+export function getImplementRun(state, issue) {
+  return getImplement(state).runs[String(issue)] ?? null;
+}
+
+// Claim a detached run for <issue>. Refusals: "running" (this card already has
+// a run in the ledger, live or not yet collected) and "max-running" (<maxRunning>
+// runs are already in the ledger, any card). On success the run has pid null
+// until attachImplementRun.
+export function reserveImplementRun(
+  state,
+  { issue, runId, slot, mode, sessionId, maxRunning, now } = {},
+) {
+  if (issue == null || !/^[1-9][0-9]*$/.test(String(issue))) {
+    throw new Error(`reserveImplementRun: invalid <issue>: ${issue}`);
+  }
+  if (runId == null || runId === "") throw new Error("reserveImplementRun requires <runId>");
+  const slotN = Number(slot);
+  if (!Number.isInteger(slotN) || slotN < 0 || slotN >= SLOT_COUNT) {
+    throw new Error(`reserveImplementRun: invalid <slot>: ${slot}`);
+  }
+  if (!IMPLEMENT_MODES.has(mode)) {
+    throw new Error(`reserveImplementRun: invalid <mode>: ${mode} (fresh|resume)`);
+  }
+  if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) {
+    throw new Error(`reserveImplementRun: invalid <sessionId>: ${sessionId}`);
+  }
+  const max = Number(maxRunning);
+  if (!Number.isInteger(max) || max < 1) {
+    throw new Error(`reserveImplementRun: invalid <maxRunning>: ${maxRunning}`);
+  }
+  nowMs(now);
+  const impl = getImplement(state);
+  const key = String(issue);
+  if (impl.runs[key]) return { ok: false, reason: "running", run: impl.runs[key] };
+  const running = Object.keys(impl.runs).length;
+  if (running >= max) return { ok: false, reason: "max-running", running, maxRunning: max };
+  impl.runs[key] = {
+    runId: String(runId),
+    slot: slotN,
+    pid: null,
+    sessionId,
+    mode,
+    startedAt: now,
+    deadlineAt: null,
+    hardKillAt: null,
+    runDir: null,
+    worktree: null,
+  };
+  return { ok: true, runId: String(runId) };
+}
+
+// Fill in what is only known once the supervisor has started. Matches on runId,
+// so a late attach can't overwrite a newer run. false: the reservation was
+// finished meanwhile (an operator's kill), and the caller must stop the
+// supervisor it started itself.
+export function attachImplementRun(
+  state,
+  issue,
+  runId,
+  { pid = null, deadlineAt = null, hardKillAt = null, runDir = null, worktree = null } = {},
+) {
+  const run = getImplementRun(state, issue);
+  if (!run || run.runId !== String(runId)) return false;
+  Object.assign(run, {
+    pid: Number.isInteger(pid) ? pid : null,
+    deadlineAt: strOrNull(deadlineAt),
+    hardKillAt: strOrNull(hardKillAt),
+    runDir: strOrNull(runDir),
+    worktree: strOrNull(worktree),
+  });
+  return true;
+}
+
+// Drop <issue>'s run from the ledger, but only the run <runId>.
+export function finishImplementRun(state, issue, runId) {
+  const impl = getImplement(state);
+  const key = String(issue);
+  const run = impl.runs[key];
+  if (!run || run.runId !== String(runId)) {
+    return { ok: false, reason: "run-id-mismatch", run: run ?? null };
+  }
+  delete impl.runs[key];
+  return { ok: true, runId: String(runId), issue: key, run };
 }

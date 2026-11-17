@@ -1,0 +1,1076 @@
+#!/usr/bin/env node
+// Detached --implement runs (ADR-0085).
+//
+// Without this, `factory-agent.sh --implement` runs its claude call in the
+// foreground for up to FACTORY_IMPLEMENT_TIMEOUT_SEC (45 min), and the loop's
+// single mutex holds every other mode (--release, --watch, --browser, --plan)
+// for every other card until it ends. With FACTORY_IMPLEMENT_DETACHED=1 the
+// tick starts the claude call here, detached, and goes on; a later tick
+// collects the finished run and hands it to the same implement_handle_result
+// the synchronous path uses.
+//
+// The split of work follows the verification lane and the CodeRabbit CLI lane:
+// the TICK does every state, git and gh write (start, finish, kill run in the
+// tick). The detached SUPERVISOR (`_supervise`) only runs claude and writes its
+// own run dir. It never reads or writes logs/factory-state.json, never runs git
+// or gh, and never touches the board.
+//
+// Run dir: logs/factory/implement/<issue>-<runId>/ (0700), holding
+//   meta.json       formatVersion 1: what the supervisor runs (argv, paths,
+//                   deadlines) and `ctx`, the handler globals the tick restores
+//                   at collection
+//   input.md        claude's -p input (the prompt and bundle, or the resume note)
+//   stdout.txt      claude's stdout (the summary line)
+//   stderr.txt      claude's and run-claude.mjs's stderr
+//   supervisor.log  the supervisor's own log lines
+//   exit.json       formatVersion 1, written by the supervisor however it ends
+//                   (a SIGKILL or a reboot excepted)
+//   collected.json  written by the tick when the run leaves the ledger
+//
+// Subcommands (all print one JSON line; exit 0 for an answer, including a
+// refusal, and 1 with {"error"} on stderr when something broke):
+//   precheck  --max-running <n> [--state-file f]
+//             Capacity before the expensive part of a start (worktree,
+//             install): {ok:true} or {ok:false, reason:"max-running"|"memory"}.
+//   start     --spec-file <json> --run-root <dir> --repo-root <dir> [--state-file f]
+//             Reserve the run, write its run dir, `git worktree lock` the
+//             worktree, spawn the supervisor detached, attach its pid and hand
+//             the card's slot to it. {started:true, runId, pid, runDir,
+//             deadlineAt, hardKillAt} or {started:false, reason}.
+//   _supervise --run-dir <dir>
+//             The detached supervisor. Internal.
+//   status    [--issue n] [--state-file f]
+//             Every ledger run with its state (below). Read-only. Fails (exit
+//             1) when it can't tell whether a run is alive.
+//   kill      --issue <n> [--finish 1 --outcome <word>] [--wait-ms <ms>]
+//             [--repo-root dir] [--state-file f]
+//             Stop the run: SIGTERM, then SIGKILL after --wait-ms (default
+//             60000). With --finish 1 and the run gone, finish it too.
+//   finish    --issue <n> --run-id <id> --outcome <word> [--repo-root dir]
+//             [--state-file f]
+//             Unlock the worktree, drop the run from the ledger, write
+//             collected.json.
+//   housekeeping --run-root <dir> [--max-age-days 30] [--state-file f]
+//             Reap run dirs the ledger no longer names, after 30 days.
+//
+// Run states (status):
+//   starting    reserved, no pid yet, under 2 minutes old
+//   unattached  reserved and never attached: the tick died mid-start. alive
+//               says whether a supervisor for it is running anyway
+//   running     alive and not yet overdue (exit.json, if written, is fresh)
+//   draining    exit.json written over a minute ago, but something in the
+//               run's process groups is still alive
+//   overdue     alive, no exit.json, 2 minutes past hardKillAt: the
+//               supervisor's own backstop did not end it
+//   done        exit.json written and nothing left alive
+//   lost        nothing alive and no exit.json (a SIGKILL, a reboot)
+//   unreadable  meta.json or exit.json is missing, corrupt or of another
+//               formatVersion
+// Liveness: the supervisor's process group (its pid, with the run id on its
+// command line, or any live member of its group), every process group below
+// it, and any process whose command line carries the run's claude session id.
+
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import * as nodeFs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { constants as osConstants } from "node:os";
+import { isMainModule } from "./is-main.mjs";
+import { parseFlags } from "./parse-flags.mjs";
+import { SESSION_ID_RE } from "./session-limit.mjs";
+import { memoryPressure } from "./host-resources.mjs";
+import { descendants, groupRunState, isLiveRow, processTable } from "./supervisor-proc.mjs";
+import {
+  acquireSlot,
+  attachImplementRun,
+  finishImplementRun,
+  getImplement,
+  getImplementRun,
+  getSlot,
+  isFactoryPaused,
+  loadFactoryState,
+  reserveImplementRun,
+  saveFactoryState,
+  DEFAULT_FACTORY_STATE_PATH,
+} from "./factory-state.mjs";
+
+export const FORMAT_VERSION = 1;
+const THIS_FILE = fileURLToPath(import.meta.url);
+export const RUN_CLAUDE = path.join(path.dirname(THIS_FILE), "run-claude.mjs");
+export const EFFORTS = Object.freeze(["ultracode", "max", "xhigh", "high", "medium", "low"]);
+export const SESSION_FLAGS = Object.freeze({ fresh: "--session-id", resume: "--resume" });
+export const MAX_RUNNING_LIMIT = 2;
+
+const MINUTE_MS = 60 * 1000;
+// A reservation still without a pid this long after it was made: the tick
+// that made it died between reserve and attach.
+export const UNATTACHED_LOST_MS = 2 * MINUTE_MS;
+// After exit.json, the supervisor exits within milliseconds. Something still
+// alive in its groups a minute later is draining and gets stopped.
+export const DRAINING_AFTER_MS = MINUTE_MS;
+// The supervisor's own backstop ends a run at hardKillAt; one still alive this
+// long after it is overdue, and the tick stops it.
+export const OVERDUE_AFTER_MS = 2 * MINUTE_MS;
+export const DEFAULT_STOP_WAIT_MS = 60 * 1000;
+const KILL_SETTLE_MS = 10 * 1000;
+const POLL_MS = 250;
+export const RUN_ID_RE = /^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
+const RUN_DIR_NAME_RE = /^[1-9][0-9]*-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
+
+// ── argv and env: exactly the synchronous path's ────────────────────────────
+// factory-agent.sh's synchronous --implement call is
+//   ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" \
+//       CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \
+//       node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" <the flags below> )
+// and implement-lane-parity.test.mjs pins the two to each other.
+
+export function buildImplementArgv({ effort, mode, sessionId }) {
+  if (!EFFORTS.includes(effort)) throw new Error(`invalid effort: ${effort}`);
+  if (!Object.hasOwn(SESSION_FLAGS, mode)) throw new Error(`invalid mode: ${mode} (fresh|resume)`);
+  if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) {
+    throw new Error(`invalid session id: ${sessionId}`);
+  }
+  return [
+    "--dangerously-skip-permissions",
+    "--effort",
+    effort,
+    "--no-chrome",
+    "--strict-mcp-config",
+    SESSION_FLAGS[mode],
+    sessionId,
+  ];
+}
+
+// The tick's own environment (the synchronous call inherits it too), plus the
+// three variables the synchronous call sets inline.
+export function buildImplementEnv(baseEnv, { timeoutSec, termGraceSec }) {
+  return {
+    ...baseEnv,
+    CLAUDE_CALL_TIMEOUT_SEC: String(timeoutSec),
+    CLAUDE_CALL_KILL_GRACE_SEC: String(termGraceSec),
+    CLAUDE_CALL_KILL_GROUP: "1",
+  };
+}
+
+// ── small helpers ───────────────────────────────────────────────────────────
+
+function positiveInt(raw, what) {
+  const s = String(raw ?? "").trim();
+  if (!/^[1-9][0-9]*$/.test(s)) throw new Error(`invalid ${what}: ${raw}`);
+  return Number(s);
+}
+
+function isoSeconds(ms) {
+  return new Date(Math.floor(ms / 1000) * 1000).toISOString().replace(".000Z", "Z");
+}
+
+export function makeRunId(nowMs, rand = () => randomBytes(3).toString("hex")) {
+  const stamp = new Date(nowMs)
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+  return `${stamp}-${rand()}`;
+}
+
+export function runDirFor(runRoot, issue, runId) {
+  return path.join(runRoot, `${issue}-${runId}`);
+}
+
+function readJson(fs, file) {
+  try {
+    return { value: JSON.parse(fs.readFileSync(file, "utf8")) };
+  } catch (err) {
+    return { error: err.code === "ENOENT" ? "missing" : "corrupt" };
+  }
+}
+
+function writeJsonAtomic(fs, file, value) {
+  const tmp = `${file}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+function appendLog(fs, file, line) {
+  try {
+    fs.appendFileSync(file, `[${new Date().toISOString()}] ${line}\n`, { mode: 0o600 });
+  } catch {
+    /* the log is best effort */
+  }
+}
+
+// Reload → mutate → save with nothing awaited in between (verify-lane.mjs).
+// `fn` must be synchronous; returning false skips the save.
+async function mutateState(stateFile, fn) {
+  const fresh = await loadFactoryState(stateFile);
+  const out = fn(fresh);
+  if (out !== false) await saveFactoryState(fresh, stateFile);
+  return out;
+}
+
+// ── dependencies (real ones; tests inject their own) ────────────────────────
+
+function realGit(args, { cwd } = {}) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (err) {
+      resolve({ code: 127, stdout: "", stderr: err.message });
+      return;
+    }
+    const out = [];
+    const err = [];
+    child.stdout.on("data", (d) => out.push(d));
+    child.stderr.on("data", (d) => err.push(d));
+    child.once("error", (e) => resolve({ code: 127, stdout: "", stderr: e.message }));
+    child.once("close", (code) =>
+      resolve({
+        code: code ?? 1,
+        stdout: Buffer.concat(out).toString("utf8"),
+        stderr: Buffer.concat(err).toString("utf8"),
+      }),
+    );
+  });
+}
+
+// Detached (its own session and process group, so launchd's process-group
+// kill at the end of the tick never reaches it), stdio to a file and never to
+// the tick's pipes: `$(node implement-lane.mjs start …)` would otherwise wait
+// on the supervisor for the whole run. Only a confirmed 'spawn' counts.
+async function realSpawnDetached(command, args, { cwd, logPath, env }) {
+  let out = "ignore";
+  try {
+    out = nodeFs.openSync(logPath, "a", 0o600);
+  } catch {
+    out = "ignore";
+  }
+  const closeOut = () => {
+    if (typeof out === "number") {
+      try {
+        nodeFs.closeSync(out);
+      } catch {
+        /* already closed */
+      }
+    }
+  };
+  let child;
+  try {
+    child = spawn(command, args, { cwd, detached: true, stdio: ["ignore", out, out], env });
+  } catch (err) {
+    closeOut();
+    return { ok: false, reason: err.message };
+  }
+  const outcome = await new Promise((resolve) => {
+    child.once("spawn", () => resolve({ ok: true }));
+    child.once("error", (err) => resolve({ ok: false, reason: err.message }));
+  });
+  child.on("error", () => {});
+  closeOut();
+  if (!outcome.ok) return outcome;
+  child.unref();
+  return { ok: true, pid: child.pid };
+}
+
+function realKill(pid, signal) {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function createDeps() {
+  return {
+    env: process.env,
+    fs: nodeFs,
+    nowMs: () => Date.now(),
+    table: () => processTable(),
+    kill: realKill,
+    git: realGit,
+    spawnDetached: realSpawnDetached,
+    memoryPressure: () => memoryPressure(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    selfPids: [process.pid, process.ppid],
+  };
+}
+
+// ── liveness ────────────────────────────────────────────────────────────────
+
+// A claude call (claude itself, or run-claude.mjs) for <sessionId>: the id as
+// the value of --session-id or --resume, on a command line that names claude.
+// Anything else that merely mentions the id (a pager on its transcript, a
+// state-cli call) is not the run and is never signalled.
+export function sessionMatcher(sessionId) {
+  if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) return () => false;
+  const flag = new RegExp(`(?:^|\\s)--(?:session-id|resume)\\s+${sessionId}(?:\\s|$)`);
+  return (command) =>
+    flag.test(command) && /claude/.test(command) && !command.includes("implement-lane.mjs");
+}
+
+// Every process group that belongs to <run> in the snapshot <rows>: the
+// supervisor's (attached pid, or any supervisor carrying the run id when the
+// ledger never got its pid), every group below one of its members (the claude
+// session leads its own), and the group of any process carrying the run's
+// claude session id (a session whose parents were killed). Never the group of
+// this process or of the one that called it.
+export function runGroups(run, rows, { selfPids = [] } = {}) {
+  const live = rows.filter(isLiveRow);
+  const groups = new Set();
+  const isSession = sessionMatcher(run.sessionId);
+  if (
+    Number.isInteger(run.pid) &&
+    groupRunState(rows, { pid: run.pid, runId: run.runId }) === "alive"
+  ) {
+    groups.add(run.pid);
+  }
+  for (const r of live) {
+    if (
+      r.command.includes("implement-lane.mjs") &&
+      r.command.includes("_supervise") &&
+      r.command.includes(run.runId)
+    ) {
+      groups.add(r.pgid);
+    }
+    if (isSession(r.command)) groups.add(r.pgid);
+  }
+  // Down the tree from every member of every group found, until nothing new.
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const r of live) {
+      if (!groups.has(r.pgid)) continue;
+      for (const d of descendants(rows, r.pid)) {
+        if (!groups.has(d.pgid)) {
+          groups.add(d.pgid);
+          grew = true;
+        }
+      }
+    }
+  }
+  const ownGroups = new Set(rows.filter((r) => selfPids.includes(r.pid)).map((r) => r.pgid));
+  for (const g of [...groups]) {
+    if (g <= 1 || ownGroups.has(g)) groups.delete(g);
+    else if (!live.some((r) => r.pgid === g)) groups.delete(g);
+  }
+  return [...groups];
+}
+
+function readRunFiles(fs, run) {
+  if (!run.runDir) return { meta: null, metaProblem: "no-run-dir", exit: null, exitProblem: null };
+  const m = readJson(fs, path.join(run.runDir, "meta.json"));
+  let meta = null;
+  let metaProblem = null;
+  if (m.error) metaProblem = `meta.json ${m.error}`;
+  else if (m.value?.formatVersion !== FORMAT_VERSION)
+    metaProblem = `meta.json formatVersion ${JSON.stringify(m.value?.formatVersion)}`;
+  else meta = m.value;
+  const e = readJson(fs, path.join(run.runDir, "exit.json"));
+  let exit = null;
+  let exitProblem = null;
+  if (e.error === "corrupt") exitProblem = "exit.json corrupt";
+  else if (!e.error && e.value?.formatVersion !== FORMAT_VERSION)
+    exitProblem = `exit.json formatVersion ${JSON.stringify(e.value?.formatVersion)}`;
+  else if (!e.error) exit = e.value;
+  return { meta, metaProblem, exit, exitProblem };
+}
+
+// Pure: a run's state from its ledger record, run files and liveness.
+export function classifyRun({ run, metaProblem, exit, exitProblem, alive, nowMs }) {
+  const ms = (iso) => {
+    const t = Date.parse(iso ?? "");
+    return Number.isNaN(t) ? null : t;
+  };
+  const deadline = ms(run.deadlineAt);
+  const hardKill = ms(run.hardKillAt);
+  const pastDeadline = deadline != null && nowMs >= deadline;
+  const base = { alive, pastDeadline };
+  if (!Number.isInteger(run.pid)) {
+    if (alive) return { ...base, state: "unattached" };
+    const started = ms(run.startedAt);
+    if (started != null && nowMs - started < UNATTACHED_LOST_MS)
+      return { ...base, state: "starting" };
+    return { ...base, state: "unattached" };
+  }
+  if (metaProblem || exitProblem) {
+    return { ...base, state: "unreadable", problem: metaProblem ?? exitProblem };
+  }
+  if (exit) {
+    if (!alive) return { ...base, state: "done" };
+    const ended = ms(exit.endedAt);
+    if (ended != null && nowMs - ended >= DRAINING_AFTER_MS) return { ...base, state: "draining" };
+    return { ...base, state: "running" };
+  }
+  if (!alive) return { ...base, state: "lost" };
+  if (hardKill != null && nowMs - hardKill >= OVERDUE_AFTER_MS)
+    return { ...base, state: "overdue" };
+  return { ...base, state: "running" };
+}
+
+// Pure: what the tick hands implement_handle_result for an ended run (done or
+// lost), as the exit code the synchronous call would have returned:
+//   - no exit.json: past the deadline it was killed at the cap → 124; before
+//     it, the supervisor died with it (a reboot, a SIGKILL) → interrupted;
+//   - the supervisor's backstop ended it → 124;
+//   - stopped by a signal from outside (exit.json says terminated) with no
+//     result of its own: past the deadline → 124, else interrupted. A run that
+//     ended 0 or 124 on its own keeps that code;
+//   - no exit code at all (the supervisor failed before claude ran) → 1, so
+//     the attempt is spent and a broken supervisor can't loop a card forever;
+//   - else claude's (run-claude.mjs's) own exit code.
+// "interrupted" spends no attempt (implement_lane_collect_one).
+export function collectOutcome({ exit, pastDeadline }) {
+  if (!exit) {
+    return pastDeadline
+      ? { exitCode: 124, interrupted: false, why: "no exit.json, past the deadline" }
+      : { exitCode: null, interrupted: true, why: "no exit.json, before the deadline" };
+  }
+  if (exit.backstop) return { exitCode: 124, interrupted: false, why: "stopped at hardKillAt" };
+  const code = Number.isInteger(exit.exitCode) ? exit.exitCode : null;
+  if (exit.terminated && code !== 0 && code !== 124) {
+    return pastDeadline
+      ? { exitCode: 124, interrupted: false, why: "stopped past the deadline" }
+      : { exitCode: null, interrupted: true, why: "stopped from outside before the deadline" };
+  }
+  if (code == null) {
+    return { exitCode: 1, interrupted: false, why: `supervisor error: ${exit.error ?? "unknown"}` };
+  }
+  return { exitCode: code, interrupted: false, why: "claude exited" };
+}
+
+// A run counts as live (the card is off limits) while anything of it runs, or
+// while it is still being started.
+export function isLiveState(s) {
+  return s.alive || s.state === "starting";
+}
+
+function describeRun(issue, run, files, cls, nowMs) {
+  const exit = files.exit
+    ? {
+        exitCode: Number.isInteger(files.exit.exitCode) ? files.exit.exitCode : null,
+        timedOut: files.exit.timedOut === true,
+        terminated: files.exit.terminated === true,
+        backstop: files.exit.backstop === true,
+        endedAt: typeof files.exit.endedAt === "string" ? files.exit.endedAt : null,
+        error: typeof files.exit.error === "string" ? files.exit.error : null,
+      }
+    : null;
+  return {
+    issue: String(issue),
+    runId: run.runId,
+    state: cls.state,
+    live: isLiveState(cls),
+    alive: cls.alive,
+    pastDeadline: cls.pastDeadline,
+    ...(cls.problem ? { problem: cls.problem } : {}),
+    pid: run.pid,
+    slot: run.slot,
+    sessionId: run.sessionId,
+    mode: run.mode,
+    startedAt: run.startedAt,
+    deadlineAt: run.deadlineAt,
+    hardKillAt: run.hardKillAt,
+    runDir: run.runDir,
+    worktree: run.worktree,
+    exit,
+    ...(cls.state === "done" || cls.state === "lost"
+      ? { collect: collectFields(exit, cls.pastDeadline, nowMs) }
+      : {}),
+  };
+}
+
+function collectFields(exit, pastDeadline, nowMs) {
+  const outcome = collectOutcome({ exit, pastDeadline });
+  const ended = Date.parse(exit?.endedAt ?? "");
+  const endedMs = Number.isNaN(ended) ? nowMs : ended;
+  return {
+    ...outcome,
+    endedAt: isoSeconds(endedMs),
+    endedEpoch: Math.floor(endedMs / 1000),
+  };
+}
+
+export async function runStatus({ stateFile, issue = null }, deps) {
+  const state = await loadFactoryState(stateFile);
+  const entries = Object.entries(getImplement(state).runs).filter(
+    ([n]) => issue == null || n === String(issue),
+  );
+  if (entries.length === 0) return { ok: true, runs: [], issues: [], live: [] };
+  const rows = deps.table();
+  if (!rows) throw new Error("ps failed: can't tell whether the implement runs are alive");
+  const nowMs = deps.nowMs();
+  const runs = entries.map(([n, run]) => {
+    const files = readRunFiles(deps.fs, run);
+    const alive = runGroups(run, rows, { selfPids: deps.selfPids }).length > 0;
+    return describeRun(n, run, files, classifyRun({ run, ...files, alive, nowMs }), nowMs);
+  });
+  return {
+    ok: true,
+    runs,
+    issues: runs.map((r) => r.issue),
+    live: runs.filter((r) => r.live).map((r) => r.issue),
+  };
+}
+
+// ── precheck ────────────────────────────────────────────────────────────────
+
+export async function runPrecheck({ stateFile, maxRunning }, deps) {
+  const max = positiveInt(maxRunning, "--max-running");
+  if (max > MAX_RUNNING_LIMIT) throw new Error(`--max-running above ${MAX_RUNNING_LIMIT}: ${max}`);
+  const state = await loadFactoryState(stateFile);
+  const running = Object.keys(getImplement(state).runs).length;
+  if (running >= max) return { ok: false, reason: "max-running", running, maxRunning: max };
+  const pressure = await deps.memoryPressure();
+  if (Number.isInteger(pressure) && pressure >= 2) return { ok: false, reason: "memory", pressure };
+  return { ok: true, running, maxRunning: max };
+}
+
+// ── start (in the tick) ─────────────────────────────────────────────────────
+
+export function readSpec(fs, file) {
+  const spec = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!spec || typeof spec !== "object" || Array.isArray(spec))
+    throw new Error("spec: not an object");
+  const issue = String(spec.issue ?? "");
+  if (!/^[1-9][0-9]*$/.test(issue)) throw new Error(`spec: invalid issue: ${spec.issue}`);
+  const slot = Number(spec.slot);
+  if (!Number.isInteger(slot) || slot < 0) throw new Error(`spec: invalid slot: ${spec.slot}`);
+  if (typeof spec.worktree !== "string" || !path.isAbsolute(spec.worktree)) {
+    throw new Error(`spec: worktree must be an absolute path: ${spec.worktree}`);
+  }
+  if (typeof spec.inputFile !== "string" || spec.inputFile === "") {
+    throw new Error("spec: inputFile is required");
+  }
+  const argv = buildImplementArgv({
+    effort: spec.effort,
+    mode: spec.mode,
+    sessionId: spec.sessionId,
+  });
+  const maxRunning = positiveInt(spec.maxRunning, "maxRunning");
+  if (maxRunning > MAX_RUNNING_LIMIT)
+    throw new Error(`spec: maxRunning above ${MAX_RUNNING_LIMIT}`);
+  if (!spec.ctx || typeof spec.ctx !== "object" || Array.isArray(spec.ctx)) {
+    throw new Error("spec: ctx must be an object");
+  }
+  return {
+    issue,
+    slot,
+    worktree: spec.worktree,
+    inputFile: spec.inputFile,
+    effort: spec.effort,
+    mode: spec.mode,
+    sessionId: spec.sessionId,
+    argv,
+    timeoutSec: positiveInt(spec.timeoutSec, "timeoutSec"),
+    termGraceSec: positiveInt(spec.termGraceSec, "termGraceSec"),
+    killGraceSec: positiveInt(spec.killGraceSec, "killGraceSec"),
+    maxRunning,
+    ctx: spec.ctx,
+  };
+}
+
+async function lockWorktree(deps, repoRoot, worktree, runId) {
+  // A lock a crashed run left behind would make `lock` fail; this card's run
+  // is the only one that ever locks its worktree, and it is reserved now.
+  await deps.git(["worktree", "unlock", worktree], { cwd: repoRoot });
+  const r = await deps.git(["worktree", "lock", "--reason", `implement run ${runId}`, worktree], {
+    cwd: repoRoot,
+  });
+  return r.code === 0 ? null : (r.stderr || r.stdout || "").trim().split("\n")[0] || "failed";
+}
+
+async function unlockWorktree(deps, repoRoot, worktree) {
+  if (!repoRoot || !worktree) return;
+  await deps.git(["worktree", "unlock", worktree], { cwd: repoRoot });
+}
+
+export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps) {
+  const fs = deps.fs;
+  const refuse = (reason, extra = {}) => ({ started: false, reason, ...extra });
+  if (!runRoot || !path.isAbsolute(runRoot)) throw new Error("--run-root must be absolute");
+  if (!repoRoot || !path.isAbsolute(repoRoot)) throw new Error("--repo-root must be absolute");
+  const spec = readSpec(fs, specFile);
+  if (!fs.existsSync(spec.worktree)) return refuse("worktree-missing");
+  let input;
+  try {
+    input = fs.readFileSync(spec.inputFile, "utf8");
+  } catch {
+    return refuse("input-missing");
+  }
+  if (input === "") return refuse("input-empty");
+
+  const nowMs = deps.nowMs();
+  const now = new Date(nowMs).toISOString();
+  const runId = makeRunId(nowMs);
+  let reservation = null;
+  let refused = null;
+  await mutateState(stateFile, (s) => {
+    if (isFactoryPaused(s, now)) refused = "factory-paused";
+    else if (String(getSlot(s, spec.slot).issueNumber ?? "") !== spec.issue)
+      refused = "slot-not-held";
+    if (refused) return false;
+    reservation = reserveImplementRun(s, {
+      issue: spec.issue,
+      runId,
+      slot: spec.slot,
+      mode: spec.mode,
+      sessionId: spec.sessionId,
+      maxRunning: spec.maxRunning,
+      now,
+    });
+    return reservation.ok;
+  });
+  if (refused) return refuse(refused);
+  if (!reservation.ok) return refuse(reservation.reason);
+
+  const runDir = runDirFor(runRoot, spec.issue, runId);
+  let spawned = null;
+  let locked = false;
+  try {
+    fs.mkdirSync(runRoot, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(runDir, { mode: 0o700 });
+    fs.chmodSync(runDir, 0o700);
+    fs.writeFileSync(path.join(runDir, "input.md"), input, { mode: 0o600 });
+    const startMs = deps.nowMs();
+    const deadlineMs = startMs + spec.timeoutSec * 1000;
+    const startedAt = isoSeconds(startMs);
+    const deadlineAt = new Date(deadlineMs).toISOString();
+    const hardKillAt = new Date(deadlineMs + spec.killGraceSec * 1000).toISOString();
+    const meta = {
+      formatVersion: FORMAT_VERSION,
+      runId,
+      issue: spec.issue,
+      slot: spec.slot,
+      worktree: spec.worktree,
+      runDir,
+      repoRoot,
+      startedAt,
+      deadlineAt,
+      hardKillAt,
+      timeoutSec: spec.timeoutSec,
+      termGraceSec: spec.termGraceSec,
+      killGraceSec: spec.killGraceSec,
+      mode: spec.mode,
+      effort: spec.effort,
+      sessionId: spec.sessionId,
+      node: process.execPath,
+      runClaude: RUN_CLAUDE,
+      argv: spec.argv,
+      ctx: spec.ctx,
+    };
+    writeJsonAtomic(fs, path.join(runDir, "meta.json"), meta);
+    const lockError = await lockWorktree(deps, repoRoot, spec.worktree, runId);
+    locked = lockError == null;
+    // The run id rides on the supervisor's command line (in --run-dir): status
+    // and kill identify the live process by it, so a reused pid never counts.
+    spawned = await deps.spawnDetached(
+      process.execPath,
+      [THIS_FILE, "_supervise", "--run-dir", runDir],
+      {
+        cwd: runDir,
+        logPath: path.join(runDir, "supervisor.log"),
+        env: deps.env,
+      },
+    );
+    if (!spawned.ok) throw new Error(`supervisor failed to start: ${spawned.reason}`);
+    const attached = await mutateState(stateFile, (s) => {
+      const ok = attachImplementRun(s, spec.issue, runId, {
+        pid: spawned.pid,
+        deadlineAt,
+        hardKillAt,
+        runDir,
+        worktree: spec.worktree,
+      });
+      if (!ok) return false;
+      // The slot is held by the supervisor from here on: slot_acquire defers
+      // this card while it runs, and no other card can take the slot.
+      if (String(getSlot(s, spec.slot).issueNumber ?? "") === spec.issue) {
+        acquireSlot(s, spec.slot, { issueNumber: spec.issue, pid: spawned.pid, now });
+      }
+      return true;
+    });
+    if (!attached) {
+      // Finished while we spawned (an operator's kill): nothing tracks this
+      // supervisor any more, so stop it here.
+      deps.kill(-spawned.pid, "SIGTERM");
+      if (locked) await unlockWorktree(deps, repoRoot, spec.worktree);
+      return refuse("abandoned", { runId });
+    }
+    return {
+      started: true,
+      runId,
+      pid: spawned.pid,
+      runDir,
+      startedAt,
+      deadlineAt,
+      hardKillAt,
+      locked,
+      ...(lockError ? { lockError } : {}),
+    };
+  } catch (err) {
+    if (spawned?.ok) deps.kill(-spawned.pid, "SIGTERM");
+    await mutateState(stateFile, (s) => finishImplementRun(s, spec.issue, runId).ok);
+    if (locked) await unlockWorktree(deps, repoRoot, spec.worktree);
+    return refuse("start-failed", { error: err.message, runId });
+  }
+}
+
+// ── the supervisor (detached; never state, git or gh) ───────────────────────
+
+function exitCodeOf(code, signal) {
+  if (code != null) return code;
+  if (signal) return 128 + (osConstants.signals[signal] ?? 0);
+  return 1;
+}
+
+export async function runSupervise(
+  { runDir },
+  {
+    env = process.env,
+    fs = nodeFs,
+    spawnImpl = spawn,
+    table = () => processTable(),
+    signalProcess = process,
+  } = {},
+) {
+  const logFile = path.join(runDir, "supervisor.log");
+  const startedAt = new Date().toISOString();
+  let exitCode = null;
+  let signal = null;
+  let error = null;
+  let terminated = false;
+  let backstop = false;
+  let child = null;
+  let backstopTimer = null;
+  let killTimer = null;
+  let meta = null;
+
+  // Every process group below the child (claude leads its own), then the
+  // child itself: the backstop's SIGKILL, once SIGTERM was ignored.
+  const killTree = () => {
+    const rows = table();
+    if (rows && child?.pid) {
+      const own = rows.find((r) => r.pid === process.pid)?.pgid;
+      const groups = new Set(descendants(rows, child.pid).map((r) => r.pgid));
+      for (const g of groups) {
+        if (g > 1 && g !== own) {
+          try {
+            signalProcess.kill(-g, "SIGKILL");
+          } catch {
+            /* gone */
+          }
+        }
+      }
+    }
+    try {
+      child?.kill("SIGKILL");
+    } catch {
+      /* gone */
+    }
+  };
+
+  // SIGTERM/SIGHUP/SIGINT reach this process when the run is stopped (kill
+  // signals the whole group, run-claude.mjs included, which stops claude's
+  // own group), or when the machine shuts down. Record it and pass it on to
+  // the child, then still write exit.json once the child is gone.
+  const onSignal = (sig) => {
+    terminated = true;
+    appendLog(fs, logFile, `received ${sig}; stopping the claude call`);
+    try {
+      child?.kill(sig);
+    } catch {
+      /* gone */
+    }
+  };
+  const handlers = {};
+  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) {
+    handlers[sig] = () => onSignal(sig);
+    signalProcess.on(sig, handlers[sig]);
+  }
+
+  try {
+    const m = readJson(fs, path.join(runDir, "meta.json"));
+    if (m.error) throw new Error(`meta.json ${m.error}`);
+    if (m.value?.formatVersion !== FORMAT_VERSION) {
+      throw new Error(`meta.json formatVersion ${JSON.stringify(m.value?.formatVersion)}`);
+    }
+    meta = m.value;
+    if (!Array.isArray(meta.argv) || !meta.argv.every((a) => typeof a === "string")) {
+      throw new Error("meta.json: argv is not a list of strings");
+    }
+    const input = fs.readFileSync(path.join(runDir, "input.md"), "utf8");
+    // Stopped before claude was even started: start nothing.
+    if (terminated) throw new Error("stopped before the claude call started");
+    const out = fs.openSync(path.join(runDir, "stdout.txt"), "a", 0o600);
+    const err = fs.openSync(path.join(runDir, "stderr.txt"), "a", 0o600);
+    appendLog(
+      fs,
+      logFile,
+      `starting claude (run ${meta.runId}, ${meta.mode}, session ${meta.sessionId})`,
+    );
+    const result = await new Promise((resolve) => {
+      try {
+        child = spawnImpl(meta.node, [meta.runClaude, "-p", input, ...meta.argv], {
+          cwd: meta.worktree,
+          env: buildImplementEnv(env, meta),
+          stdio: ["ignore", out, err],
+        });
+      } catch (e) {
+        resolve({ code: 127, signal: null, error: `spawn failed: ${e.message}` });
+        return;
+      }
+      child.once("error", (e) =>
+        resolve({ code: 127, signal: null, error: `spawn failed: ${e.message}` }),
+      );
+      child.once("exit", (code, sig) => resolve({ code, signal: sig, error: null }));
+      // The backstop: run-claude.mjs ends the call at the cap; this ends a
+      // run-claude.mjs that didn't, at hardKillAt.
+      const hardKillMs = Date.parse(meta.hardKillAt) - Date.now();
+      backstopTimer = setTimeout(
+        () => {
+          backstop = true;
+          appendLog(fs, logFile, "hardKillAt reached with the claude call still running; SIGTERM");
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            /* gone */
+          }
+          const graceMs = (Number(meta.termGraceSec) || 30) * 1000 + 15_000;
+          killTimer = setTimeout(() => {
+            appendLog(fs, logFile, "still running after SIGTERM; SIGKILL");
+            killTree();
+          }, graceMs);
+        },
+        Math.max(0, Number.isFinite(hardKillMs) ? hardKillMs : 0),
+      );
+    });
+    for (const fd of [out, err]) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+    exitCode = exitCodeOf(result.code, result.signal);
+    signal = result.signal ?? null;
+    error = result.error;
+  } catch (e) {
+    error = error ?? e.message;
+  } finally {
+    clearTimeout(backstopTimer);
+    clearTimeout(killTimer);
+    try {
+      writeJsonAtomic(fs, path.join(runDir, "exit.json"), {
+        formatVersion: FORMAT_VERSION,
+        runId: meta?.runId ?? null,
+        exitCode,
+        signal,
+        timedOut: exitCode === 124 || backstop,
+        terminated,
+        backstop,
+        error,
+        startedAt,
+        endedAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      appendLog(fs, logFile, `could not write exit.json: ${e.message}`);
+    }
+    appendLog(
+      fs,
+      logFile,
+      `run ended (exit=${exitCode}, signal=${signal ?? "none"}, terminated=${terminated}, backstop=${backstop}, error=${error ?? "none"})`,
+    );
+    for (const sig of Object.keys(handlers)) signalProcess.removeListener(sig, handlers[sig]);
+  }
+  return { exitCode, terminated, backstop, error };
+}
+
+// ── finish and kill (in the tick) ───────────────────────────────────────────
+
+// Unlock first, then drop the run from the ledger: a tick that dies between
+// the two leaves a run the next tick collects again, never a locked worktree
+// nothing will unlock.
+export async function runFinish({ stateFile, issue, runId, outcome, repoRoot }, deps) {
+  if (!/^[1-9][0-9]*$/.test(String(issue ?? ""))) throw new Error(`invalid --issue: ${issue}`);
+  if (!runId) throw new Error("finish requires --run-id");
+  if (!outcome || !/^[a-z-]+$/.test(outcome)) throw new Error(`invalid --outcome: ${outcome}`);
+  const before = getImplementRun(await loadFactoryState(stateFile), issue);
+  if (!before || before.runId !== String(runId)) {
+    return { ok: false, reason: "run-id-mismatch", issue: String(issue), runId };
+  }
+  await unlockWorktree(deps, repoRoot, before.worktree);
+  const result = await mutateState(stateFile, (s) => {
+    const r = finishImplementRun(s, issue, runId);
+    return r.ok ? r : false;
+  });
+  if (!result) return { ok: false, reason: "run-id-mismatch", issue: String(issue), runId };
+  if (before.runDir && deps.fs.existsSync(before.runDir)) {
+    try {
+      writeJsonAtomic(deps.fs, path.join(before.runDir, "collected.json"), {
+        formatVersion: FORMAT_VERSION,
+        runId,
+        outcome,
+        at: new Date(deps.nowMs()).toISOString(),
+      });
+    } catch {
+      /* the ledger is the record; this file is for the operator */
+    }
+  }
+  return { ok: true, issue: String(issue), runId, outcome };
+}
+
+function signalGroups(deps, groups, sig) {
+  for (const g of groups) deps.kill(-g, sig);
+}
+
+// Wait until <run> has no live process group, polling, for at most <ms>.
+// Returns "gone", "alive" or "unknown" (ps failed).
+async function waitGone(run, deps, ms) {
+  const until = deps.nowMs() + ms;
+  for (;;) {
+    const rows = deps.table();
+    if (!rows) return { state: "unknown", groups: [] };
+    const groups = runGroups(run, rows, { selfPids: deps.selfPids });
+    if (groups.length === 0) return { state: "gone", groups };
+    if (deps.nowMs() >= until) return { state: "alive", groups };
+    await deps.sleep(POLL_MS);
+  }
+}
+
+export async function runKill(
+  { stateFile, issue, finish = false, outcome = "killed", waitMs = DEFAULT_STOP_WAIT_MS, repoRoot },
+  deps,
+) {
+  if (!/^[1-9][0-9]*$/.test(String(issue ?? ""))) throw new Error(`invalid --issue: ${issue}`);
+  const run = getImplementRun(await loadFactoryState(stateFile), issue);
+  if (!run) return { ok: true, issue: String(issue), state: "none" };
+  let signalled = false;
+  let killed = false;
+  let w = await waitGone(run, deps, 0);
+  if (w.state === "alive") {
+    signalled = true;
+    signalGroups(deps, w.groups, "SIGTERM");
+    w = await waitGone(run, deps, waitMs);
+  }
+  if (w.state === "alive") {
+    killed = true;
+    signalGroups(deps, w.groups, "SIGKILL");
+    w = await waitGone(run, deps, KILL_SETTLE_MS);
+  }
+  const out = { issue: String(issue), runId: run.runId, state: w.state, signalled, killed };
+  if (w.state !== "gone") return { ok: false, ...out };
+  if (!finish) return { ok: true, ...out };
+  const fin = await runFinish({ stateFile, issue, runId: run.runId, outcome, repoRoot }, deps);
+  return { ok: fin.ok, ...out, finished: fin.ok, ...(fin.ok ? {} : { reason: fin.reason }) };
+}
+
+// ── housekeeping ────────────────────────────────────────────────────────────
+
+export async function runHousekeeping({ stateFile, runRoot, maxAgeDays = 30 }, deps) {
+  if (!runRoot || !path.isAbsolute(runRoot)) throw new Error("--run-root must be absolute");
+  const days = positiveInt(maxAgeDays, "--max-age-days");
+  const fs = deps.fs;
+  if (!fs.existsSync(runRoot)) return { ok: true, reaped: [] };
+  const state = await loadFactoryState(stateFile);
+  const held = new Set(
+    Object.values(getImplement(state).runs).flatMap((r) => [r.runDir, r.runId].filter(Boolean)),
+  );
+  const cutoff = deps.nowMs() - days * 24 * 60 * MINUTE_MS;
+  const reaped = [];
+  for (const name of fs.readdirSync(runRoot)) {
+    if (!RUN_DIR_NAME_RE.test(name)) continue;
+    const dir = path.join(runRoot, name);
+    const runId = name.slice(name.indexOf("-") + 1);
+    if (held.has(dir) || held.has(runId)) continue;
+    let stat;
+    try {
+      stat = fs.statSync(dir);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory() || stat.mtimeMs > cutoff) continue;
+    fs.rmSync(dir, { recursive: true, force: true });
+    reaped.push(name);
+  }
+  return { ok: true, reaped };
+}
+
+// ── CLI ─────────────────────────────────────────────────────────────────────
+
+export async function main(argv, deps = createDeps()) {
+  const [sub, ...rest] = argv;
+  const { flags } = parseFlags(rest);
+  const stateFile = flags["state-file"] ?? DEFAULT_FACTORY_STATE_PATH;
+  switch (sub) {
+    case "precheck":
+      return runPrecheck({ stateFile, maxRunning: flags["max-running"] }, deps);
+    case "start":
+      if (!flags["spec-file"]) throw new Error("start requires --spec-file");
+      return runStart(
+        {
+          specFile: flags["spec-file"],
+          stateFile,
+          runRoot: flags["run-root"],
+          repoRoot: flags["repo-root"],
+        },
+        deps,
+      );
+    case "_supervise":
+      if (!flags["run-dir"]) throw new Error("_supervise requires --run-dir");
+      return runSupervise({ runDir: flags["run-dir"] }, { env: deps.env, fs: deps.fs });
+    case "status":
+      return runStatus({ stateFile, issue: flags.issue ?? null }, deps);
+    case "kill": {
+      const waitMs = flags["wait-ms"] == null ? DEFAULT_STOP_WAIT_MS : Number(flags["wait-ms"]);
+      if (!Number.isInteger(waitMs) || waitMs < 0) {
+        throw new Error(`invalid --wait-ms: ${flags["wait-ms"]}`);
+      }
+      return runKill(
+        {
+          stateFile,
+          issue: flags.issue,
+          finish: flags.finish === "1",
+          outcome: flags.outcome ?? "killed",
+          waitMs,
+          repoRoot: flags["repo-root"],
+        },
+        deps,
+      );
+    }
+    case "finish":
+      return runFinish(
+        {
+          stateFile,
+          issue: flags.issue,
+          runId: flags["run-id"],
+          outcome: flags.outcome,
+          repoRoot: flags["repo-root"],
+        },
+        deps,
+      );
+    case "housekeeping":
+      return runHousekeeping(
+        { stateFile, runRoot: flags["run-root"], maxAgeDays: flags["max-age-days"] ?? 30 },
+        deps,
+      );
+    default:
+      throw new Error(
+        `unknown subcommand: ${sub ?? "(none)"} (precheck|start|status|kill|finish|housekeeping)`,
+      );
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  const argv = process.argv.slice(2);
+  main(argv)
+    .then((out) => {
+      // The supervisor's stdout is its log file: it prints nothing.
+      if (argv[0] !== "_supervise") process.stdout.write(JSON.stringify(out) + "\n");
+      process.exit(0);
+    })
+    .catch((err) => {
+      process.stderr.write(JSON.stringify({ error: err.message }) + "\n");
+      process.exit(1);
+    });
+}
