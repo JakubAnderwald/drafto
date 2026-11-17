@@ -101,7 +101,7 @@ describe("implement resume: wiring in the --implement block", () => {
       /if \[\[ "\$IMPL_RESUMED" -eq 0 \]\]; then\n\s*implement_mark_resumable "\$ISSUE_NUM" "\$WT_PATH" "\$IMPL_SESSION_ID" "\$IMPL_TASK_KEY" \\\n\s*"\$CHAIN_PRE_HEAD_OID" "\$CHAIN_PRE_HEAD_KNOWN" "timed out" "\$IMPL_FEEDBACK_DIGEST"\n\s*fi/,
     );
     assert.match(branch, /factory:bump-attempts "\$ISSUE_NUM"/);
-    assert.match(branch, /continue\n$/);
+    assert.match(branch, /return 0\n$/);
   });
 
   it("checks the named session for a limit, then lets a resume that never started off the attempt", () => {
@@ -117,7 +117,7 @@ describe("implement resume: wiring in the --implement block", () => {
     assert.ok(limit !== -1 && limit < never && never < bump);
     assert.match(
       branch,
-      /if \[\[ "\$IMPL_RESUMED" -eq 1 \]\] \\\n\s*&& implement_resume_never_started "\$IMPL_SESSION_ID" "\$CLAUDE_START_ISO" "\$IMPL_START_EPOCH"; then\n\s*log "[^"]*never started[^"]*"\n\s*continue\n/,
+      /if \[\[ "\$IMPL_RESUMED" -eq 1 \]\] \\\n\s*&& implement_resume_never_started "\$IMPL_SESSION_ID" "\$CLAUDE_START_ISO" "\$IMPL_START_EPOCH"; then\n\s*log "[^"]*never started[^"]*"\n\s*return 0\n/,
     );
   });
 
@@ -729,9 +729,11 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       'implement_head_landed() { echo "landed? $3" >>"$CALLS"; [[ "${FAKE_LANDED:-1}" == "1" ]]; }',
       'gh() { echo "gh $1 $2" >>"$CALLS"; }',
       'node() { echo "node $2 $3 $4" >>"$CALLS"; case "$*" in *factory:get-issue*) printf \'{"intestCommentSha":"%s"}\' "$FAKE_SHOWN" ;; esac; }',
-      "for _once in 1; do",
+      // The arms live in implement_handle_result, where `return 0` ends a card.
+      "_arms() {",
       CASE,
-      "done",
+      "}",
+      "_arms",
       'echo "exit-ok"',
     ].join("\n");
     const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });

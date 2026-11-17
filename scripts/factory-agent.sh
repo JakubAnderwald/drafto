@@ -46,9 +46,11 @@
 # Each mode acquires its own PID-file lock so multiple modes can run
 # back-to-back in one launchd tick without contending. --implement and
 # --watch additionally track per-issue worktree slots (slot0|slot1) in
-# logs/factory-state.json; because only one --implement and one --watch
-# process can run at a time (the mode-wide lock), the state file is the
-# slot source of truth and no separate per-slot flock is needed.
+# logs/factory-state.json. factory-agent-loop.sh runs the modes one after
+# another under one mutex, but their locks are different, so a mode run by
+# hand can overlap the loop's. There is no per-slot file lock: slot_acquire
+# reads factory:slot-acquire's answer and defers a card whose slot is in use
+# (#466).
 #
 # Phase gate: --phase A|B|C|D. Refusing to operate outside the requested
 # phase is the prompt's job (the bundle includes config.phase); bash
@@ -2851,6 +2853,65 @@ slot_for_issue() {
   if [[ -n "$existing" ]]; then echo "$existing"; return 0; fi
   echo "$status_all" | jq -r \
     '.slots | to_entries | map(select(.value.issueNumber == null)) | (.[0].key // "")'
+}
+
+# slot_acquire <slot> <issue> <pid> — record <slot> as <issue>'s, held by
+# <pid>. Exit 0 when the slot is now this issue's, 1 to defer the card this
+# tick (the reason is logged). factory:slot-acquire exits 0 even when it
+# refuses (#466), so its JSON decides. It refuses when the slot's recorded pid
+# is alive. factory-agent-loop.sh runs the modes one after another under one
+# mutex, so a live pid means a mode run by hand alongside it, a pid reused
+# since, or a detached implement run (ADR-0085). A refusal defers the card
+# when the slot is another issue's, or when it's this issue's and the pid is
+# still working on it: a detached implement run (`implement-lane.mjs
+# _supervise`) or another factory-agent.sh process. Any other pid is stale
+# for this slot (reused, or this process), so the slot is taken back with
+# --force true. That is what the refusal-blind callers used to get.
+slot_acquire() {
+  local slot="$1" issue="$2" pid="$3" out fields ok reason holder holder_pid holder_cmd
+  if ! out=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$slot" "$issue" "$pid" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: slot-acquire $slot for #$issue failed; deferring"
+    return 1
+  fi
+  printf '%s\n' "$out" >>"$LOG_FILE"
+  # One parse; the unit separator keeps empty fields apart (a tab would not).
+  fields=$(jq -r '[(.ok == true), (.reason // ""), (.occupiedBy.issueNumber // ""), (.occupiedBy.pid // "")]
+    | map(tostring) | join("\u001f")' <<<"$out" 2>/dev/null) || fields=""
+  IFS=$'\x1f' read -r ok reason holder holder_pid <<<"$fields" || true
+  [[ "$ok" == "true" ]] && return 0
+  if [[ "$reason" != "slot-occupied" || -z "$holder" ]]; then
+    log "WARNING: slot-acquire $slot for #$issue was refused (unreadable answer); deferring"
+    return 1
+  fi
+  if [[ "$holder" != "$issue" ]]; then
+    log "Issue #$issue: slot $slot is held by #$holder (pid ${holder_pid:-none}); deferring to a later tick"
+    return 1
+  fi
+  holder_cmd=""
+  if [[ "$holder_pid" =~ ^[0-9]+$ && "$holder_pid" != "$$" ]]; then
+    holder_cmd=$(ps -o command= -p "$holder_pid" 2>/dev/null || true)
+  fi
+  if [[ "$holder_cmd" == *"implement-lane.mjs _supervise"* ]]; then
+    log "Issue #$issue: slot $slot is held by its own running implement (pid $holder_pid); deferring to a later tick"
+    return 1
+  fi
+  if [[ "$holder_cmd" == *"factory-agent.sh"* ]]; then
+    log "Issue #$issue: slot $slot is held by another running factory-agent.sh for this issue (pid $holder_pid); deferring to a later tick"
+    return 1
+  fi
+  log "Issue #$issue: slot $slot is recorded for this issue (pid ${holder_pid:-none}), which isn't working on it; taking it over"
+  if ! out=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$slot" "$issue" "$pid" --force true \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: slot-acquire --force $slot for #$issue failed; deferring"
+    return 1
+  fi
+  printf '%s\n' "$out" >>"$LOG_FILE"
+  if [[ "$(jq -r '.ok == true' <<<"$out" 2>/dev/null || echo false)" != "true" ]]; then
+    log "WARNING: slot-acquire --force $slot for #$issue was refused; deferring"
+    return 1
+  fi
+  return 0
 }
 
 # Parity / phase post-check on a PR's changed files. Args:
@@ -8476,6 +8537,301 @@ and drag the card back to **Plan Review** (or **Ready** for a full restart).
 fi
 
 # ── --implement mode ────────────────────────────────────────────────────────
+# implement_handle_result — everything --implement does with a finished claude
+# run: the exit code (timeout, session limit, other failure), the summary line,
+# then the action it reports (implemented, noop, blocked, incomplete, declined,
+# anything else). The loop body calls it straight after run-claude.mjs. Moved
+# here verbatim from that loop, so the detached runs of ADR-0085 can hand a
+# collected run to the same tested code; `return 0` is where the loop said
+# `continue`. A session limit still ends the whole tick (`exit 0`). It takes no
+# arguments. Every global it reads is set by the loop body for this card:
+#   ISSUE_NUM ITEM_ID ITEM_LABELS          the card
+#   SLOT WT_PATH                           its worktree slot and path
+#   EXIT_CODE CLAUDE_OUTPUT_FILE           the run's exit code and stdout file
+#                                          (the file is removed here)
+#   CLAUDE_START_ISO IMPL_START_EPOCH      when the run started
+#   IMPL_RESUMED IMPL_SESSION_ID           set by implement_resume_decide
+#   IMPL_TASK_KEY IMPL_FEEDBACK_DIGEST
+#   PRE_HEAD_OID PRE_HEAD_KNOWN            the PR head at this run's start
+#   CHAIN_PRE_HEAD_OID CHAIN_PRE_HEAD_KNOWN  ... and at the resume chain's start
+#   PRIOR_PR COMMENTS_JSON BUNDLE          the open PR, comments and bundle
+#   AFFECTED PARITY_OVERRIDE               the parity post-check's inputs
+#   IS_REVISION FEEDBACK_CONSUMED_AT REPLY_MARKERS  revision feedback
+#   IMPLEMENT_TIMEOUT_SEC SCRIPT_DIR STATE_FILE LOG_FILE MODE_NAME START_TIME
+# It also sets these globals, as the loop did: SUMMARY_LINE ACTION PR_URL
+# NOW_ISO FEEDBACK_MARK PR_OBJ PR_NUM POST_HEAD_OID CLAIM_HEAD CLAIM_SINCE
+# CLAIM_JSON LOCAL_HEAD DECLINE_SHOWN_SHA DECLINE_NOW_SHA.
+implement_handle_result() {
+    if [[ $EXIT_CODE -eq 124 ]]; then
+      log "WARNING: claude timed out (>${IMPLEMENT_TIMEOUT_SEC}s) for #$ISSUE_NUM; keeping slot for retry"
+      # Whatever it printed before the kill, before the file goes.
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      # A fresh run's session may be resumed by the next attempt (ADR-0084).
+      # A resumed one never is: one resume per timeout chain.
+      if [[ "$IMPL_RESUMED" -eq 0 ]]; then
+        implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+          "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "timed out" "$IMPL_FEEDBACK_DIGEST"
+      fi
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      return 0
+    elif [[ $EXIT_CODE -ne 0 ]]; then
+      log "ERROR: claude exited non-zero ($EXIT_CODE) for #$ISSUE_NUM --implement"
+      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
+      # Session limit? Pause until reset instead of burning the retry budget.
+      # Keep the slot + worktree (as the timeout branch does) so the resumed
+      # tick reuses the warm worktree; the card stays In Progress.
+      if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO" "$IMPL_SESSION_ID"; then
+        rm -f "$CLAUDE_OUTPUT_FILE"
+        # The limit stopped the session, not the card: record it for the run
+        # after the reset to resume, a resumed one included (ADR-0084).
+        implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+          "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "session limit" "$IMPL_FEEDBACK_DIGEST"
+        log "Issue #$ISSUE_NUM: session limit — keeping slot $SLOT + worktree; card stays In Progress for resume"
+        pause_for_session_limit
+        log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
+        exit 0
+      fi
+      rm -f "$CLAUDE_OUTPUT_FILE"
+      # A resume that never got going (the CLI or the API refused the restored
+      # session) is the factory's failure, not the card's: no attempt, and the
+      # next tick runs fresh, its record already cleared.
+      if [[ "$IMPL_RESUMED" -eq 1 ]] \
+         && implement_resume_never_started "$IMPL_SESSION_ID" "$CLAUDE_START_ISO" "$IMPL_START_EPOCH"; then
+        log "Issue #$ISSUE_NUM: resumed session $IMPL_SESSION_ID never started (exit $EXIT_CODE); no attempt spent, the next tick runs a fresh session"
+        return 0
+      fi
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      return 0
+    fi
+
+    cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
+    SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
+    rm -f "$CLAUDE_OUTPUT_FILE"
+    if [[ -z "$SUMMARY_LINE" ]]; then
+      if [[ "$IMPL_RESUMED" -eq 1 ]] \
+         && implement_resume_never_started "$IMPL_SESSION_ID" "$CLAUDE_START_ISO" "$IMPL_START_EPOCH"; then
+        log "Issue #$ISSUE_NUM: resumed session $IMPL_SESSION_ID never started (no summary line); no attempt spent, the next tick runs a fresh session"
+        return 0
+      fi
+      log "WARNING: no well-formed summary line from claude for #$ISSUE_NUM; keeping slot for retry"
+      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      return 0
+    fi
+    log "Claude summary: $SUMMARY_LINE"
+    ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
+    PR_URL=$(echo "$SUMMARY_LINE" | sed -E 's/.*pr=([^ ]+).*/\1/')
+
+    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # On a revision run, mark as consumed only the feedback this run was given.
+    # A comment posted while it ran (a scenario run can take most of the cap)
+    # stays newer than the mark, so the In Test sweep picks it up next instead
+    # of it being dropped unread.
+    FEEDBACK_MARK="$NOW_ISO"
+    if [[ "$IS_REVISION" -eq 1 && -n "$FEEDBACK_CONSUMED_AT" ]]; then
+      FEEDBACK_MARK="$FEEDBACK_CONSUMED_AT"
+    fi
+    case "$ACTION" in
+      implemented)
+        PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
+        if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
+          log "WARNING: #$ISSUE_NUM action=implemented but no PR on head factory/issue-$ISSUE_NUM; keeping slot for retry"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          return 0
+        fi
+        PR_NUM=$(echo "$PR_OBJ" | jq -r '.number')
+        # Did the work actually land? An agent whose worktree does not descend
+        # from the PR head gets its push rejected, and has historically still
+        # reported action=implemented — which advanced the card AND marked the
+        # reporter's feedback consumed, losing the change request silently.
+        # Trust GitHub's head OID, not the agent's self-report.
+        if [[ "$PRE_HEAD_KNOWN" -eq 0 ]]; then
+          log "WARNING: #$ISSUE_NUM: the PR head before this run is unknown, so action=implemented cannot be verified; not advancing this tick"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          return 0
+        fi
+        # Progress is judged for the whole chain: a resumed run whose stopped
+        # predecessor already pushed the work has moved the PR from the chain's
+        # baseline even when it pushes nothing more (ADR-0084).
+        if [[ -n "$CHAIN_PRE_HEAD_OID" ]]; then
+          POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
+          if [[ -z "$POST_HEAD_OID" ]]; then
+            log "WARNING: #$ISSUE_NUM: could not read PR #$PR_NUM head OID; not advancing this tick"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            return 0
+          fi
+          if [[ "$POST_HEAD_OID" == "$CHAIN_PRE_HEAD_OID" ]]; then
+            log "ERROR: #$ISSUE_NUM claimed action=implemented but PR #$PR_NUM head is unchanged (${CHAIN_PRE_HEAD_OID:0:12}); treating as a failed attempt"
+            if ! echo "$COMMENTS_JSON" | jq -e 'any(.[]?; (.body // "") | contains("drafto-factory-head-unchanged"))' >/dev/null 2>&1; then
+              gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
+                --body "🏭 **A revision run reported success but pushed nothing.**
+
+PR #$PR_NUM is still at \`${CHAIN_PRE_HEAD_OID:0:12}\`, so the requested change is *not* on the \
+PR. The card stays In Progress and your feedback is left unconsumed, so the next attempt \
+still sees it. If this repeats until the retry budget is exhausted, the card moves to \
+**Blocked** for a human.
+
+<!-- drafto-factory-head-unchanged -->" >>"$LOG_FILE" 2>&1 || true
+            fi
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            return 0
+          fi
+        fi
+        # Parity / phase post-check. implement_parity_gate parks a violation in
+        # Blocked (slot released, worktree removed) and skips it when
+        # `gh pr diff` fails; the revision noop on an unshown head runs the same.
+        # The worktree's own commits must be on the PR too: a resumed run that
+        # committed more after its predecessor pushed, then reported success
+        # without pushing, moved the PR from the chain's baseline all the same.
+        # Checked against the PR head now, never the agent's word (#842 review).
+        if [[ -z "$CHAIN_PRE_HEAD_OID" ]]; then
+          POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
+        fi
+        if ! implement_head_landed "$WT_PATH" "$ISSUE_NUM" "$POST_HEAD_OID"; then
+          log "ERROR: #$ISSUE_NUM claimed action=implemented but the worktree's commits aren't all on PR #$PR_NUM (PR head ${POST_HEAD_OID:0:12}); not advancing, feedback left unconsumed"
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          return 0
+        fi
+        if ! implement_parity_gate "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "$PR_NUM" \
+            "$AFFECTED" "$PARITY_OVERRIDE"; then
+          return 0
+        fi
+        # Migration versions (ADR-0079): move this PR's off any an older open
+        # PR already adds, and the ones this run added off any open PR's. A
+        # revision reuses the head read above and names the head before the
+        # run; a fresh PR has neither, so every migration it adds is this
+        # run's. The bundle's claims spare a second sweep of the open PRs, but
+        # only when they are all of them (claimedComplete): the bundle shapes
+        # the list for the model and may drop a claim, and then the post-check
+        # sweeps itself. Never blocks; the card goes on either way.
+        CLAIM_HEAD=""
+        CLAIM_SINCE="all"
+        if [[ -n "$CHAIN_PRE_HEAD_OID" ]]; then
+          CLAIM_HEAD="$POST_HEAD_OID"
+          CLAIM_SINCE="$CHAIN_PRE_HEAD_OID"
+        fi
+        CLAIM_JSON=$(jq -c 'if .migrations.claimedComplete == true then (.migrations.claimed | map({pr, file})) else empty end' <<<"$BUNDLE" 2>/dev/null || echo "")
+        implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM" "$CLAIM_HEAD" "$CLAIM_SINCE" "$CLAIM_JSON"
+        # Happy path: advance to In Review. KEEP slot + worktree for --watch.
+        # Advancing lastFeedbackAt to FEEDBACK_MARK marks the comments this run
+        # applied as consumed, so a revision we just applied can't re-trigger
+        # next tick.
+        transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastImplementAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$FEEDBACK_MARK" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        # A new In Review stint starts here, with a fresh behind-main budget (ADR-0070).
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        if [[ "$IS_REVISION" -eq 1 ]]; then
+          log "Issue #$ISSUE_NUM: revision pushed → In Review (PR $PR_URL; slot $SLOT retained)"
+          # Each feedback comment gets its own reply saying what changed, even
+          # when the change answers it: the new In Test scenario comes later.
+          revise_replies_check "$ISSUE_NUM" \
+            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
+            "$REPLY_MARKERS" implemented
+        else
+          log "Issue #$ISSUE_NUM: advanced to In Review (PR $PR_URL; slot $SLOT retained for --watch)"
+        fi
+        ;;
+      noop)
+        if [[ "$IS_REVISION" -eq 1 ]]; then
+          # A genuine no-op commits nothing, so the worktree must still sit on
+          # the PR head. If it has moved, work WAS committed and simply never
+          # landed — the same false success as a bogus action=implemented, and
+          # indistinguishable from it by PR head alone (unchanged either way).
+          if [[ "$PRE_HEAD_KNOWN" -eq 0 ]]; then
+            log "WARNING: #$ISSUE_NUM: the PR head before this run is unknown, so action=noop cannot be verified; not advancing this tick"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            return 0
+          fi
+          LOCAL_HEAD=$(git -C "$WT_PATH" rev-parse HEAD 2>>"$LOG_FILE" || echo "")
+          # Only "ahead of / diverged from" the PR head means work was committed
+          # and never landed. A worktree merely BEHIND the PR head (someone else
+          # pushed) is not this failure, and treating it as one would burn the
+          # retry budget on a run that correctly did nothing.
+          if [[ -n "$PRE_HEAD_OID" && -n "$LOCAL_HEAD" && "$LOCAL_HEAD" != "$PRE_HEAD_OID" ]] \
+             && ! git -C "$WT_PATH" merge-base --is-ancestor "$LOCAL_HEAD" "$PRE_HEAD_OID" 2>>"$LOG_FILE"; then
+            log "ERROR: #$ISSUE_NUM returned action=noop but the worktree HEAD (${LOCAL_HEAD:0:12}) differs from the PR head (${PRE_HEAD_OID:0:12}) — work was committed and not landed; treating as a failed attempt"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            return 0
+          fi
+          # The feedback needed no code change. When the PR head is the one shown
+          # at In Test, the existing PR + preview are still valid, so re-present
+          # them; any other head goes through In Review first
+          # (revision_noop_route). The PR number comes from bash's own lookup,
+          # not the directive's pr=.
+          revision_noop_route "$ISSUE_NUM" "$ITEM_ID" "$SLOT" "$PRE_HEAD_OID" "$ITEM_LABELS" \
+            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
+            "$REPLY_MARKERS" "$FEEDBACK_MARK" "$AFFECTED" "$PARITY_OVERRIDE"
+        else
+          # Fresh idempotency hit: a PR already exists from a prior attempt.
+          PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
+          if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
+            log "WARNING: #$ISSUE_NUM action=noop but no PR found; keeping slot for retry"
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            return 0
+          fi
+          PR_URL=$(echo "$PR_OBJ" | jq -r '.url')
+          # An earlier attempt opened this PR and stopped (a timeout) before
+          # its migration post-check (ADR-0079). The PR is this card's first,
+          # so every migration it adds counts as this card's run's ("all").
+          implement_migration_claim_check "$ISSUE_NUM" "$(echo "$PR_OBJ" | jq -r '.number')" "" "all" ""
+          transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+          log "Issue #$ISSUE_NUM: noop (PR $PR_URL already open); advanced to In Review"
+        fi
+        ;;
+      blocked)
+        implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "implementer returned blocked"
+        ;;
+      incomplete)
+        # The implementer reached its soft deadline with work left and stopped
+        # cleanly, its work committed locally (ADR-0084). Like a timeout: the
+        # slot and worktree stay, the attempt is spent, and a fresh run's
+        # session is recorded for the next attempt to resume.
+        log "Issue #$ISSUE_NUM: implementer stopped at its soft deadline (action=incomplete); keeping slot $SLOT for retry"
+        if [[ "$IMPL_RESUMED" -eq 0 ]]; then
+          implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
+            "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "action=incomplete" "$IMPL_FEEDBACK_DIGEST"
+        fi
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        ;;
+      declined)
+        # Revision feedback the implementer declined as outside the approved
+        # plan, with the PR left as it was (ADR-0058). It goes back where the
+        # reporter tests and ships, with the reply saying why, instead of hiding
+        # a finished PR in Blocked. Only for a head that was already shown at In
+        # Test (a card dragged out of Blocked hasn't been through In Review's
+        # gates on it), that is still the PR's head now the run is over (nobody
+        # pushed meanwhile; an unreadable head counts as moved), and a worktree
+        # holding nothing the PR lacks. Anything else parks in Blocked as
+        # action=blocked does.
+        DECLINE_SHOWN_SHA=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
+          --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
+        DECLINE_NOW_SHA=""
+        if [[ "$IS_REVISION" -eq 1 && "$PRE_HEAD_KNOWN" -eq 1 && -n "$PRE_HEAD_OID" ]]; then
+          DECLINE_NOW_SHA=$(pr_head_oid "$(echo "$PRIOR_PR" | jq -r '.number')")
+        fi
+        if [[ "$IS_REVISION" -eq 1 && "$PRE_HEAD_KNOWN" -eq 1 && -n "$PRE_HEAD_OID" \
+              && "$DECLINE_SHOWN_SHA" == "$PRE_HEAD_OID" && "$DECLINE_NOW_SHA" == "$PRE_HEAD_OID" ]] \
+           && worktree_untouched "$WT_PATH" "$PRE_HEAD_OID"; then
+          revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
+            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
+            "$REPLY_MARKERS" "$FEEDBACK_MARK" declined
+        else
+          implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" \
+            "implementer declined, but the PR head wasn't the one shown at In Test or the worktree changed"
+        fi
+        ;;
+      *)
+        log "WARNING: unrecognised action '$ACTION' from claude for #$ISSUE_NUM; keeping slot for retry"
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+        ;;
+    esac
+}
+
 # Phase A: post a one-time stub comment per In Progress card (observation
 # mode). Phase B+: the real engine — slot → worktree → Claude → PR → parity
 # post-check → In Review, with the slot + worktree persisting for --watch.
@@ -8718,9 +9074,8 @@ Drag it back to **Ready** so the factory can plan it first.
     fi
 
     # Claim the slot, create the worktree, copy env, install deps.
-    if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$SLOT" "$ISSUE_NUM" "$$" \
-        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
-      log "WARNING: slot-acquire $SLOT for #$ISSUE_NUM failed; deferring"; continue
+    if ! slot_acquire "$SLOT" "$ISSUE_NUM" "$$"; then
+      continue
     fi
     WT_ERR_FILE=$(mktemp -t factory-wt-err)
     if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
@@ -8826,274 +9181,7 @@ Drag it back to **Ready** so the factory can plan it first.
         node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config \
         "$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID" ) >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
-    if [[ $EXIT_CODE -eq 124 ]]; then
-      log "WARNING: claude timed out (>${IMPLEMENT_TIMEOUT_SEC}s) for #$ISSUE_NUM; keeping slot for retry"
-      # Whatever it printed before the kill, before the file goes.
-      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
-      rm -f "$CLAUDE_OUTPUT_FILE"
-      # A fresh run's session may be resumed by the next attempt (ADR-0084).
-      # A resumed one never is: one resume per timeout chain.
-      if [[ "$IMPL_RESUMED" -eq 0 ]]; then
-        implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
-          "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "timed out" "$IMPL_FEEDBACK_DIGEST"
-      fi
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-      continue
-    elif [[ $EXIT_CODE -ne 0 ]]; then
-      log "ERROR: claude exited non-zero ($EXIT_CODE) for #$ISSUE_NUM --implement"
-      cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE" 2>/dev/null || true
-      # Session limit? Pause until reset instead of burning the retry budget.
-      # Keep the slot + worktree (as the timeout branch does) so the resumed
-      # tick reuses the warm worktree; the card stays In Progress.
-      if check_session_limit "$WT_PATH" "$CLAUDE_START_ISO" "$IMPL_SESSION_ID"; then
-        rm -f "$CLAUDE_OUTPUT_FILE"
-        # The limit stopped the session, not the card: record it for the run
-        # after the reset to resume, a resumed one included (ADR-0084).
-        implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
-          "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "session limit" "$IMPL_FEEDBACK_DIGEST"
-        log "Issue #$ISSUE_NUM: session limit — keeping slot $SLOT + worktree; card stays In Progress for resume"
-        pause_for_session_limit
-        log "=== factory-agent --$MODE_NAME completed in $(( $(date +%s) - START_TIME ))s ==="
-        exit 0
-      fi
-      rm -f "$CLAUDE_OUTPUT_FILE"
-      # A resume that never got going (the CLI or the API refused the restored
-      # session) is the factory's failure, not the card's: no attempt, and the
-      # next tick runs fresh, its record already cleared.
-      if [[ "$IMPL_RESUMED" -eq 1 ]] \
-         && implement_resume_never_started "$IMPL_SESSION_ID" "$CLAUDE_START_ISO" "$IMPL_START_EPOCH"; then
-        log "Issue #$ISSUE_NUM: resumed session $IMPL_SESSION_ID never started (exit $EXIT_CODE); no attempt spent, the next tick runs a fresh session"
-        continue
-      fi
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-      continue
-    fi
-
-    cat "$CLAUDE_OUTPUT_FILE" >>"$LOG_FILE"
-    SUMMARY_LINE=$(grep -E '^issue=[0-9]+ action=[a-z]+ pr=[^ ]+$' "$CLAUDE_OUTPUT_FILE" | tail -1 || true)
-    rm -f "$CLAUDE_OUTPUT_FILE"
-    if [[ -z "$SUMMARY_LINE" ]]; then
-      if [[ "$IMPL_RESUMED" -eq 1 ]] \
-         && implement_resume_never_started "$IMPL_SESSION_ID" "$CLAUDE_START_ISO" "$IMPL_START_EPOCH"; then
-        log "Issue #$ISSUE_NUM: resumed session $IMPL_SESSION_ID never started (no summary line); no attempt spent, the next tick runs a fresh session"
-        continue
-      fi
-      log "WARNING: no well-formed summary line from claude for #$ISSUE_NUM; keeping slot for retry"
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-      continue
-    fi
-    log "Claude summary: $SUMMARY_LINE"
-    ACTION=$(echo "$SUMMARY_LINE" | sed -E 's/.*action=([^ ]+).*/\1/')
-    PR_URL=$(echo "$SUMMARY_LINE" | sed -E 's/.*pr=([^ ]+).*/\1/')
-
-    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    # On a revision run, mark as consumed only the feedback this run was given.
-    # A comment posted while it ran (a scenario run can take most of the cap)
-    # stays newer than the mark, so the In Test sweep picks it up next instead
-    # of it being dropped unread.
-    FEEDBACK_MARK="$NOW_ISO"
-    if [[ "$IS_REVISION" -eq 1 && -n "$FEEDBACK_CONSUMED_AT" ]]; then
-      FEEDBACK_MARK="$FEEDBACK_CONSUMED_AT"
-    fi
-    case "$ACTION" in
-      implemented)
-        PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
-        if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
-          log "WARNING: #$ISSUE_NUM action=implemented but no PR on head factory/issue-$ISSUE_NUM; keeping slot for retry"
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          continue
-        fi
-        PR_NUM=$(echo "$PR_OBJ" | jq -r '.number')
-        # Did the work actually land? An agent whose worktree does not descend
-        # from the PR head gets its push rejected, and has historically still
-        # reported action=implemented — which advanced the card AND marked the
-        # reporter's feedback consumed, losing the change request silently.
-        # Trust GitHub's head OID, not the agent's self-report.
-        if [[ "$PRE_HEAD_KNOWN" -eq 0 ]]; then
-          log "WARNING: #$ISSUE_NUM: the PR head before this run is unknown, so action=implemented cannot be verified; not advancing this tick"
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          continue
-        fi
-        # Progress is judged for the whole chain: a resumed run whose stopped
-        # predecessor already pushed the work has moved the PR from the chain's
-        # baseline even when it pushes nothing more (ADR-0084).
-        if [[ -n "$CHAIN_PRE_HEAD_OID" ]]; then
-          POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
-          if [[ -z "$POST_HEAD_OID" ]]; then
-            log "WARNING: #$ISSUE_NUM: could not read PR #$PR_NUM head OID; not advancing this tick"
-            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-            continue
-          fi
-          if [[ "$POST_HEAD_OID" == "$CHAIN_PRE_HEAD_OID" ]]; then
-            log "ERROR: #$ISSUE_NUM claimed action=implemented but PR #$PR_NUM head is unchanged (${CHAIN_PRE_HEAD_OID:0:12}); treating as a failed attempt"
-            if ! echo "$COMMENTS_JSON" | jq -e 'any(.[]?; (.body // "") | contains("drafto-factory-head-unchanged"))' >/dev/null 2>&1; then
-              gh issue comment "$ISSUE_NUM" --repo JakubAnderwald/drafto \
-                --body "🏭 **A revision run reported success but pushed nothing.**
-
-PR #$PR_NUM is still at \`${CHAIN_PRE_HEAD_OID:0:12}\`, so the requested change is *not* on the \
-PR. The card stays In Progress and your feedback is left unconsumed, so the next attempt \
-still sees it. If this repeats until the retry budget is exhausted, the card moves to \
-**Blocked** for a human.
-
-<!-- drafto-factory-head-unchanged -->" >>"$LOG_FILE" 2>&1 || true
-            fi
-            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-            continue
-          fi
-        fi
-        # Parity / phase post-check. implement_parity_gate parks a violation in
-        # Blocked (slot released, worktree removed) and skips it when
-        # `gh pr diff` fails; the revision noop on an unshown head runs the same.
-        # The worktree's own commits must be on the PR too: a resumed run that
-        # committed more after its predecessor pushed, then reported success
-        # without pushing, moved the PR from the chain's baseline all the same.
-        # Checked against the PR head now, never the agent's word (#842 review).
-        if [[ -z "$CHAIN_PRE_HEAD_OID" ]]; then
-          POST_HEAD_OID=$(pr_head_oid "$PR_NUM")
-        fi
-        if ! implement_head_landed "$WT_PATH" "$ISSUE_NUM" "$POST_HEAD_OID"; then
-          log "ERROR: #$ISSUE_NUM claimed action=implemented but the worktree's commits aren't all on PR #$PR_NUM (PR head ${POST_HEAD_OID:0:12}); not advancing, feedback left unconsumed"
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          continue
-        fi
-        if ! implement_parity_gate "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "$PR_NUM" \
-            "$AFFECTED" "$PARITY_OVERRIDE"; then
-          continue
-        fi
-        # Migration versions (ADR-0079): move this PR's off any an older open
-        # PR already adds, and the ones this run added off any open PR's. A
-        # revision reuses the head read above and names the head before the
-        # run; a fresh PR has neither, so every migration it adds is this
-        # run's. The bundle's claims spare a second sweep of the open PRs, but
-        # only when they are all of them (claimedComplete): the bundle shapes
-        # the list for the model and may drop a claim, and then the post-check
-        # sweeps itself. Never blocks; the card goes on either way.
-        CLAIM_HEAD=""
-        CLAIM_SINCE="all"
-        if [[ -n "$CHAIN_PRE_HEAD_OID" ]]; then
-          CLAIM_HEAD="$POST_HEAD_OID"
-          CLAIM_SINCE="$CHAIN_PRE_HEAD_OID"
-        fi
-        CLAIM_JSON=$(jq -c 'if .migrations.claimedComplete == true then (.migrations.claimed | map({pr, file})) else empty end' <<<"$BUNDLE" 2>/dev/null || echo "")
-        implement_migration_claim_check "$ISSUE_NUM" "$PR_NUM" "$CLAIM_HEAD" "$CLAIM_SINCE" "$CLAIM_JSON"
-        # Happy path: advance to In Review. KEEP slot + worktree for --watch.
-        # Advancing lastFeedbackAt to FEEDBACK_MARK marks the comments this run
-        # applied as consumed, so a revision we just applied can't re-trigger
-        # next tick.
-        transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastImplementAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$FEEDBACK_MARK" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        # A new In Review stint starts here, with a fresh behind-main budget (ADR-0070).
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        if [[ "$IS_REVISION" -eq 1 ]]; then
-          log "Issue #$ISSUE_NUM: revision pushed → In Review (PR $PR_URL; slot $SLOT retained)"
-          # Each feedback comment gets its own reply saying what changed, even
-          # when the change answers it: the new In Test scenario comes later.
-          revise_replies_check "$ISSUE_NUM" \
-            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
-            "$REPLY_MARKERS" implemented
-        else
-          log "Issue #$ISSUE_NUM: advanced to In Review (PR $PR_URL; slot $SLOT retained for --watch)"
-        fi
-        ;;
-      noop)
-        if [[ "$IS_REVISION" -eq 1 ]]; then
-          # A genuine no-op commits nothing, so the worktree must still sit on
-          # the PR head. If it has moved, work WAS committed and simply never
-          # landed — the same false success as a bogus action=implemented, and
-          # indistinguishable from it by PR head alone (unchanged either way).
-          if [[ "$PRE_HEAD_KNOWN" -eq 0 ]]; then
-            log "WARNING: #$ISSUE_NUM: the PR head before this run is unknown, so action=noop cannot be verified; not advancing this tick"
-            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-            continue
-          fi
-          LOCAL_HEAD=$(git -C "$WT_PATH" rev-parse HEAD 2>>"$LOG_FILE" || echo "")
-          # Only "ahead of / diverged from" the PR head means work was committed
-          # and never landed. A worktree merely BEHIND the PR head (someone else
-          # pushed) is not this failure, and treating it as one would burn the
-          # retry budget on a run that correctly did nothing.
-          if [[ -n "$PRE_HEAD_OID" && -n "$LOCAL_HEAD" && "$LOCAL_HEAD" != "$PRE_HEAD_OID" ]] \
-             && ! git -C "$WT_PATH" merge-base --is-ancestor "$LOCAL_HEAD" "$PRE_HEAD_OID" 2>>"$LOG_FILE"; then
-            log "ERROR: #$ISSUE_NUM returned action=noop but the worktree HEAD (${LOCAL_HEAD:0:12}) differs from the PR head (${PRE_HEAD_OID:0:12}) — work was committed and not landed; treating as a failed attempt"
-            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-            continue
-          fi
-          # The feedback needed no code change. When the PR head is the one shown
-          # at In Test, the existing PR + preview are still valid, so re-present
-          # them; any other head goes through In Review first
-          # (revision_noop_route). The PR number comes from bash's own lookup,
-          # not the directive's pr=.
-          revision_noop_route "$ISSUE_NUM" "$ITEM_ID" "$SLOT" "$PRE_HEAD_OID" "$ITEM_LABELS" \
-            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
-            "$REPLY_MARKERS" "$FEEDBACK_MARK" "$AFFECTED" "$PARITY_OVERRIDE"
-        else
-          # Fresh idempotency hit: a PR already exists from a prior attempt.
-          PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
-          if [[ -z "$PR_OBJ" || "$PR_OBJ" == "null" ]]; then
-            log "WARNING: #$ISSUE_NUM action=noop but no PR found; keeping slot for retry"
-            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-            continue
-          fi
-          PR_URL=$(echo "$PR_OBJ" | jq -r '.url')
-          # An earlier attempt opened this PR and stopped (a timeout) before
-          # its migration post-check (ADR-0079). The PR is this card's first,
-          # so every migration it adds counts as this card's run's ("all").
-          implement_migration_claim_check "$ISSUE_NUM" "$(echo "$PR_OBJ" | jq -r '.number')" "" "all" ""
-          transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" lastFeedbackAt "$NOW_ISO" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:reset-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$ISSUE_NUM" branchUpdates "" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-          log "Issue #$ISSUE_NUM: noop (PR $PR_URL already open); advanced to In Review"
-        fi
-        ;;
-      blocked)
-        implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" "implementer returned blocked"
-        ;;
-      incomplete)
-        # The implementer reached its soft deadline with work left and stopped
-        # cleanly, its work committed locally (ADR-0084). Like a timeout: the
-        # slot and worktree stay, the attempt is spent, and a fresh run's
-        # session is recorded for the next attempt to resume.
-        log "Issue #$ISSUE_NUM: implementer stopped at its soft deadline (action=incomplete); keeping slot $SLOT for retry"
-        if [[ "$IMPL_RESUMED" -eq 0 ]]; then
-          implement_mark_resumable "$ISSUE_NUM" "$WT_PATH" "$IMPL_SESSION_ID" "$IMPL_TASK_KEY" \
-            "$CHAIN_PRE_HEAD_OID" "$CHAIN_PRE_HEAD_KNOWN" "action=incomplete" "$IMPL_FEEDBACK_DIGEST"
-        fi
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        ;;
-      declined)
-        # Revision feedback the implementer declined as outside the approved
-        # plan, with the PR left as it was (ADR-0058). It goes back where the
-        # reporter tests and ships, with the reply saying why, instead of hiding
-        # a finished PR in Blocked. Only for a head that was already shown at In
-        # Test (a card dragged out of Blocked hasn't been through In Review's
-        # gates on it), that is still the PR's head now the run is over (nobody
-        # pushed meanwhile; an unreadable head counts as moved), and a worktree
-        # holding nothing the PR lacks. Anything else parks in Blocked as
-        # action=blocked does.
-        DECLINE_SHOWN_SHA=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$ISSUE_NUM" \
-          --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.intestCommentSha // ""' 2>/dev/null || echo "")
-        DECLINE_NOW_SHA=""
-        if [[ "$IS_REVISION" -eq 1 && "$PRE_HEAD_KNOWN" -eq 1 && -n "$PRE_HEAD_OID" ]]; then
-          DECLINE_NOW_SHA=$(pr_head_oid "$(echo "$PRIOR_PR" | jq -r '.number')")
-        fi
-        if [[ "$IS_REVISION" -eq 1 && "$PRE_HEAD_KNOWN" -eq 1 && -n "$PRE_HEAD_OID" \
-              && "$DECLINE_SHOWN_SHA" == "$PRE_HEAD_OID" && "$DECLINE_NOW_SHA" == "$PRE_HEAD_OID" ]] \
-           && worktree_untouched "$WT_PATH" "$PRE_HEAD_OID"; then
-          revision_return_to_test "$ISSUE_NUM" "$ITEM_ID" "$PRE_HEAD_OID" "$ITEM_LABELS" \
-            "$(echo "$PRIOR_PR" | jq -r '.number // ""' 2>/dev/null || echo "")" \
-            "$REPLY_MARKERS" "$FEEDBACK_MARK" declined
-        else
-          implement_park_blocked "$ITEM_ID" "$ISSUE_NUM" "$SLOT" \
-            "implementer declined, but the PR head wasn't the one shown at In Test or the worktree changed"
-        fi
-        ;;
-      *)
-        log "WARNING: unrecognised action '$ACTION' from claude for #$ISSUE_NUM; keeping slot for retry"
-        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-        ;;
-    esac
+    implement_handle_result
   done
 
   log "=== factory-agent --implement completed in $(( $(date +%s) - START_TIME ))s ==="
@@ -9443,8 +9531,9 @@ A human should take a look. Reset with \
       if [[ -z "$SLOT" ]]; then
         log "Issue #$ISSUE_NUM: no slot free to resume the fix; deferring"; continue
       fi
-      node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-acquire "$SLOT" "$ISSUE_NUM" "$$" \
-        --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      if ! slot_acquire "$SLOT" "$ISSUE_NUM" "$$"; then
+        continue
+      fi
       WT_ERR_FILE=$(mktemp -t factory-wt-err)
       if ! WT_JSON=$(node "$SCRIPT_DIR/lib/worktree-cli.mjs" add --issue "$ISSUE_NUM" \
           --root "$REPO_ROOT" --base origin/main --fetch 2>"$WT_ERR_FILE"); then
