@@ -343,7 +343,7 @@ If a card keeps timing out, it ends in **Blocked** when the retry budget runs ou
 
 ### "The implement log says the run started detached, then nothing for a while"
 
-That's `FACTORY_IMPLEMENT_DETACHED=1` working: the run goes on in the background for up to the 45-minute cap, and the next `--implement` ticks log `detached implement run <runId> is running` and skip the card. The tick after it ends logs `collecting detached implement run …`, and the card moves on as usual. `node scripts/lib/implement-lane.mjs status | jq` on the Mac mini shows every run and its state. A run you dragged out of In Progress is stopped by the next `--watch` sweep and its work isn't collected. See the runbook's "Detached implement runs".
+That's `FACTORY_IMPLEMENT_DETACHED=1` working: the run goes on in the background for up to the 45-minute cap, and the next `--implement` ticks log `detached implement run <runId> is running` and skip the card. The tick after it ends logs `collecting detached implement run …`, and the card moves on as usual. `node scripts/lib/implement-lane.mjs status | jq` on the Mac mini shows every run and its state. A run you dragged out of In Progress is stopped by the next `--watch` sweep and its work isn't collected. To continue a run's session by hand (`claude --resume <id>`), add `factory-pause` to the card first, in In Progress, In Review or Testing alike, and remove it afterwards: otherwise the factory can start its own run or fix pass in the same worktree. See the runbook's "Detached implement runs".
 
 ## Related
 

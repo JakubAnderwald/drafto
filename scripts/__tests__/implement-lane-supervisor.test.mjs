@@ -28,7 +28,15 @@ const SID = randomUUID();
 
 const dirs = [];
 const supervisors = [];
+const strays = [];
 after(() => {
+  for (const pid of strays) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* gone */
+    }
+  }
   for (const pid of supervisors) {
     try {
       process.kill(-pid, "SIGKILL");
@@ -52,6 +60,19 @@ fs.writeFileSync(process.cwd() + "/claude-call.json", JSON.stringify({
   },
 }));
 if (process.env.FAKE_CLAUDE_MODE === "sleep") {
+  // A child in claude's own process group, and a grandchild that left it
+  // (setsid, like a test runner's worker) and ignores SIGTERM.
+  const { spawn } = require("child_process");
+  const child = spawn("sleep", ["600"], { stdio: "ignore" });
+  const grand = spawn(
+    process.execPath,
+    ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'],
+    { detached: true, stdio: "ignore" },
+  );
+  fs.writeFileSync(
+    process.cwd() + "/claude-pids.json",
+    JSON.stringify({ claude: process.pid, child: child.pid, grand: grand.pid }),
+  );
   setInterval(() => {}, 1000);
 } else {
   process.stdout.write("issue=7 action=implemented pr=https://github.com/x/y/pull/9\\n");
@@ -154,6 +175,25 @@ const alive = (pid) => {
     return false;
   }
 };
+// Dead for certain: signal 0 answers ESRCH (no such process). Zombies of our
+// own children don't apply: none of these is this process's child.
+const assertGone = async (pids) => {
+  for (const [name, pid] of Object.entries(pids)) {
+    await waitFor(() => !alive(pid), 15_000).catch(() => {});
+    assert.throws(
+      () => process.kill(pid, 0),
+      (err) => err.code === "ESRCH",
+      `${name} (pid ${pid}) is still running`,
+    );
+  }
+};
+const recordPids = async (wt) => {
+  const file = join(wt, "claude-pids.json");
+  await waitFor(() => fs.existsSync(file));
+  const pids = readJson(file);
+  strays.push(...Object.values(pids));
+  return pids;
+};
 
 describe("implement-lane supervisor (real detached spawn, fake claude)", () => {
   it("runs claude with the synchronous call's argv and env, in the worktree, and touches no state, git or gh", async () => {
@@ -211,17 +251,21 @@ describe("implement-lane supervisor (real detached spawn, fake claude)", () => {
     assert.ok(!call.argv.includes("--session-id"));
   });
 
-  it("ends at the cap with 124, the claude group gone", async () => {
-    const t = setup({ timeoutSec: 1, termGraceSec: 1, claudeMode: "sleep" });
+  it("ends at the cap with 124, with claude, its child and its setsid grandchild all gone", async () => {
+    const t = setup({ timeoutSec: 3, termGraceSec: 1, claudeMode: "sleep" });
     await seedState(t);
     const out = startRun(t);
+    const pids = await recordPids(t.wt);
     await waitFor(() => fs.existsSync(exitJson(out.runDir)));
     const exit = readJson(exitJson(out.runDir));
     assert.deepEqual([exit.exitCode, exit.timedOut, exit.terminated], [124, true, false]);
     await waitFor(() => !alive(out.pid));
+    // Independently of status: each process is gone, the one that left
+    // claude's group and ignored SIGTERM included (the supervisor stops what
+    // the run left behind).
+    await assertGone(pids);
     const status = lane(t, ["status"]);
     assert.equal(status.runs[0].state, "done");
-    assert.equal(status.runs[0].alive, false, "nothing of the run is left, claude included");
     assert.equal(status.runs[0].collect.exitCode, 124);
   });
 
@@ -229,10 +273,13 @@ describe("implement-lane supervisor (real detached spawn, fake claude)", () => {
     const t = setup({ claudeMode: "sleep" });
     await seedState(t);
     const out = startRun(t);
-    await waitFor(() => fs.existsSync(join(t.wt, "claude-call.json")));
+    const pids = await recordPids(t.wt);
+    // Let the supervisor see the grandchild before the stop.
+    await new Promise((r) => setTimeout(r, 1500));
     assert.equal(lane(t, ["status"]).runs[0].state, "running");
     const killed = lane(t, ["kill", "--issue", "7", "--wait-ms", "20000", "--repo-root", t.root]);
-    assert.deepEqual([killed.state, killed.signalled, killed.killed], ["gone", true, false]);
+    assert.deepEqual([killed.state, killed.signalled], ["gone", true]);
+    await assertGone(pids);
     const exit = readJson(exitJson(out.runDir));
     assert.equal(exit.terminated, true);
     assert.notEqual(exit.exitCode, 0);
@@ -272,7 +319,7 @@ ps -o pgid= -p $$ | tr -d ' '
     assert.equal(fs.existsSync(lock), false, "cleanup() removed the lock");
     assert.equal(fs.readFileSync(trapLog, "utf8"), "ran\n", "the trap ran once, in bash only");
 
-    await waitFor(() => fs.existsSync(join(t.wt, "claude-call.json")));
+    const pids = await recordPids(t.wt);
     assert.ok(alive(out.pid), "the supervisor is still running after bash exited");
     const pgid = spawnSync("ps", ["-o", "pgid=", "-p", String(out.pid)], {
       encoding: "utf8",
@@ -283,6 +330,7 @@ ps -o pgid= -p $$ | tr -d ' '
 
     const killed = lane(t, ["kill", "--issue", "7", "--finish", "1", "--repo-root", t.root]);
     assert.deepEqual([killed.state, killed.finished], ["gone", true]);
+    await assertGone(pids);
     assert.deepEqual(lane(t, ["status"]).runs, []);
   });
 });

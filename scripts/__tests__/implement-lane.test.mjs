@@ -31,7 +31,9 @@ import {
   collectOutcome,
   main,
   makeRunId,
+  observeRun,
   runGroups,
+  trackRun,
 } from "../lib/implement-lane.mjs";
 import { descendants, groupRunState, parseProcessTable } from "../lib/supervisor-proc.mjs";
 
@@ -325,6 +327,16 @@ describe("process groups: runGroups and the supervisor-proc helpers", () => {
       pid: 100,
       ppid: 1,
       pgid: 100,
+      lstart: null,
+      stat: "Ss",
+      command: "node a b",
+    });
+    // With the start time (ps -o lstart=, C locale), which tells a reused pid.
+    assert.deepEqual(ps(["  100     1   100 Tue Nov  7 10:00:00 2026     Ss   node a b"])[0], {
+      pid: 100,
+      ppid: 1,
+      pgid: 100,
+      lstart: "Tue Nov 7 10:00:00 2026",
       stat: "Ss",
       command: "node a b",
     });
@@ -551,6 +563,63 @@ describe("start", () => {
     assert.equal(deps.calls.at(-1), `git worktree unlock ${env.wt}`);
   });
 
+  // The attach write fails after the supervisor has started (a corrupt state
+  // file); the rollback must wait for the supervisor before letting go.
+  function attachFails(env, { survives }) {
+    const deps = fakeDeps();
+    let runDir = null;
+    let restored = false;
+    deps.spawnDetached = async (cmd, args) => {
+      runDir = args.at(-1);
+      deps.calls.push("spawn");
+      fs.writeFileSync(env.stateFile + ".good", fs.readFileSync(env.stateFile));
+      fs.writeFileSync(env.stateFile, "{ not json");
+      return { ok: true, pid: 4242 };
+    };
+    deps.kill = (pid, sig) => {
+      deps.calls.push(`kill ${pid} ${sig}`);
+      if (!restored) {
+        fs.copyFileSync(env.stateFile + ".good", env.stateFile);
+        restored = true;
+      }
+      return true;
+    };
+    deps.table = () => {
+      const sup = `4242 1 4242 S node implement-lane.mjs _supervise --run-dir ${runDir}`;
+      if (!runDir) return [];
+      if (survives) return parseProcessTable(sup);
+      return deps.calls.some((c) => c.startsWith("kill")) ? [] : parseProcessTable(sup);
+    };
+    return deps;
+  }
+
+  it("a rollback after the supervisor started waits for it, then unlocks and drops the reservation", async () => {
+    const env = await setup();
+    const deps = attachFails(env, { survives: false });
+    const out = await start(env, deps);
+    assert.deepEqual([out.started, out.reason, out.stillAlive], [false, "start-failed", undefined]);
+    const killAt = deps.calls.indexOf("kill -4242 SIGTERM");
+    const unlockAt = deps.calls.lastIndexOf(`git worktree unlock ${env.wt}`);
+    assert.ok(killAt !== -1 && unlockAt > killAt, deps.calls.join("\n"));
+    assert.deepEqual((await loadFactoryState(env.stateFile)).implement.runs, {});
+  });
+
+  it("a supervisor that won't die keeps the reservation and the lock", async () => {
+    const env = await setup();
+    const deps = attachFails(env, { survives: true });
+    const fs0 = JSON.parse(fs.readFileSync(env.specFile, "utf8"));
+    fs.writeFileSync(env.specFile, JSON.stringify({ ...fs0, termGraceSec: "1" }));
+    const out = await start(env, deps);
+    assert.deepEqual([out.started, out.stillAlive], [false, true]);
+    assert.ok(deps.calls.includes("kill -4242 SIGKILL"));
+    assert.equal(
+      deps.calls.filter((c) => c === `git worktree unlock ${env.wt}`).length,
+      1,
+      "only the pre-lock unlock; the lock stays",
+    );
+    assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].pid, null);
+  });
+
   it("a failed lock is reported, and the run still starts", async () => {
     const env = await setup();
     const out = await start(env, fakeDeps({ gitCode: 128 }));
@@ -731,6 +800,52 @@ describe("status", () => {
   });
 });
 
+describe("trackRun: a cancellation keeps the groups it found", () => {
+  const RUN = { runId: "20261117T100000Z-abc123", pid: 100, sessionId: SID };
+  const T1 = "Tue Nov 17 10:00:00 2026";
+  const T2 = "Tue Nov 17 10:30:00 2026";
+  const sup = `100 1 100 ${T1} Ss node implement-lane.mjs _supervise --run-dir /x/7-${RUN.runId}`;
+  const ps = (lines) => parseProcessTable(lines.join("\n"));
+
+  it("keeps a descendant group alive after its ancestors exit, until it is gone", () => {
+    const start = ps([
+      sup,
+      `101 100 100 ${T1} S node run-claude.mjs`,
+      `102 101 102 ${T1} S claude -p x --session-id ${SID}`,
+      `103 102 102 ${T1} S bash -c pnpm test`,
+      `104 103 104 ${T1} S node vitest`,
+    ]);
+    const t = trackRun(RUN, start);
+    assert.deepEqual(observeRun(t, start).sort(), [100, 102, 104]);
+    // The supervisor and claude are gone; vitest (its own group, now a child
+    // of launchd) ignored SIGTERM. A fresh look alone would call this "gone".
+    const later = ps([`104 1 104 ${T1} S node vitest`]);
+    assert.deepEqual(runGroups(RUN, later), [], "nothing ties it to the run any more");
+    assert.deepEqual(observeRun(t, later), [104]);
+    assert.deepEqual(observeRun(t, []), []);
+  });
+
+  it("never takes back a group once it was seen empty, nor one whose id was reused", () => {
+    const t = trackRun(RUN, ps([sup, `104 100 104 ${T1} S node vitest`]));
+    assert.deepEqual(observeRun(t, ps([`104 1 104 ${T1} S node vitest`])), [104]);
+    // 104 exits; later a new, unrelated process gets pid 104 and leads a group.
+    assert.deepEqual(observeRun(t, []), []);
+    assert.deepEqual(observeRun(t, ps([`104 1 104 ${T2} S unrelated`])), []);
+    // A reuse seen without the empty snapshot in between: told by start time.
+    const t2 = trackRun(RUN, ps([sup, `104 100 104 ${T1} S node vitest`]));
+    assert.deepEqual(observeRun(t2, ps([`104 1 104 ${T2} S unrelated`])), []);
+  });
+
+  it("follows children the run starts meanwhile, into groups of their own", () => {
+    const t = trackRun(RUN, ps([sup, `102 100 102 ${T1} S claude --session-id ${SID}`]));
+    const next = ps([
+      `102 100 102 ${T1} S claude --session-id ${SID}`,
+      `110 102 110 ${T2} S node daemon --setsid`,
+    ]);
+    assert.deepEqual(observeRun(t, next).sort(), [102, 110]);
+  });
+});
+
 describe("kill and finish", () => {
   const RUN_ID = "20261117T100000Z-abc123";
   const sup = `100 1 100 Ss node implement-lane.mjs _supervise --run-dir /x/7-${RUN_ID}`;
@@ -805,6 +920,89 @@ describe("kill and finish", () => {
     const out = await kill(env, deps, ["--finish", "1"]);
     assert.equal(out.state, "gone");
     assert.ok(!deps.calls.some((c) => c.startsWith("kill")));
+  });
+
+  it("SIGKILLs a descendant group that outlived its ancestors, and only then finishes", async () => {
+    const root = tempDir();
+    const env = await setup({ runs: ledger(v1RunDir(root)) });
+    const start = parseProcessTable(
+      [sup, `101 100 100 S node run-claude.mjs`, claude, `104 102 104 S node vitest`].join("\n"),
+    );
+    const orphan = parseProcessTable("104 1 104 S node vitest");
+    const deps = fakeDeps({ rows: [start, start, orphan, orphan, orphan, orphan, []] });
+    const out = await kill(env, deps, ["--finish", "1", "--wait-ms", "500"]);
+    assert.deepEqual([out.ok, out.state, out.killed, out.finished], [true, "gone", true, true]);
+    assert.ok(deps.calls.includes("kill -104 SIGTERM"));
+    assert.ok(deps.calls.includes("kill -104 SIGKILL"), deps.calls.join("\n"));
+    assert.ok(
+      deps.calls.indexOf("git worktree unlock /wt") > deps.calls.indexOf("kill -104 SIGKILL"),
+      "unlocked only once the leftover group is gone",
+    );
+  });
+
+  it("finish refuses a run attached since the stop decided (pid changed)", async () => {
+    const root = tempDir();
+    const env = await setup({ runs: ledger(v1RunDir(root)) });
+    const deps = fakeDeps({ rows: [] });
+    const out = await main(
+      [
+        "finish",
+        "--issue",
+        "7",
+        "--run-id",
+        RUN_ID,
+        "--outcome",
+        "stopped",
+        "--pid",
+        "none",
+      ].concat(["--state-file", env.stateFile]),
+      deps,
+    );
+    assert.deepEqual([out.ok, out.reason], [false, "pid-changed"]);
+    assert.deepEqual(deps.calls, [], "no unlock");
+    assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].pid, 100);
+  });
+
+  it("kill --finish refuses when a supervisor was attached during the stop", async () => {
+    // Reserved, never attached (pid null): the stop finds nothing to signal.
+    // Before the finish, an attach lands (another tick's start).
+    const root = tempDir();
+    const runDir = v1RunDir(root);
+    const env = await setup({ runs: { 7: { ...ledger(runDir)["7"], pid: null } } });
+    const deps = fakeDeps({ rows: [] });
+    let calls = 0;
+    const table = deps.table;
+    deps.table = () => {
+      calls += 1;
+      if (calls === 2) {
+        const st = JSON.parse(fs.readFileSync(env.stateFile, "utf8"));
+        st.implement.runs["7"].pid = 4242;
+        fs.writeFileSync(env.stateFile, JSON.stringify(st));
+      }
+      return table();
+    };
+    const out = await kill(env, deps, ["--finish", "1"]);
+    assert.deepEqual(
+      [out.ok, out.state, out.finished, out.reason],
+      [false, "gone", false, "pid-changed"],
+    );
+    assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].pid, 4242);
+    assert.ok(!deps.calls.some((c) => c.startsWith("git")));
+  });
+
+  it("finish refuses while anything of the run is alive, or when ps can't tell", async () => {
+    const root = tempDir();
+    const env = await setup({ runs: ledger(v1RunDir(root)) });
+    const args = ["finish", "--issue", "7", "--run-id", RUN_ID, "--outcome", "collected"].concat([
+      "--state-file",
+      env.stateFile,
+    ]);
+    const alive = await main(args, fakeDeps({ rows: parseProcessTable(sup) }));
+    assert.deepEqual([alive.ok, alive.reason], [false, "still-alive"]);
+    const deps = fakeDeps();
+    deps.table = () => null;
+    assert.equal((await main(args, deps)).reason, "unverifiable");
+    assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].runId, RUN_ID);
   });
 
   it("finish refuses another run's id and leaves the ledger alone", async () => {

@@ -371,6 +371,7 @@ describe("implement_lane_collect: a run that ended", () => {
     assert.match(r.calls, /^handler-markers \[\{"commentId":"1"\}\]$/m);
     assert.match(r.calls, /^handler-comments \[\{"id":1\}\]$/m, "the comments are fetched afresh");
     assert.match(r.calls, /^handler-out issue=7 action=implemented pr=x$/m);
+    assert.match(r.calls, /^lane finish --issue 7 --run-id R1 --outcome collected --pid 100 /m);
     assert.match(r.log, /stderr follows\nclaude said things\n/);
     assert.equal(
       r.out,
@@ -698,21 +699,27 @@ describe("guards in the other modes", () => {
     );
   });
 
-  it("--watch skips a held card, and starts no fix pass when the runs can't be read", () => {
+  it("--watch skips a held card, and every In Review card when the runs can't be read", () => {
     assert.match(
       WATCH,
       /if \[\[ "\$REVIEW_COUNT" -gt 0 \]\]; then implement_lane_held_issues \|\| true; fi/,
     );
     const loop = WATCH.slice(WATCH.indexOf("for ((IDX=0; IDX<REVIEW_COUNT; IDX++)); do"));
-    assert.ok(
-      loop.indexOf('implement_lane_holds "$ISSUE_NUM"') < loop.indexOf("PR_OBJ=$(find_prior_pr"),
-    );
-    const fix = loop.indexOf(
-      'if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 || "$CONFLICTING" -eq 1 ]]; then',
-    );
+    const holds = loop.indexOf('if implement_lane_holds "$ISSUE_NUM"; then');
+    const known = loop.indexOf('if [[ "$IMPLEMENT_LIVE_KNOWN" -eq 0 ]]; then');
+    // Before anything that can write to the PR branch or worktree.
+    const writes = [
+      "PR_OBJ=$(find_prior_pr",
+      "migration_renumber_gate",
+      'worktree-cli.mjs" add',
+      "update_pr_branch",
+      "intest_handoff",
+    ].map((w) => loop.indexOf(w));
+    assert.ok(holds !== -1 && known !== -1 && holds < known);
+    for (const w of writes) assert.ok(w > known, "every branch write comes after the guard");
     assert.match(
-      loop.slice(fix, fix + 400),
-      /then\n\s*if \[\[ "\$IMPLEMENT_LIVE_KNOWN" -eq 0 \]\]; then\n[^\n]*no fix pass this tick"\n\s*continue/,
+      loop.slice(known, known + 300),
+      /then\n\s*log "[^\n]*couldn't be read; leaving the card for the next tick"; continue\n/,
     );
   });
 
@@ -801,6 +808,13 @@ describe("guards in the other modes", () => {
       /stopped detached implement run R1 \(why\)/,
     );
     assert.equal(runStop('{"ok":false,"state":"alive"}').out, "r=1");
+    // The processes are gone but the finish was refused (another run, or an
+    // attach since): not stopped, the worktree stays.
+    assert.equal(runStop('{"ok":false,"state":"gone","reason":"pid-changed"}').out, "r=1");
+    assert.match(
+      runStop('{"ok":false,"state":"gone","reason":"pid-changed"}').log,
+      /couldn't stop and drop[^\n]*pid-changed/,
+    );
     assert.equal(runStop('{"ok":false,"state":"unknown"}').out, "r=1");
     assert.equal(runStop("", 1).out, "r=1");
   });

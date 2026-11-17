@@ -1341,7 +1341,7 @@ node scripts/lib/implement-lane.mjs status | jq
 node scripts/lib/state-cli.mjs factory:implement-status | jq
 ```
 
-States: `starting` (not attached yet), `running`, `draining` (ended, but something it started still runs), `overdue` (past `hardKillAt`), `done`, `lost` (died with no `exit.json`), `unattached` (the tick died mid-start), `unreadable` (run files of another format). The next tick stops `draining` and `overdue` runs, and drops dead `unattached` and `unreadable` ones without spending an attempt.
+States: `starting` (not attached yet), `running`, `draining` (ended, but something it started still runs), `overdue` (past `hardKillAt`), `done`, `lost` (died with no `exit.json`), `unattached` (the tick died mid-start), `unreadable` (run files of another format). The next tick stops `draining` and `overdue` runs and collects them, and drops dead `unattached` and `unreadable` runs unread; see the attempt rule below.
 
 **Stopping a run.** This stops it and drops it from the ledger without collecting its result:
 
@@ -1351,14 +1351,18 @@ node scripts/lib/implement-lane.mjs kill --issue <n> --finish 1 --outcome stoppe
 
 It sends SIGTERM to the run's process groups (the supervisor's, and claude's own below it), waits a minute, then SIGKILL. With `ok:false` and `state:"alive"` something survived even that; with `state:"unknown"` `ps` failed. Don't `kill -9` the supervisor by hand: claude leads a process group of its own and would be left running. Dragging the card out of In Progress / In Review / Testing does the same stop on the next `--watch` sweep, which then frees the slot.
 
-**Resuming by hand.** The run's session id is in `status` (`sessionId`) and in `implementSessionId` on the card's record. Continue it interactively only once `status` no longer lists the card (the run was collected, or stopped with `--finish 1`), and with the card out of In Progress or `factory-pause` on it, so the factory doesn't start its own run in the same worktree meanwhile. An interactive `claude --resume` is never counted as the run, so the factory won't wait for it:
+**Resuming by hand.** The run's session id is in `status` (`sessionId`) and in `implementSessionId` on the card's record. First add the `factory-pause` label to the card, whichever of In Progress, In Review or Testing it is in: the factory works every card in those columns, and without the label it can start its own implement run or a `--watch` fix pass in the same worktree while you work there. An interactive `claude --resume` is never counted as the run, so nothing else makes the factory wait. Then continue the session only once `status` no longer lists the card (the run was collected, or stopped with `--finish 1`). Remove `factory-pause` when you are done:
 
 ```bash
+gh issue edit <n> --repo JakubAnderwald/drafto --add-label factory-pause
+node scripts/lib/implement-lane.mjs status --issue <n> | jq '.runs'   # must print []
 cd <worktree>
 claude --resume <sessionId>
+# done: let the factory have the card again
+gh issue edit <n> --repo JakubAnderwald/drafto --remove-label factory-pause
 ```
 
-**Collection re-reads the card.** An ended run is handed to the usual result handling only while its card is open, in In Progress, In Review or Testing, without `factory-pause`. With `factory-pause` set the result waits, and the run keeps its place in the ledger (and its share of `FACTORY_IMPLEMENT_MAX_RUNNING`) until the label goes or you stop it. A card that moved anywhere else has its run dropped unread. A run that couldn't start because of an error, or whose run files can't be read, spends an attempt, so a fault that repeats still sends the card to Blocked. A refused start (no room, a race) spends none. The feedback mark a collected run sets is the run's end, not the collecting tick's time.
+**Collection re-reads the card.** An ended run is handed to the usual result handling only while its card is open, in In Progress, In Review or Testing, without `factory-pause`. With `factory-pause` set the result waits, and the run keeps its place in the ledger (and its share of `FACTORY_IMPLEMENT_MAX_RUNNING`) until the label goes or you stop it. A card that moved anywhere else has its run dropped unread. **Attempts**, the one rule: a run dropped `unreadable` (corrupt run files, or another `formatVersion`) spends the card's attempt, and so does a start that failed with an error, so a fault that repeats still sends the card to Blocked. A run dropped `unattached` (the tick died mid-start), a refused start (no room, a race) and a run stopped by you or by a drag spend none. An interrupted run (a reboot, a SIGKILL before its deadline) spends none unless it was already a resume. The feedback mark a collected run sets is the run's end, not the collecting tick's time.
 
 **A pause doesn't stop a run.** `factory:pause`, the session-limit pause and the toolchain pause end every tick at its start, so nothing is collected meanwhile, but a run in flight keeps going to its end or its cap. Stop it as above if needed.
 

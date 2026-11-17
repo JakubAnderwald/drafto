@@ -108,29 +108,39 @@ export async function stopSupervisor(inFlight, { waitMs }) {
 // (run-with-timeout.mjs's group mode), so stopping the run means finding that
 // group under the supervisor before anything is killed.
 
-// The process table as [{pid, ppid, pgid, stat, command}], or null when ps
-// fails. `ww` so a long command line (claude's carries its whole prompt) is
-// never cut off before the run id or session id; the buffer is sized for that.
+// The process table as [{pid, ppid, pgid, lstart, stat, command}], or null
+// when ps fails. `ww` so a long command line (claude's carries its whole
+// prompt) is never cut off before the run id or session id; the buffer is
+// sized for that. lstart (the start time, in the C locale so it always has the
+// same shape) tells a process from a later one that got its pid.
 export function processTable({ run = spawnSync } = {}) {
-  const ps = run("ps", ["-axww", "-o", "pid=,ppid=,pgid=,stat=,command="], {
+  const ps = run("ps", ["-axww", "-o", "pid=,ppid=,pgid=,lstart=,stat=,command="], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, LC_ALL: "C", LANG: "C" },
   });
   if (!ps || ps.error || ps.status !== 0) return null;
   return parseProcessTable(ps.stdout);
 }
 
+// Rows of `pid ppid pgid [lstart] stat command`; lstart ("Tue Nov 17
+// 10:00:00 2026") is optional, so hand-written test tables can leave it out.
 export function parseProcessTable(text) {
   return String(text ?? "")
     .split("\n")
-    .map((line) => /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/.exec(line))
+    .map((line) =>
+      /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(?:([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+\d{4})\s+)?(\S+)\s*(.*)$/.exec(
+        line,
+      ),
+    )
     .filter(Boolean)
     .map((m) => ({
       pid: Number(m[1]),
       ppid: Number(m[2]),
       pgid: Number(m[3]),
-      stat: m[4],
-      command: m[5],
+      lstart: m[4] ? m[4].replace(/\s+/g, " ") : null,
+      stat: m[5],
+      command: m[6],
     }));
 }
 

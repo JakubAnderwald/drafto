@@ -3674,9 +3674,10 @@ implement_lane_holds() {
 # it has one, and drop it from the ledger without handing its result to
 # implement_handle_result: the card left the columns the factory works, or its
 # worktree is going. SIGTERM, then SIGKILL a minute later (implement-lane.mjs
-# kill). Exit 0 when nothing of the run is left (or there was none); 1 when it
-# is still alive or that can't be told, and the caller then keeps the
-# worktree, which `git worktree lock` also guards while the run lives.
+# kill). Exit 0 only when the answer is ok:true and nothing of the run is left
+# (or there was none); 1 otherwise (still alive, ps failed, or the finish was
+# refused), and the caller then keeps the worktree, which `git worktree lock`
+# also guards while the run lives.
 implement_lane_stop() {
   local issue="$1" why="${2:-worktree teardown}" out state run_id
   if ! out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" kill --issue "$issue" --finish 1 --outcome stopped \
@@ -3685,6 +3686,13 @@ implement_lane_stop() {
     return 1
   fi
   state=$(jq -r '.state // ""' <<<"$out" 2>/dev/null || echo "")
+  # ok:false is never "stopped", whatever the state: the processes may be gone
+  # while the finish was refused (the ledger now holds another run, or one
+  # attached since the stop looked), and that run's worktree must stay.
+  if [[ "$(jq -r '.ok == true' <<<"$out" 2>/dev/null || echo false)" != "true" ]]; then
+    log "WARNING: issue #$issue: couldn't stop and drop its detached implement run (${state:-no answer}, $(jq -r '.reason // "still running or ps failed"' <<<"$out" 2>/dev/null || echo unknown); $why)"
+    return 1
+  fi
   case "$state" in
     none) return 0 ;;
     gone)
@@ -3692,7 +3700,7 @@ implement_lane_stop() {
       log "Issue #$issue: stopped detached implement run $run_id ($why); its result is not collected"
       return 0 ;;
     *)
-      log "WARNING: issue #$issue: its detached implement run is still running after SIGKILL, or ps failed (${state:-no answer}; $why)"
+      log "WARNING: issue #$issue: unexpected answer stopping its detached implement run (${state:-no answer}; $why)"
       return 1 ;;
   esac
 }
@@ -9168,7 +9176,7 @@ implement_lane_collect() {
 # failure: it is recorded as resumable and spends no attempt, unless it was
 # itself a resume (bounded: then the attempt is spent).
 implement_lane_collect_one() {
-  local run="$1" issue run_id state run_dir alive meta stop_out interrupted why ended_at ended_epoch fin
+  local run="$1" issue run_id run_pid state run_dir alive meta stop_out interrupted why ended_at ended_epoch fin
   issue=$(jq -r '.issue // ""' <<<"$run")
   run_id=$(jq -r '.runId // ""' <<<"$run")
   state=$(jq -r '.state // ""' <<<"$run")
@@ -9198,6 +9206,9 @@ implement_lane_collect_one() {
       fi
       ;;
   esac
+  # The pid every finish below must still find: an attach since this status
+  # (another tick's start) makes the finish refuse.
+  run_pid=$(jq -r '.pid // "none"' <<<"$run")
   case "$state" in
     done|lost) ;;
     unattached|unreadable)
@@ -9206,7 +9217,7 @@ implement_lane_collect_one() {
       # read (another formatVersion, or corrupt). That one spends the attempt,
       # so a card whose every run ends that way still reaches Blocked.
       log "WARNING: #$issue: detached implement run $run_id is $state ($(jq -r '.problem // "never attached"' <<<"$run")); dropping it unread"
-      node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome "$state" \
+      node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome "$state" --pid "$run_pid" \
         --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       if [[ "$state" == "unreadable" ]]; then
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$issue" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
@@ -9230,7 +9241,7 @@ implement_lane_collect_one() {
       return 0 ;;
     left)
       log "Issue #$issue: the card left In Progress/In Review/Testing (or closed) since its detached implement run $run_id started; dropping the run unread"
-      node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome stopped \
+      node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome stopped --pid "$run_pid" \
         --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       IMPLEMENT_COLLECTED_ISSUES+="$issue "
       return 0 ;;
@@ -9260,7 +9271,7 @@ implement_lane_collect_one() {
     cat "$run_dir/stderr.txt" >>"$LOG_FILE" 2>/dev/null || true
   fi
   if ! fin=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$ISSUE_NUM" --run-id "$run_id" \
-      --outcome collected --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" 2>>"$LOG_FILE") \
+      --outcome collected --pid "$run_pid" --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" 2>>"$LOG_FILE") \
      || [[ "$(jq -r '.ok == true' <<<"$fin" 2>/dev/null || echo false)" != "true" ]]; then
     log "WARNING: #$ISSUE_NUM: couldn't finish detached implement run $run_id (${fin:-no answer}); not collecting it this tick"
     rm -f "$CLAUDE_OUTPUT_FILE"
@@ -9819,8 +9830,9 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
   # CI gate reads branch-protection required contexts (advisory bots ignored).
   fetch_required_contexts
   # Cards a detached implement run still holds (ADR-0085): not touched here
-  # until --implement has collected the run. If that can't be read, no fix
-  # pass starts this tick (one could push beside a running implement).
+  # until --implement has collected the run. If that can't be read, no In
+  # Review card is worked this tick (a push could land beside a running
+  # implement).
   if [[ "$REVIEW_COUNT" -gt 0 ]]; then implement_lane_held_issues || true; fi
 
   WATCH_PROMPT_TEXT=""
@@ -9841,6 +9853,13 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
 
     if implement_lane_holds "$ISSUE_NUM"; then
       log "Issue #$ISSUE_NUM: a detached implement run is still running or uncollected; skipping until --implement collects it"; continue
+    fi
+    # Unreadable ledger: any card may be held. Every write to a PR branch or
+    # worktree (fix and conflict passes, the migration renumber, the
+    # behind-main update) and the In Test hand-off happen below, so the card
+    # waits for a tick that can read it.
+    if [[ "$IMPLEMENT_LIVE_KNOWN" -eq 0 ]]; then
+      log "Issue #$ISSUE_NUM: the detached implement runs couldn't be read; leaving the card for the next tick"; continue
     fi
 
     PR_OBJ=$(find_prior_pr "$ISSUE_NUM")
@@ -9940,10 +9959,6 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     fi
 
     if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 || "$CONFLICTING" -eq 1 ]]; then
-      if [[ "$IMPLEMENT_LIVE_KNOWN" -eq 0 ]]; then
-        log "Issue #$ISSUE_NUM: PR #$PR_NUM needs a fix pass, but the detached implement runs couldn't be read; no fix pass this tick"
-        continue
-      fi
       if [[ "$CONFLICTING" -eq 1 ]]; then
         log "Issue #$ISSUE_NUM: PR #$PR_NUM conflicts with main → conflict pass"
       elif [[ "$FAILING" -gt 0 ]]; then

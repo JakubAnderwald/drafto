@@ -45,11 +45,14 @@
 //   kill      --issue <n> [--finish 1 --outcome <word>] [--wait-ms <ms>]
 //             [--repo-root dir] [--state-file f]
 //             Stop the run: SIGTERM, then SIGKILL after --wait-ms (default
-//             60000). With --finish 1 and the run gone, finish it too.
-//   finish    --issue <n> --run-id <id> --outcome <word> [--repo-root dir]
-//             [--state-file f]
+//             60000), following the process groups it found at the start
+//             until each is gone (trackRun). With --finish 1 and the run gone,
+//             finish it too (ok:false if that is refused).
+//   finish    --issue <n> --run-id <id> --outcome <word> [--pid <n>|none]
+//             [--repo-root dir] [--state-file f]
 //             Unlock the worktree, drop the run from the ledger, write
-//             collected.json.
+//             collected.json. Refused while anything of the run is alive, or
+//             when the run's pid is no longer --pid (attached since).
 //   housekeeping --run-root <dir> [--max-age-days 30] [--state-file f]
 //             Reap run dirs the ledger no longer names, after 30 days.
 //
@@ -117,6 +120,10 @@ const KILL_SETTLE_MS = 10 * 1000;
 // The supervisor touches <runDir>/heartbeat this often, so a run that dies
 // without exit.json can still be placed before or after its deadline.
 export const HEARTBEAT_MS = 30 * 1000;
+// How often the supervisor reads the process table to follow what the run
+// starts, and how long it gives leftovers between SIGTERM and SIGKILL.
+const FOLLOW_MS = 1000;
+const LEFTOVER_WAIT_MS = 5000;
 const POLL_MS = 250;
 export const RUN_ID_RE = /^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
 const RUN_DIR_NAME_RE = /^[1-9][0-9]*-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
@@ -716,8 +723,15 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
     });
     if (!attached) {
       // Finished while we spawned (an operator's kill): nothing tracks this
-      // supervisor any more, so stop it here.
-      deps.kill(-spawned.pid, "SIGTERM");
+      // supervisor any more, so stop it here, and unlock only once it's gone.
+      const stop = await stopRun(
+        { runId, pid: spawned.pid, sessionId: spec.sessionId },
+        deps,
+        rollbackWaitMs(spec),
+      );
+      if (stop.state !== "gone") {
+        return refuse("abandoned", { runId, stillAlive: true, pid: spawned.pid });
+      }
       if (locked) await unlockWorktree(deps, repoRoot, spec.worktree);
       return refuse("abandoned", { runId });
     }
@@ -733,11 +747,32 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
       ...(lockError ? { lockError } : {}),
     };
   } catch (err) {
-    if (spawned?.ok) deps.kill(-spawned.pid, "SIGTERM");
-    await mutateState(stateFile, (s) => finishImplementRun(s, spec.issue, runId).ok);
+    // Roll back only once nothing of the run is left: a supervisor that did
+    // start is stopped (SIGTERM, then SIGKILL) and waited for. If it survives,
+    // or ps can't tell, the reservation and the lock stay, so no other run
+    // starts in this worktree; the collector stops it on a later tick.
+    const stop = await stopRun(
+      { runId, pid: spawned?.ok ? spawned.pid : null, sessionId: spec.sessionId },
+      deps,
+      rollbackWaitMs(spec),
+    );
+    if (stop.state !== "gone") {
+      return refuse("start-failed", { error: err.message, runId, stillAlive: true });
+    }
+    try {
+      await mutateState(stateFile, (s) => finishImplementRun(s, spec.issue, runId).ok);
+    } catch (e) {
+      return refuse("start-failed", { error: `${err.message}; rollback: ${e.message}`, runId });
+    }
     if (locked) await unlockWorktree(deps, repoRoot, spec.worktree);
     return refuse("start-failed", { error: err.message, runId });
   }
+}
+
+// How long a start rollback waits after SIGTERM: run-claude.mjs's own grace
+// for claude, plus a margin for it and the supervisor to exit.
+function rollbackWaitMs(spec) {
+  return (spec.termGraceSec ?? 30) * 1000 + 15_000;
 }
 
 // ── the supervisor (detached; never state, git or gh) ───────────────────────
@@ -807,6 +842,23 @@ export async function runSupervise(
       /* gone */
     }
   };
+  // Everything the run starts, followed while it runs (trackRun), so that at
+  // the end a group that left claude's (a setsid test runner, a daemon) and
+  // ignored the stop is still found and stopped, not left in the worktree.
+  let tracker = null;
+  let following = null;
+  let followSoon = null;
+  const follow = () => {
+    const rows = table();
+    if (!rows || !meta) return;
+    if (!tracker) {
+      tracker = trackRun({ runId: meta.runId, pid: process.pid, sessionId: meta.sessionId }, rows, {
+        selfPids: [process.pid],
+      });
+    } else {
+      observeRun(tracker, rows);
+    }
+  };
   const beat = () => {
     try {
       fs.writeFileSync(path.join(runDir, "heartbeat"), new Date().toISOString() + "\n", {
@@ -855,6 +907,8 @@ export async function runSupervise(
         resolve({ code: 127, signal: null, error: `spawn failed: ${e.message}` });
         return;
       }
+      following = setInterval(follow, FOLLOW_MS);
+      followSoon = setTimeout(follow, 300);
       child.once("error", (e) =>
         resolve({ code: 127, signal: null, error: `spawn failed: ${e.message}` }),
       );
@@ -887,12 +941,43 @@ export async function runSupervise(
         /* already closed */
       }
     }
+    // Whatever the run left behind in a group of its own: stopped now.
+    clearInterval(following);
+    clearTimeout(followSoon);
+    follow();
+    if (tracker && tracker.groups.size > 0) {
+      appendLog(
+        fs,
+        logFile,
+        `stopping what the run left running (groups ${[...tracker.groups].join(", ")})`,
+      );
+      const left = await stopTracked(
+        tracker,
+        {
+          table,
+          kill: (pid, sig) => {
+            try {
+              signalProcess.kill(pid, sig);
+            } catch {
+              /* gone */
+            }
+            return true;
+          },
+          nowMs: () => Date.now(),
+          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        },
+        LEFTOVER_WAIT_MS,
+      );
+      if (left.state !== "gone") appendLog(fs, logFile, `left running: ${left.state}`);
+    }
     exitCode = exitCodeOf(result.code, result.signal);
     signal = result.signal ?? null;
     error = result.error;
   } catch (e) {
     error = error ?? e.message;
   } finally {
+    clearInterval(following);
+    clearTimeout(followSoon);
     clearInterval(heartbeat);
     clearTimeout(backstopTimer);
     clearTimeout(killTimer);
@@ -924,23 +1009,46 @@ export async function runSupervise(
 
 // ── finish and kill (in the tick) ───────────────────────────────────────────
 
-// Unlock first, then drop the run from the ledger: a tick that dies between
-// the two leaves a run the next tick collects again, never a locked worktree
-// nothing will unlock.
-export async function runFinish({ stateFile, issue, runId, outcome, repoRoot }, deps) {
+// Drop <issue>'s run <runId> from the ledger, unlock its worktree and write
+// collected.json. Refused (ok:false, nothing changed) when:
+//   - the ledger holds another run, or none (run-id-mismatch);
+//   - <expectPid> is given (a number, or null for "never attached") and the
+//     run's pid isn't it: attached, or re-attached, since the caller decided
+//     (pid-changed);
+//   - anything of the run is alive now, or ps can't tell (still-alive /
+//     unverifiable): finishing would free a worktree something still works in.
+// The same ledger load that is saved checks run id and pid again. Unlock comes
+// before that save: a tick that dies between the two leaves a run the next
+// tick finishes again, never a locked worktree nothing unlocks. If the save is
+// refused after the unlock, the worktree is locked again.
+export async function runFinish(
+  { stateFile, issue, runId, outcome, repoRoot, expectPid = undefined },
+  deps,
+) {
   if (!/^[1-9][0-9]*$/.test(String(issue ?? ""))) throw new Error(`invalid --issue: ${issue}`);
   if (!runId) throw new Error("finish requires --run-id");
   if (!outcome || !/^[a-z-]+$/.test(outcome)) throw new Error(`invalid --outcome: ${outcome}`);
+  const refuse = (reason) => ({ ok: false, reason, issue: String(issue), runId });
   const before = getImplementRun(await loadFactoryState(stateFile), issue);
-  if (!before || before.runId !== String(runId)) {
-    return { ok: false, reason: "run-id-mismatch", issue: String(issue), runId };
-  }
+  if (!before || before.runId !== String(runId)) return refuse("run-id-mismatch");
+  if (expectPid !== undefined && before.pid !== expectPid) return refuse("pid-changed");
+  const rows = deps.table();
+  if (!rows) return refuse("unverifiable");
+  if (runGroups(before, rows, { selfPids: deps.selfPids }).length > 0) return refuse("still-alive");
   await unlockWorktree(deps, repoRoot, before.worktree);
   const result = await mutateState(stateFile, (s) => {
-    const r = finishImplementRun(s, issue, runId);
-    return r.ok ? r : false;
+    const now = getImplementRun(s, issue);
+    if (!now || now.runId !== String(runId) || now.pid !== before.pid) return false;
+    return finishImplementRun(s, issue, runId);
   });
-  if (!result) return { ok: false, reason: "run-id-mismatch", issue: String(issue), runId };
+  if (!result) {
+    if (repoRoot && before.worktree) {
+      await deps.git(["worktree", "lock", "--reason", `implement run ${runId}`, before.worktree], {
+        cwd: repoRoot,
+      });
+    }
+    return refuse("changed-during-finish");
+  }
   if (before.runDir && deps.fs.existsSync(before.runDir)) {
     try {
       writeJsonAtomic(deps.fs, path.join(before.runDir, "collected.json"), {
@@ -956,22 +1064,126 @@ export async function runFinish({ stateFile, issue, runId, outcome, repoRoot }, 
   return { ok: true, issue: String(issue), runId, outcome };
 }
 
-function signalGroups(deps, groups, sig) {
-  for (const g of groups) deps.kill(-g, sig);
+// ── stopping a run: a tracker kept across polls ─────────────────────────────
+// A cancellation remembers every process group it found when it began, and
+// every process it has seen in them (pid and start time), and keeps polling
+// and signalling those groups until each is gone. Membership is never
+// re-derived from a fresh snapshot alone: once the supervisor and claude have
+// exited, a group they started (a test runner that called setsid, ignoring
+// SIGTERM) has launchd for a parent and nothing in a new snapshot ties it to
+// the run any more. A fresh look still ADDS what it finds (an orphaned claude).
+//   - A tracked group is dropped for good the first time it has no live
+//     member, so a later group that happens to get the same id (its new
+//     leader reusing the old pid) is never signalled.
+//   - A row whose pid is the group's id but whose start time differs from
+//     the leader first seen is that reuse, and drops the group.
+//   - Children the run's processes start meanwhile join (known parent pid
+//     and start time), groups of their own included.
+export function trackRun(run, rows, { selfPids = [] } = {}) {
+  const tracker = {
+    run,
+    selfPids,
+    groups: new Set(),
+    leaders: new Map(),
+    known: new Map(),
+    dropped: new Set(),
+  };
+  observeRun(tracker, rows);
+  return tracker;
 }
 
-// Wait until <run> has no live process group, polling, for at most <ms>.
-// Returns "gone", "alive" or "unknown" (ps failed).
-async function waitGone(run, deps, ms) {
+// Fold a snapshot into <tracker>; returns the tracked groups still alive.
+export function observeRun(tracker, rows) {
+  const live = rows.filter(isLiveRow);
+  const own = new Set(rows.filter((r) => tracker.selfPids.includes(r.pid)).map((r) => r.pgid));
+  const add = (g) => {
+    if (g > 1 && !own.has(g) && !tracker.dropped.has(g)) tracker.groups.add(g);
+  };
+  for (const g of runGroups(tracker.run, rows, { selfPids: tracker.selfPids })) add(g);
+  const byPid = new Map(live.map((r) => [r.pid, r]));
+  const isKnown = (pid) => {
+    if (!tracker.known.has(pid)) return false;
+    const row = byPid.get(pid);
+    return !row || row.lstart == null || tracker.known.get(pid) == null
+      ? true
+      : row.lstart === tracker.known.get(pid);
+  };
+  // Members of tracked groups, and children of known processes, to a fixpoint.
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const r of live) {
+      if (tracker.known.has(r.pid) && isKnown(r.pid)) continue;
+      const member = tracker.groups.has(r.pgid);
+      const child = r.ppid > 1 && isKnown(r.ppid);
+      if (!member && !child) continue;
+      if (member && r.pid === r.pgid && tracker.leaders.has(r.pgid)) {
+        const first = tracker.leaders.get(r.pgid);
+        if (first != null && r.lstart != null && first !== r.lstart) continue; // reused id
+      }
+      tracker.known.set(r.pid, r.lstart ?? null);
+      if (child) add(r.pgid);
+      grew = true;
+    }
+  }
+  const alive = [];
+  for (const g of [...tracker.groups]) {
+    const leader = live.find((r) => r.pid === g && r.pgid === g);
+    if (leader && !tracker.leaders.has(g)) tracker.leaders.set(g, leader.lstart ?? null);
+    const reused =
+      leader &&
+      tracker.leaders.get(g) != null &&
+      leader.lstart != null &&
+      tracker.leaders.get(g) !== leader.lstart;
+    const members = live.filter((r) => r.pgid === g);
+    if (reused || members.length === 0) {
+      tracker.groups.delete(g);
+      tracker.dropped.add(g);
+      continue;
+    }
+    alive.push(g);
+  }
+  return alive;
+}
+
+// Poll <tracker> until none of its groups is alive, for at most <ms>.
+// Returns {state: "gone"|"alive"|"unknown" (ps failed), groups}.
+async function waitTracked(tracker, deps, ms) {
   const until = deps.nowMs() + ms;
   for (;;) {
     const rows = deps.table();
-    if (!rows) return { state: "unknown", groups: [] };
-    const groups = runGroups(run, rows, { selfPids: deps.selfPids });
+    if (!rows) return { state: "unknown", groups: [...tracker.groups] };
+    const groups = observeRun(tracker, rows);
     if (groups.length === 0) return { state: "gone", groups };
     if (deps.nowMs() >= until) return { state: "alive", groups };
     await deps.sleep(POLL_MS);
   }
+}
+
+// Stop <run>: SIGTERM every group it has, wait up to <waitMs>, then SIGKILL
+// whatever of them is left and wait up to KILL_SETTLE_MS more. Each signal
+// goes to the groups the tracker still holds alive at that moment.
+export async function stopRun(run, deps, waitMs) {
+  const first = deps.table();
+  if (!first) return { state: "unknown", signalled: false, killed: false };
+  return stopTracked(trackRun(run, first, { selfPids: deps.selfPids }), deps, waitMs);
+}
+
+export async function stopTracked(tracker, deps, waitMs) {
+  let w = await waitTracked(tracker, deps, 0);
+  let signalled = false;
+  let killed = false;
+  if (w.state === "alive") {
+    signalled = true;
+    for (const g of w.groups) deps.kill(-g, "SIGTERM");
+    w = await waitTracked(tracker, deps, waitMs);
+  }
+  if (w.state === "alive") {
+    killed = true;
+    for (const g of w.groups) deps.kill(-g, "SIGKILL");
+    w = await waitTracked(tracker, deps, KILL_SETTLE_MS);
+  }
+  return { state: w.state, signalled, killed, groups: w.groups };
 }
 
 export async function runKill(
@@ -981,23 +1193,22 @@ export async function runKill(
   if (!/^[1-9][0-9]*$/.test(String(issue ?? ""))) throw new Error(`invalid --issue: ${issue}`);
   const run = getImplementRun(await loadFactoryState(stateFile), issue);
   if (!run) return { ok: true, issue: String(issue), state: "none" };
-  let signalled = false;
-  let killed = false;
-  let w = await waitGone(run, deps, 0);
-  if (w.state === "alive") {
-    signalled = true;
-    signalGroups(deps, w.groups, "SIGTERM");
-    w = await waitGone(run, deps, waitMs);
-  }
-  if (w.state === "alive") {
-    killed = true;
-    signalGroups(deps, w.groups, "SIGKILL");
-    w = await waitGone(run, deps, KILL_SETTLE_MS);
-  }
-  const out = { issue: String(issue), runId: run.runId, state: w.state, signalled, killed };
-  if (w.state !== "gone") return { ok: false, ...out };
+  const stop = await stopRun(run, deps, waitMs);
+  const out = {
+    issue: String(issue),
+    runId: run.runId,
+    state: stop.state,
+    signalled: stop.signalled,
+    killed: stop.killed,
+  };
+  if (stop.state !== "gone") return { ok: false, ...out };
   if (!finish) return { ok: true, ...out };
-  const fin = await runFinish({ stateFile, issue, runId: run.runId, outcome, repoRoot }, deps);
+  // Finish only the run this stop was about: same run id, same pid (an attach
+  // since then is another supervisor, which runFinish refuses).
+  const fin = await runFinish(
+    { stateFile, issue, runId: run.runId, outcome, repoRoot, expectPid: run.pid },
+    deps,
+  );
   return { ok: fin.ok, ...out, finished: fin.ok, ...(fin.ok ? {} : { reason: fin.reason }) };
 }
 
@@ -1033,6 +1244,14 @@ export async function runHousekeeping({ stateFile, runRoot, maxAgeDays = 30 }, d
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
+
+// --pid <n> or --pid none (never attached); absent: not checked.
+function parseExpectPid(raw) {
+  if (raw == null) return undefined;
+  if (raw === "none" || raw === "null") return null;
+  if (!/^[1-9][0-9]*$/.test(String(raw))) throw new Error(`invalid --pid: ${raw}`);
+  return Number(raw);
+}
 
 export async function main(argv, deps = createDeps()) {
   const [sub, ...rest] = argv;
@@ -1082,6 +1301,7 @@ export async function main(argv, deps = createDeps()) {
           runId: flags["run-id"],
           outcome: flags.outcome,
           repoRoot: flags["repo-root"],
+          expectPid: parseExpectPid(flags.pid),
         },
         deps,
       );
