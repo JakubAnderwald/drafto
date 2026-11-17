@@ -573,6 +573,7 @@ function describeRun(issue, run, files, cls, nowMs) {
     ...(cls.problem ? { problem: cls.problem } : {}),
     pid: run.pid,
     ...(run.rollbackPending === true ? { rollbackPending: true } : {}),
+    ...(run.unlockPending === true ? { unlockPending: true } : {}),
     slot: run.slot,
     sessionId: run.sessionId,
     mode: run.mode,
@@ -715,9 +716,23 @@ async function lockWorktree(deps, repoRoot, worktree, runId) {
   return r.code === 0 ? null : `lock-failed: ${(r.stderr || r.stdout || "").trim().split("\n")[0]}`;
 }
 
+// Unlock <worktree> and confirm it: true when git then lists it unlocked, or
+// doesn't list it at all (removed); false when it is still locked or the list
+// can't be read. "not locked" from the unlock itself is fine: the list decides.
 async function unlockWorktree(deps, repoRoot, worktree) {
-  if (!repoRoot || !worktree) return;
+  if (!repoRoot || !worktree) return true;
   await deps.git(["worktree", "unlock", worktree], { cwd: repoRoot });
+  const list = await deps.git(["worktree", "list", "--porcelain"], { cwd: repoRoot });
+  if (list.code !== 0) return false;
+  const canon = (p) => {
+    try {
+      return deps.fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const entry = parseWorktreePorcelain(list.stdout).find((w) => canon(w.path) === canon(worktree));
+  return !entry || !entry.locked;
 }
 
 export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps) {
@@ -861,7 +876,18 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
         });
         return refuse("abandoned", { runId, stillAlive: true, pid: spawned.pid });
       }
-      if (locked) await unlockWorktree(deps, repoRoot, spec.worktree);
+      if (locked && !(await unlockWorktree(deps, repoRoot, spec.worktree))) {
+        // Gone, but the lock wouldn't come off: back in the ledger, so a
+        // later tick retries the unlock (finish) instead of a lock nobody owns.
+        await markRollback(stateFile, spec, runId, {
+          pid: spawned.pid,
+          runDir,
+          deadlineAt,
+          hardKillAt,
+          startedAt,
+        });
+        return refuse("abandoned", { runId, unlockPending: true });
+      }
       return refuse("abandoned", { runId });
     }
     return {
@@ -891,12 +917,18 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
       });
       return refuse("start-failed", { error: err.message, runId, stillAlive: true });
     }
+    // Unlock before letting go of the reservation: if the lock won't come
+    // off, the run stays in the ledger (pending its rollback) and a later
+    // tick's finish retries it.
+    if (locked && !(await unlockWorktree(deps, repoRoot, spec.worktree))) {
+      await markRollback(stateFile, spec, runId, { pid: spawned?.ok ? spawned.pid : null, runDir });
+      return refuse("start-failed", { error: err.message, runId, unlockPending: true });
+    }
     try {
       await mutateState(stateFile, (s) => finishImplementRun(s, spec.issue, runId).ok);
     } catch (e) {
       return refuse("start-failed", { error: `${err.message}; rollback: ${e.message}`, runId });
     }
-    if (locked) await unlockWorktree(deps, repoRoot, spec.worktree);
     return refuse("start-failed", { error: err.message, runId });
   }
 }
@@ -1004,16 +1036,18 @@ export async function runSupervise(
   // supervisor saw the run's process groups and saw them all gone.
   let cleanup = "unverified";
   let childRunning = false;
-  let psFailedWhileRunning = false;
-  let observedWhileRunning = false;
+  // A failed read while claude ran opens a gap (a worker could have started
+  // and left the tree unseen); only a later successful read while it still
+  // ran closes it. The final read, after claude ended, must succeed too.
+  let gapWhileRunning = false;
   const follow = () => {
     const rows = table();
-    if (!meta) return;
+    if (!meta) return false;
     if (!rows) {
-      if (childRunning) psFailedWhileRunning = true;
-      return;
+      if (childRunning) gapWhileRunning = true;
+      return false;
     }
-    if (childRunning) observedWhileRunning = true;
+    if (childRunning) gapWhileRunning = false;
     if (!tracker) {
       tracker = trackRun({ runId: meta.runId, pid: process.pid, sessionId: meta.sessionId }, rows, {
         selfPids: [process.pid],
@@ -1021,6 +1055,7 @@ export async function runSupervise(
     } else {
       observeRun(tracker, rows);
     }
+    return true;
   };
   const beat = () => {
     try {
@@ -1109,19 +1144,17 @@ export async function runSupervise(
     // Whatever the run left behind in a group of its own: stopped now.
     clearInterval(following);
     clearTimeout(followSoon);
-    follow();
-    if (!tracker) {
-      // Never got a look at the table: try again before giving up on it.
-      for (let i = 0; i < leftover.retries && !tracker; i++) {
-        await new Promise((r) => setTimeout(r, leftover.retryMs));
-        follow();
-      }
-      if (!tracker)
-        appendLog(fs, logFile, "ps never answered; what the run left behind is unknown");
+    // The final look, after claude ended: retried, bounded, if ps fails.
+    let finalOk = follow();
+    for (let i = 0; i < leftover.retries && !finalOk; i++) {
+      await new Promise((r) => setTimeout(r, leftover.retryMs));
+      finalOk = follow();
     }
-    // No look at all while claude ran (every read failed), or none ever: what
-    // it started can't be known, so the cleanup can't be called clean.
-    const unverifiedNow = !tracker || (psFailedWhileRunning && !observedWhileRunning);
+    if (!finalOk) appendLog(fs, logFile, "ps didn't answer after the run ended");
+    // Verified only with a tracker, a successful final look, and no read
+    // that failed while claude ran without a successful one after it: an
+    // empty snapshot earlier proves nothing about the gap that followed.
+    const unverifiedNow = !tracker || !finalOk || gapWhileRunning;
     if (unverifiedNow) {
       writeJsonAtomic(fs, path.join(runDir, "leftover.json"), {
         formatVersion: FORMAT_VERSION,
@@ -1249,7 +1282,18 @@ export async function runFinish(
   if (!rows) return refuse("unverifiable");
   const tracked = trackRun(before, rows, { selfPids: deps.selfPids, seed: files.leftover });
   if (tracked.alive.length > 0) return refuse("still-alive");
-  await unlockWorktree(deps, repoRoot, before.worktree);
+  if (!(await unlockWorktree(deps, repoRoot, before.worktree))) {
+    // The lock is still on (or can't be checked): the run keeps its ledger
+    // entry, marked, and the next tick's finish tries again. Never a dropped
+    // run behind a lock nothing owns.
+    await mutateState(stateFile, (s) => {
+      const now = getImplementRun(s, issue);
+      if (!now || now.runId !== String(runId)) return false;
+      now.unlockPending = true;
+      return true;
+    });
+    return refuse("unlock-failed");
+  }
   const result = await mutateState(stateFile, (s) => {
     const now = getImplementRun(s, issue);
     if (!now || now.runId !== String(runId) || now.pid !== before.pid) return false;

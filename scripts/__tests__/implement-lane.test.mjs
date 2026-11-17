@@ -37,7 +37,12 @@ import {
   runSupervise,
   trackRun,
 } from "../lib/implement-lane.mjs";
-import { descendants, groupRunState, parseProcessTable } from "../lib/supervisor-proc.mjs";
+import {
+  descendants,
+  groupRunState,
+  parseProcessTable,
+  processTable,
+} from "../lib/supervisor-proc.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATE_CLI = resolve(HERE, "..", "lib", "state-cli.mjs");
@@ -55,6 +60,14 @@ function tempDir() {
 after(() => {
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 });
+
+// <a> and <b> both occur in <calls>, <a> first. Never vacuous: a missing call
+// fails the check instead of reading as -1.
+function before(calls, a, b) {
+  const i = calls.indexOf(a);
+  const j = calls.indexOf(b);
+  return i >= 0 && j >= 0 && i < j;
+}
 
 const reserve = (state, over = {}) =>
   reserveImplementRun(state, {
@@ -593,7 +606,11 @@ describe("start", () => {
     assert.deepEqual(s.implement.runs, {});
     assert.deepEqual([s.slots[1].issueNumber, s.slots[1].pid], ["7", 99], "the slot is untouched");
     assert.equal(s.issues["7"], undefined, "no attempt is spent");
-    assert.equal(deps.calls.at(-1), `git worktree unlock ${env.wt}`);
+    // Unlocked, and the unlock confirmed by listing the worktrees again.
+    assert.deepEqual(deps.calls.slice(-2), [
+      `git worktree unlock ${env.wt}`,
+      "git worktree list --porcelain",
+    ]);
   });
 
   it("refuses a worktree that is already locked (owner unknown), before anything else", async () => {
@@ -940,6 +957,20 @@ describe("status", () => {
   });
 });
 
+describe("processTable", () => {
+  const ok = { status: 0, stdout: "1 0 1 S launchd\n" };
+  it("reads a ps killed by a signal again (a stop signalled the caller's group)", () => {
+    const answers = [{ status: null, signal: "SIGTERM", stdout: "" }, ok];
+    const t = processTable({ run: () => answers.shift() });
+    assert.equal(t[0].command, "launchd");
+  });
+  it("any other failure, or three signalled reads, is null", () => {
+    assert.equal(processTable({ run: () => ({ status: 1, stdout: "" }) }), null);
+    assert.equal(processTable({ run: () => ({ error: new Error("ENOENT") }) }), null);
+    assert.equal(processTable({ run: () => ({ status: null, signal: "SIGTERM" }) }), null);
+  });
+});
+
 describe("trackRun: a cancellation keeps the groups it found", () => {
   const RUN = { runId: "20261117T100000Z-abc123", pid: 100, sessionId: SID };
   const T1 = "Tue Nov 17 10:00:00 2026";
@@ -1091,7 +1122,7 @@ describe("kill and finish", () => {
       "kill -102 SIGTERM",
     ]);
     assert.ok(
-      deps.calls.indexOf("git worktree unlock /wt") > deps.calls.indexOf("kill -100 SIGTERM"),
+      before(deps.calls, "kill -100 SIGTERM", "git worktree unlock /wt"),
       "unlocked only once the run is gone",
     );
     assert.deepEqual((await loadFactoryState(env.stateFile)).implement.runs, {});
@@ -1144,9 +1175,38 @@ describe("kill and finish", () => {
     assert.ok(deps.calls.includes("kill -104 SIGTERM"));
     assert.ok(deps.calls.includes("kill -104 SIGKILL"), deps.calls.join("\n"));
     assert.ok(
-      deps.calls.indexOf("git worktree unlock /wt") > deps.calls.indexOf("kill -104 SIGKILL"),
+      before(deps.calls, "kill -104 SIGKILL", "git worktree unlock /wt"),
       "unlocked only once the leftover group is gone",
     );
+  });
+
+  it("finish keeps the run when the unlock doesn't take, marked unlock-pending, and retries later", async () => {
+    const root = tempDir();
+    const env = await setup({ runs: ledger(v1RunDir(root)) });
+    const args = ["finish", "--issue", "7", "--run-id", RUN_ID, "--outcome", "collected"].concat([
+      "--repo-root",
+      "/repo",
+      "--state-file",
+      env.stateFile,
+    ]);
+    // git still lists /wt as locked after the unlock.
+    const stuck = fakeDeps({ rows: [], lockedWorktrees: ["/wt"] });
+    stuck.worktrees.push("/wt");
+    const out = await main(args, stuck);
+    assert.deepEqual([out.ok, out.reason], [false, "unlock-failed"]);
+    const run = (await loadFactoryState(env.stateFile)).implement.runs["7"];
+    assert.deepEqual([run.runId, run.unlockPending], [RUN_ID, true]);
+    const st = await main(["status", "--state-file", env.stateFile], fakeDeps({ rows: [] }));
+    assert.equal(st.runs[0].unlockPending, true);
+    // The list can't be read either: still refused.
+    const blind = fakeDeps({ rows: [] });
+    blind.git = async (a) => ({ code: a[1] === "list" ? 128 : 0, stdout: "", stderr: "" });
+    assert.equal((await main(args, blind)).reason, "unlock-failed");
+    // A later tick: the lock comes off, the run goes.
+    const ok = fakeDeps({ rows: [] });
+    ok.worktrees.push("/wt");
+    assert.equal((await main(args, ok)).ok, true);
+    assert.deepEqual((await loadFactoryState(env.stateFile)).implement.runs, {});
   });
 
   it("finish refuses a run attached since the stop decided (pid changed)", async () => {
@@ -1265,9 +1325,7 @@ describe("kill and finish", () => {
     const out = await kill(env, deps, ["--finish", "1"]);
     assert.deepEqual([out.ok, out.state, out.finished], [true, "gone", true]);
     assert.ok(deps.calls.includes("kill -904 SIGTERM"));
-    assert.ok(
-      deps.calls.indexOf("git worktree unlock /wt") > deps.calls.indexOf("kill -904 SIGTERM"),
-    );
+    assert.ok(before(deps.calls, "kill -904 SIGTERM", "git worktree unlock /wt"));
   });
 
   it("an unreadable leftover.json: status says unreadable, kill and finish refuse", async () => {
@@ -1350,7 +1408,7 @@ describe("housekeeping", () => {
 describe("runSupervise: what the run left behind", () => {
   // A fake run-claude.mjs that exits at once, and a process table where the
   // run left a group of its own behind (pgid 9001, started by the supervisor).
-  function supervise({ table }) {
+  function supervise({ table, exitAfterMs = 700 }) {
     const runDir = tempDir();
     const runId = "20261117T100000Z-abc123";
     fs.writeFileSync(
@@ -1375,7 +1433,7 @@ describe("runSupervise: what the run left behind", () => {
       const child = new EventEmitter();
       child.pid = 4243;
       child.kill = () => true;
-      setTimeout(() => child.emit("exit", 0, null), 700);
+      setTimeout(() => child.emit("exit", 0, null), exitAfterMs);
       return child;
     };
     // As in production, the run id is in the run dir's name on the command line.
@@ -1475,6 +1533,51 @@ describe("runSupervise: what the run left behind", () => {
     );
     assert.deepEqual([k.ok, k.reason], [false, "cleanup-unverified"]);
     assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].pid, 4243);
+  });
+
+  it("an empty snapshot, then ps failing while claude still runs: unverified, though the end read works", async () => {
+    // Reads while running at ~300 ms (empty: nothing below the supervisor),
+    // then ~1 s and ~2 s fail: a worker could start and leave the tree in
+    // that gap. The final read, after claude ends at 2.5 s, succeeds.
+    let calls = 0;
+    const { runDir } = await supervise({
+      exitAfterMs: 2500,
+      table: (sup) => {
+        calls += 1;
+        return calls === 1 || calls >= 4 ? parseProcessTable(sup) : null;
+      },
+    });
+    const left = JSON.parse(fs.readFileSync(join(runDir, "leftover.json"), "utf8"));
+    assert.equal(left.state, "cleanup-unverified");
+    const exit = JSON.parse(fs.readFileSync(join(runDir, "exit.json"), "utf8"));
+    assert.equal(exit.cleanup, "unverified");
+  });
+
+  it("a gap closed by a later successful read while claude runs, and a good final read: clean", async () => {
+    let calls = 0;
+    const { runDir } = await supervise({
+      exitAfterMs: 2500,
+      table: (sup) => {
+        calls += 1;
+        return calls === 2 ? null : parseProcessTable(sup);
+      },
+    });
+    assert.equal(fs.existsSync(join(runDir, "leftover.json")), false);
+    const exit = JSON.parse(fs.readFileSync(join(runDir, "exit.json"), "utf8"));
+    assert.equal(exit.cleanup, "clean");
+  });
+
+  it("the final read, after claude ended, failing: unverified", async () => {
+    let calls = 0;
+    const { runDir } = await supervise({
+      exitAfterMs: 1500,
+      table: (sup) => {
+        calls += 1;
+        return calls <= 2 ? parseProcessTable(sup) : null;
+      },
+    });
+    const left = JSON.parse(fs.readFileSync(join(runDir, "leftover.json"), "utf8"));
+    assert.equal(left.state, "cleanup-unverified");
   });
 
   it("nothing left behind: no leftover.json", async () => {

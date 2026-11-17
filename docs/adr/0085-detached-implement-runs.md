@@ -40,6 +40,8 @@ One rule runs through every step from start to collection: **when the factory ca
 - The supervisor's cleanup writes `exit.json` `cleanup: clean` only after seeing every tracked group gone. Otherwise `leftover.json` holds the identities, or `cleanup-unverified` when it couldn't read the table at all, and a missing `leftover.json` behind a non-clean `exit.json` is still unverified.
 - A supervisor that died without `exit.json` makes its run `unverified`, not `lost`, unless the machine has rebooted since its last heartbeat.
 - A worktree that is already locked is never reused, by `worktree-cli add` or by a start.
+- The cleanup counts as verified only when the final read, after claude ended, succeeded and no read failed while claude ran without a successful one after it. An empty snapshot before such a gap proves nothing. A `ps` killed by a signal (a stop signals the caller's whole group, its own `ps` included) is read again, not counted as a failure.
+- `finish` drops a run only after confirming the unlock: git must list the worktree unlocked, or not at all. Otherwise the run stays in the ledger marked `unlockPending`, `finish` answers `ok:false` (`unlock-failed`), and the next tick tries again. A start rollback unlocks before it lets go of the reservation, for the same reason.
 - Every drop without the handler checks `finish`'s `ok`, and charges nothing until the run has really left the ledger.
 
 The one deliberate exception is the memory-pressure precheck, which fails open (an unreadable pressure starts the run), as it does in the verification lane. It's a resource heuristic, not an ownership question.
@@ -66,7 +68,7 @@ The one deliberate exception is the memory-pressure precheck, which fails open (
 ## Consequences
 
 - **Positive**: an implement run no longer stalls every other card for up to 45 minutes. Merges, fix passes, In Test hand-offs and planning keep their 5-minute cadence. The detached run makes the same claude call and goes through the same handler. Off by default, and collection runs whatever the knob, so flipping it back to 0 mid-run is safe.
-- **Negative**: more moving parts — a ledger, a supervisor, process-group liveness — on a path that used to be one foreground call. An operator drag out of the factory's columns now stops a run and discards its work, which a synchronous run could never do. A tick that dies between `finish` and the handler loses that run's result. Each `--implement`, `--watch` and `--release` tick now spends a node call on `status` (with an empty ledger it never runs `ps`), and each slot release a node call on `kill`.
+- **Negative**: more moving parts — a ledger, a supervisor, process-group liveness — on a path that used to be one foreground call. An operator drag out of In Progress, In Review and Testing (to any other column) now stops a run and discards its work, which a synchronous run could never do; a move between those three doesn't. A tick that dies between `finish` and the handler loses that run's result. Each `--implement`, `--watch` and `--release` tick now spends a node call on `status` (with an empty ledger it never runs `ps`), and each slot release a node call on `kill`.
 - **Neutral**: with the knob off nothing changes except those calls, `--now` passed to the session-limit check only while a run is collected, and the teardown helpers keeping a worktree when the ledger can't be read. Run dirs are reaped after 30 days by `implement-lane.mjs housekeeping`.
 
 ## Alternatives Considered

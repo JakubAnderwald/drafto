@@ -1359,9 +1359,11 @@ node scripts/lib/implement-lane.mjs clear --issue <n> --confirm 1 --note "checke
 
 It writes `cleared.json` in the run dir. It refuses while anything the factory can see of the run is still alive. The next `--implement` tick then collects or drops the run as usual.
 
+**`unlockPending`.** `finish` drops a run only once git lists its worktree unlocked. If the unlock doesn't take, or the worktree list can't be read, the run stays in the ledger marked `unlockPending` (`status` shows it), the card stays held, and the next tick tries again. If it persists, look at `git worktree list --porcelain` in the factory checkout.
+
 **A locked worktree no run owns.** A start, and `worktree-cli add`, refuse a worktree that is already `git worktree lock`ed: `worktree is locked (implement run <runId>)`, or `the detached implement run failed to start (worktree-locked)`. Check `implement-lane.mjs status` first; if no run holds the card and nothing runs in the worktree, `git worktree unlock <path>`.
 
-Don't `kill -9` the supervisor by hand: claude leads a process group of its own and would be left running. Dragging the card out of In Progress / In Review / Testing does the same stop on the next `--watch` sweep, which then frees the slot.
+Don't `kill -9` the supervisor by hand: claude leads a process group of its own and would be left running. Dragging the card out of In Progress, In Review and Testing, to any other column (or closing it), does the same stop on the next `--watch` sweep, which then frees the slot. Moving it between those three columns doesn't stop the run.
 
 **Resuming by hand.** The run's session id is in `status` (`sessionId`) and in `implementSessionId` on the card's record. First add the `factory-pause` label to the card, whichever of In Progress, In Review or Testing it is in: the factory works every card in those columns, and without the label it can start its own implement run or a `--watch` fix pass in the same worktree while you work there. An interactive `claude --resume` is never counted as the run, so nothing else makes the factory wait. Then continue the session only once `status` no longer lists the card (the run was collected, or stopped with `--finish 1`). Remove `factory-pause` when you are done:
 

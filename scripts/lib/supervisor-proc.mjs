@@ -113,14 +113,22 @@ export async function stopSupervisor(inFlight, { waitMs }) {
 // prompt) is never cut off before the run id or session id; the buffer is
 // sized for that. lstart (the start time, in the C locale so it always has the
 // same shape) tells a process from a later one that got its pid.
+//
+// A ps killed by a signal is read again (twice at most): a stop signals the
+// caller's whole process group, and a ps the caller had running at that
+// moment is in it. That says nothing about the process table, so it mustn't
+// read as "ps failed". Any other failure is a failure.
 export function processTable({ run = spawnSync } = {}) {
-  const ps = run("ps", ["-axww", "-o", "pid=,ppid=,pgid=,lstart=,stat=,command="], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, LC_ALL: "C", LANG: "C" },
-  });
-  if (!ps || ps.error || ps.status !== 0) return null;
-  return parseProcessTable(ps.stdout);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ps = run("ps", ["-axww", "-o", "pid=,ppid=,pgid=,lstart=,stat=,command="], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: "C", LANG: "C" },
+    });
+    if (ps && !ps.error && ps.status === 0) return parseProcessTable(ps.stdout);
+    if (!ps || ps.error || !ps.signal) return null;
+  }
+  return null;
 }
 
 // Rows of `pid ppid pgid [lstart] stat command`; lstart ("Tue Nov 17

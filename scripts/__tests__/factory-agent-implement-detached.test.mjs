@@ -41,6 +41,13 @@ const between = (from, to, start = 0) => {
   assert.ok(b !== -1, `not found: ${to}`);
   return script.slice(a, b);
 };
+// The index of the first line matching <re>, asserting there is one: an
+// ordering check between two missing lines (-1 < -1) would pass vacuously.
+const atIn = (lines) => (re) => {
+  const i = lines.findIndex((l) => re.test(l));
+  assert.ok(i >= 0, `no line matches ${re}:\n${lines.join("\n")}`);
+  return i;
+};
 const read = (f) => {
   try {
     return readFileSync(f, "utf8");
@@ -348,7 +355,7 @@ describe("implement_lane_collect: a run that ended", () => {
       vars: { FAKE_STATUS: statusOf(env, DONE(0)) },
     });
     const lines = r.calls.trim().split("\n");
-    const at = (re) => lines.findIndex((l) => re.test(l));
+    const at = atIn(lines);
     assert.ok(at(/^lane housekeeping/) < at(/^lane status/));
     assert.ok(at(/^comments 7$/) < at(/^lane finish --issue 7 --run-id R1 --outcome collected/));
     assert.ok(at(/^lane finish/) < at(/^handler /), "finish comes before the handler");
@@ -479,7 +486,7 @@ describe("implement_lane_collect: runs not (yet) ended, and failures", () => {
       },
     });
     const lines = r.calls.trim().split("\n");
-    const at = (re) => lines.findIndex((l) => re.test(l));
+    const at = atIn(lines);
     assert.match(lines[at(/^lane kill/)], /^lane kill --issue 7 --repo-root --state-file$/);
     assert.ok(at(/^lane kill/) < at(/^lane status --issue 7/));
     assert.ok(at(/^lane status --issue 7/) < at(/^lane finish/));
@@ -571,7 +578,7 @@ describe("implement_lane_collect: runs not (yet) ended, and failures", () => {
       },
     });
     const lines = r.calls.trim().split("\n");
-    const at = (re) => lines.findIndex((l) => re.test(l));
+    const at = atIn(lines);
     assert.ok(
       at(/^lane kill --issue 7 --repo-root --state-file$/) <
         at(/^lane finish .*--outcome rollback/),
