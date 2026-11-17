@@ -9167,6 +9167,19 @@ implement_lane_collect() {
   return 0
 }
 
+# implement_lane_finish <issue> <run id> <outcome> <pid|none> — drop a run
+# from the ledger without the handler (implement-lane.mjs finish). Exit 0
+# only on ok:true; a refusal (still alive, a leftover still running, another
+# run or pid in the ledger, ps failing) is logged and exits 1.
+implement_lane_finish() {
+  local out
+  out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$1" --run-id "$2" --outcome "$3" --pid "$4" \
+    --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" 2>>"$LOG_FILE") || out=""
+  [[ "$(jq -r '.ok == true' <<<"$out" 2>/dev/null || echo false)" == "true" ]] && return 0
+  log "WARNING: #$1: couldn't drop detached implement run $2 ($(jq -r '.reason // "no answer"' <<<"$out" 2>/dev/null || echo "no answer")); keeping it for the next tick"
+  return 1
+}
+
 # implement_lane_collect_one <status run JSON> — one ledger run (see
 # implement_lane_collect). A run that ended goes: comments fetched afresh,
 # stdout into a temp file, stderr into the log, then `finish` (the ledger drops
@@ -9217,8 +9230,13 @@ implement_lane_collect_one() {
       # read (another formatVersion, or corrupt). That one spends the attempt,
       # so a card whose every run ends that way still reaches Blocked.
       log "WARNING: #$issue: detached implement run $run_id is $state ($(jq -r '.problem // "never attached"' <<<"$run")); dropping it unread"
-      node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome "$state" --pid "$run_pid" \
-        --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+      # Charged only once the run is really dropped: a refused finish (it is
+      # alive after all, a leftover the supervisor recorded is, or the ledger
+      # moved) keeps the card held and charges nothing this tick.
+      if ! implement_lane_finish "$issue" "$run_id" "$state" "$run_pid"; then
+        IMPLEMENT_LIVE_ISSUES+="$issue "
+        return 0
+      fi
       if [[ "$state" == "unreadable" ]]; then
         node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$issue" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
       fi
@@ -9241,9 +9259,11 @@ implement_lane_collect_one() {
       return 0 ;;
     left)
       log "Issue #$issue: the card left In Progress/In Review/Testing (or closed) since its detached implement run $run_id started; dropping the run unread"
-      node "$SCRIPT_DIR/lib/implement-lane.mjs" finish --issue "$issue" --run-id "$run_id" --outcome stopped --pid "$run_pid" \
-        --repo-root "$REPO_ROOT" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-      IMPLEMENT_COLLECTED_ISSUES+="$issue "
+      if implement_lane_finish "$issue" "$run_id" stopped "$run_pid"; then
+        IMPLEMENT_COLLECTED_ISSUES+="$issue "
+      else
+        IMPLEMENT_LIVE_ISSUES+="$issue "
+      fi
       return 0 ;;
     *)
       log "WARNING: #$issue: couldn't read the card; collecting its detached implement run $run_id next tick"

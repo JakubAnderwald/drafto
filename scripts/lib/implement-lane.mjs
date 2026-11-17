@@ -124,6 +124,8 @@ export const HEARTBEAT_MS = 30 * 1000;
 // starts, and how long it gives leftovers between SIGTERM and SIGKILL.
 const FOLLOW_MS = 1000;
 const LEFTOVER_WAIT_MS = 5000;
+const LEFTOVER_RETRIES = 5;
+const LEFTOVER_RETRY_MS = 2000;
 const POLL_MS = 250;
 export const RUN_ID_RE = /^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
 const RUN_DIR_NAME_RE = /^[1-9][0-9]*-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
@@ -369,7 +371,9 @@ export function runGroups(run, rows, { selfPids = [] } = {}) {
 }
 
 function readRunFiles(fs, run) {
-  if (!run.runDir) return { meta: null, metaProblem: "no-run-dir", exit: null, exitProblem: null };
+  if (!run.runDir) {
+    return { meta: null, metaProblem: "no-run-dir", exit: null, exitProblem: null, leftover: null };
+  }
   const m = readJson(fs, path.join(run.runDir, "meta.json"));
   let meta = null;
   let metaProblem = null;
@@ -390,7 +394,34 @@ function readRunFiles(fs, run) {
   } catch {
     heartbeatMs = null;
   }
-  return { meta, metaProblem, exit, exitProblem, heartbeatMs };
+  const leftover = leftoverOf(fs, run.runDir);
+  return {
+    meta,
+    metaProblem,
+    exit,
+    exitProblem: exitProblem ?? leftover.problem,
+    heartbeatMs,
+    leftover: leftover.seed,
+  };
+}
+
+// leftover.json: written by a supervisor that couldn't confirm that what its
+// run left behind is gone (ps failing, or a group surviving SIGKILL). It holds
+// the tracked identities (pgid and leader start time, member pid and start
+// time), so status keeps the run alive while they are, and kill and finish
+// carry the cleanup on from them before anything is unlocked.
+export function leftoverOf(fs, runDir) {
+  if (!runDir) return { seed: null, problem: null };
+  const r = readJson(fs, path.join(runDir, "leftover.json"));
+  if (r.error === "missing") return { seed: null, problem: null };
+  if (r.error) return { seed: null, problem: "leftover.json corrupt" };
+  if (r.value?.formatVersion !== FORMAT_VERSION) {
+    return {
+      seed: null,
+      problem: `leftover.json formatVersion ${JSON.stringify(r.value?.formatVersion)}`,
+    };
+  }
+  return { seed: r.value, problem: null };
 }
 
 // Pure: a run's state from its ledger record, run files and liveness.
@@ -531,7 +562,8 @@ export async function runStatus({ stateFile, issue = null }, deps) {
   const nowMs = deps.nowMs();
   const runs = entries.map(([n, run]) => {
     const files = readRunFiles(deps.fs, run);
-    const alive = runGroups(run, rows, { selfPids: deps.selfPids }).length > 0;
+    const alive =
+      trackRun(run, rows, { selfPids: deps.selfPids, seed: files.leftover }).alive.length > 0;
     return describeRun(n, run, files, classifyRun({ run, ...files, alive, nowMs }), nowMs);
   });
   return {
@@ -791,6 +823,7 @@ export async function runSupervise(
     spawnImpl = spawn,
     table = () => processTable(),
     signalProcess = process,
+    leftover = { retries: LEFTOVER_RETRIES, waitMs: LEFTOVER_WAIT_MS, retryMs: LEFTOVER_RETRY_MS },
   } = {},
 ) {
   const logFile = path.join(runDir, "supervisor.log");
@@ -945,30 +978,53 @@ export async function runSupervise(
     clearInterval(following);
     clearTimeout(followSoon);
     follow();
+    if (!tracker) {
+      // Never got a look at the table: try again before giving up on it.
+      for (let i = 0; i < leftover.retries && !tracker; i++) {
+        await new Promise((r) => setTimeout(r, leftover.retryMs));
+        follow();
+      }
+      if (!tracker)
+        appendLog(fs, logFile, "ps never answered; what the run left behind is unknown");
+    }
     if (tracker && tracker.groups.size > 0) {
       appendLog(
         fs,
         logFile,
         `stopping what the run left running (groups ${[...tracker.groups].join(", ")})`,
       );
-      const left = await stopTracked(
-        tracker,
-        {
-          table,
-          kill: (pid, sig) => {
-            try {
-              signalProcess.kill(pid, sig);
-            } catch {
-              /* gone */
-            }
-            return true;
-          },
-          nowMs: () => Date.now(),
-          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      const supDeps = {
+        table,
+        kill: (pid, sig) => {
+          try {
+            signalProcess.kill(pid, sig);
+          } catch {
+            /* gone */
+          }
+          return true;
         },
-        LEFTOVER_WAIT_MS,
-      );
-      if (left.state !== "gone") appendLog(fs, logFile, `left running: ${left.state}`);
+        nowMs: () => Date.now(),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      };
+      // "unknown" (ps failed) is not clean, and neither is "alive": retry,
+      // bounded, with the same tracker.
+      let left = await stopTracked(tracker, supDeps, leftover.waitMs);
+      for (let i = 0; i < leftover.retries && left.state !== "gone"; i++) {
+        await new Promise((r) => setTimeout(r, leftover.retryMs));
+        left = await stopTracked(tracker, supDeps, leftover.waitMs);
+      }
+      if (left.state !== "gone") {
+        // Hand the cleanup on: status keeps the run alive while these are,
+        // and kill / finish stop them before anything is unlocked.
+        writeJsonAtomic(fs, path.join(runDir, "leftover.json"), {
+          formatVersion: FORMAT_VERSION,
+          runId: meta.runId,
+          state: left.state,
+          at: new Date().toISOString(),
+          ...trackerIdentities(tracker),
+        });
+        appendLog(fs, logFile, `left running (${left.state}); identities in leftover.json`);
+      }
     }
     exitCode = exitCodeOf(result.code, result.signal);
     signal = result.signal ?? null;
@@ -1032,9 +1088,13 @@ export async function runFinish(
   const before = getImplementRun(await loadFactoryState(stateFile), issue);
   if (!before || before.runId !== String(runId)) return refuse("run-id-mismatch");
   if (expectPid !== undefined && before.pid !== expectPid) return refuse("pid-changed");
+  // Including whatever the supervisor recorded it couldn't clean up.
+  const leftover = leftoverOf(deps.fs, before.runDir);
+  if (leftover.problem) return refuse("leftover-unreadable");
   const rows = deps.table();
   if (!rows) return refuse("unverifiable");
-  if (runGroups(before, rows, { selfPids: deps.selfPids }).length > 0) return refuse("still-alive");
+  const tracked = trackRun(before, rows, { selfPids: deps.selfPids, seed: leftover.seed });
+  if (tracked.alive.length > 0) return refuse("still-alive");
   await unlockWorktree(deps, repoRoot, before.worktree);
   const result = await mutateState(stateFile, (s) => {
     const now = getImplementRun(s, issue);
@@ -1079,69 +1139,115 @@ export async function runFinish(
 //     the leader first seen is that reuse, and drops the group.
 //   - Children the run's processes start meanwhile join (known parent pid
 //     and start time), groups of their own included.
-export function trackRun(run, rows, { selfPids = [] } = {}) {
+export function trackRun(run, rows, { selfPids = [], seed = null } = {}) {
   const tracker = {
     run,
     selfPids,
     groups: new Set(),
+    // pgid → {present, lstart}: the group's leader as first seen (present:
+    // false when it had already exited). A leader pid can't come back while
+    // its group exists, so a leader row appearing later, or one with another
+    // start time, is a new group that reused the id.
     leaders: new Map(),
     known: new Map(),
     dropped: new Set(),
+    alive: [],
   };
-  observeRun(tracker, rows);
+  if (seed) seedTracker(tracker, seed);
+  tracker.alive = observeRun(tracker, rows);
   return tracker;
 }
 
+// Load identities a supervisor wrote to leftover.json (leftoverOf below).
+function seedTracker(tracker, seed) {
+  for (const g of seed.groups ?? []) {
+    if (!Number.isInteger(g.pgid) || g.pgid <= 1) continue;
+    tracker.groups.add(g.pgid);
+    tracker.leaders.set(g.pgid, {
+      present: g.leaderPresent === true,
+      lstart: typeof g.leaderLstart === "string" ? g.leaderLstart : null,
+    });
+  }
+  for (const m of seed.members ?? []) {
+    if (Number.isInteger(m.pid))
+      tracker.known.set(m.pid, typeof m.lstart === "string" ? m.lstart : null);
+  }
+}
+
+// What a tracker holds, for leftover.json.
+export function trackerIdentities(tracker) {
+  return {
+    groups: [...tracker.groups].map((pgid) => ({
+      pgid,
+      leaderPresent: tracker.leaders.get(pgid)?.present === true,
+      leaderLstart: tracker.leaders.get(pgid)?.lstart ?? null,
+    })),
+    members: [...tracker.known].map(([pid, lstart]) => ({ pid, lstart })),
+  };
+}
+
 // Fold a snapshot into <tracker>; returns the tracked groups still alive.
+// Identity first, on every poll: a tracked group still counts only while its
+// leader is the one first seen (same pid and start time), or, its leader
+// gone, while one of its live members is a process already known (same pid
+// and start time). A group that fails is a reused id and is dropped for good,
+// before its rows can admit anyone: neither its new members nor their
+// children are ever tracked. Then, to a fixpoint, members of the groups that
+// still match, and children of known processes (alive, same start time) with
+// their own groups, join.
 export function observeRun(tracker, rows) {
   const live = rows.filter(isLiveRow);
   const own = new Set(rows.filter((r) => tracker.selfPids.includes(r.pid)).map((r) => r.pgid));
-  const add = (g) => {
-    if (g > 1 && !own.has(g) && !tracker.dropped.has(g)) tracker.groups.add(g);
-  };
-  for (const g of runGroups(tracker.run, rows, { selfPids: tracker.selfPids })) add(g);
   const byPid = new Map(live.map((r) => [r.pid, r]));
-  const isKnown = (pid) => {
-    if (!tracker.known.has(pid)) return false;
+  const sameStart = (a, b) => a == null || b == null || a === b;
+  const knownRow = (r) => tracker.known.has(r.pid) && sameStart(tracker.known.get(r.pid), r.lstart);
+  const knownLive = (pid) => {
     const row = byPid.get(pid);
-    return !row || row.lstart == null || tracker.known.get(pid) == null
-      ? true
-      : row.lstart === tracker.known.get(pid);
+    return Boolean(row) && knownRow(row);
   };
-  // Members of tracked groups, and children of known processes, to a fixpoint.
+  const leaderRow = (g) => live.find((r) => r.pid === g && r.pgid === g) ?? null;
+  const drop = (g) => {
+    tracker.groups.delete(g);
+    tracker.dropped.add(g);
+  };
+  const track = (g) => {
+    if (g <= 1 || own.has(g) || tracker.dropped.has(g) || tracker.groups.has(g)) return false;
+    tracker.groups.add(g);
+    const leader = leaderRow(g);
+    tracker.leaders.set(g, { present: Boolean(leader), lstart: leader?.lstart ?? null });
+    return true;
+  };
+
+  // 1. The groups tracked before this snapshot: still the same groups?
+  for (const g of [...tracker.groups]) {
+    const first = tracker.leaders.get(g) ?? { present: false, lstart: null };
+    const leader = leaderRow(g);
+    const matches = leader
+      ? first.present && sameStart(first.lstart, leader.lstart)
+      : live.some((r) => r.pgid === g && knownRow(r));
+    if (!matches) drop(g);
+  }
+  // 2. The run as a fresh look identifies it (run id, session id, its tree).
+  for (const g of runGroups(tracker.run, rows, { selfPids: tracker.selfPids })) track(g);
+  // 3. Members of matching groups, and children of known live processes.
   let grew = true;
   while (grew) {
     grew = false;
     for (const r of live) {
-      if (tracker.known.has(r.pid) && isKnown(r.pid)) continue;
+      if (knownRow(r)) continue;
       const member = tracker.groups.has(r.pgid);
-      const child = r.ppid > 1 && isKnown(r.ppid);
+      const child = r.ppid > 1 && knownLive(r.ppid);
       if (!member && !child) continue;
-      if (member && r.pid === r.pgid && tracker.leaders.has(r.pgid)) {
-        const first = tracker.leaders.get(r.pgid);
-        if (first != null && r.lstart != null && first !== r.lstart) continue; // reused id
-      }
+      if (!member && !track(r.pgid)) continue;
       tracker.known.set(r.pid, r.lstart ?? null);
-      if (child) add(r.pgid);
       grew = true;
     }
   }
+  // 4. Alive: a tracked group with a live member. Empty: dropped for good.
   const alive = [];
   for (const g of [...tracker.groups]) {
-    const leader = live.find((r) => r.pid === g && r.pgid === g);
-    if (leader && !tracker.leaders.has(g)) tracker.leaders.set(g, leader.lstart ?? null);
-    const reused =
-      leader &&
-      tracker.leaders.get(g) != null &&
-      leader.lstart != null &&
-      tracker.leaders.get(g) !== leader.lstart;
-    const members = live.filter((r) => r.pgid === g);
-    if (reused || members.length === 0) {
-      tracker.groups.delete(g);
-      tracker.dropped.add(g);
-      continue;
-    }
-    alive.push(g);
+    if (live.some((r) => r.pgid === g)) alive.push(g);
+    else drop(g);
   }
   return alive;
 }
@@ -1163,10 +1269,10 @@ async function waitTracked(tracker, deps, ms) {
 // Stop <run>: SIGTERM every group it has, wait up to <waitMs>, then SIGKILL
 // whatever of them is left and wait up to KILL_SETTLE_MS more. Each signal
 // goes to the groups the tracker still holds alive at that moment.
-export async function stopRun(run, deps, waitMs) {
+export async function stopRun(run, deps, waitMs, { seed = null } = {}) {
   const first = deps.table();
   if (!first) return { state: "unknown", signalled: false, killed: false };
-  return stopTracked(trackRun(run, first, { selfPids: deps.selfPids }), deps, waitMs);
+  return stopTracked(trackRun(run, first, { selfPids: deps.selfPids, seed }), deps, waitMs);
 }
 
 export async function stopTracked(tracker, deps, waitMs) {
@@ -1193,7 +1299,17 @@ export async function runKill(
   if (!/^[1-9][0-9]*$/.test(String(issue ?? ""))) throw new Error(`invalid --issue: ${issue}`);
   const run = getImplementRun(await loadFactoryState(stateFile), issue);
   if (!run) return { ok: true, issue: String(issue), state: "none" };
-  const stop = await stopRun(run, deps, waitMs);
+  const leftover = leftoverOf(deps.fs, run.runDir);
+  if (leftover.problem) {
+    return {
+      ok: false,
+      issue: String(issue),
+      runId: run.runId,
+      state: "unknown",
+      reason: leftover.problem,
+    };
+  }
+  const stop = await stopRun(run, deps, waitMs, { seed: leftover.seed });
   const out = {
     issue: String(issue),
     runId: run.runId,

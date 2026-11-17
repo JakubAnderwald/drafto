@@ -7,6 +7,7 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -33,6 +34,7 @@ import {
   makeRunId,
   observeRun,
   runGroups,
+  runSupervise,
   trackRun,
 } from "../lib/implement-lane.mjs";
 import { descendants, groupRunState, parseProcessTable } from "../lib/supervisor-proc.mjs";
@@ -836,6 +838,49 @@ describe("trackRun: a cancellation keeps the groups it found", () => {
     assert.deepEqual(observeRun(t2, ps([`104 1 104 ${T2} S unrelated`])), []);
   });
 
+  it("a reused group id admits neither its new members nor their children", () => {
+    const t = trackRun(RUN, ps([sup, `104 100 104 ${T1} S node vitest`]));
+    assert.deepEqual([...t.groups].sort(), [100, 104]);
+    // 104 and its group are gone; a replacement group got id 104 in the same
+    // poll: its leader (new start time), a member, and that member's child in
+    // a group of its own.
+    const next = ps([
+      `104 1 104 ${T2} S replacement-leader`,
+      `105 104 104 ${T2} S replacement-member`,
+      `106 105 106 ${T2} S replacement-child`,
+    ]);
+    assert.deepEqual(observeRun(t, next), []);
+    assert.ok(!t.groups.has(104) && !t.groups.has(106));
+    assert.ok(!t.known.has(105) && !t.known.has(106));
+    // Nor later.
+    assert.deepEqual(observeRun(t, next), []);
+  });
+
+  it("a leader that reappears in a group first seen without one is a reuse too", () => {
+    // Group 104 first seen with its leader already gone, a known member left.
+    const t = trackRun(RUN, ps([sup, `105 100 104 ${T1} S node vitest-worker`]));
+    assert.ok(t.groups.has(104));
+    assert.deepEqual(
+      observeRun(t, ps([`104 1 104 ${T2} S new`, `107 104 104 ${T2} S new-member`])),
+      [],
+    );
+  });
+
+  it("children of a group that still matches stay discoverable, in groups of their own", () => {
+    const t = trackRun(RUN, ps([sup, `102 100 102 ${T1} S claude --session-id ${SID}`]));
+    // The supervisor is gone; claude's group still matches (same leader).
+    const next = ps([
+      `102 1 102 ${T1} S claude --session-id ${SID}`,
+      `110 102 110 ${T2} S node worker --setsid`,
+      `111 110 110 ${T2} S node worker-thread`,
+      `112 111 112 ${T2} S node grandchild --setsid`,
+    ]);
+    assert.deepEqual(
+      observeRun(t, next).sort((a, b) => a - b),
+      [102, 110, 112],
+    );
+  });
+
   it("follows children the run starts meanwhile, into groups of their own", () => {
     const t = trackRun(RUN, ps([sup, `102 100 102 ${T1} S claude --session-id ${SID}`]));
     const next = ps([
@@ -1005,6 +1050,92 @@ describe("kill and finish", () => {
     assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].runId, RUN_ID);
   });
 
+  const writeLeftover = (runDir, groups, extra = {}) =>
+    fs.writeFileSync(
+      join(runDir, "leftover.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        runId: RUN_ID,
+        state: "alive",
+        groups,
+        members: [],
+        ...extra,
+      }),
+    );
+  const LEFT = "Tue Nov 17 10:00:00 2026";
+  const leftRow = `904 1 904 ${LEFT} S node vitest-left-behind`;
+
+  it("a leftover the supervisor recorded keeps the run alive in status until it is gone", async () => {
+    const root = tempDir();
+    const runDir = v1RunDir(root, { exit: { exitCode: 0, endedAt: iso(NOW - 120_000) } });
+    writeLeftover(runDir, [{ pgid: 904, leaderPresent: true, leaderLstart: LEFT }]);
+    const env = await setup({ runs: ledger(runDir) });
+    const status = (rows) => main(["status", "--state-file", env.stateFile], fakeDeps({ rows }));
+    const held = (await status(parseProcessTable(leftRow))).runs[0];
+    assert.deepEqual([held.state, held.alive, held.live], ["draining", true, true]);
+    // The same pgid reused by an unrelated group doesn't count.
+    const reused = (await status(parseProcessTable(`904 1 904 Tue Nov 17 11:00:00 2026 S other`)))
+      .runs[0];
+    assert.equal(reused.state, "done");
+    assert.equal((await status([])).runs[0].state, "done");
+  });
+
+  it("kill carries the cleanup on from leftover.json, and finish refuses while it lives", async () => {
+    const root = tempDir();
+    const runDir = v1RunDir(root, { exit: { exitCode: 0, endedAt: iso(NOW) } });
+    writeLeftover(runDir, [{ pgid: 904, leaderPresent: true, leaderLstart: LEFT }]);
+    const env = await setup({ runs: ledger(runDir) });
+    const finishArgs = [
+      "finish",
+      "--issue",
+      "7",
+      "--run-id",
+      RUN_ID,
+      "--outcome",
+      "collected",
+    ].concat(["--state-file", env.stateFile]);
+    const refused = await main(finishArgs, fakeDeps({ rows: parseProcessTable(leftRow) }));
+    assert.deepEqual([refused.ok, refused.reason], [false, "still-alive"]);
+    const live = parseProcessTable(leftRow);
+    const deps = fakeDeps({ rows: [live, live, []] });
+    const out = await kill(env, deps, ["--finish", "1"]);
+    assert.deepEqual([out.ok, out.state, out.finished], [true, "gone", true]);
+    assert.ok(deps.calls.includes("kill -904 SIGTERM"));
+    assert.ok(
+      deps.calls.indexOf("git worktree unlock /wt") > deps.calls.indexOf("kill -904 SIGTERM"),
+    );
+  });
+
+  it("an unreadable leftover.json: status says unreadable, kill and finish refuse", async () => {
+    const root = tempDir();
+    const runDir = v1RunDir(root, { exit: { exitCode: 0, endedAt: iso(NOW) } });
+    fs.writeFileSync(join(runDir, "leftover.json"), "{ nope");
+    const env = await setup({ runs: ledger(runDir) });
+    const st = await main(["status", "--state-file", env.stateFile], fakeDeps({ rows: [] }));
+    assert.deepEqual(
+      [st.runs[0].state, st.runs[0].problem],
+      ["unreadable", "leftover.json corrupt"],
+    );
+    const k = await kill(env, fakeDeps({ rows: [] }), ["--finish", "1"]);
+    assert.deepEqual([k.ok, k.state], [false, "unknown"]);
+    const f = await main(
+      [
+        "finish",
+        "--issue",
+        "7",
+        "--run-id",
+        RUN_ID,
+        "--outcome",
+        "x",
+        "--state-file",
+        env.stateFile,
+      ],
+      fakeDeps({ rows: [] }),
+    );
+    assert.equal(f.reason, "leftover-unreadable");
+    assert.equal((await loadFactoryState(env.stateFile)).implement.runs["7"].runId, RUN_ID);
+  });
+
   it("finish refuses another run's id and leaves the ledger alone", async () => {
     const root = tempDir();
     const env = await setup({ runs: ledger(v1RunDir(root)) });
@@ -1049,5 +1180,89 @@ describe("housekeeping", () => {
     assert.deepEqual(out.reaped, ["7-20261002T000000Z-bbbbbb"]);
     assert.ok(fs.existsSync(held) && fs.existsSync(fresh) && fs.existsSync(other));
     assert.equal(fs.existsSync(old), false);
+  });
+});
+
+describe("runSupervise: what the run left behind", () => {
+  // A fake run-claude.mjs that exits at once, and a process table where the
+  // run left a group of its own behind (pgid 9001, started by the supervisor).
+  function supervise({ table }) {
+    const runDir = tempDir();
+    const runId = "20261117T100000Z-abc123";
+    fs.writeFileSync(
+      join(runDir, "meta.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        runId,
+        sessionId: SID,
+        node: "node",
+        runClaude: "/x/run-claude.mjs",
+        argv: [],
+        worktree: runDir,
+        hardKillAt: iso(Date.now() + 3600_000),
+        termGraceSec: 1,
+      }),
+    );
+    fs.writeFileSync(join(runDir, "input.md"), "x");
+    const kills = [];
+    const signalProcess = new EventEmitter();
+    signalProcess.kill = (pid, sig) => kills.push(`${pid} ${sig}`);
+    const spawnImpl = () => {
+      const child = new EventEmitter();
+      child.pid = 4243;
+      child.kill = () => true;
+      setTimeout(() => child.emit("exit", 0, null), 700);
+      return child;
+    };
+    // As in production, the run id is in the run dir's name on the command line.
+    const sup = `${process.pid} 1 ${process.pid} S node implement-lane.mjs _supervise --run-dir /logs/implement/7-${runId}`;
+    return runSupervise(
+      { runDir },
+      {
+        env: {},
+        fs,
+        spawnImpl,
+        signalProcess,
+        table: () => table(sup),
+        leftover: { retries: 2, waitMs: 50, retryMs: 10 },
+      },
+    ).then((r) => ({ r, runDir, kills }));
+  }
+  const stuck = `9001 ${process.pid} 9001 Tue Nov 17 10:00:00 2026 S node vitest-ignores-kill`;
+
+  it("a group that won't die is written to leftover.json, versioned, before exit.json", async () => {
+    const { runDir, kills } = await supervise({
+      table: (sup) => parseProcessTable([sup, stuck].join("\n")),
+    });
+    const left = JSON.parse(fs.readFileSync(join(runDir, "leftover.json"), "utf8"));
+    assert.equal(left.formatVersion, 1);
+    assert.equal(left.state, "alive");
+    assert.deepEqual(left.groups, [
+      { pgid: 9001, leaderPresent: true, leaderLstart: "Tue Nov 17 10:00:00 2026" },
+    ]);
+    assert.ok(kills.includes("-9001 SIGTERM") && kills.includes("-9001 SIGKILL"));
+    assert.ok(fs.existsSync(join(runDir, "exit.json")));
+  });
+
+  it("ps failing during the cleanup is not clean: leftover.json, state unknown", async () => {
+    let calls = 0;
+    const { runDir } = await supervise({
+      table: (sup) => {
+        calls += 1;
+        // Answers while the run lives (the follow), then fails for good.
+        return calls <= 3 ? parseProcessTable([sup, stuck].join("\n")) : null;
+      },
+    });
+    const left = JSON.parse(fs.readFileSync(join(runDir, "leftover.json"), "utf8"));
+    assert.equal(left.state, "unknown");
+    assert.deepEqual(
+      left.groups.map((g) => g.pgid),
+      [9001],
+    );
+  });
+
+  it("nothing left behind: no leftover.json", async () => {
+    const { runDir } = await supervise({ table: (sup) => parseProcessTable(sup) });
+    assert.equal(fs.existsSync(join(runDir, "leftover.json")), false);
   });
 });

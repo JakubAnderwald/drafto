@@ -259,6 +259,7 @@ function collectEnv() {
 }
 
 const COLLECT_FNS = [
+  "implement_lane_finish",
   "implement_lane_ctx_get",
   "implement_lane_restore",
   "implement_lane_collect",
@@ -515,6 +516,34 @@ describe("implement_lane_collect: runs not (yet) ended, and failures", () => {
       assert.match(r.out, /collected=\[ 7 \]/);
     });
   }
+
+  it("an unreadable run whose finish is refused stays held, and is charged nothing this tick", () => {
+    const env = collectEnv();
+    const r = runCollect(env, {
+      vars: {
+        FAKE_STATUS: statusOf(env, { state: "unreadable", alive: false }),
+        FAKE_FINISH: '{"ok":false,"reason":"leftover-unreadable"}',
+      },
+    });
+    assert.match(r.calls, /^lane finish --issue 7 --run-id R1 --outcome unreadable --pid 100/m);
+    assert.doesNotMatch(r.calls, /bump-attempts|^handler/m);
+    assert.match(r.log, /couldn't drop detached implement run R1 \(leftover-unreadable\)/);
+    assert.match(r.out, /live=\[ 7 \] collected=\[ \]/);
+  });
+
+  it("a card that left, whose run's finish is refused, stays held", () => {
+    const env = collectEnv();
+    const r = runCollect(env, {
+      ctx: FULL_CTX,
+      vars: {
+        FAKE_STATUS: statusOf(env, DONE(0)),
+        FAKE_CARD: "left",
+        FAKE_FINISH: '{"ok":false,"reason":"still-alive"}',
+      },
+    });
+    assert.doesNotMatch(r.calls, /^handler/m);
+    assert.match(r.out, /live=\[ 7 \] collected=\[ \]/);
+  });
 
   it("re-reads the card first: factory-pause holds the result back", () => {
     const env = collectEnv();
