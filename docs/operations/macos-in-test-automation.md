@@ -78,12 +78,12 @@ A finished run's report and screenshots can be posted on the card's issue, with 
    node scripts/lib/evidence-post.mjs macos --run-dir ~/Library/Logs/drafto-in-test/<scenario>/<timestamp> --issue <n>
    ```
 
-   You can list `<scenario>/latest`: the command resolves the link and lists the run it points to under that run's own id, `macos-<timestamp>`. But don't pass `latest` to `--yes` (step 4). Use the `<timestamp>` path the listing printed instead. The harness moves `latest` to the next run as soon as that run has credentials, so a later `--yes` through the link could post shots you never looked at.
+   You can list `<scenario>/latest`: the command resolves the link and lists the run it points to under that run's own id, `macos-<timestamp>`. `--yes` (step 4) refuses a link and names the run's own directory: pass the `<timestamp>` path the listing printed. The harness moves `latest` to the next run as soon as that run has credentials, so a later `--yes` through the link could post shots you never looked at.
 
    It prints each shot it would publish and each one it would keep on the Mac mini (with why), then the report as it would be posted. Nothing is published yet.
 
 3. **Look at each shot it lists.** An early one can show your own account's notes, because a run starts by signing that account out. If one shouldn't go out, move it out of `shots/` (only what's there is published) and list again, or don't post the run. Once an earlier `--yes` has published the shots (say its comment post failed), moving a file no longer changes anything: the listing shows what is already published, which is what a retry posts. To withdraw a shot then, take it down first (the runbook's "Taking a screenshot down"), delete the run's `upload.json`, and list again. If the run's comment is already on the issue, the listing says so instead.
-4. **Post it** by running the same command again with `--yes`. It publishes the shots as one parentless commit on `refs/factory-evidence/<issue>/<sha12>/macos-<timestamp>`, then posts one comment, **🏭 macOS run — the In-Test harness on this Mac mini** (marker `<!-- drafto-factory-macos-run-report -->`). The comment has the report, then each step's shots, matched by name (`NN-step-<id>-<STATUS>.png`) to the step in `results.jsonl`. Shots with other names go under "Other screenshots". The comment never moves the card.
+4. **Post it** by running the command again with `--yes`, on the `<timestamp>` path the listing printed. It publishes the shots as one parentless commit on `refs/factory-evidence/<issue>/<sha12>/macos-<timestamp>`, then posts one comment, **🏭 macOS run — the In-Test harness on this Mac mini** (marker `<!-- drafto-factory-macos-run-report -->`). The comment has the report, then each step's shots, matched by name (`NN-step-<id>-<STATUS>.png`) to the step in `results.jsonl`. Shots with other names go under "Other screenshots". The comment never moves the card.
 
 The shots go through the same checks as the browser runner's (see the factory runbook's "Test-run screenshots on GitHub"):
 
@@ -103,6 +103,7 @@ Flags:
 It refuses, with exit 1 and nothing published, in these cases:
 
 - in an unattended session (`DRAFTO_UNATTENDED=1`);
+- with `--yes`, when `--run-dir` is a link to the run (such as `latest`) rather than the run's own directory;
 - while the run's `state.env` exists;
 - when `report.md` is missing or has no `Run:` line, so the run didn't finish writing it;
 - when the report matches a secret pattern;

@@ -269,6 +269,20 @@ function defaultOcr(logDir, repoRoot) {
 }
 
 /**
+ * The real path a directory has when its own last component isn't a link:
+ * its parent's real path plus its name. A link further up (macOS's /var →
+ * /private/var) doesn't count. "" when the parent can't be resolved.
+ */
+function ownPath(dir) {
+  const abs = path.resolve(dir);
+  try {
+    return path.join(nodeFs.realpathSync(path.dirname(abs)), path.basename(abs));
+  } catch {
+    return "";
+  }
+}
+
+/**
  * List what a run would publish, or (yes) publish and post it. Returns a
  * result object; throws Refusal for anything that stops it.
  */
@@ -296,6 +310,15 @@ export function postMacosRun({
     runDir = nodeFs.realpathSync(givenRunDir);
   } catch {
     throw new Refusal(`no run directory at ${givenRunDir}`);
+  }
+  // --yes publishes what a listing showed, so it takes the run's own
+  // directory only. Through a link it could post a run nobody looked at:
+  // the harness moves `latest` to the next run once that run has
+  // credentials. Listing through a link is fine, it names the run it found.
+  if (yes && runDir !== ownPath(givenRunDir)) {
+    throw new Refusal(
+      `--yes needs the run's own directory, not a link to it: pass --run-dir ${runDir}`,
+    );
   }
   if (nodeFs.existsSync(path.join(runDir, POSTED_FILE))) {
     const prior = readUpload(path.join(runDir, POSTED_FILE));

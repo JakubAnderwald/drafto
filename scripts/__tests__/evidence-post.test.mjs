@@ -933,7 +933,7 @@ describe("posting with --yes", () => {
     assert.equal(commentCalls(t.gh).length, 1);
   });
 
-  it("posts through a link to the run dir (the harness's `latest`) under the run's own id", () => {
+  it("lists through a link to the run dir (the harness's `latest`), but --yes takes only the run's own dir", () => {
     const t = setup();
     // harness.sh: ln -sfn "$RUN_DIR" "$RUNS_ROOT/latest"
     const latest = join(t.root, "runs", "latest");
@@ -946,13 +946,47 @@ describe("posting with --yes", () => {
       t.printed[0],
     );
 
-    assert.equal(t.post({ yes: true, runDir: latest }).posted, true);
+    // --yes through the link refuses, naming the run's own dir, and
+    // publishes and records nothing. A trailing slash is still the link.
+    const linkRefusal = new RegExp(
+      `--yes needs the run's own directory, not a link to it: pass --run-dir ${t.runDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+    );
+    for (const runDir of [latest, `${latest}/`, `${latest}/.`]) {
+      assertRefuses(() => t.post({ yes: true, runDir }), linkRefusal);
+    }
+    assertRefuses(
+      () =>
+        main(
+          [
+            "macos",
+            "--run-dir",
+            latest,
+            "--issue",
+            ISSUE,
+            "--log-dir",
+            t.logDir,
+            "--repo-root",
+            t.work,
+            "--yes",
+          ],
+          { gh: t.gh.gh, env: {}, print: () => {} },
+        ),
+      linkRefusal,
+    );
+    assert.equal(commentCalls(t.gh).length, 0);
+    assert.deepEqual(originRefs(t), []);
+    assert.equal(existsSync(join(t.runDir, UPLOAD_FILE)), false);
+    assert.equal(existsSync(join(t.runDir, POSTED_FILE)), false);
+
+    // The run's own dir posts, under the run's own id.
+    assert.equal(t.post({ yes: true }).posted, true);
     const commit = assertEvidenceCommit(t);
     assertComment(t.gh.posts[0].body, commit, { runDir: t.runDir });
     assert.equal(readJson(join(t.runDir, POSTED_FILE)).runId, RUN_ID);
 
-    // The next run of the same issue and commit, posted through the same
-    // link: its own id, ref and comment, never the first run's.
+    // The next run of the same issue and commit, once the link has moved to
+    // it: listed through the link, posted from its own dir, with its own id,
+    // ref and comment, never the first run's.
     const nextName = "20261110-061500";
     const nextId = `macos-${nextName}`;
     const next = join(t.root, "runs", nextName);
@@ -965,7 +999,13 @@ describe("posting with --yes", () => {
     rmSync(latest);
     symlinkSync(next, latest);
 
-    const r = t.post({ yes: true, runDir: latest });
+    t.printed.length = 0;
+    t.post({ runDir: latest });
+    assert.ok(t.printed[0].startsWith(`Would post the report of ${next} on #797`), t.printed[0]);
+    assertRefuses(() => t.post({ yes: true, runDir: latest }), /not a link to it/);
+    assert.equal(commentCalls(t.gh).length, 1);
+
+    const r = t.post({ yes: true, runDir: next });
     assert.deepEqual(r, { posted: true, url: COMMENT_URL, upload: true, reason: null });
     assert.equal(commentCalls(t.gh).length, 2);
     const nextRef = evidenceRef(ISSUE, SHA, nextId);
