@@ -1338,7 +1338,7 @@ To rehearse a resume by hand, on a scratch card:
    launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist
    ```
 
-2. Put a scratch card in **In Progress** with an approved plan.
+2. Put a scratch card in **In Progress** with an approved plan. `--implement` takes every In Progress card, not only this one, and would run each under the drill's short cap. So put the `factory-pause` label on every other In Progress card for the drill; `--implement` skips a paused card.
 3. Run the implement stage once with a short cap and let it stop. Hitting the cap and stopping itself with `action=incomplete` at the soft deadline are both recorded as resumable, so either counts. `FACTORY_AUTOPULL=0` is read only by the loop wrapper (`scripts/factory-agent-loop.sh`); it is kept so pasting the command into the wrapper doesn't reset the tree. Don't export `FACTORY_IMPLEMENT_DETACHED`, so both runs stay in the foreground.
 
    ```bash
@@ -1347,10 +1347,11 @@ To rehearse a resume by hand, on a scratch card:
 
    If you scrub the environment with `env -i …` to mimic launchd, keep `USER`, `LOGNAME` and `TMPDIR`. Without them `claude` can't read its keychain login: it exits 1 within seconds with `Not logged in · Please run /login` in the implement log, and the run spends an attempt.
 
-4. Run the same command again. Change nothing in between: the resume conditions above all have to hold.
-5. In the day's implement log, `logs/factory/factory-agent-implement-<YYYY-MM-DD>.log`, check for `Issue #<n>: recorded resumable session <id>` from the first run, then `Issue #<n>: resume session <id>` from the second, with the same `<id>`. A `fresh session <id> (no resume: <reason>)` line means the drill failed, and the reason says why.
-6. Check that the second run appended to the same transcript: `ls -l ~/.claude/projects/*/<id>.jsonl` shows one file, and it grew after the second run.
-7. Reload the job, then close the scratch card or move it out of In Progress:
+4. In the day's implement log, `logs/factory/factory-agent-implement-<YYYY-MM-DD>.log`, find `Issue #<n>: recorded resumable session <id>` from the first run (without it, the drill already failed). Note the transcript's size before the second run: `ls -l ~/.claude/projects/*/<id>.jsonl`.
+5. Run the same command again. Change nothing in between: the resume conditions above all have to hold.
+6. In the same log, check for `Issue #<n>: resume session <id>` from the second run, with the same `<id>`. A `fresh session <id> (no resume: <reason>)` line means the drill failed, and the reason says why.
+7. Check that the second run appended to the same transcript: `ls -l ~/.claude/projects/*/<id>.jsonl` still shows one file, and it is larger than the size you noted in step 4.
+8. Close the scratch card or move it out of In Progress, and remove `factory-pause` from the cards you paused in step 2. Only then reload the job, so its first tick can't take the scratch card:
 
    ```bash
    launchctl load ~/Library/LaunchAgents/eu.drafto.factory.plist
