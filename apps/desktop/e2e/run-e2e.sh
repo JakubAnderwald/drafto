@@ -72,6 +72,17 @@ if has_element "Email" && has_element "Password" && has_element "Log in"; then
     fail "Password toggle" "No 'Show password' control on the login screen"
   fi
 
+  # Never type the real password into a revealed field. If the toggle is still showing the
+  # value, hide it once more, and abort rather than sign in if it stays revealed.
+  if has_element "Hide password"; then
+    click_element_by_desc "Hide password" || true
+    wait_for_ui
+    if has_element "Hide password"; then
+      echo "Error: the password field is still revealed — aborting before typing credentials." >&2
+      exit 1
+    fi
+  fi
+
   click_element_by_desc "Email"
   cliclick t:"$E2E_TEST_EMAIL"
   click_element_by_desc "Password"
