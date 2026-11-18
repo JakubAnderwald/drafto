@@ -27,19 +27,27 @@ attachment's new status is pushed too.
 ### Offline attachment cache
 
 Attachments show offline ([ADR-0086](../adr/0086-offline-attachment-cache.md)).
-Each app keeps a copy of attachment files under
-`<Documents>/attachment-cache/<storage path>`:
+Each app keeps a copy of image attachments under
+`<Documents>/attachment-cache/<storage path>` (each segment mapped one-to-one
+by `attachmentCacheRelativePath`):
 
-- A picked file is copied straight there; it is uploaded from there and kept
-  after the upload. The row's `local_uri` still goes to `null` once uploaded;
-  the cache is keyed by `file_path`, so the schema is unchanged.
+- A picked image is copied straight there; it is uploaded from there and kept
+  after the upload. Until its row is written it is held, so nothing deletes
+  it. The row's `local_uri` still goes to `null` once uploaded; the cache is
+  keyed by `file_path`, so the schema is unchanged. Any other file waits in
+  `attachments/` and is deleted once uploaded.
 - After each successful sync pass, `prefetchAttachmentImages` downloads up to
   25 uncached images (100 MB) of notes not in the trash, newest first, on any
   network; images over 20 MB wait until they are viewed. Opening a note also
   caches an image it had to fetch.
+- An index (`AttachmentCacheIndex`) keeps each file's size, its last use and
+  the running total, filled by one walk and saved to `.index.json` in the
+  cache, so last use survives a restart.
 - Over its cap (300 MB mobile, 1 GB desktop) the cache evicts least recently
   used files first, never a file whose row is `pending`, `failed` or
-  `quota_exceeded`.
+  `quota_exceeded`, or one still held.
+- After the first sync of a session, `cleanupOrphanedFiles` deletes cached
+  files whose attachment or note is gone (trashed notes keep theirs).
 - `deleteAllLocalAttachments` (sign-out and the identity guard) wipes it.
 
 The editor shows a cached image through a `file://…#drafto-attachment=<path>`
@@ -58,7 +66,7 @@ the network.
 | Mobile sync orchestration + triggers | `apps/mobile/src/providers/database-provider.tsx`                                                              |
 | Mobile attachment upload queue       | `apps/mobile/src/lib/data/attachment-queue.ts`                                                                 |
 | Attachment cache (mirrored)          | `apps/{mobile,desktop}/src/lib/data/attachment-{cache,resolver,prefetch}.ts`                                   |
-| Attachment cache policy (shared)     | `packages/shared/src/storage/attachment-cache-policy.ts`                                                       |
+| Attachment cache policy (shared)     | `packages/shared/src/storage/attachment-cache-{policy,index}.ts`, `attachment-prefetch.ts`                     |
 | Desktop schema (must match mobile)   | `apps/desktop/src/db/schema.ts`                                                                                |
 | Desktop migrations                   | `apps/desktop/src/db/migrations.ts`                                                                            |
 | Desktop WatermelonDB instance        | `apps/desktop/src/db/index.ts`                                                                                 |

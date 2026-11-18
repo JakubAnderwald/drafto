@@ -104,6 +104,16 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 - In a worktree on Android, Metro on port 8081 may clash with the main checkout's Metro. Start Metro on another port with `pnpm start --port 8082`, then, in a second terminal, redirect the app with `adb reverse tcp:8081 tcp:8082`. Metro stays in the foreground, so chaining the two with `&&` never runs `adb reverse`.
 - **Before shipping an iOS release, launch a Release build on the iOS 27 simulator** (runtime `com.apple.CoreSimulator.SimRuntime.iOS-27-0`). Build it with `xcodebuild … -configuration Release -sdk iphonesimulator` after `expo prebuild` with `.env.production` sourced, then check that the app reaches the Log In screen. Then quit it with `xcrun simctl terminate <sim> eu.drafto.mobile` and check that `xcrun simctl openurl <sim> "drafto://reset-password"` lands on the reset screen. Quitting first makes this a true cold start, through `scene(_:willConnectTo:options:)`. With the app still running, the link goes through `scene(_:openURLContexts:)` instead. iOS 27 stops apps built with its SDK that skip the UIScene lifecycle, and older simulators don't show it ([ADR-0046](../adr/0046-ios-uiscene-lifecycle.md)).
 
+### E2E probe builds
+
+The editor's image render status views (`editor-image-rendered` / `editor-image-missing`, labelled "Image shown: <name>" / "Image not loaded: <name>", [ADR-0086](../adr/0086-offline-attachment-cache.md)) are test-only probes. VoiceOver and TalkBack would read them to real users, so a build has them only when it was made with the flag on. Default is off: store, TestFlight and Play builds, and any build made without the flag, have no probes and no injected reporter.
+
+- **Mobile:** `EXPO_PUBLIC_E2E_PROBES=1`. `app.config.ts` puts it in `extra.e2eProbes` when the config is evaluated, and `src/lib/e2e-probes.ts` reads it. A release build evaluates the config at build time, so export the flag in the shell that builds:
+  - **Android release APK against dev** (for the offline flows, the QA 10668 report flows among them): export `EXPO_PUBLIC_E2E_PROBES=1` alongside the dev `.env` before `./gradlew assembleRelease`, so the flag is in the APK's `assets/app.config`. Check with `unzip -p "$APK" assets/app.config | grep -o '"e2eProbes":true'`.
+  - **iOS simulator build:** export `EXPO_PUBLIC_E2E_PROBES=1` before `npx expo prebuild --platform ios` and the `xcodebuild … -sdk iphonesimulator` build. A Debug build served by Metro reads the config from Metro, so start Metro with the flag exported instead (`EXPO_PUBLIC_E2E_PROBES=1 npx expo start`).
+- **Desktop:** `E2E_PROBES=1`, in the environment when Metro bundles (or in `apps/desktop/.env`, never `.env.production`). react-native-dotenv inlines it; `src/lib/e2e-probes.ts` reads it.
+- **Without the flag**, the `09` offline image Maestro flows, which assert on those `testID`s, can't pass. The QA 10668 runner's `image-rendered` host check falls back to the WebView's own `<img>` alt-text nodes in `maestro hierarchy`, which are less reliable: they don't always reach the accessibility tree.
+
 ### Desktop E2E
 
 `apps/desktop/e2e/run-e2e.sh` drives the running macOS app through System Events (AppleScript) and clicks with `cliclick`. It finds elements by their accessibility label.
