@@ -47,9 +47,13 @@ if has_element "Email" && has_element "Password" && has_element "Log in"; then
   echo ""
   echo "TEST 0: Login password field has a show/hide toggle (PrimeTestLab 10668, S-01)"
   # ──────────────────────────────────────────────
-  # Runs only from the login screen, and before the real password is typed: the field is
-  # empty, so nothing secret is ever revealed in the window or a screenshot. It ends hidden
-  # again, so the sign-in below types into a secure field.
+  # Runs only from the login screen, and before the real password is typed. The field is
+  # cleared first (an aborted earlier run can leave a typed password in it), so only an
+  # empty field is ever revealed in the window or a screenshot. It ends hidden again, so the
+  # sign-in below types into a secure field.
+  click_element_by_desc "Password"
+  cliclick kd:cmd t:a ku:cmd kp:delete
+  wait_for_ui
   if has_element "Show password"; then
     pass "Password field offers 'Show password'"
     if click_element_by_desc "Show password" && wait_for_ui && has_element "Hide password"; then
