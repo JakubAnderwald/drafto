@@ -8,12 +8,53 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: mockCaptureException,
 }));
 
-const { recordMcpActivity } = await import("@/lib/api/record-mcp-activity");
+const { isMcpToolCall, isMcpToolCallRequest, recordMcpActivity } =
+  await import("@/lib/api/record-mcp-activity");
 
 function clientWithUpsert(upsert: ReturnType<typeof vi.fn>) {
   const from = vi.fn().mockReturnValue({ upsert });
   return { client: { from } as unknown as SupabaseClient<Database>, from };
 }
+
+describe("isMcpToolCall", () => {
+  const toolCall = { jsonrpc: "2.0", method: "tools/call", params: { name: "read_note" }, id: 1 };
+
+  it("is true for a tool call, alone or in a batch", () => {
+    expect(isMcpToolCall(toolCall)).toBe(true);
+    expect(isMcpToolCall([{ jsonrpc: "2.0", method: "tools/list", id: 1 }, toolCall])).toBe(true);
+  });
+
+  it("is false for the handshake, tools/list and anything that isn't a request", () => {
+    expect(isMcpToolCall({ jsonrpc: "2.0", method: "initialize", id: 1 })).toBe(false);
+    expect(isMcpToolCall({ jsonrpc: "2.0", method: "notifications/initialized" })).toBe(false);
+    expect(isMcpToolCall({ jsonrpc: "2.0", method: "tools/list", id: 1 })).toBe(false);
+    expect(isMcpToolCall([])).toBe(false);
+    expect(isMcpToolCall([null, "tools/call", 1])).toBe(false);
+    expect(isMcpToolCall(null)).toBe(false);
+    expect(isMcpToolCall("tools/call")).toBe(false);
+    expect(isMcpToolCall({ jsonrpc: "2.0", result: { method: "tools/call" }, id: 1 })).toBe(false);
+  });
+});
+
+describe("isMcpToolCallRequest", () => {
+  const post = (body: string) => new Request("http://localhost/api/mcp", { method: "POST", body });
+
+  it("reads a clone, leaving the body readable", async () => {
+    const body = JSON.stringify({ jsonrpc: "2.0", method: "tools/call", id: 1 });
+    const request = post(body);
+
+    await expect(isMcpToolCallRequest(request)).resolves.toBe(true);
+    await expect(request.text()).resolves.toBe(body);
+  });
+
+  it("is false for a body that isn't JSON or a body already read", async () => {
+    await expect(isMcpToolCallRequest(post("not json"))).resolves.toBe(false);
+
+    const read = post(JSON.stringify({ jsonrpc: "2.0", method: "tools/call", id: 1 }));
+    await read.text();
+    await expect(isMcpToolCallRequest(read)).resolves.toBe(false);
+  });
+});
 
 describe("recordMcpActivity", () => {
   beforeEach(() => {

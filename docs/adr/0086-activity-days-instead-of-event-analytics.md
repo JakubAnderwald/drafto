@@ -24,7 +24,7 @@ Record **activity days**: one row per user, UTC day and client, written by every
 - **Every client pings:**
   - **Web**: the signed-in app shell calls `record_activity([today], 'web')` once per browser session per UTC day, fire-and-forget, after render. It checks again when the tab comes back to the front and at midnight UTC while it is in front, so a tab left open past midnight counts the new day.
   - **iOS, Android, macOS**: the sync code keeps a queue of the UTC days the app was opened (at most 30) in WatermelonDB's `localStorage`, and sends it after each successful sync. Only a sync started while the app is in front marks today, so background reconnect and retry syncs don't count as opening the app. Days opened offline wait in the queue. A failed ping never fails the sync and is retried by the next one. The queue is cleared with the local database on sign-out and account switch, so one user's days are never sent under another user's session.
-  - **MCP**: the route authenticates by API key and queries as `service_role`, so `auth.uid()` is null there and the RPC can't be used. On each authenticated call, after the response is sent (Next's `after()`), it upserts `(user, today, 'web-mcp')` itself, ignoring duplicates.
+  - **MCP**: the route authenticates by API key and queries as `service_role`, so `auth.uid()` is null there and the RPC can't be used. On each authenticated tool call (`tools/call`), after the response is sent (Next's `after()`), it upserts `(user, today, 'web-mcp')` itself, ignoring duplicates. The handshake and `tools/list` don't count: an assistant with the connector enabled sends them whenever a session starts, before the user asks it for anything in Drafto.
 
   The day logic (UTC day, queue, tag list, one `recordActivity` wrapper) lives once, in `packages/shared/src/activity/`.
 
@@ -46,7 +46,7 @@ Definitions and caveats: [`docs/features/product-metrics.md`](../features/produc
   - No new service, SDK, processor or monthly cost. The data stays in the Supabase project that already holds the notes.
   - The data is tiny and bounded: at most five rows per user per day, kept 13 months.
   - The metrics read the same SQL as ADR-0075's, so the `/admin/stats` page ([#822](https://github.com/JakubAnderwald/drafto/issues/822)) and the Monday email reuse them as they are.
-  - The writes are idempotent everywhere: a repeated ping, a second tab or an MCP call per request adds nothing after the first row of the day.
+  - The writes are idempotent everywhere: a repeated ping, a second tab or an MCP tool call per request adds nothing after the first row of the day.
 - **Negative**:
   - **Counting starts the day this ships.** There is no backfill: weeks before it show no active users, and retention windows that started before the first row are null.
   - **The native apps are counted only once users update them.** Older builds don't ping. Their users appear only on days they save a change to an existing note, because the rollup creates a client's row for a tagged overwrite when no ping arrived that day.

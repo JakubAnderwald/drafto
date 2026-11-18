@@ -7,6 +7,34 @@ import type { Database } from "@/lib/supabase/database.types";
 const MCP_CLIENT_TAG: DraftoClientTag = "web-mcp";
 
 /**
+ * Whether a JSON-RPC message, or any message in a batch, is a `tools/call` request.
+ *
+ * Only a tool call counts as an MCP activity day (ADR 0086). An assistant with the Drafto
+ * connector enabled runs the handshake (`initialize`, `notifications/initialized`) and
+ * `tools/list` whenever a session starts, before the user has asked it for anything in
+ * Drafto, so counting those would mark a user active for opening their assistant.
+ */
+export function isMcpToolCall(message: unknown): boolean {
+  const messages: unknown[] = Array.isArray(message) ? message : [message];
+  return messages.some(
+    (m) => typeof m === "object" && m !== null && "method" in m && m.method === "tools/call",
+  );
+}
+
+/**
+ * Whether <request> carries a `tools/call`. It reads a clone of the body, so the MCP
+ * transport can still read the request itself. A body that isn't JSON counts as no tool
+ * call: the transport answers it with a parse error.
+ */
+export async function isMcpToolCallRequest(request: Request): Promise<boolean> {
+  try {
+    return isMcpToolCall(await request.clone().json());
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Records that <userId> used Drafto through the MCP server on the UTC day of <now>, as a
  * `web-mcp` activity day (ADR 0086). Only the day is recorded: never the tool or the note.
  *

@@ -165,7 +165,9 @@ describe("Privacy policy page", () => {
       /which days you use it, and on which kind of app: the web app, iOS, Android, macOS, or an AI assistant/,
     );
     expect(usage).toMatch(/so days spent offline count too/);
-    expect(usage).toMatch(/connects to Drafto with your API key/);
+    // Only a `tools/call` records an MCP day, never the handshake or `tools/list`.
+    expect(usage).toMatch(/recorded when it uses Drafto with your API key/);
+    expect(usage).toMatch(/Merely connecting to Drafto doesn.t count/);
     // content_changes is a nightly count from note_content_history and new notes.
     expect(usage).toMatch(/Each night we add a count/);
     expect(usage).toMatch(/we never record which notes you open or anything you write/);

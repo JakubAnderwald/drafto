@@ -187,9 +187,8 @@ describe("POST /api/mcp", () => {
           body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
         }),
       );
-      // Drop the activity-day task every authenticated call schedules (ADR 0086), so only the
-      // tool's own tasks are left.
-      afterTasks.length = 0;
+      // A `tools/list` schedules no activity day (ADR 0086), so only the tool's own tasks run.
+      expect(afterTasks).toHaveLength(0);
       const call = mockTool.mock.calls.find((c: unknown[]) => c[0] === "delete_notebook");
       if (!call) throw new Error("delete_notebook was not registered");
       return call[3] as (args: { notebook_id: string }) => Promise<{ isError?: boolean }>;
@@ -238,11 +237,18 @@ describe("POST /api/mcp", () => {
 describe("POST /api/mcp activity day (ADR 0086)", () => {
   const today = () => new Date().toISOString().slice(0, 10);
 
-  function authenticatedRequest(): Request {
+  const toolCall = {
+    jsonrpc: "2.0",
+    method: "tools/call",
+    params: { name: "list_notebooks", arguments: {} },
+    id: 1,
+  };
+
+  function authenticatedRequest(body: unknown = toolCall): Request {
     return new Request("http://localhost/api/mcp", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer dk_test123" },
-      body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+      body: typeof body === "string" ? body : JSON.stringify(body),
     });
   }
 
@@ -262,7 +268,7 @@ describe("POST /api/mcp activity day (ADR 0086)", () => {
     );
   });
 
-  it("records (user, today, web-mcp) after the response of an authenticated call", async () => {
+  it("records (user, today, web-mcp) after the response of an authenticated tool call", async () => {
     const upsert = vi.fn().mockResolvedValue({ error: null });
     const { supabase, from } = supabaseWithUpsert(upsert);
     vi.mocked(authenticateMcpRequest).mockResolvedValue({ userId: "user-1", supabase });
@@ -311,6 +317,64 @@ describe("POST /api/mcp activity day (ADR 0086)", () => {
 
     expect(response.status).toBe(401);
     expect(mockAfter).not.toHaveBeenCalled();
+  });
+
+  // An assistant with the connector enabled sends these whenever a session starts, before the
+  // user asks it for anything in Drafto, so they must not mark the user active.
+  it.each([
+    ["initialize", { jsonrpc: "2.0", method: "initialize", id: 1 }],
+    ["notifications/initialized", { jsonrpc: "2.0", method: "notifications/initialized" }],
+    ["tools/list", { jsonrpc: "2.0", method: "tools/list", id: 2 }],
+    [
+      "a batch without a tool call",
+      [
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        { jsonrpc: "2.0", method: "tools/list", id: 2 },
+      ],
+    ],
+    ["a body that isn't JSON", "not json"],
+  ])("records nothing for %s", async (_name, body) => {
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    const { supabase } = supabaseWithUpsert(upsert);
+    vi.mocked(authenticateMcpRequest).mockResolvedValue({ userId: "user-1", supabase });
+
+    await POST(authenticatedRequest(body));
+
+    expect(mockAfter).not.toHaveBeenCalled();
+    expect(mockHandleRequest).toHaveBeenCalled();
+  });
+
+  it("records the day once for a batch that holds a tool call", async () => {
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    const { supabase } = supabaseWithUpsert(upsert);
+    vi.mocked(authenticateMcpRequest).mockResolvedValue({ userId: "user-1", supabase });
+
+    await POST(
+      authenticatedRequest([
+        { jsonrpc: "2.0", method: "tools/list", id: 1 },
+        { ...toolCall, id: 2 },
+      ]),
+    );
+    await runAfterCallbacks();
+
+    expect(mockAfter).toHaveBeenCalledTimes(1);
+    expect(upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the request body for the transport to read", async () => {
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    const { supabase } = supabaseWithUpsert(upsert);
+    vi.mocked(authenticateMcpRequest).mockResolvedValue({ userId: "user-1", supabase });
+    let bodySeenByTransport: unknown;
+    mockHandleRequest.mockImplementationOnce(async (req: Request) => {
+      bodySeenByTransport = await req.json();
+      return new Response(JSON.stringify({ jsonrpc: "2.0", result: {} }), { status: 200 });
+    });
+
+    await POST(authenticatedRequest());
+
+    expect(bodySeenByTransport).toEqual(toolCall);
+    expect(mockAfter).toHaveBeenCalledTimes(1);
   });
 
   it("returns the same response when recording the day fails", async () => {

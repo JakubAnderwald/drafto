@@ -213,7 +213,8 @@ export default function PrivacyPolicyPage() {
             ). We call these your usage days. The web app records a day when you open it signed in.
             The iOS, Android and macOS apps record each day you open them and send those days the
             next time they sync, so days spent offline count too. An AI assistant&apos;s day is
-            recorded when it connects to Drafto with your API key.
+            recorded when it uses Drafto with your API key, for example to read, search or change
+            your notes. Merely connecting to Drafto doesn&apos;t count.
           </p>
           <p>
             For each usage day we store your account ID, the date (in UTC) and the kind of app. Each
