@@ -17,7 +17,9 @@ tags:
 #   QA_PHASE=offline    the Mac is offline: banner, offline note, cold start
 #   QA_PHASE=reconnect  online again: the offline note syncs
 #
-# Self-contained (creates its own data); assumes the user is logged in.
+# Self-contained: creates its own notebook ("OffMode NB", a name no other flow
+# uses, so 06's "OffNB" never matches it) and deletes it in the reconnect
+# phase. Assumes the user is logged in.
 # Pass -e RUN_ID=<timestamp>, the same for all three phases. To skip it in a
 # folder run: maestro test apps/mobile/e2e/ios-only/ --exclude-tags requires-host-offline
 
@@ -38,13 +40,13 @@ tags:
       - tapOn:
           id: "add"
       - assertVisible: "Notebook name"
-      - inputText: "OffNB ${RUN_ID}"
+      - inputText: "OffMode NB ${RUN_ID}"
       - tapOn:
           id: "checkmark"
       - extendedWaitUntil:
-          visible: ".*OffNB ${RUN_ID}"
+          visible: ".*OffMode NB ${RUN_ID}"
           timeout: 10000
-      - tapOn: ".*OffNB ${RUN_ID}"
+      - tapOn: ".*OffMode NB ${RUN_ID}"
       - extendedWaitUntil:
           visible: "No notes yet"
           timeout: 10000
@@ -82,7 +84,7 @@ tags:
             id: "search-button"
           timeout: 30000
       - runFlow: ../helpers/assert-offline-banner.yaml
-      - tapOn: ".*OffNB ${RUN_ID}"
+      - tapOn: ".*OffMode NB ${RUN_ID}"
       - extendedWaitUntil:
           visible: ".*NoteF ${RUN_ID}.*"
           timeout: 10000
@@ -110,7 +112,7 @@ tags:
             id: "search-button"
           timeout: 30000
       - runFlow: ../helpers/assert-offline-banner.yaml
-      - tapOn: ".*OffNB ${RUN_ID}"
+      - tapOn: ".*OffMode NB ${RUN_ID}"
       - extendedWaitUntil:
           visible: ".*NoteF ${RUN_ID}.*"
           timeout: 10000
@@ -129,12 +131,12 @@ tags:
       - extendedWaitUntil:
           notVisible: "You are offline"
           timeout: 30000
-      - tapOn: ".*OffNB ${RUN_ID}"
+      - tapOn: ".*OffMode NB ${RUN_ID}"
       - extendedWaitUntil:
           visible: ".*OffNote ${RUN_ID}.*"
           timeout: 10000
       - assertVisible: ".*NoteF ${RUN_ID}.*"
-      # Cleanup: trash the offline note, then check everything synced
+      # Cleanup: trash both notes, delete the notebook, then check everything synced
       - tapOn:
           id: "swipe-hint-dismiss"
           optional: true
@@ -147,7 +149,24 @@ tags:
       - extendedWaitUntil:
           notVisible: ".*OffNote ${RUN_ID}.*"
           timeout: 10000
+      - swipe:
+          from:
+            text: ".*NoteF ${RUN_ID}.*"
+          direction: LEFT
+      - assertVisible: "Move to Trash"
+      - tapOn: "Trash"
+      - extendedWaitUntil:
+          notVisible: ".*NoteF ${RUN_ID}.*"
+          timeout: 10000
+      # Back to the notebooks list (header back button)
       - tapOn: "Notebooks"
+      - swipe:
+          from:
+            text: ".*OffMode NB ${RUN_ID}"
+          direction: LEFT
+      - extendedWaitUntil:
+          notVisible: ".*OffMode NB ${RUN_ID}"
+          timeout: 10000
       - tapOn: "Settings, tab.*"
       - extendedWaitUntil:
           visible: "Sync status: All synced"

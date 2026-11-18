@@ -7,8 +7,10 @@ onFlowComplete:
 ---
 # Flow 05 (Android): offline mode — local data persists offline, across a cold
 # start, and syncs on reconnect.
-# Self-contained: creates its own notebook and note, so it runs on its own or
-# after any other flow. Assumes the user is logged in (after 01-login).
+# Self-contained: creates its own notebook ("OffMode NB", a name no other flow
+# uses, so 06's "OffNB" never matches it) and deletes it at the end, so it runs
+# on its own or after any other flow. Assumes the user is logged in (after
+# 01-login).
 # Pass -e RUN_ID=<timestamp>.
 # Run on a release APK built against dev (docs/architecture/testing.md,
 # "Offline flows on Android"): a debug build loads its JavaScript from Metro
@@ -26,13 +28,13 @@ onFlowComplete:
 - tapOn:
     id: "add"
 - assertVisible: "Notebook name"
-- inputText: "OffNB ${RUN_ID}"
+- inputText: "OffMode NB ${RUN_ID}"
 - tapOn:
     id: "checkmark"
 - extendedWaitUntil:
-    visible: ".*OffNB ${RUN_ID}"
+    visible: ".*OffMode NB ${RUN_ID}"
     timeout: 10000
-- tapOn: ".*OffNB ${RUN_ID}"
+- tapOn: ".*OffMode NB ${RUN_ID}"
 - extendedWaitUntil:
     visible: "No notes yet"
     timeout: 10000
@@ -83,7 +85,7 @@ onFlowComplete:
       id: "search-button"
     timeout: 30000
 - runFlow: ../helpers/assert-offline-banner.yaml
-- tapOn: ".*OffNB ${RUN_ID}"
+- tapOn: ".*OffMode NB ${RUN_ID}"
 - extendedWaitUntil:
     visible: ".*NoteF ${RUN_ID}.*"
     timeout: 10000
@@ -97,7 +99,7 @@ onFlowComplete:
 - assertVisible: ".*NoteF ${RUN_ID}.*"
 - assertVisible: ".*OffNote ${RUN_ID}.*"
 
-# --- Cleanup: trash the offline note, then check everything synced ---
+# --- Cleanup: trash both notes, delete the notebook, then check everything synced ---
 - swipe:
     from:
       text: ".*OffNote ${RUN_ID}.*"
@@ -107,10 +109,26 @@ onFlowComplete:
 - extendedWaitUntil:
     notVisible: ".*OffNote ${RUN_ID}.*"
     timeout: 10000
+- swipe:
+    from:
+      text: ".*NoteF ${RUN_ID}.*"
+    direction: LEFT
+- assertVisible: "Move to Trash"
+- tapOn: "Trash"
+- extendedWaitUntil:
+    notVisible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
 - pressKey: back
 - extendedWaitUntil:
     visible:
       id: "search-button"
+    timeout: 10000
+- swipe:
+    from:
+      text: ".*OffMode NB ${RUN_ID}"
+    direction: LEFT
+- extendedWaitUntil:
+    notVisible: ".*OffMode NB ${RUN_ID}"
     timeout: 10000
 - tapOn: "Settings"
 # The sync row's accessibility label is "Sync status: <state>"

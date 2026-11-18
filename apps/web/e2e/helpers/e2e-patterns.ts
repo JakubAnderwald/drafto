@@ -41,6 +41,7 @@ const E2E_NAME_PREFIXES = [
   "Search NB",
   "Attach NB",
   "OffNB",
+  "OffMode NB",
   "Note",
   "NoteF",
   "Findable",
