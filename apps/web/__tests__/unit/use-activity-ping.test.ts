@@ -190,6 +190,50 @@ describe("useActivityPing", () => {
     expect(storedDay("user-1")).toBe(DAY_2);
   });
 
+  it("forgets a day recorded while the clock ran ahead once it goes back, and sends it when it really comes", async () => {
+    // The clock runs a day ahead: the server ignores DAY_2, but the tab marks it.
+    setNow(`${DAY_2}T10:00:00.000Z`);
+    const ahead = renderHook(() => mod.useActivityPing("user-1"));
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_2));
+    ahead.unmount();
+
+    // The clock is put right.
+    setNow(`${DAY_1}T10:00:00.000Z`);
+    const corrected = renderHook(() => mod.useActivityPing("user-1"));
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));
+    corrected.unmount();
+
+    // DAY_2 really comes.
+    setNow(`${DAY_2}T00:00:10.000Z`);
+    renderHook(() => mod.useActivityPing("user-1"));
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_2));
+
+    expect(mockRpc.mock.calls).toEqual([rpcArgs(DAY_2), rpcArgs(DAY_1), rpcArgs(DAY_2)]);
+  });
+
+  it("doesn't mark a day the clock went back before its ping answered", async () => {
+    let answerAhead: (value: { error: null }) => void = () => {};
+    mockRpc.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerAhead = resolve;
+      }),
+    );
+
+    setNow(`${DAY_2}T10:00:00.000Z`);
+    const ahead = renderHook(() => mod.useActivityPing("user-1"));
+    ahead.unmount();
+    setNow(`${DAY_1}T10:00:00.000Z`);
+    answerAhead({ error: null });
+    await flush();
+    expect(storedDay("user-1")).toBeNull();
+
+    setNow(`${DAY_2}T00:00:10.000Z`);
+    renderHook(() => mod.useActivityPing("user-1"));
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_2));
+
+    expect(mockRpc.mock.calls).toEqual([rpcArgs(DAY_2), rpcArgs(DAY_2)]);
+  });
+
   it("re-checks when the user returns to a tab left open into the next UTC day", async () => {
     renderHook(() => mod.useActivityPing("user-1"));
     await waitFor(() => expect(storedDay("user-1")).toBe(DAY_1));

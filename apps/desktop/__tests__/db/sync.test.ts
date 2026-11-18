@@ -794,4 +794,32 @@ describe("activity ping after a successful sync (ADR-0086)", () => {
 
     expect(pings()).toEqual([]);
   });
+
+  it("sends no ping when resetSyncState runs after synchronize() but before today's mark settles", async () => {
+    const db = makeDb();
+    // A failed sync leaves today queued for the user who is about to sign out.
+    mockSynchronize.mockRejectedValueOnce(new Error("Network request failed"));
+    await expect(syncDatabase(db)).rejects.toThrow(SyncNetworkError);
+    await new Promise<void>((resolve) => setImmediate(() => resolve()));
+
+    // The next sync's mark is held on its storage read.
+    const storage = (db as unknown as { localStorage: { get(key: string): Promise<unknown> } })
+      .localStorage;
+    const read = storage.get.bind(storage);
+    let releaseMark!: () => void;
+    storage.get = (key) => {
+      storage.get = read;
+      return new Promise((resolve) => (releaseMark = () => resolve(read(key))));
+    };
+
+    const stale = syncDatabase(db);
+    // Let synchronize() resolve, so the sync is already waiting on its mark.
+    await new Promise<void>((resolve) => setImmediate(() => resolve()));
+    expect(mockSynchronize).toHaveBeenCalledTimes(2);
+    resetSyncState(); // sign-out
+    releaseMark();
+    await expect(stale).resolves.toEqual({ remoteChangeCount: 0 });
+
+    expect(pings()).toEqual([]);
+  });
 });

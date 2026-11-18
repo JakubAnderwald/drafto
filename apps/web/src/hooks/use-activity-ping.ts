@@ -55,6 +55,29 @@ function storeDay(userId: string, day: string): void {
   }
 }
 
+/**
+ * Drops <userId>'s markers, in memory and in sessionStorage, for days after <today>. Such a
+ * marker was written while this device's clock ran ahead, and the clock has since gone back.
+ * The server ignores days after its own today, so it never recorded that day, and the marker
+ * mustn't hold the day back when it really comes. Markers up to <today> are left alone, so an
+ * earlier day's late answer still can't move the stored day back (see storeDay).
+ */
+function forgetFutureDays(userId: string, today: string): void {
+  const prefix = `${userId}:`;
+  for (const marker of recordedMarkers) {
+    if (marker.startsWith(prefix) && marker.slice(prefix.length) > today) {
+      recordedMarkers.delete(marker);
+    }
+  }
+  try {
+    const key = storageKey(userId);
+    const stored = window.sessionStorage.getItem(key);
+    if (stored !== null && stored > today) window.sessionStorage.removeItem(key);
+  } catch {
+    // Storage is unavailable: only the in-memory markers apply.
+  }
+}
+
 function reportFailure(error: string): void {
   if (failureReported) return;
   failureReported = true;
@@ -71,8 +94,12 @@ async function sendPing(userId: string, day: string, marker: string): Promise<vo
     // recordActivity never throws; the try/catch covers creating the client.
     const outcome = await recordActivity(createClient(), [day], "web");
     if (outcome.ok) {
-      recordedMarkers.add(marker);
-      storeDay(userId, day);
+      // The clock went back while the call was out, so <day> was sent ahead of time and the
+      // server ignored it: leave it unmarked, so it is sent again when it really comes.
+      if (day <= utcDay()) {
+        recordedMarkers.add(marker);
+        storeDay(userId, day);
+      }
     } else {
       reportFailure(outcome.error);
     }
@@ -86,6 +113,7 @@ async function sendPing(userId: string, day: string, marker: string): Promise<vo
 /** Sends today's activity day for <userId> unless this tab already sent (or is sending) it. */
 function pingActivity(userId: string): void {
   const day = utcDay();
+  forgetFutureDays(userId, day);
   const marker = `${userId}:${day}`;
   if (inFlightMarkers.has(marker) || recordedMarkers.has(marker)) return;
   if (readStoredDay(userId) === day) return;

@@ -52,7 +52,8 @@ holds the logic, identical on both apps.
   Then the real day isn't held back when it comes.
 - **Sending.** After `synchronize()` resolves, `syncDatabase()` frees the
   in-flight latch, waits for the mark, then calls
-  `flushActivityDays(db, supabase, clientTag)`. That sends the whole queue
+  `flushActivityDays(db, supabase, clientTag)`, unless sign-out reset the
+  sync while the mark was still waiting. That sends the whole queue
   through `record_activity` (`recordActivity` in `@drafto/shared`). On success
   it reads the queue again, removes only the days it sent (a day marked in the
   meantime stays), and moves `lastSent` to the newest day sent. The caller that

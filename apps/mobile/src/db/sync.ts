@@ -323,10 +323,19 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
  * never reject; the catch is a backstop so a ping can never change the sync's
  * result. A failed ping keeps its days for the next sync. Waits for it at most
  * ACTIVITY_PING_MAX_WAIT_MS.
+ *
+ * <stillCurrent> is asked again once today's mark has settled: sign-out can
+ * call resetSyncState while the mark is still waiting, and the flush must not
+ * then start, or it would send the signed-out user's queued days under
+ * whichever session the client holds next.
  */
-async function pingActivity(db: WMDatabase, opened: Promise<void>): Promise<void> {
+async function pingActivity(
+  db: WMDatabase,
+  opened: Promise<void>,
+  stillCurrent: () => boolean,
+): Promise<void> {
   const ping = opened
-    .then(() => flushActivityDays(db, supabase, clientTag))
+    .then(() => (stillCurrent() ? flushActivityDays(db, supabase, clientTag) : undefined))
     .catch((error: unknown) => console.warn("[Sync] Activity ping failed:", error));
   await settleWithin(ping, ACTIVITY_PING_MAX_WAIT_MS);
 }
@@ -421,6 +430,7 @@ export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
   // synchronize() and pushes what changed since this push, instead of joining
   // a sync whose push has already finished. A sync that resetSyncState
   // superseded sends no ping: its session has ended.
-  if (syncGeneration === generation) await pingActivity(db, opened);
+  const stillCurrent = () => syncGeneration === generation;
+  if (stillCurrent()) await pingActivity(db, opened, stillCurrent);
   return result;
 }
