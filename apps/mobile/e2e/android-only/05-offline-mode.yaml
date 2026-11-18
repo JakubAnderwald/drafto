@@ -1,88 +1,119 @@
 appId: eu.drafto.mobile
+tags:
+  - offline
+onFlowComplete:
+  # However the flow ends, the emulator goes back online.
+  - setAirplaneMode: disabled
 ---
-# Flow 05: Offline mode — airplane mode toggle, verify local data persists
-# Depends on: 03-create-edit-note (NoteR <RUN_ID> / NoteF <RUN_ID> exists in NB <RUN_ID>)
-# Note: this flow runs BEFORE 04-trash-restore in the offline test sequence
-# Pass -e RUN_ID=<timestamp> when running
-# Tests: offline indicator, offline note creation, offline editing,
-#         data persistence across app restart while offline, sync on reconnect
+# Flow 05 (Android): offline mode — local data persists offline, across a cold
+# start, and syncs on reconnect.
+# Self-contained: creates its own notebook and note, so it runs on its own or
+# after any other flow. Assumes the user is logged in (after 01-login).
+# Pass -e RUN_ID=<timestamp>.
+# Run on a release APK built against dev (docs/architecture/testing.md,
+# "Offline flows on Android"): a debug build loads its JavaScript from Metro
+# at 10.0.2.2:8081, which airplane mode cuts off.
+# Tests: offline banner, offline note creation, offline editing, data
+# persistence across an offline cold start, sync on reconnect.
 
 - launchApp
-
-# Navigate to the test notebook
 - extendedWaitUntil:
-    visible: "Notebooks"
-    timeout: 10000
-- tapOn: ".*NB ${RUN_ID}"
+    visible:
+      id: "search-button"
+    timeout: 30000
 
-# Verify existing note is visible before going offline
-- assertVisible: ".*NoteR ${RUN_ID}.*"
-
-# --- Test 1: Enable airplane mode and verify offline indicator ---
-- toggleAirplaneMode
-
-- assertVisible: "Offline"
-
-# --- Test 2: Create a note while offline ---
+# --- Online: a notebook with one note ---
 - tapOn:
     id: "add"
-- tapOn: "Note title (optional)"
+- assertVisible: "Notebook name"
+- inputText: "OffNB ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*OffNB ${RUN_ID}"
+    timeout: 10000
+- tapOn: ".*OffNB ${RUN_ID}"
+- extendedWaitUntil:
+    visible: "No notes yet"
+    timeout: 10000
+    optional: true
+- tapOn:
+    id: "swipe-hint-dismiss"
+    optional: true
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "NoteF ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+
+# --- Test 1: airplane mode shows the offline banner ---
+- setAirplaneMode: enabled
+- runFlow: ../helpers/assert-offline-banner.yaml
+
+# --- Test 2: create a note while offline ---
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
 - inputText: "OffNote ${RUN_ID}"
 - tapOn:
     id: "checkmark"
-
-# Verify the offline note appears in the local list
-- assertVisible: ".*OffNote ${RUN_ID}.*"
-
-# --- Test 3: Edit an existing note while offline ---
-- tapOn: ".*NoteR ${RUN_ID}.*"
-- assertVisible: ".*NoteR ${RUN_ID}.*"
-
-# Verify auto-save indicator works offline (saved locally)
-- extendedWaitUntil:
-    visible: "Saved"
-    timeout: 10000
-    optional: true
-
-# Go back to notes list
-- pressKey: back
-
-# --- Test 4: Verify data persists across app restart while offline ---
-# (airplane mode still on — app should show local data from SQLite)
-- launchApp
-
-- extendedWaitUntil:
-    visible: "Notebooks"
-    timeout: 10000
-- tapOn: ".*NB ${RUN_ID}"
-
-# Both the pre-existing note and the offline-created note must survive restart
-- assertVisible: ".*NoteR ${RUN_ID}.*"
-- assertVisible: ".*OffNote ${RUN_ID}.*"
-
-# Offline indicator should still be visible
-- assertVisible: "Offline"
-
-# --- Test 5: Go back online and verify sync ---
-- toggleAirplaneMode
-
-# Wait for sync to kick in
-- extendedWaitUntil:
-    visible: "Syncing"
-    timeout: 10000
-    optional: true
-
-# Verify both notes persist after sync completes
 - extendedWaitUntil:
     visible: ".*OffNote ${RUN_ID}.*"
     timeout: 10000
-- assertVisible: ".*NoteR ${RUN_ID}.*"
 
-# --- Cleanup: delete the offline-created note ---
+# --- Test 3: open the existing note while offline ---
+- tapOn: ".*NoteF ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+- pressKey: back
+- extendedWaitUntil:
+    visible: ".*OffNote ${RUN_ID}.*"
+    timeout: 10000
+
+# --- Test 4: both notes survive a cold start while offline ---
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 30000
+- runFlow: ../helpers/assert-offline-banner.yaml
+- tapOn: ".*OffNB ${RUN_ID}"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+- assertVisible: ".*OffNote ${RUN_ID}.*"
+
+# --- Test 5: back online, the banner goes and the notes stay ---
+- setAirplaneMode: disabled
+- extendedWaitUntil:
+    notVisible: "You are offline"
+    timeout: 30000
+- assertVisible: ".*NoteF ${RUN_ID}.*"
+- assertVisible: ".*OffNote ${RUN_ID}.*"
+
+# --- Cleanup: trash the offline note, then check everything synced ---
 - swipe:
     from:
       text: ".*OffNote ${RUN_ID}.*"
     direction: LEFT
 - assertVisible: "Move to Trash"
 - tapOn: "Trash"
-- assertNotVisible: ".*OffNote ${RUN_ID}.*"
+- extendedWaitUntil:
+    notVisible: ".*OffNote ${RUN_ID}.*"
+    timeout: 10000
+- pressKey: back
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 10000
+- tapOn: "Settings"
+# The sync row's accessibility label is "Sync status: <state>"
+- extendedWaitUntil:
+    visible: "Sync status: All synced"
+    timeout: 30000

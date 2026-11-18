@@ -1,85 +1,114 @@
 appId: eu.drafto.mobile
+tags:
+  - offline
+  - requires-host-offline
 ---
-# Flow 06 (iOS): Offline notebook creation and multi-operation sync
-# Depends on: 01-login (user is logged in)
-# Pass -e RUN_ID=<timestamp> when running
-# Run with: maestro test apps/mobile/e2e/ios-only/06-offline-notebook-sync.yaml --platform ios
+# Flow 06 (iOS): offline notebook creation and multi-operation sync
+#
+# The iOS simulator has no airplane mode and shares the Mac's network, so this
+# flow runs in phases and the runner takes the whole Mac offline between them
+# with apps/desktop/e2e/in-test/lib/net.sh (sudo):
+#
+#   bash apps/mobile/e2e/run-qa-10668-e2e.sh ios --allow-host-offline
+#
+#   QA_PHASE=prepare    online: the app is up and signed in
+#   QA_PHASE=offline    the Mac is offline: a notebook and a note in it
+#   QA_PHASE=reconnect  online again: both sync
+#
+# Assumes the user is logged in. Pass -e RUN_ID=<timestamp>, the same for all
+# phases. To skip it in a folder run:
+#   maestro test apps/mobile/e2e/ios-only/ --exclude-tags requires-host-offline
 
-- launchApp
+- assertTrue:
+    condition: ${typeof QA_PHASE !== 'undefined' && ['prepare', 'offline', 'reconnect'].includes(QA_PHASE)}
+    label: "Needs -e QA_PHASE=prepare|offline|reconnect: run it through run-qa-10668-e2e.sh ios --allow-host-offline"
 
-- extendedWaitUntil:
-    visible: "Notebooks"
-    timeout: 10000
+# --- Phase: prepare (online) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'prepare'}
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
 
-# --- Test 1: Go offline and create a notebook ---
-- toggleAirplaneMode
+# --- Phase: offline (the runner has taken the Mac offline) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'offline'}
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - runFlow: ../helpers/assert-offline-banner.yaml
+      # Create a notebook offline
+      - tapOn:
+          id: "add"
+      - assertVisible: "Notebook name"
+      - inputText: "OffNB ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: ".*OffNB ${RUN_ID}"
+          timeout: 10000
+      # Create a note inside it
+      - tapOn: ".*OffNB ${RUN_ID}"
+      - tapOn:
+          id: "swipe-hint-dismiss"
+          optional: true
+      - tapOn:
+          id: "add"
+      - tapOn: "Note title (optional)"
+      - inputText: "OffNest ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: ".*OffNest ${RUN_ID}.*"
+          timeout: 10000
+      # Back to the notebooks list (header back button), still offline
+      - tapOn: "Notebooks"
+      - runFlow: ../helpers/assert-offline-banner.yaml
 
-- assertVisible: "Offline"
-
-- tapOn:
-    id: "add"
-- assertVisible: "Notebook name"
-- inputText: "OffNB ${RUN_ID}"
-- tapOn:
-    id: "checkmark"
-
-# Verify notebook appears in local list
-- assertVisible: ".*OffNB ${RUN_ID}"
-
-# --- Test 2: Create a note inside the offline notebook ---
-- tapOn: ".*OffNB ${RUN_ID}"
-
-- tapOn:
-    id: "add"
-- tapOn: "Note title (optional)"
-- inputText: "OffNest ${RUN_ID}"
-- tapOn:
-    id: "checkmark"
-
-- assertVisible: ".*OffNest ${RUN_ID}.*"
-
-# Go back to notebooks list (iOS: tap header back button)
-- tapOn: "Notebooks"
-
-# --- Test 3: Verify pending changes indicator ---
-- assertVisible: "Offline"
-
-# --- Test 4: Reconnect and verify all operations sync ---
-- toggleAirplaneMode
-
-# Wait for sync
-- extendedWaitUntil:
-    visible: "Syncing"
-    timeout: 10000
-    optional: true
-
-# Verify the offline notebook still exists after sync
-- extendedWaitUntil:
-    visible: ".*OffNB ${RUN_ID}"
-    timeout: 10000
-
-# Verify the note inside it survived sync
-- tapOn: ".*OffNB ${RUN_ID}"
-- assertVisible: ".*OffNest ${RUN_ID}.*"
-
-# --- Cleanup: delete the note and notebook ---
-- swipe:
-    from:
-      text: ".*OffNest ${RUN_ID}.*"
-    direction: LEFT
-- assertVisible: "Move to Trash"
-- tapOn: "Trash"
-- extendedWaitUntil:
-    notVisible: ".*OffNest ${RUN_ID}.*"
-    timeout: 10000
-
-# Go back to notebooks list (iOS: tap header back button)
-- tapOn: "Notebooks"
-
-- swipe:
-    from:
-      text: ".*OffNB ${RUN_ID}"
-    direction: LEFT
-- extendedWaitUntil:
-    notVisible: ".*OffNB ${RUN_ID}"
-    timeout: 10000
+# --- Phase: reconnect (online again) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'reconnect'}
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - extendedWaitUntil:
+          notVisible: "You are offline"
+          timeout: 30000
+      # The offline notebook and its note survived the sync
+      - extendedWaitUntil:
+          visible: ".*OffNB ${RUN_ID}"
+          timeout: 10000
+      - tapOn: ".*OffNB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible: ".*OffNest ${RUN_ID}.*"
+          timeout: 10000
+      # Cleanup: delete the note and notebook
+      - swipe:
+          from:
+            text: ".*OffNest ${RUN_ID}.*"
+          direction: LEFT
+      - assertVisible: "Move to Trash"
+      - tapOn: "Trash"
+      - extendedWaitUntil:
+          notVisible: ".*OffNest ${RUN_ID}.*"
+          timeout: 10000
+      - tapOn: "Notebooks"
+      - swipe:
+          from:
+            text: ".*OffNB ${RUN_ID}"
+          direction: LEFT
+      - extendedWaitUntil:
+          notVisible: ".*OffNB ${RUN_ID}"
+          timeout: 10000

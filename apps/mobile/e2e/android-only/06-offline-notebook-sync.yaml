@@ -1,21 +1,29 @@
 appId: eu.drafto.mobile
+tags:
+  - offline
+onFlowComplete:
+  # However the flow ends, the emulator goes back online.
+  - setAirplaneMode: disabled
 ---
 # Flow 06: Offline notebook creation and multi-operation sync
 # Depends on: 01-login (user is logged in)
 # Pass -e RUN_ID=<timestamp> when running
+# Run on a release APK built against dev (docs/architecture/testing.md,
+# "Offline flows on Android"): a debug build loses Metro in airplane mode.
 # Tests: create notebook offline, create note inside it offline,
 #         all queued operations sync correctly on reconnect
 
 - launchApp
 
 - extendedWaitUntil:
-    visible: "Notebooks"
-    timeout: 10000
+    visible:
+      id: "search-button"
+    timeout: 30000
 
 # --- Test 1: Go offline and create a notebook ---
-- toggleAirplaneMode
+- setAirplaneMode: enabled
 
-- assertVisible: "Offline"
+- runFlow: ../helpers/assert-offline-banner.yaml
 
 - tapOn:
     id: "add"
@@ -25,10 +33,15 @@ appId: eu.drafto.mobile
     id: "checkmark"
 
 # Verify notebook appears in local list
-- assertVisible: ".*OffNB ${RUN_ID}"
+- extendedWaitUntil:
+    visible: ".*OffNB ${RUN_ID}"
+    timeout: 10000
 
 # --- Test 2: Create a note inside the offline notebook ---
 - tapOn: ".*OffNB ${RUN_ID}"
+- tapOn:
+    id: "swipe-hint-dismiss"
+    optional: true
 
 - tapOn:
     id: "add"
@@ -37,22 +50,22 @@ appId: eu.drafto.mobile
 - tapOn:
     id: "checkmark"
 
-- assertVisible: ".*OffNest ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible: ".*OffNest ${RUN_ID}.*"
+    timeout: 10000
 
 # Go back to notebooks list
 - pressKey: back
 
-# --- Test 3: Verify pending changes indicator ---
-- assertVisible: "Offline"
+# --- Test 3: Still offline on the Notebooks tab ---
+- runFlow: ../helpers/assert-offline-banner.yaml
 
 # --- Test 4: Reconnect and verify all operations sync ---
-- toggleAirplaneMode
+- setAirplaneMode: disabled
 
-# Wait for sync
 - extendedWaitUntil:
-    visible: "Syncing"
-    timeout: 10000
-    optional: true
+    notVisible: "You are offline"
+    timeout: 30000
 
 # Verify the offline notebook still exists after sync
 - extendedWaitUntil:
