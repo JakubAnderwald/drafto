@@ -120,6 +120,16 @@ export function readUpload(file) {
   }
 }
 
+/**
+ * Whether <url> has the shape of a screenshot the factory published: the only
+ * URLs validImages lets a comment render. factory-bundle.mjs's
+ * extractScreenshots skips these, so the factory's own reports can't fill the
+ * screenshot slots that should hold a reporter's images.
+ */
+export function isEvidenceImageUrl(url) {
+  return IMAGE_URL_RE.test(String(url ?? ""));
+}
+
 /** The record's images that may be rendered, by n. */
 export function validImages(upload) {
   if (upload?.ok !== true || !Array.isArray(upload.images)) return [];
