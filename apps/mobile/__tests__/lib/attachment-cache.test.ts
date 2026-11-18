@@ -512,4 +512,17 @@ describe("deleteAttachmentCache", () => {
     deleteAttachmentCache();
     expect(fakeFs.files.size).toBe(0);
   });
+
+  it("never throws when the delete fails, so it can't block sign-out", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const FakeDirectory = fakeFs.module.Directory as { prototype: { delete: () => void } };
+    put("u/n/a.jpg", 1);
+    const remove = jest.spyOn(FakeDirectory.prototype, "delete").mockImplementation(() => {
+      throw new Error("EBUSY");
+    });
+    expect(() => deleteAttachmentCache()).not.toThrow();
+    remove.mockRestore();
+    expect(warn).toHaveBeenCalledWith("Failed to delete the attachment cache:", expect.any(Error));
+    warn.mockRestore();
+  });
 });

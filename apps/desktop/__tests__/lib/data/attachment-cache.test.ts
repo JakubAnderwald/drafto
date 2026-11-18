@@ -590,4 +590,12 @@ describe("listAttachmentCache / deleteAttachmentCache", () => {
     expect(mockFiles.size).toBe(0);
     await expect(listAttachmentCache()).resolves.toEqual([]);
   });
+  it("never rejects when the delete fails, so it can't block sign-out", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    put("u/n/a.jpg", 1);
+    jest.mocked(RNFS.unlink).mockRejectedValueOnce(new Error("EBUSY"));
+    await expect(deleteAttachmentCache()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith("Failed to delete the attachment cache:", expect.any(Error));
+    warn.mockRestore();
+  });
 });
