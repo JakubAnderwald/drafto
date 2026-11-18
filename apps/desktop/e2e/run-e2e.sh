@@ -54,8 +54,10 @@ if has_element "Email" && has_element "Password" && has_element "Log in"; then
   click_element_by_desc "Password"
   cliclick kd:cmd t:a ku:cmd kp:delete
   wait_for_ui
+  TOGGLE_CLICKED=false
   if has_element "Show password"; then
     pass "Password field offers 'Show password'"
+    TOGGLE_CLICKED=true
     if click_element_by_desc "Show password" && wait_for_ui && has_element "Hide password"; then
       pass "Toggle switches to 'Hide password'"
       click_element_by_desc "Hide password" || true
@@ -72,13 +74,17 @@ if has_element "Email" && has_element "Password" && has_element "Log in"; then
     fail "Password toggle" "No 'Show password' control on the login screen"
   fi
 
-  # Never type the real password into a revealed field. If the toggle is still showing the
-  # value, hide it once more, and abort rather than sign in if it stays revealed.
-  if has_element "Hide password"; then
-    click_element_by_desc "Hide password" || true
-    wait_for_ui
+  # Never type the real password into a field that may be revealed. Once the toggle has been
+  # clicked, sign in only when the field is confirmed hidden: "Show password" present and
+  # "Hide password" absent. Try hiding it once more, then abort rather than guess. (If there
+  # was no toggle at all, nothing was clicked and the field is still secure.)
+  if [ "$TOGGLE_CLICKED" = true ]; then
     if has_element "Hide password"; then
-      echo "Error: the password field is still revealed — aborting before typing credentials." >&2
+      click_element_by_desc "Hide password" || true
+      wait_for_ui
+    fi
+    if ! has_element "Show password" || has_element "Hide password"; then
+      echo "Error: cannot confirm the password field is hidden — aborting before typing credentials." >&2
       exit 1
     fi
   fi
