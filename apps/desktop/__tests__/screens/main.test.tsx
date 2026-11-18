@@ -64,7 +64,11 @@ jest.mock("@/components/notes/note-list", () => ({
 jest.mock("@/components/notes/note-editor-panel", () => ({ NoteEditorPanel: () => null }));
 jest.mock("@/components/notes/trash-list", () => ({ TrashList: () => null }));
 jest.mock("@/components/search/search-overlay", () => ({ SearchOverlay: () => null }));
-jest.mock("@/components/offline-banner", () => ({ OfflineBanner: () => null }));
+let mockOffline = false;
+jest.mock("@/components/offline-banner", () => {
+  const { View } = jest.requireActual("react-native");
+  return { OfflineBanner: () => (mockOffline ? <View testID="offline-banner" /> : null) };
+});
 
 function newNoteEnabled(): boolean {
   const calls = jest.mocked(setEnabledMenuActions).mock.calls;
@@ -134,5 +138,23 @@ describe("MainScreen menu actions", () => {
     act(() => mockSidebarProps.onToggleTrash());
 
     expect(newNoteEnabled()).toBe(false);
+  });
+});
+
+describe("MainScreen offline banner", () => {
+  afterEach(() => {
+    mockOffline = false;
+  });
+
+  it("puts the banner above the three panes, not over them", () => {
+    mockOffline = true;
+
+    const { toJSON } = render(app());
+
+    // The banner is a sibling before the panes' row in the column, so it pushes them down.
+    const root = toJSON() as { children: Array<{ props: { testID?: string } }> } | null;
+    const ids = (root?.children ?? []).map((child) => child.props.testID);
+    expect(ids.indexOf("offline-banner")).toBe(0);
+    expect(ids.indexOf("main-layout")).toBe(1);
   });
 });

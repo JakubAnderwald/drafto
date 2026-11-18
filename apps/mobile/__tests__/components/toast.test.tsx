@@ -14,6 +14,11 @@ import {
 } from "@/components/toast";
 import { spacing } from "@/theme/tokens";
 
+let mockBannerOffset = 0;
+jest.mock("@/providers/offline-banner-provider", () => ({
+  useOfflineBannerHeaderOffset: () => mockBannerOffset,
+}));
+
 type ShowToast = ReturnType<typeof useToast>["showToast"];
 
 /** Where an iPhone 12's header ends: the 47 pt inset plus a 44 pt bar. */
@@ -67,6 +72,18 @@ describe("ToastProvider", () => {
     );
     expect(style.top).toBe(HEADER_BOTTOM + spacing.sm);
     expect(style.bottom).toBeUndefined();
+  });
+
+  it("starts below the offline banner while it hangs under the header", () => {
+    mockBannerOffset = 28;
+    try {
+      const { getByTestId } = renderToasts();
+
+      const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
+      expect(style.top).toBe(HEADER_BOTTOM + 28 + spacing.sm);
+    } finally {
+      mockBannerOffset = 0;
+    }
   });
 
   it("clears the header's back button on a Dynamic Island iPhone, whose inset is taller", () => {

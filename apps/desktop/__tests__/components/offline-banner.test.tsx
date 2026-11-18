@@ -1,4 +1,5 @@
 import React from "react";
+import { StyleSheet } from "react-native";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 
@@ -9,8 +10,13 @@ jest.mock("@/hooks/use-network-status", () => ({
 const mockUseNetworkStatus = useNetworkStatus as jest.Mock;
 
 // Import render after mocks are set up
-import { render, screen } from "../helpers/test-utils";
+import { render, screen, act } from "../helpers/test-utils";
 import { OfflineBanner } from "@/components/offline-banner";
+import { RECONNECTED_HOLD_MS } from "@/hooks/use-offline-banner-state";
+
+function setConnected(isConnected: boolean) {
+  mockUseNetworkStatus.mockReturnValue({ isConnected, isInternetReachable: isConnected });
+}
 
 describe("OfflineBanner", () => {
   beforeEach(() => {
@@ -18,42 +24,49 @@ describe("OfflineBanner", () => {
   });
 
   it("renders nothing when connected and never was offline", () => {
-    mockUseNetworkStatus.mockReturnValue({
-      isConnected: true,
-      isInternetReachable: true,
-    });
+    setConnected(true);
 
     const { toJSON } = render(<OfflineBanner />);
     expect(toJSON()).toBeNull();
   });
 
   it('shows "You are offline" when disconnected', () => {
-    mockUseNetworkStatus.mockReturnValue({
-      isConnected: false,
-      isInternetReachable: false,
-    });
+    setConnected(false);
 
     render(<OfflineBanner />);
     expect(screen.getByText("You are offline")).toBeTruthy();
+    expect(screen.getByTestId("offline-banner").props.accessibilityRole).toBe("alert");
   });
 
-  it('shows "Back online — syncing..." after reconnection', () => {
-    // Start offline
-    mockUseNetworkStatus.mockReturnValue({
-      isConnected: false,
-      isInternetReachable: false,
-    });
+  it("is part of the layout, not an overlay over the panes", () => {
+    setConnected(false);
 
-    const { rerender } = render(<OfflineBanner />);
-    expect(screen.getByText("You are offline")).toBeTruthy();
+    render(<OfflineBanner />);
 
-    // Go back online
-    mockUseNetworkStatus.mockReturnValue({
-      isConnected: true,
-      isInternetReachable: true,
-    });
+    const style = StyleSheet.flatten(screen.getByTestId("offline-banner").props.style);
+    expect(style.position).toBeUndefined();
+    expect(style.zIndex).toBeUndefined();
+    expect(style.top).toBeUndefined();
+    expect(style.transform).toBeUndefined();
+  });
 
-    rerender(<OfflineBanner />);
-    expect(screen.getByText("Back online — syncing...")).toBeTruthy();
+  it('shows "Back online — syncing..." after reconnection, then hides', () => {
+    jest.useFakeTimers();
+    try {
+      setConnected(false);
+      const { rerender } = render(<OfflineBanner />);
+      expect(screen.getByText("You are offline")).toBeTruthy();
+
+      setConnected(true);
+      rerender(<OfflineBanner />);
+      expect(screen.getByText("Back online — syncing...")).toBeTruthy();
+
+      act(() => {
+        jest.advanceTimersByTime(RECONNECTED_HOLD_MS);
+      });
+      expect(screen.queryByTestId("offline-banner")).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

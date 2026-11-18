@@ -14,6 +14,7 @@ import { getDefaultHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaFrame, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useTheme } from "@/providers/theme-provider";
+import { useOfflineBannerHeaderOffset } from "@/providers/offline-banner-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
@@ -150,6 +151,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   // as this app's headers (on Android it allows 64 dp for the 56 dp stack
   // header), so toasts always start below the header's buttons.
   const headerBottom = getDefaultHeaderHeight(frame, false, insets.top);
+  // While offline the banner hangs below the header, so toasts start below it.
+  const bannerOffset = useOfflineBannerHeaderOffset();
 
   const commit = useCallback((next: ToastMessage[]) => {
     toastsRef.current = next;
@@ -186,7 +189,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           editor's attachment row, and inside the header they hid its back button. */}
       <View
         testID="toast-container"
-        style={[styles.container, { top: headerBottom + spacing.sm }]}
+        style={[styles.container, { top: headerBottom + bannerOffset + spacing.sm }]}
         pointerEvents="none"
       >
         {toasts.map((t) => (

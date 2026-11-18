@@ -1,84 +1,60 @@
-import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Animated } from "react-native";
+import { View, Text, StyleSheet, type LayoutChangeEvent } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
 
-import { useNetworkStatus } from "@/hooks/use-network-status";
-import { useTheme } from "@/providers/theme-provider";
+import type { OfflineBannerVariant } from "@/hooks/use-offline-banner-state";
 import { colors, fontSizes, spacing } from "@/theme/tokens";
 
-export function OfflineBanner() {
-  const { isConnected } = useNetworkStatus();
-  const { semantic } = useTheme();
-  const insets = useSafeAreaInsets();
-  const slideAnim = useRef(new Animated.Value(-100)).current;
-  const wasOfflineRef = useRef(false);
-  const [showReconnected, setShowReconnected] = useState(false);
+interface OfflineBannerProps {
+  variant: OfflineBannerVariant;
+  /**
+   * The status-bar inset to pad by when the banner is the topmost thing on
+   * screen (a screen without a header). 0, the default, below a header.
+   */
+  topInset?: number;
+  onLayout?: (event: LayoutChangeEvent) => void;
+}
 
-  useEffect(() => {
-    if (!isConnected) {
-      wasOfflineRef.current = true;
-      setShowReconnected(false);
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    } else if (wasOfflineRef.current) {
-      setShowReconnected(true);
-      wasOfflineRef.current = false;
-      // Keep visible briefly to show "Back online", then hide
-      const timer = setTimeout(() => {
-        Animated.timing(slideAnim, {
-          toValue: -100,
-          duration: 300,
-          useNativeDriver: true,
-        }).start(() => {
-          setShowReconnected(false);
-        });
-      }, 2000);
-      return () => clearTimeout(timer);
-    } else {
-      // Initially connected, hide
-      slideAnim.setValue(-100);
-    }
-  }, [isConnected, slideAnim]);
-
-  const isOffline = !isConnected;
-  const isReconnected = showReconnected && isConnected;
-
-  if (!isOffline && !isReconnected) return null;
+/**
+ * The offline / back-online strip. It is part of the layout, not an overlay:
+ * whatever comes after it is pushed down, so it can never cover a header's
+ * Back button or take its taps (PrimeTestLab report 10668, M-03).
+ * OfflineScreenLayout decides where it goes.
+ */
+export function OfflineBanner({ variant, topInset = 0, onLayout }: OfflineBannerProps) {
+  const reconnected = variant === "reconnected";
 
   return (
-    <Animated.View
+    <View
+      testID="offline-banner"
+      accessibilityRole="alert"
+      accessibilityLiveRegion="polite"
+      onLayout={onLayout}
       style={[
         styles.container,
-        isReconnected ? styles.reconnected : styles.offline,
-        { paddingTop: insets.top + spacing.xs, transform: [{ translateY: slideAnim }] },
+        reconnected ? styles.reconnected : styles.offline,
+        { paddingTop: topInset + spacing.xs },
       ]}
     >
+      {/* Under the status bar, white icons read on the red or green strip in either theme. */}
+      {topInset > 0 ? <StatusBar style="light" /> : null}
       <View style={styles.content}>
         <Ionicons
-          name={isReconnected ? "wifi" : "cloud-offline-outline"}
+          name={reconnected ? "wifi" : "cloud-offline-outline"}
           size={16}
-          color={semantic.onPrimary}
+          color={colors.white}
         />
         <Text style={styles.text}>
-          {isReconnected ? "Back online — syncing..." : "You are offline"}
+          {reconnected ? "Back online — syncing..." : "You are offline"}
         </Text>
       </View>
-    </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 100,
-    paddingBottom: spacing.sm,
+    paddingBottom: spacing.xs,
   },
   offline: {
     backgroundColor: colors.error,

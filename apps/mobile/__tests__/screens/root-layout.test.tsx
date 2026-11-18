@@ -14,16 +14,44 @@ type ScreenOptions =
     }) => Record<string, unknown>);
 type ScreenProps = { name: string; options?: ScreenOptions };
 
+type ScreenLayout = (props: {
+  route: { name: string };
+  options: { headerShown?: boolean };
+  children: React.ReactElement;
+}) => React.ReactElement;
+
 const mockScreens: ScreenProps[] = [];
+const mockStack: { screenLayout?: ScreenLayout } = {};
 jest.mock("expo-router", () => ({
   useRouter: () => ({ replace: jest.fn(), push: jest.fn(), back: jest.fn(), dismissTo: jest.fn() }),
   useSegments: () => ["(tabs)"],
-  Stack: Object.assign(({ children }: { children: React.ReactNode }) => children, {
-    Screen: (props: ScreenProps) => {
-      mockScreens.push(props);
-      return null;
+  // Renders one stand-in note screen through the navigator's screenLayout, the
+  // way native-stack wraps each screen's content (below its header).
+  Stack: Object.assign(
+    ({ children, screenLayout }: { children: React.ReactNode; screenLayout?: ScreenLayout }) => {
+      mockStack.screenLayout = screenLayout;
+      const { Text: MockText } = jest.requireActual("react-native");
+      const screen = <MockText testID="note-screen-content">note</MockText>;
+      return (
+        <>
+          {children}
+          {screenLayout
+            ? screenLayout({ route: { name: "notes/[id]" }, options: {}, children: screen })
+            : screen}
+        </>
+      );
     },
-  }),
+    {
+      Screen: (props: ScreenProps) => {
+        mockScreens.push(props);
+        return null;
+      },
+    },
+  ),
+}));
+
+jest.mock("@/hooks/use-network-status", () => ({
+  useNetworkStatus: jest.fn(() => ({ isConnected: true, isInternetReachable: true })),
 }));
 
 const mockAuth = { isLoading: false };
@@ -40,7 +68,6 @@ jest.mock("@/providers/auth-provider", () => ({
 jest.mock("@/providers/database-provider", () => ({
   DatabaseProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
-jest.mock("@/components/offline-banner", () => ({ OfflineBanner: () => null }));
 jest.mock("@/components/toast", () => ({
   ToastProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -51,6 +78,8 @@ jest.mock("@/lib/performance", () => ({
 }));
 
 import RootLayout from "../../app/_layout";
+import { offlineScreenLayout } from "@/components/navigation/offline-screen-layout";
+import { useNetworkStatus } from "@/hooks/use-network-status";
 
 type StackRoute = { key: string; name: string };
 
@@ -186,5 +215,38 @@ describe("RootLayout system bars", () => {
     render(<RootLayout />);
 
     expect(setButtonStyle).not.toHaveBeenCalled();
+  });
+});
+
+describe("RootLayout offline banner", () => {
+  const mockedNetwork = jest.mocked(useNetworkStatus);
+
+  afterEach(() => {
+    mockedNetwork.mockReturnValue({ isConnected: true, isInternetReachable: true });
+  });
+
+  it("gives every stack screen its own banner through screenLayout", () => {
+    render(<RootLayout />);
+
+    expect(mockStack.screenLayout).toBe(offlineScreenLayout);
+  });
+
+  it("draws the banner in the screen's layout, above its content, when offline", () => {
+    mockedNetwork.mockReturnValue({ isConnected: false, isInternetReachable: false });
+
+    const { getAllByTestId, getByText, toJSON } = render(<RootLayout />);
+
+    // Exactly one banner: the screen's. Nothing is laid over the stack's headers.
+    expect(getAllByTestId("offline-banner")).toHaveLength(1);
+    expect(getByText("You are offline")).toBeTruthy();
+    const json = JSON.stringify(toJSON());
+    expect(json.indexOf('"offline-banner"')).toBeLessThan(json.indexOf('"note-screen-content"'));
+  });
+
+  it("shows no banner online", () => {
+    const { queryByTestId, getByTestId } = render(<RootLayout />);
+
+    expect(queryByTestId("offline-banner")).toBeNull();
+    expect(getByTestId("note-screen-content")).toBeTruthy();
   });
 });

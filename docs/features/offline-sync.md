@@ -1,6 +1,6 @@
 # Offline Sync
 
-**Status:** shipped **Updated:** 2026-10-12
+**Status:** shipped **Updated:** 2026-11-18
 
 ## What it is
 
@@ -48,6 +48,48 @@ attachment's new status is pushed too.
 | Sync driver tests                    | `apps/desktop/__tests__/db/sync.test.ts`, `sync-mappers.test.ts`                                               |
 | Schema / migration tests             | `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts`                                                 |
 | Sync UI + perf tests                 | `apps/mobile/__tests__/components/sync-status.test.tsx`, `apps/mobile/__tests__/performance/sync-perf.test.ts` |
+
+## Offline banner
+
+While the device has no connection, mobile and desktop show a red "You are
+offline" strip, then a green "Back online — syncing..." for 2 s after the
+connection returns. The state machine is `useOfflineBannerState()`
+(`apps/{mobile,desktop}/src/hooks/use-offline-banner-state.ts`, identical on both),
+fed by `useNetworkStatus()` (NetInfo `isConnected`). Web has no offline banner.
+
+The banner is part of the layout flow, never an overlay. Until 1.4.7 it was
+`position: absolute` with `zIndex: 100` over the whole app, so it covered the
+header's Back arrow and took its taps (PrimeTestLab report 10668, M-03).
+
+- **Mobile (iOS, Android).** Each screen draws its own banner below its header.
+  `offlineScreenLayout` (`apps/mobile/src/components/navigation/offline-screen-layout.tsx`)
+  is the react-navigation `screenLayout` of the root `<Stack>` (`app/_layout.tsx`)
+  and of `<Tabs>` (`app/(tabs)/_layout.tsx`); it skips `(tabs)` on the root stack,
+  whose tabs wrap themselves. The header keeps its own status-bar padding, so there
+  is no blank strip. `OfflineBannerProvider` (`src/providers/offline-banner-provider.tsx`)
+  runs the state once for the app. The banner itself (`src/components/offline-banner.tsx`)
+  only draws (`testID="offline-banner"`, `accessibilityRole="alert"`).
+- **Headerless screens** (login, reset-password, waiting-for-approval, and the
+  RouteGuard loading view) have nothing to cover, so the banner goes at the very top
+  there, fills the status-bar area (white status-bar icons while it shows), and the
+  screen below it sees a top safe-area inset of 0. A user who opens the app offline
+  on the login screen still learns why sign-in fails.
+- **Offsets.** `useOfflineBannerHeight()` (`src/hooks/use-offline-banner-height.ts`)
+  is the banner's height above the current screen. The note editor adds it to its
+  Android keyboard offset (`app/notes/[id].tsx`), and login and reset-password use it
+  as theirs; otherwise the toolbar sits behind the keyboard by that much while
+  offline. Toasts start below the banner (`useOfflineBannerHeaderOffset()` in
+  `src/components/toast.tsx`). The tree has the same shape with or without the
+  banner, so a connection change resizes the note editor's WebView but never
+  remounts it.
+- **macOS.** `apps/desktop/src/components/offline-banner.tsx` is the first child of
+  `MainScreen`'s column (`src/screens/main.tsx`), so it pushes the three panes down
+  instead of covering the sidebar's top row and the note list's "New note" button.
+- **E2E.** `apps/mobile/e2e/android-only/10-offline-banner-header.yaml` and
+  `ios-only/10-offline-banner-header.yaml`, run by `run-qa-10668-e2e.sh`, tap the
+  header Back button while offline and end on an offline note; the host check
+  `banner-clear-of-back` then reads the hierarchy and fails if the banner overlaps the
+  Back button or sits above the header.
 
 ## Related ADRs
 
