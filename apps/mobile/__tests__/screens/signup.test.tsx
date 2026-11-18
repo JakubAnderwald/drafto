@@ -1,9 +1,12 @@
 import React from "react";
+import { KeyboardAvoidingView } from "react-native";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { useRouter } from "expo-router";
 import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import SignupScreen from "../../app/(auth)/signup";
+import { OfflineBannerHeightContext } from "@/hooks/use-offline-banner-height";
 
 const mockSignUp = jest.fn();
 jest.mock("@/lib/supabase", () => ({
@@ -157,5 +160,25 @@ describe("SignupScreen", () => {
     await waitFor(() => {
       expect(getByText("Back to login").props.dismissTo).toBe(true);
     });
+  });
+
+  it("offsets its keyboard avoidance by the header above it and, offline, the banner below that", () => {
+    // The jest.setup.js mock; the header that keeps the Back button.
+    jest.mocked(useHeaderHeight).mockReturnValue(91);
+    try {
+      const online = render(<SignupScreen />);
+      expect(online.UNSAFE_getByType(KeyboardAvoidingView).props.keyboardVerticalOffset).toBe(91);
+      online.unmount();
+
+      const { UNSAFE_getByType } = render(
+        <OfflineBannerHeightContext.Provider value={28}>
+          <SignupScreen />
+        </OfflineBannerHeightContext.Provider>,
+      );
+
+      expect(UNSAFE_getByType(KeyboardAvoidingView).props.keyboardVerticalOffset).toBe(91 + 28);
+    } finally {
+      jest.mocked(useHeaderHeight).mockReturnValue(0);
+    }
   });
 });
