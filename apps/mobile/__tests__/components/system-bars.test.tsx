@@ -5,7 +5,12 @@ import * as SecureStore from "expo-secure-store";
 import * as NavigationBar from "expo-navigation-bar";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
-import { SystemBars, systemBarContentStyleFor } from "@/components/system-bars";
+import {
+  MIN_NAVIGATION_BAR_STYLE_API_LEVEL,
+  SystemBars,
+  canStyleNavigationBar,
+  systemBarContentStyleFor,
+} from "@/components/system-bars";
 import { useTheme, type ThemePreference } from "@/providers/theme-provider";
 
 const mockStatusBar = jest.fn();
@@ -42,6 +47,11 @@ function spyOnAppState() {
   };
 }
 
+/** Platform.Version is a getter (undefined under jest); on Android it is the API level. */
+function mockApiLevel(level: number | string | undefined) {
+  return jest.spyOn(Platform, "Version", "get").mockReturnValue(level as number);
+}
+
 function mockOsScheme(scheme: "light" | "dark") {
   return jest.spyOn(ReactNative, "useColorScheme").mockReturnValue(scheme);
 }
@@ -73,12 +83,48 @@ describe("systemBarContentStyleFor", () => {
   });
 });
 
+describe("canStyleNavigationBar", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("allows Android API 29 and later", () => {
+    jest.replaceProperty(Platform, "OS", "android");
+    expect(MIN_NAVIGATION_BAR_STYLE_API_LEVEL).toBe(29);
+    for (const level of [29, 30, 34, 35]) {
+      mockApiLevel(level);
+      expect(canStyleNavigationBar()).toBe(true);
+    }
+  });
+
+  it("refuses Android below API 29, where the bar has a fixed OS-themed colour", () => {
+    jest.replaceProperty(Platform, "OS", "android");
+    for (const level of [24, 26, 28]) {
+      mockApiLevel(level);
+      expect(canStyleNavigationBar()).toBe(false);
+    }
+  });
+
+  it("refuses an API level it cannot read", () => {
+    jest.replaceProperty(Platform, "OS", "android");
+    mockApiLevel(undefined);
+    expect(canStyleNavigationBar()).toBe(false);
+  });
+
+  it("refuses iOS, whatever its version", () => {
+    jest.replaceProperty(Platform, "OS", "ios");
+    mockApiLevel("18.0");
+    expect(canStyleNavigationBar()).toBe(false);
+  });
+});
+
 describe("SystemBars", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     getItemAsync.mockResolvedValue(null);
     setButtonStyle.mockImplementation(() => Promise.resolve());
     jest.replaceProperty(Platform, "OS", "android");
+    mockApiLevel(34);
   });
 
   afterEach(() => {
@@ -243,6 +289,30 @@ describe("SystemBars", () => {
 
     expect(setButtonStyle).not.toHaveBeenCalled();
     expect(addEventListener).not.toHaveBeenCalled();
+  });
+
+  it("leaves the navigation bar alone below Android API 29 but still styles the status bar", async () => {
+    mockApiLevel(28);
+    getItemAsync.mockResolvedValue("dark");
+    mockOsScheme("light");
+    const addEventListener = jest.spyOn(AppState, "addEventListener");
+
+    render(<SystemBars />);
+    await waitFor(() => expect(mockStatusBar).toHaveBeenLastCalledWith({ style: "light" }));
+
+    expect(setButtonStyle).not.toHaveBeenCalled();
+    expect(addEventListener).not.toHaveBeenCalled();
+  });
+
+  it("styles the navigation bar from Android API 29", async () => {
+    mockApiLevel(29);
+    getItemAsync.mockResolvedValue("dark");
+    mockOsScheme("light");
+    spyOnAppState();
+
+    render(<SystemBars />);
+
+    await waitFor(() => expect(lastButtonStyle()).toBe("light"));
   });
 
   it("only ever passes an explicit light or dark style, never one that reads the OS", async () => {

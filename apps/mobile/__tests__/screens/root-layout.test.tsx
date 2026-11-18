@@ -152,8 +152,14 @@ describe("RootLayout system bars", () => {
     mockAuth.isLoading = false;
   });
 
-  it("mounts SystemBars, which styles the Android navigation bar from the app theme", () => {
+  /** Android on an API level SystemBars styles (29+); Platform.Version is undefined under jest. */
+  function mockAndroid() {
     jest.replaceProperty(Platform, "OS", "android");
+    jest.spyOn(Platform, "Version", "get").mockReturnValue(34);
+  }
+
+  it("mounts SystemBars, which styles the Android navigation bar from the app theme", () => {
+    mockAndroid();
 
     render(<RootLayout />);
 
@@ -164,7 +170,7 @@ describe("RootLayout system bars", () => {
   });
 
   it("styles the navigation bar on the launch loading screen, before auth finishes", () => {
-    jest.replaceProperty(Platform, "OS", "android");
+    mockAndroid();
     mockAuth.isLoading = true;
 
     const { getByTestId } = render(<RootLayout />);

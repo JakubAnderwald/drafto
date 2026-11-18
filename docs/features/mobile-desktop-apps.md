@@ -94,7 +94,9 @@ resolved theme changes and again when the app comes back to the foreground, and
 catches a rejected native call. It uses `setButtonStyleAsync` rather than `setStyle`
 because `setStyle` drops the native promise. Note that the two name opposite things:
 `setStyle` names the bar colour, `setButtonStyleAsync` (like `expo-status-bar`) the
-content colour. Never pass `"auto"` or `"inverted"`, and
+content colour. It styles the navigation bar only on API 29+ (`canStyleNavigationBar`):
+below that React Native paints the bar a fixed OS-themed colour, so flipping just the
+buttons would make them unreadable. Never pass `"auto"` or `"inverted"`, and
 don't use `Appearance.setColorScheme()`: both tie the bar back to the OS. Known
 gap, tracked as a follow-up: an RN `Modal` (`DeleteAccountDialog`) re-runs
 edge-to-edge from the OS theme in its own window, which `SystemBars` does not style. iOS, web and macOS have no navigation bar. See

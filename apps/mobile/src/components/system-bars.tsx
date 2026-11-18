@@ -27,6 +27,31 @@ export function systemBarContentStyleFor(isDark: boolean): SystemBarContentStyle
 }
 
 /**
+ * The first Android API level (10, Q) whose 3-button navigation bar is transparent
+ * with a contrast scrim that follows the light-appearance flag.
+ */
+export const MIN_NAVIGATION_BAR_STYLE_API_LEVEL = 29;
+
+/**
+ * Whether SystemBars may set the navigation bar's button style on this device:
+ * Android API 29 and later only.
+ *
+ * Below API 29 React Native's `enableEdgeToEdge()` paints the bar a fixed colour
+ * from the OS theme at launch (a 90%-white scrim on API 26-28 with the OS in
+ * Light, a dark translucent one otherwise), and there is no contrast scrim to
+ * follow the flag. Flipping only the buttons there would put light buttons on
+ * that near-white bar, so the bar keeps React Native's matching OS pair. API
+ * 24-25 has no light navigation-bar flag at all.
+ */
+export function canStyleNavigationBar(): boolean {
+  return (
+    Platform.OS === "android" &&
+    typeof Platform.Version === "number" &&
+    Platform.Version >= MIN_NAVIGATION_BAR_STYLE_API_LEVEL
+  );
+}
+
+/**
  * Sets the Android navigation bar's button style, and with it the 3-button
  * contrast scrim. Never throws or rejects.
  *
@@ -51,9 +76,10 @@ async function applyNavigationBarButtonStyle(style: SystemBarContentStyle): Prom
  * Keeps the OS system bars in step with the in-app theme.
  *
  * - Status bar (iOS and Android): through expo-status-bar.
- * - Navigation bar (Android only): React Native's edge-to-edge setup picks the
- *   bar's light/dark appearance from the OS theme when the activity is created,
- *   and on 3-button navigation Android paints its contrast scrim from that flag.
+ * - Navigation bar (Android API 29+, see `canStyleNavigationBar`): React
+ *   Native's edge-to-edge setup picks the bar's light/dark appearance from the
+ *   OS theme when the activity is created, and on 3-button navigation Android
+ *   paints its contrast scrim from that flag.
  *   With the OS in Light and Drafto in Dark that is a 90%-white bar under a dark
  *   tab bar. Setting the button style from `isDark` makes the scrim follow the app.
  *
@@ -71,12 +97,12 @@ export function SystemBars() {
 
   useEffect(() => {
     latestStyle.current = style;
-    if (Platform.OS !== "android") return;
+    if (!canStyleNavigationBar()) return;
     void applyNavigationBarButtonStyle(style);
   }, [style]);
 
   useEffect(() => {
-    if (Platform.OS !== "android") return;
+    if (!canStyleNavigationBar()) return;
 
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") {
