@@ -47,6 +47,11 @@ jest.mock("@/lib/performance", () => ({
   markStartupBegin: jest.fn(),
   markStartupEnd: jest.fn(),
 }));
+// SystemBars restyles the Android navigation bar; the native module is not linked under jest.
+const mockSetNavigationBarStyle = jest.fn();
+jest.mock("expo-navigation-bar", () => ({
+  setStyle: (...args: unknown[]) => mockSetNavigationBarStyle(...args),
+}));
 
 import RootLayout from "../../app/_layout";
 
@@ -133,5 +138,31 @@ describe("RootLayout screen options", () => {
 
     expect(optionsFor("search", [TABS, SEARCH])?.headerLeft).toBeUndefined();
     expect(optionsFor("notes/[id]", [TABS, SEARCH, NOTE])?.headerLeft).toBeUndefined();
+  });
+});
+
+describe("RootLayout system bars", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mockSetNavigationBarStyle.mockClear();
+  });
+
+  it("mounts SystemBars, which styles the Android navigation bar from the app theme", () => {
+    jest.replaceProperty(Platform, "OS", "android");
+
+    render(<RootLayout />);
+
+    expect(mockSetNavigationBarStyle).toHaveBeenCalled();
+    for (const [style] of mockSetNavigationBarStyle.mock.calls) {
+      expect(["light", "dark"]).toContain(style);
+    }
+  });
+
+  it("leaves the navigation bar alone on iOS", () => {
+    jest.replaceProperty(Platform, "OS", "ios");
+
+    render(<RootLayout />);
+
+    expect(mockSetNavigationBarStyle).not.toHaveBeenCalled();
   });
 });

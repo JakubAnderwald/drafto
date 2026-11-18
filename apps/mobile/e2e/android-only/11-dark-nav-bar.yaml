@@ -1,0 +1,69 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+env:
+  THEME: dark
+---
+# Flow 11: the navigation bar follows the in-app theme (PrimeTestLab report 10668, M-04)
+# Pass -e THEME=dark|light|system -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+#
+# The bug: on 3-button navigation, Drafto set to Dark under an OS in Light kept a
+# light-grey navigation bar under the dark tab bar (and the reverse). Maestro cannot
+# read system-bar colours, so this flow only signs in, picks the theme and leaves the
+# app on the Notebooks tab. The pass/fail checks run on the host, after the flow, in
+# the QA 10668 runner (`run-qa-10668-e2e.sh`): the focused window's `apr=` flags in
+# `dumpsys window` (LIGHT_NAVIGATION_BARS absent for dark, present for light) and a
+# pixel sample of the navigation bar from `screencap`. The runner sets the OS theme
+# (`cmd uimode night`) and 3-button navigation before each case:
+#   A. OS Light, THEME=dark   -> dark bar
+#   B. OS Dark,  THEME=light  -> light bar
+#   C. THEME=system           -> bar follows the OS, live, without a relaunch
+# Run on API 34 (the QA device's Android 14): the Android 15 emulator ignores the
+# navigation-bar style.
+#
+# Leaves the chosen theme selected, on purpose: the host checks read the screen as
+# this flow leaves it. The next clearState resets it to System.
+# Creates no data, so it needs no RUN_ID and no cleanup.
+
+# --- Clean start and sign in ---
+- clearKeychain
+- stopApp
+- clearState
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
+- tapOn: "you@example.com"
+- inputText: ${E2E_TEST_EMAIL}
+- tapOn: "Sign in to your Drafto account"
+- tapOn: "Your password"
+- inputText: ${E2E_TEST_PASSWORD}
+- tapOn: "Sign in to your Drafto account"
+- tapOn:
+    id: "login-button"
+
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
+- waitForAnimationToEnd
+
+# --- Pick the theme in Settings ---
+- tapOn: "Settings"
+- extendedWaitUntil:
+    visible:
+      id: "theme-option-${THEME}"
+    timeout: 10000
+- tapOn:
+    id: "theme-option-${THEME}"
+- assertVisible:
+    id: "theme-option-${THEME}"
+    selected: true
+
+# --- Back to the Notebooks tab, where QA saw the bar ---
+- tapOn: "Notebooks"
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 10000
+- waitForAnimationToEnd
+- takeScreenshot: nav-bar-${THEME}

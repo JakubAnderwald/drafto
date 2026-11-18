@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, type AlertButton } from "react-native";
+import { Alert, Platform, type AlertButton } from "react-native";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
   describeAccountDeletionFailure,
@@ -8,6 +8,7 @@ import {
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import SettingsScreen from "../../app/(tabs)/settings";
+import { SystemBars } from "@/components/system-bars";
 
 const mockSignOut = jest.fn();
 const mockDeleteAccount = jest.fn();
@@ -58,6 +59,12 @@ jest.mock("@/hooks/use-haptics", () => ({
     error: jest.fn(),
     selection: jest.fn(),
   }),
+}));
+
+// SystemBars restyles the Android navigation bar; the native module is not linked under jest.
+const mockSetNavigationBarStyle = jest.fn();
+jest.mock("expo-navigation-bar", () => ({
+  setStyle: (...args: unknown[]) => mockSetNavigationBarStyle(...args),
 }));
 
 const OFFLINE_NOTE = "Deleting your account needs an internet connection.";
@@ -330,5 +337,44 @@ describe("SettingsScreen", () => {
     });
     expect(await findByText(describeAccountDeletionFailure({ status: "network" }))).toBeTruthy();
     expect(mockSignOut).not.toHaveBeenCalled();
+  });
+
+  describe("theme options (QA report 10668, M-04)", () => {
+    it("gives each theme option a stable testID for E2E", () => {
+      const { getByTestId } = render(<SettingsScreen />);
+
+      expect(getByTestId("theme-option-system").props.accessibilityLabel).toBe("System theme");
+      expect(getByTestId("theme-option-light").props.accessibilityLabel).toBe("Light theme");
+      expect(getByTestId("theme-option-dark").props.accessibilityLabel).toBe("Dark theme");
+    });
+
+    it("marks the pressed theme option as selected", () => {
+      const { getByTestId } = render(<SettingsScreen />);
+
+      fireEvent.press(getByTestId("theme-option-dark"));
+
+      expect(getByTestId("theme-option-dark").props.accessibilityState).toEqual({
+        selected: true,
+      });
+      expect(getByTestId("theme-option-system").props.accessibilityState).toEqual({
+        selected: false,
+      });
+    });
+
+    it("restyles the Android navigation bar when the theme is switched", () => {
+      jest.replaceProperty(Platform, "OS", "android");
+      const { getByLabelText } = render(
+        <>
+          <SettingsScreen />
+          <SystemBars />
+        </>,
+      );
+
+      fireEvent.press(getByLabelText("Dark theme"));
+      expect(mockSetNavigationBarStyle).toHaveBeenLastCalledWith("dark");
+
+      fireEvent.press(getByLabelText("Light theme"));
+      expect(mockSetNavigationBarStyle).toHaveBeenLastCalledWith("light");
+    });
   });
 });
