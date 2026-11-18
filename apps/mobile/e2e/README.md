@@ -86,6 +86,7 @@ bash apps/mobile/e2e/run-nested-lists-e2e.sh
 | `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link        |
 | `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel         |
 | `08-nested-lists.yaml`        | Open a web note with nested to-dos, edit the deepest one |
+| `10-swipe-hint.yaml`          | One-time swipe hints on each list, Trash tap menu        |
 | `search.yaml`                 | Open search, type query, dismiss                         |
 
 ### Android-only

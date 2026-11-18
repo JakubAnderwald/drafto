@@ -1,5 +1,14 @@
 import { useMemo, useCallback } from "react";
-import { Text, View, FlatList, Alert, Pressable, RefreshControl, StyleSheet } from "react-native";
+import {
+  Text,
+  View,
+  FlatList,
+  Alert,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  type AlertButton,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Q } from "@nozbe/watermelondb";
 
@@ -8,6 +17,7 @@ import { useTheme } from "@/providers/theme-provider";
 import { useTrashedNotes } from "@/hooks/use-trashed-notes";
 import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
 import { useSwipeHint } from "@/hooks/use-swipe-hint";
+import { trashMenuButtons } from "@/lib/trash-menu-buttons";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { SwipeHint, SWIPE_HINT_TEXT } from "@/components/swipe-hint";
 import { ListSkeleton } from "@/components/ui/skeleton";
@@ -22,7 +32,7 @@ export default function TrashScreen() {
   const { refreshing, onRefresh } = usePullToRefresh(sync);
   const { notes, loading } = useTrashedNotes();
   const { semantic } = useTheme();
-  const swipeHint = useSwipeHint("trash");
+  const swipeHint = useSwipeHint("trash", notes[0]?.id);
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const restoreNote = useCallback(
@@ -92,25 +102,26 @@ export default function TrashScreen() {
   // undoable, so picking it here is the confirmation; deleting still asks.
   const openNoteMenu = useCallback(
     (id: string, title: string) => {
+      const restore: AlertButton = { text: "Restore", onPress: () => restoreNote(id) };
+      const deleteForever: AlertButton = {
+        text: "Delete permanently",
+        style: "destructive",
+        onPress: () => handleDeletePermanent(id, title),
+      };
+      const cancel: AlertButton = { text: "Cancel", style: "cancel" };
       Alert.alert(
         title || "Untitled",
         undefined,
-        [
-          { text: "Restore", onPress: () => restoreNote(id) },
-          {
-            text: "Delete permanently",
-            style: "destructive",
-            onPress: () => handleDeletePermanent(id, title),
-          },
-          { text: "Cancel", style: "cancel" },
-        ],
-        { cancelable: true },
+        trashMenuButtons(restore, deleteForever, cancel),
+        {
+          cancelable: true,
+        },
       );
     },
     [restoreNote, handleDeletePermanent],
   );
 
-  const renderNote = ({ item, index }: { item: Note; index: number }) => {
+  const renderNote = ({ item }: { item: Note }) => {
     const trashedDate = item.trashedAt ? item.trashedAt.toLocaleDateString() : "";
 
     const leftActions: SwipeAction[] = [
@@ -137,7 +148,7 @@ export default function TrashScreen() {
       <SwipeableRow
         leftActions={leftActions}
         rightActions={rightActions}
-        peek={swipeHint.peek && index === 0}
+        peek={item.id === swipeHint.peekRowId}
         onPeekEnd={swipeHint.endPeek}
         onOpen={swipeHint.dismiss}
       >

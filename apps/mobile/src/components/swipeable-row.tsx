@@ -159,19 +159,24 @@ export function SwipeableRow({
     if (mounted.current && !isOpen.current && !dragging.current) setRevealed(false);
   }, []);
 
+  /**
+   * Springs the row open at `toValue`. `byUser` is a release that opened it:
+   * only that buzzes and reports the open, not a re-settle after the list took
+   * the gesture.
+   */
   const snapOpen = useCallback(
-    (toValue: number) => {
+    (toValue: number, byUser: boolean) => {
       const wasOpen = isOpen.current;
       isOpen.current = true;
       currentOffset.current = toValue;
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      if (byUser) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       Animated.spring(translateX, {
         toValue,
         useNativeDriver: true,
         bounciness: 0,
         speed: 20,
       }).start();
-      if (!wasOpen) latest.current.onOpen?.();
+      if (byUser && !wasOpen) latest.current.onOpen?.();
     },
     [translateX],
   );
@@ -201,8 +206,19 @@ export function SwipeableRow({
       },
       onPanResponderGrant: () => {
         dragging.current = true;
-        peekAnimation.current?.stop();
         setRevealed(true);
+        const peeking = peekAnimation.current;
+        if (peeking) {
+          // The finger takes over a peek mid-slide: carry on from where the
+          // row is, not from rest, so it doesn't jump. The native driver
+          // reports that position asynchronously; moves before then use 0.
+          peekAnimation.current = null;
+          peeking.stop();
+          translateX.stopAnimation((value) => {
+            if (dragging.current && !isOpen.current) currentOffset.current = value;
+          });
+          latest.current.onPeekEnd?.();
+        }
       },
       onPanResponderMove: (_evt: GestureResponderEvent, gestureState: PanResponderGestureState) => {
         const { leftWidth: left, rightWidth: right } = latest.current;
@@ -228,12 +244,12 @@ export function SwipeableRow({
           rightWidth: latest.current.rightWidth,
         });
         if (target === 0) snapClosed();
-        else snapOpen(target);
+        else snapOpen(target, true);
       },
       onPanResponderTerminate: () => {
         // Another responder (the list's scroll) took the gesture: settle where the row was.
         dragging.current = false;
-        if (isOpen.current) snapOpen(currentOffset.current);
+        if (isOpen.current) snapOpen(currentOffset.current, false);
         else snapClosed();
       },
     }),
@@ -243,17 +259,15 @@ export function SwipeableRow({
     if (!peek || peeked.current) return;
     const offsets = peekOffsets(leftWidth, rightWidth);
     if (offsets.length === 0) return;
-    peeked.current = true;
 
-    const endPeek = () => {
-      peekAnimation.current = null;
-      hideActionsIfClosed();
-      latest.current.onPeekEnd?.();
-    };
+    // Set by the cleanup: `peek` turned false, the row unmounted, or its
+    // actions changed. Checked after the Reduce Motion lookup, which is async.
+    let cancelled = false;
 
     AccessibilityInfo.isReduceMotionEnabled().then(
       (reduceMotion) => {
-        if (!mounted.current) return;
+        if (cancelled || !mounted.current || peeked.current) return;
+        peeked.current = true;
         if (reduceMotion || isOpen.current || dragging.current) {
           latest.current.onPeekEnd?.();
           return;
@@ -261,19 +275,43 @@ export function SwipeableRow({
         setRevealed(true);
         const slide = (toValue: number) =>
           Animated.timing(translateX, { toValue, duration: PEEK_SLIDE_MS, useNativeDriver: true });
-        const animation = Animated.sequence([
+        const run = Animated.sequence([
           Animated.delay(PEEK_DELAY_MS),
           ...offsets.flatMap((offset) => [slide(offset), Animated.delay(PEEK_HOLD_MS), slide(0)]),
         ]);
-        peekAnimation.current = animation;
-        animation.start(endPeek);
+        peekAnimation.current = run;
+        run.start(({ finished }) => {
+          // A stopped peek is settled by whoever stopped it: a drag, the
+          // called-off effect below, or the unmount.
+          if (!finished) return;
+          if (peekAnimation.current === run) peekAnimation.current = null;
+          hideActionsIfClosed();
+          latest.current.onPeekEnd?.();
+        });
       },
       (error: unknown) => {
+        if (cancelled || !mounted.current || peeked.current) return;
+        peeked.current = true;
         console.warn("Could not read the Reduce Motion setting; skipping the row peek:", error);
         latest.current.onPeekEnd?.();
       },
     );
+
+    return () => {
+      cancelled = true;
+    };
   }, [peek, leftWidth, rightWidth, translateX, hideActionsIfClosed]);
+
+  // The peek was called off mid-slide (the hint was dismissed): stop it and
+  // settle the row, unless a finger has it.
+  useEffect(() => {
+    if (peek) return;
+    const running = peekAnimation.current;
+    if (!running) return;
+    peekAnimation.current = null;
+    running.stop();
+    if (!dragging.current) snapClosed();
+  }, [peek, snapClosed]);
 
   const handleActionPress = useCallback(
     (action: SwipeAction) => {

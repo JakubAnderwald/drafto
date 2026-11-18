@@ -40,7 +40,7 @@ export default function NotebooksScreen() {
   const { notebooks, loading } = useNotebooks();
   const { semantic } = useTheme();
   const haptics = useHaptics();
-  const swipeHint = useSwipeHint("notebooks");
+  const swipeHint = useSwipeHint("notebooks", notebooks[0]?.id);
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [creating, setCreating] = useState(false);
@@ -189,7 +189,7 @@ export default function NotebooksScreen() {
     setEditName(notebook.name);
   };
 
-  const renderNotebook = ({ item, index }: { item: Notebook; index: number }) => {
+  const renderNotebook = ({ item }: { item: Notebook }) => {
     if (editingId === item.id) {
       return (
         <View style={styles.row}>
@@ -237,7 +237,7 @@ export default function NotebooksScreen() {
     return (
       <SwipeableRow
         rightActions={rightActions}
-        peek={swipeHint.peek && index === 0}
+        peek={item.id === swipeHint.peekRowId}
         onPeekEnd={swipeHint.endPeek}
         onOpen={swipeHint.dismiss}
       >

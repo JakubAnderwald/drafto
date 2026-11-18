@@ -1,6 +1,13 @@
 import * as SecureStore from "expo-secure-store";
 
-import { hasSeenSwipeHint, markSwipeHintSeen, swipeHintKey } from "@/lib/swipe-hint-store";
+import {
+  hasPeekedSwipeHint,
+  hasSeenSwipeHint,
+  markSwipeHintPeeked,
+  markSwipeHintSeen,
+  swipeHintKey,
+  swipePeekKey,
+} from "@/lib/swipe-hint-store";
 
 const mockSecureStore = SecureStore as jest.Mocked<typeof SecureStore>;
 
@@ -44,5 +51,28 @@ describe("swipe-hint-store", () => {
     await markSwipeHintSeen("trash");
 
     expect(mockSecureStore.setItemAsync).toHaveBeenCalledWith("drafto_swipe_hint_seen_trash", "1");
+  });
+
+  it("keys each list's peek flag apart from its hint flag", () => {
+    expect(swipePeekKey("notes")).toBe("drafto_swipe_hint_peeked_notes");
+    expect(swipePeekKey("trash")).toBe("drafto_swipe_hint_peeked_trash");
+    expect(swipePeekKey("notebooks")).toBe("drafto_swipe_hint_peeked_notebooks");
+  });
+
+  it("reports whether the first-row peek has played", async () => {
+    mockSecureStore.getItemAsync.mockResolvedValueOnce(null).mockResolvedValueOnce("1");
+
+    await expect(hasPeekedSwipeHint("notes")).resolves.toBe(false);
+    await expect(hasPeekedSwipeHint("notes")).resolves.toBe(true);
+    expect(mockSecureStore.getItemAsync).toHaveBeenCalledWith("drafto_swipe_hint_peeked_notes");
+  });
+
+  it("stores the peek flag for one list", async () => {
+    await markSwipeHintPeeked("notebooks");
+
+    expect(mockSecureStore.setItemAsync).toHaveBeenCalledWith(
+      "drafto_swipe_hint_peeked_notebooks",
+      "1",
+    );
   });
 });

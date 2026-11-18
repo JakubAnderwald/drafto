@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, FlatList, type AlertButton } from "react-native";
+import { Alert, FlatList, Platform, type AlertButton } from "react-native";
 import * as SecureStore from "expo-secure-store";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
@@ -84,7 +84,7 @@ describe("TrashScreen", () => {
   });
 
   afterEach(() => {
-    alertSpy.mockRestore();
+    jest.restoreAllMocks();
   });
 
   it("shows the empty state, without a hint", async () => {
@@ -176,7 +176,8 @@ describe("TrashScreen", () => {
       mockNotes.push({ id: "n1", title: "Old idea", trashedAt: new Date() });
     });
 
-    it("opens Restore / Delete permanently / Cancel on a tap", () => {
+    it("opens Restore / Delete permanently / Cancel on a tap, Restore first on iOS", () => {
+      jest.replaceProperty(Platform, "OS", "ios");
       const { getByText } = render(<TrashScreen />);
 
       fireEvent.press(getByText("Old idea"));
@@ -188,6 +189,21 @@ describe("TrashScreen", () => {
         ["Restore", undefined],
         ["Delete permanently", "destructive"],
         ["Cancel", "cancel"],
+      ]);
+    });
+
+    it("puts Cancel in Android's neutral slot and Restore in its positive one", () => {
+      // React Native fills Android's three dialog slots from the end:
+      // positive (right), then negative, then neutral (far left).
+      jest.replaceProperty(Platform, "OS", "android");
+      const { getByText } = render(<TrashScreen />);
+
+      fireEvent.press(getByText("Old idea"));
+
+      expect(lastAlertButtons(alertSpy).map((button) => button.text)).toEqual([
+        "Cancel",
+        "Delete permanently",
+        "Restore",
       ]);
     });
 

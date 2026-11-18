@@ -67,6 +67,16 @@ function capturePanResponder() {
           config.onPanResponderGrant?.(event, gesture(0));
         });
       },
+      move(dx: number) {
+        act(() => {
+          config.onPanResponderMove?.(event, gesture(dx));
+        });
+      },
+      release(dx: number, vx = 0) {
+        act(() => {
+          config.onPanResponderRelease?.(event, gesture(dx, vx));
+        });
+      },
       terminate() {
         act(() => {
           config.onPanResponderTerminate?.(event, gesture(0));
@@ -305,6 +315,27 @@ describe("SwipeableRow", () => {
     expect(getByTestId("action-trash")).toBeTruthy();
   });
 
+  it("buzzes and reports only the user's open, not the re-settle after the list takes over", () => {
+    const panResponder = capturePanResponder();
+    const onOpen = jest.fn();
+    const { left, right } = trashActions();
+    render(
+      <SwipeableRow leftActions={left} rightActions={right} onOpen={onOpen}>
+        <Text>Row</Text>
+      </SwipeableRow>,
+    );
+
+    panResponder().swipe(-100);
+    expect(Haptics.impactAsync).toHaveBeenCalledTimes(1);
+    expect(Haptics.impactAsync).toHaveBeenCalledWith(Haptics.ImpactFeedbackStyle.Medium);
+
+    panResponder().grant();
+    panResponder().terminate();
+
+    expect(Haptics.impactAsync).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
   describe("peek", () => {
     function fakeSequence() {
       let finish: ((result: { finished: boolean }) => void) | undefined;
@@ -441,6 +472,107 @@ describe("SwipeableRow", () => {
       expect(onPeekEnd).toHaveBeenCalledTimes(1);
       // The swipe opened the row, so its buttons stay.
       expect(getByTestId("action-trash")).toBeTruthy();
+    });
+
+    it("picks a drag up from where the peek left the row", async () => {
+      const panResponder = capturePanResponder();
+      const { sequence, stop } = fakeSequence();
+      // The native driver reports the peek's position when the animation stops.
+      jest
+        .spyOn(Animated.Value.prototype, "stopAnimation")
+        .mockImplementation((callback?: (value: number) => void) => callback?.(-40));
+      const setValue = jest.spyOn(Animated.Value.prototype, "setValue");
+      const onOpen = jest.fn();
+      const onPeekEnd = jest.fn();
+      const { left, right } = trashActions();
+      render(
+        <SwipeableRow
+          leftActions={left}
+          rightActions={right}
+          peek
+          onPeekEnd={onPeekEnd}
+          onOpen={onOpen}
+        >
+          <Text>Row</Text>
+        </SwipeableRow>,
+      );
+      await waitFor(() => expect(sequence).toHaveBeenCalledTimes(1));
+
+      panResponder().grant();
+      panResponder().move(30);
+
+      expect(stop).toHaveBeenCalled();
+      expect(onPeekEnd).toHaveBeenCalledTimes(1);
+      // -40 + 30, not 0 + 30: no jump, and no left-hand actions half open.
+      expect(setValue).toHaveBeenLastCalledWith(-10);
+
+      panResponder().release(30);
+
+      // Ten points left of rest is a short drag: the row closes.
+      expect(onOpen).not.toHaveBeenCalled();
+    });
+
+    it("stops and settles the row when the peek is called off mid-slide", async () => {
+      const spring = jest.spyOn(Animated, "spring");
+      const { sequence, stop } = fakeSequence();
+      const onPeekEnd = jest.fn();
+      const { left, right } = trashActions();
+      const { rerender, queryByTestId } = render(
+        <SwipeableRow leftActions={left} rightActions={right} peek onPeekEnd={onPeekEnd}>
+          <Text>Row</Text>
+        </SwipeableRow>,
+      );
+      await waitFor(() => expect(sequence).toHaveBeenCalledTimes(1));
+      expect(queryByTestId("action-trash")).not.toBeNull();
+
+      rerender(
+        <SwipeableRow leftActions={left} rightActions={right} peek={false} onPeekEnd={onPeekEnd}>
+          <Text>Row</Text>
+        </SwipeableRow>,
+      );
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(spring).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ toValue: 0 }),
+      );
+      expect(onPeekEnd).not.toHaveBeenCalled();
+      await waitFor(() => expect(queryByTestId("action-trash")).toBeNull());
+    });
+
+    it("doesn't start when the peek is called off during the Reduce Motion lookup", async () => {
+      let answer!: (reduceMotion: boolean) => void;
+      mockedReduceMotion.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
+      const { sequence } = fakeSequence();
+      const onPeekEnd = jest.fn();
+      const { left, right } = trashActions();
+      const { rerender } = render(
+        <SwipeableRow leftActions={left} rightActions={right} peek onPeekEnd={onPeekEnd}>
+          <Text>Row</Text>
+        </SwipeableRow>,
+      );
+
+      rerender(
+        <SwipeableRow leftActions={left} rightActions={right} peek={false} onPeekEnd={onPeekEnd}>
+          <Text>Row</Text>
+        </SwipeableRow>,
+      );
+      await act(async () => answer(false));
+
+      expect(sequence).not.toHaveBeenCalled();
+      expect(onPeekEnd).not.toHaveBeenCalled();
+
+      // Called back on, it still gets its one slide.
+      rerender(
+        <SwipeableRow leftActions={left} rightActions={right} peek onPeekEnd={onPeekEnd}>
+          <Text>Row</Text>
+        </SwipeableRow>,
+      );
+      await waitFor(() => expect(sequence).toHaveBeenCalledTimes(1));
     });
 
     it("stops when the row unmounts mid-peek", async () => {

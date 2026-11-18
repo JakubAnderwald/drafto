@@ -41,7 +41,7 @@ export default function NotesListScreen() {
   const notebookName = useNotebookName(notebookId);
   const { semantic } = useTheme();
   const haptics = useHaptics();
-  const swipeHint = useSwipeHint("notes");
+  const swipeHint = useSwipeHint("notes", notes[0]?.id);
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [creating, setCreating] = useState(false);
@@ -141,7 +141,7 @@ export default function NotesListScreen() {
     setEditTitle(note.title);
   };
 
-  const renderNote = ({ item, index }: { item: Note; index: number }) => {
+  const renderNote = ({ item }: { item: Note }) => {
     if (editingId === item.id) {
       return (
         <View style={styles.row}>
@@ -189,7 +189,7 @@ export default function NotesListScreen() {
     return (
       <SwipeableRow
         rightActions={rightActions}
-        peek={swipeHint.peek && index === 0}
+        peek={item.id === swipeHint.peekRowId}
         onPeekEnd={swipeHint.endPeek}
         onOpen={swipeHint.dismiss}
       >

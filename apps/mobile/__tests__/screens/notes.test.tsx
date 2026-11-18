@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, FlatList, StyleSheet } from "react-native";
+import { Alert, Animated, FlatList, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as SecureStore from "expo-secure-store";
 
@@ -172,6 +172,44 @@ describe("NotesListScreen", () => {
       fireEvent(getByText("First Note"), "longPress");
 
       expect(getByDisplayValue("First Note")).toBeTruthy();
+    });
+
+    it("slides only the row that was first, once, even after a new note lands on top", async () => {
+      const start = jest.fn();
+      const sequence = jest.spyOn(Animated, "sequence").mockImplementation(
+        () =>
+          ({
+            start,
+            stop: jest.fn(),
+            reset: jest.fn(),
+          }) as unknown as Animated.CompositeAnimation,
+      );
+      const { findByTestId, getByText, rerender } = render(<NotesListScreen />);
+      await findByTestId("swipe-hint");
+      await waitFor(() => expect(sequence).toHaveBeenCalledTimes(1));
+
+      mockNotes.unshift({ id: "note-new", title: "Brand New", updatedAt: new Date() });
+      rerender(<NotesListScreen />);
+      await act(async () => {});
+
+      expect(getByText("Brand New")).toBeTruthy();
+      expect(sequence).toHaveBeenCalledTimes(1);
+      expect(mockSecureStore.getItemAsync).toHaveBeenCalledWith("drafto_swipe_hint_peeked_notes");
+      sequence.mockRestore();
+    });
+
+    it("doesn't slide a row on a device where the peek already played", async () => {
+      mockSecureStore.getItemAsync.mockImplementation(async (key: string) =>
+        key === "drafto_swipe_hint_peeked_notes" ? "1" : null,
+      );
+      const sequence = jest.spyOn(Animated, "sequence");
+      const { findByTestId } = render(<NotesListScreen />);
+
+      expect(await findByTestId("swipe-hint")).toBeTruthy();
+      await act(async () => {});
+
+      expect(sequence).not.toHaveBeenCalled();
+      sequence.mockRestore();
     });
   });
 
