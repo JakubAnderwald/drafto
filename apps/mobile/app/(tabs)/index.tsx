@@ -20,8 +20,10 @@ import { useTheme } from "@/providers/theme-provider";
 import { useNotebooks } from "@/hooks/use-notebooks";
 import { useHaptics } from "@/hooks/use-haptics";
 import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
+import { useSwipeHint } from "@/hooks/use-swipe-hint";
 import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
+import { SwipeHint, SWIPE_HINT_TEXT } from "@/components/swipe-hint";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Fab, useFabLayout } from "@/components/ui/fab";
@@ -38,6 +40,7 @@ export default function NotebooksScreen() {
   const { notebooks, loading } = useNotebooks();
   const { semantic } = useTheme();
   const haptics = useHaptics();
+  const swipeHint = useSwipeHint("notebooks");
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [creating, setCreating] = useState(false);
@@ -186,7 +189,7 @@ export default function NotebooksScreen() {
     setEditName(notebook.name);
   };
 
-  const renderNotebook = ({ item }: { item: Notebook }) => {
+  const renderNotebook = ({ item, index }: { item: Notebook; index: number }) => {
     if (editingId === item.id) {
       return (
         <View style={styles.row}>
@@ -224,6 +227,7 @@ export default function NotebooksScreen() {
     const rightActions: SwipeAction[] = [
       {
         icon: "trash-outline",
+        label: "Delete notebook",
         color: colors.white,
         backgroundColor: colors.error,
         onPress: () => handleDelete(item.id, item.name),
@@ -231,22 +235,30 @@ export default function NotebooksScreen() {
     ];
 
     return (
-      <SwipeableRow rightActions={rightActions}>
-        <Pressable
-          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-          onPress={() => router.push(`/notebooks/${item.id}`)}
-          onLongPress={() => startEditing(item)}
-        >
-          <Ionicons
-            name="book-outline"
-            size={20}
-            color={colors.primary[600]}
-            style={styles.rowIcon}
-          />
-          <Text style={styles.rowText} numberOfLines={1}>
-            {item.name}
-          </Text>
-        </Pressable>
+      <SwipeableRow
+        rightActions={rightActions}
+        peek={swipeHint.peek && index === 0}
+        onPeekEnd={swipeHint.endPeek}
+        onOpen={swipeHint.dismiss}
+      >
+        {(accessibility) => (
+          <Pressable
+            {...accessibility}
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push(`/notebooks/${item.id}`)}
+            onLongPress={() => startEditing(item)}
+          >
+            <Ionicons
+              name="book-outline"
+              size={20}
+              color={colors.primary[600]}
+              style={styles.rowIcon}
+            />
+            <Text style={styles.rowText} numberOfLines={1}>
+              {item.name}
+            </Text>
+          </Pressable>
+        )}
       </SwipeableRow>
     );
   };
@@ -295,6 +307,11 @@ export default function NotebooksScreen() {
           data={notebooks}
           keyExtractor={(item) => item.id}
           renderItem={renderNotebook}
+          ListHeaderComponent={
+            swipeHint.visible && notebooks.length > 0 ? (
+              <SwipeHint text={SWIPE_HINT_TEXT.notebooks} onDismiss={swipeHint.dismiss} />
+            ) : null
+          }
           contentContainerStyle={listContentStyle}
           refreshControl={
             <RefreshControl
