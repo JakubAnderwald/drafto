@@ -5,6 +5,7 @@ import {
   migrateSignedUrlsToAttachmentUrls,
 } from "../src/editor/resolve-urls";
 import type { BlockNoteBlock, TipTapDoc } from "../src/editor/types";
+import { toLocalAttachmentSrc } from "../src/editor/attachment-url";
 
 describe("resolveBlockNoteImageUrls", () => {
   it("resolves attachment:// URLs via resolver", async () => {
@@ -19,7 +20,7 @@ describe("resolveBlockNoteImageUrls", () => {
     const resolver = vi.fn().mockResolvedValue("https://signed.url/img.jpg");
     const result = await resolveBlockNoteImageUrls(blocks, resolver);
 
-    expect(resolver).toHaveBeenCalledWith("user-1/note-1/img.jpg");
+    expect(resolver).toHaveBeenCalledWith("user-1/note-1/img.jpg", "image");
     expect(result[0].props?.url).toBe("https://signed.url/img.jpg");
   });
 
@@ -95,7 +96,7 @@ describe("resolveBlockNoteImageUrls", () => {
     const resolver = vi.fn().mockResolvedValue("https://signed.url/report.pdf");
     const result = await resolveBlockNoteImageUrls(blocks, resolver);
 
-    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf");
+    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf", "link");
     expect(result[0].props?.url).toBe("https://signed.url/report.pdf");
     expect(result[0].props?.name).toBe("report.pdf");
   });
@@ -119,7 +120,7 @@ describe("resolveBlockNoteImageUrls", () => {
     const resolver = vi.fn().mockResolvedValue("https://signed.url/report.pdf");
     const result = await resolveBlockNoteImageUrls(blocks, resolver);
 
-    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf");
+    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf", "link");
     expect((result[0].content as { type: string; href?: string }[])[0].href).toBe(
       "https://signed.url/report.pdf",
     );
@@ -141,7 +142,7 @@ describe("resolveTipTapImageUrls", () => {
     const resolver = vi.fn().mockResolvedValue("https://signed.url/img.jpg");
     const result = await resolveTipTapImageUrls(doc, resolver);
 
-    expect(resolver).toHaveBeenCalledWith("user-1/note-1/img.jpg");
+    expect(resolver).toHaveBeenCalledWith("user-1/note-1/img.jpg", "image");
     expect(result.content[0].attrs?.src).toBe("https://signed.url/img.jpg");
   });
 
@@ -195,7 +196,7 @@ describe("resolveTipTapImageUrls", () => {
     const resolver = vi.fn().mockResolvedValue("https://signed.url/report.pdf");
     const result = await resolveTipTapImageUrls(doc, resolver);
 
-    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf");
+    expect(resolver).toHaveBeenCalledWith("user-1/note-1/report.pdf", "link");
     const text = result.content[0].content![0];
     expect(text.marks?.[0].attrs?.href).toBe("https://signed.url/report.pdf");
   });
@@ -297,5 +298,118 @@ describe("migrateSignedUrlsToAttachmentUrls", () => {
     expect(result[0].type).toBe("paragraph");
     expect(result[1].props?.url).toBe("attachment://user-1/note-1/img.jpg");
     expect(result[2].type).toBe("paragraph");
+  });
+});
+
+describe("attachment reference kinds", () => {
+  it("tells the resolver whether a path is an image src or a link", async () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        { type: "image", attrs: { src: "attachment://u/n/pic.jpg" } },
+        { type: "file", attrs: { src: "attachment://u/n/file.bin" } },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "doc",
+              marks: [{ type: "link", attrs: { href: "attachment://u/n/doc.pdf" } }],
+            },
+          ],
+        },
+      ],
+    };
+    const resolver = vi.fn(async (filePath: string) => `resolved:${filePath}`);
+    await resolveTipTapImageUrls(doc, resolver);
+    expect(resolver.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["u/n/pic.jpg", "image"],
+        ["u/n/file.bin", "link"],
+        ["u/n/doc.pdf", "link"],
+      ]),
+    );
+  });
+
+  it("resolves a path used as both an image and a link once, as an image", async () => {
+    const blocks: BlockNoteBlock[] = [
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "link",
+            href: "attachment://u/n/pic.jpg",
+            content: [{ type: "text", text: "x" }],
+          },
+        ],
+        children: [],
+      },
+      { type: "image", props: { url: "attachment://u/n/pic.jpg" }, children: [] },
+    ];
+    const resolver = vi.fn().mockResolvedValue("resolved");
+    await resolveBlockNoteImageUrls(blocks, resolver);
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith("u/n/pic.jpg", "image");
+  });
+
+  it("leaves a src that fails to resolve (offline) as attachment:// and resolves the rest", async () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        { type: "image", attrs: { src: "attachment://u/n/missing.jpg" } },
+        { type: "image", attrs: { src: "attachment://u/n/cached.jpg" } },
+      ],
+    };
+    const resolver = vi.fn(async (filePath: string) => {
+      if (filePath.endsWith("missing.jpg")) throw new Error("offline");
+      return toLocalAttachmentSrc("file:///c/cached.jpg", filePath);
+    });
+    const result = await resolveTipTapImageUrls(doc, resolver);
+    expect(result.content[0].attrs?.src).toBe("attachment://u/n/missing.jpg");
+    expect(result.content[1].attrs?.src).toBe(
+      "file:///c/cached.jpg#drafto-attachment=u%2Fn%2Fcached.jpg",
+    );
+  });
+});
+
+describe("migrateSignedUrlsToAttachmentUrls with device-local srcs (ADR-0086)", () => {
+  const local = (filePath: string) =>
+    toLocalAttachmentSrc("file:///data/user/0/eu.drafto.mobile/files/attachment-cache/x", filePath);
+
+  it("maps a local src on image and file blocks, nested children and inline links back to attachment://", () => {
+    const blocks: BlockNoteBlock[] = [
+      { type: "image", props: { url: local("u/n/a b.jpg") }, children: [] },
+      { type: "file", props: { url: local("u/n/r.pdf"), name: "r.pdf" }, children: [] },
+      {
+        type: "bulletListItem",
+        content: [
+          {
+            type: "link",
+            href: local("u/n/l.pdf"),
+            content: [{ type: "text", text: "l" }],
+          },
+        ],
+        children: [{ type: "image", props: { url: local("u/n/child.png") }, children: [] }],
+      },
+    ];
+    const result = migrateSignedUrlsToAttachmentUrls(blocks);
+    expect(result[0].props?.url).toBe("attachment://u/n/a b.jpg");
+    expect(result[1].props?.url).toBe("attachment://u/n/r.pdf");
+    const link = (result[2].content as { href?: string }[])[0];
+    expect(link.href).toBe("attachment://u/n/l.pdf");
+    expect(result[2].children?.[0].props?.url).toBe("attachment://u/n/child.png");
+    const saved = JSON.stringify(result);
+    expect(saved).not.toContain("file://");
+    expect(saved).not.toContain("#drafto-attachment=");
+  });
+
+  it("leaves an unrelated file:// URL and https URLs alone", () => {
+    const blocks: BlockNoteBlock[] = [
+      { type: "image", props: { url: "file:///tmp/other.jpg" }, children: [] },
+      { type: "image", props: { url: "https://example.com/a.jpg" }, children: [] },
+    ];
+    const result = migrateSignedUrlsToAttachmentUrls(blocks);
+    expect(result[0].props?.url).toBe("file:///tmp/other.jpg");
+    expect(result[1].props?.url).toBe("https://example.com/a.jpg");
   });
 });

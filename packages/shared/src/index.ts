@@ -155,3 +155,36 @@ export {
   fontSizes,
 } from "./design-tokens";
 export type { SemanticColors } from "./design-tokens";
+
+// Offline attachment cache (ADR-0086)
+export {
+  ATTACHMENT_CACHE_DIR_NAME,
+  LOCAL_ATTACHMENT_FRAGMENT,
+  ATTACHMENT_PREFETCH_MAX_FILES,
+  ATTACHMENT_PREFETCH_MAX_BYTES,
+  ATTACHMENT_PREFETCH_MAX_FILE_BYTES,
+} from "./constants";
+export {
+  toLocalAttachmentSrc,
+  isLocalAttachmentSrc,
+  extractFilePathFromLocalSrc,
+  attachmentCacheRelativePath,
+} from "./editor/attachment-url";
+export type { AttachmentRefKind, UrlResolver } from "./editor/resolve-urls";
+export {
+  IMAGE_RENDER_STATUS_MESSAGE_TYPE,
+  IMAGE_RENDER_STATUS_MAX_IMAGES,
+  IMAGE_RENDER_STATUS_SCRIPT,
+  parseImageRenderStatus,
+  imageRenderStatusLabel,
+} from "./editor/image-render-status";
+export type { ImageRenderState } from "./editor/image-render-status";
+export {
+  planAttachmentCacheEviction,
+  selectPrefetchCandidates,
+} from "./storage/attachment-cache-policy";
+export type {
+  AttachmentCacheEntry,
+  PrefetchCandidate,
+  PrefetchLimits,
+} from "./storage/attachment-cache-policy";

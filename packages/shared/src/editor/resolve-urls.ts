@@ -6,18 +6,56 @@ import {
   isSignedStorageUrl,
   extractFilePathFromSignedUrl,
   toAttachmentUrl,
+  extractFilePathFromLocalSrc,
 } from "./attachment-url";
 
-type UrlResolver = (filePath: string) => Promise<string>;
+/**
+ * What a reference to an attachment is: the src of an image (shown inline, so
+ * worth a local copy) or a link / file block (opened on demand).
+ */
+export type AttachmentRefKind = "image" | "link";
+
+/**
+ * Turns an attachment's storage path into the URL to show. `kind` says what
+ * refers to it; a path used both ways is resolved once, as "image".
+ */
+export type UrlResolver = (filePath: string, kind: AttachmentRefKind) => Promise<string>;
+
+interface AttachmentRef {
+  url: string;
+  kind: AttachmentRefKind;
+}
+
+/** Resolve each distinct attachment:// URL once, keeping the ones that resolved. */
+async function resolveRefs(
+  refs: AttachmentRef[],
+  resolver: UrlResolver,
+): Promise<Map<string, string>> {
+  const kinds = new Map<string, AttachmentRefKind>();
+  for (const ref of refs) {
+    if (kinds.get(ref.url) !== "image") kinds.set(ref.url, ref.kind);
+  }
+  const settled = await Promise.allSettled(
+    [...kinds].map(async ([url, kind]) => {
+      const resolved = await resolver(extractFilePath(url), kind);
+      return [url, resolved] as const;
+    }),
+  );
+  return new Map(
+    settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : [])),
+  );
+}
 
 const BLOCKNOTE_ATTACHMENT_BLOCK_TYPES = new Set(["image", "file"]);
 
-function collectBlockNoteInlineUrls(content: BlockNoteInlineContent[] | undefined): string[] {
+function collectBlockNoteInlineUrls(
+  content: BlockNoteInlineContent[] | undefined,
+): AttachmentRef[] {
   if (!content) return [];
-  const urls: string[] = [];
+  const urls: AttachmentRef[] = [];
   for (const item of content) {
     if (item.type === "link" && typeof item.href === "string" && isAttachmentUrl(item.href)) {
-      urls.push(item.href);
+      urls.push({ url: item.href, kind: "link" });
     }
     if (item.type === "link" && item.content) {
       urls.push(...collectBlockNoteInlineUrls(item.content));
@@ -26,13 +64,13 @@ function collectBlockNoteInlineUrls(content: BlockNoteInlineContent[] | undefine
   return urls;
 }
 
-function collectBlockNoteImageUrls(blocks: BlockNoteBlock[]): string[] {
-  const urls: string[] = [];
+function collectBlockNoteImageUrls(blocks: BlockNoteBlock[]): AttachmentRef[] {
+  const urls: AttachmentRef[] = [];
   for (const block of blocks) {
     if (BLOCKNOTE_ATTACHMENT_BLOCK_TYPES.has(block.type) && typeof block.props?.url === "string") {
       const url = block.props.url;
       if (isAttachmentUrl(url)) {
-        urls.push(url);
+        urls.push({ url, kind: block.type === "image" ? "image" : "link" });
       }
     }
     if (Array.isArray(block.content)) {
@@ -92,33 +130,20 @@ export async function resolveBlockNoteImageUrls(
   blocks: BlockNoteBlock[],
   resolver: UrlResolver,
 ): Promise<BlockNoteBlock[]> {
-  const attachmentUrls = collectBlockNoteImageUrls(blocks);
-  if (attachmentUrls.length === 0) return blocks;
-
-  const uniqueUrls = [...new Set(attachmentUrls)];
-  const settled = await Promise.allSettled(
-    uniqueUrls.map(async (url) => {
-      const filePath = extractFilePath(url);
-      const signedUrl = await resolver(filePath);
-      return [url, signedUrl] as const;
-    }),
-  );
-
-  const urlMap = new Map(
-    settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : [])),
-  );
-  return applyResolvedUrls(blocks, urlMap);
+  const refs = collectBlockNoteImageUrls(blocks);
+  if (refs.length === 0) return blocks;
+  return applyResolvedUrls(blocks, await resolveRefs(refs, resolver));
 }
 
 const TIPTAP_ATTACHMENT_NODE_TYPES = new Set(["image", "file"]);
 
-function collectTipTapImageUrls(nodes: TipTapNode[]): string[] {
-  const urls: string[] = [];
+function collectTipTapImageUrls(nodes: TipTapNode[]): AttachmentRef[] {
+  const urls: AttachmentRef[] = [];
   for (const node of nodes) {
     if (TIPTAP_ATTACHMENT_NODE_TYPES.has(node.type) && typeof node.attrs?.src === "string") {
       const src = node.attrs.src;
       if (isAttachmentUrl(src)) {
-        urls.push(src);
+        urls.push({ url: src, kind: node.type === "image" ? "image" : "link" });
       }
     }
     if (Array.isArray(node.marks)) {
@@ -128,7 +153,7 @@ function collectTipTapImageUrls(nodes: TipTapNode[]): string[] {
           typeof mark.attrs?.href === "string" &&
           isAttachmentUrl(mark.attrs.href)
         ) {
-          urls.push(mark.attrs.href);
+          urls.push({ url: mark.attrs.href, kind: "link" });
         }
       }
     }
@@ -172,25 +197,31 @@ export async function resolveTipTapImageUrls(
   doc: TipTapDoc,
   resolver: UrlResolver,
 ): Promise<TipTapDoc> {
-  const attachmentUrls = collectTipTapImageUrls(doc.content);
-  if (attachmentUrls.length === 0) return doc;
-
-  const uniqueUrls = [...new Set(attachmentUrls)];
-  const settled = await Promise.allSettled(
-    uniqueUrls.map(async (url) => {
-      const filePath = extractFilePath(url);
-      const signedUrl = await resolver(filePath);
-      return [url, signedUrl] as const;
-    }),
-  );
-
-  const urlMap = new Map(
-    settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : [])),
-  );
-  return { ...doc, content: applyResolvedTipTapUrls(doc.content, urlMap) };
+  const refs = collectTipTapImageUrls(doc.content);
+  if (refs.length === 0) return doc;
+  return {
+    ...doc,
+    content: applyResolvedTipTapUrls(doc.content, await resolveRefs(refs, resolver)),
+  };
 }
 
-// --- Backward compatibility: migrate old signed URLs to attachment:// ---
+// --- Save path: map display URLs back to attachment:// ---
+
+/**
+ * The `attachment://` form of a URL the editors only show, or null when `url`
+ * is not one: a Supabase signed URL (older content, or a session's display
+ * src) or a device-local cached-file src (ADR-0086). A local src must never
+ * be stored: it names a file on one device, so it would show as a broken
+ * image everywhere else.
+ */
+function canonicalAttachmentUrl(url: string): string | null {
+  if (isSignedStorageUrl(url)) {
+    const filePath = extractFilePathFromSignedUrl(url);
+    return filePath ? toAttachmentUrl(filePath) : null;
+  }
+  const localPath = extractFilePathFromLocalSrc(url);
+  return localPath ? toAttachmentUrl(localPath) : null;
+}
 
 function migrateBlockNoteInlineSignedUrls(
   content: BlockNoteInlineContent[] | undefined,
@@ -199,12 +230,7 @@ function migrateBlockNoteInlineSignedUrls(
   return content.map((item) => {
     if (item.type !== "link") return item;
     const nextHref =
-      typeof item.href === "string" && isSignedStorageUrl(item.href)
-        ? (() => {
-            const filePath = extractFilePathFromSignedUrl(item.href!);
-            return filePath ? toAttachmentUrl(filePath) : item.href;
-          })()
-        : item.href;
+      typeof item.href === "string" ? (canonicalAttachmentUrl(item.href) ?? item.href) : item.href;
     return {
       ...item,
       href: nextHref,
@@ -218,12 +244,11 @@ function migrateBlockNoteSignedUrls(blocks: BlockNoteBlock[]): BlockNoteBlock[] 
     const newBlock = { ...block };
     if (
       BLOCKNOTE_ATTACHMENT_BLOCK_TYPES.has(newBlock.type) &&
-      typeof newBlock.props?.url === "string" &&
-      isSignedStorageUrl(newBlock.props.url)
+      typeof newBlock.props?.url === "string"
     ) {
-      const filePath = extractFilePathFromSignedUrl(newBlock.props.url);
-      if (filePath) {
-        newBlock.props = { ...newBlock.props, url: toAttachmentUrl(filePath) };
+      const canonical = canonicalAttachmentUrl(newBlock.props.url);
+      if (canonical) {
+        newBlock.props = { ...newBlock.props, url: canonical };
       }
     }
     if (Array.isArray(newBlock.content)) {
@@ -238,6 +263,12 @@ function migrateBlockNoteSignedUrls(blocks: BlockNoteBlock[]): BlockNoteBlock[] 
   });
 }
 
+/**
+ * Rewrites every display URL in `blocks` (signed storage URLs and device-local
+ * cached-file srcs) to the canonical `attachment://<path>`. Every content write
+ * goes through it: `serializeEditorContent`, the mobile attachment insert and
+ * the web PATCH route.
+ */
 export function migrateSignedUrlsToAttachmentUrls(blocks: BlockNoteBlock[]): BlockNoteBlock[] {
   return migrateBlockNoteSignedUrls(blocks);
 }
