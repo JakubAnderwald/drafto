@@ -39,8 +39,10 @@ env:
 # --- Open Settings and wait until nothing is pending ---
 # iOS labels the tab "Settings, tab, 3 of 3"; Android uses the bare title.
 - tapOn: "Settings(, tab.*)?"
+# iOS exposes the sync row as one element labelled "Sync status: All synced"
+# (sync-status.tsx); Android shows the bare text.
 - extendedWaitUntil:
-    visible: "All synced"
+    visible: "(Sync status: )?All synced"
     timeout: 30000
 - scrollUntilVisible:
     element:

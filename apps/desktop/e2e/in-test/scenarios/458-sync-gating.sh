@@ -49,7 +49,7 @@ else
   # Bringing Drafto forward just started a sync; give it time to finish.
   settle 30 ||
     fail_step "sync status '$(sync_help)' with $(db_pending) pending local change(s) — not signing out (desktop sign-out wipes local data)"
-  sign_out_via_menu || fail_step "could not sign out through the App menu"
+  sign_out_via_menu || fail_step "could not sign out through the App menu (confirmation: ${SIGN_OUT_COPY:-unread}; a confirmation that warns of a loss is answered with Cancel)"
   step_end PASS "signed out at Synced with 0 pending (confirmation: $SIGN_OUT_COPY); login screen shown"
 fi
 sleep 2
@@ -312,8 +312,10 @@ h_before=$(sync_help)
 p_before=$(db_pending)
 choose_sign_out || fail_step "Sign out did not respond"
 # Every sign-out asks first; the last sync should have pushed the edit before
-# the dialog opened, so it should read "Everything is synced…".
-confirm_sign_out 20 || fail_step "no login screen within 20 s of confirming the sign-out (confirmation: ${SIGN_OUT_COPY:-unread})"
+# the dialog opened, so it should read "Everything is synced…". This step
+# measures what confirming does to the edit, so it confirms whatever the dialog
+# says ("any") and classifies the copy below.
+confirm_sign_out 20 any || fail_step "no login screen within 20 s of confirming the sign-out (confirmation: ${SIGN_OUT_COPY:-unread})"
 secs=$(($(date +%s) - t0))
 poll 20 sb_has_marker "$M4" || fail_step "the edit made right before sign-out is NOT on the server (lost; confirmation: $SIGN_OUT_COPY)"
 if [ "$SIGN_OUT_COPY" = unsynced ] || [ "$SIGN_OUT_COPY" = unknown ]; then
