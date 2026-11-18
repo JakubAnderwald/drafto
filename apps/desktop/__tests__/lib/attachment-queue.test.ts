@@ -65,6 +65,21 @@ jest.mock("@/lib/generate-id", () => ({
   generateId: () => "mock-id-123",
 }));
 
+// The attachment cache (ADR-0086) has its own tests; here it only records calls.
+const mockRetainInCache = jest.fn();
+const mockDeleteAttachmentCache = jest.fn();
+const mockPrepareCacheFile = jest.fn();
+jest.mock("@/lib/data/attachment-cache", () => ({
+  retainInCache: (...args: unknown[]) => mockRetainInCache(...args),
+  deleteAttachmentCache: () => mockDeleteAttachmentCache(),
+  prepareCacheFile: (...args: unknown[]) => mockPrepareCacheFile(...args),
+}));
+
+const mockResetPrefetch = jest.fn();
+jest.mock("@/lib/data/attachment-prefetch", () => ({
+  resetAttachmentPrefetch: () => mockResetPrefetch(),
+}));
+
 // atob is used by attachment-queue to decode base64 from RNFS.readFile.
 // In Node test env, provide a global shim if not already present.
 if (typeof globalThis.atob !== "function") {
@@ -94,6 +109,11 @@ beforeEach(() => {
   mockFetchStorageUsage.mockResolvedValue(null);
   mockMaybeSingle.mockResolvedValue({ data: null, error: null });
   mockRemove.mockResolvedValue({ data: [], error: null });
+  mockRetainInCache.mockResolvedValue(undefined);
+  mockDeleteAttachmentCache.mockResolvedValue(undefined);
+  mockPrepareCacheFile.mockImplementation(
+    async (filePath: string) => `/mock/documents/attachment-cache/${filePath}`,
+  );
 });
 
 afterEach(() => {
@@ -116,9 +136,10 @@ describe("queueAttachment (saveFileLocally path handling)", () => {
 
     await queueAttachment("user-1", "note-1", file);
 
+    // Into the attachment cache, at the storage path (ADR-0086).
     expect(RNFS.copyFile).toHaveBeenCalledWith(
       "/Users/j/Downloads/partikelverb Aöb(1).pdf",
-      expect.stringContaining("/mock/documents/attachments/"),
+      expect.stringContaining("/mock/documents/attachment-cache/user-1/note-1/"),
     );
     expect(RNFS.copyFile).not.toHaveBeenCalledWith(
       expect.stringContaining("%20"),
@@ -437,7 +458,12 @@ describe("processPendingUploads", () => {
       expect(attachment.localUri).toBeNull();
       expect(mockRemove).not.toHaveBeenCalled();
       expect(mockUpload).not.toHaveBeenCalled();
-      expect(RNFS.unlink).toHaveBeenCalledWith("/local/photo.jpg");
+      // The local file stays on as the cached copy (ADR-0086).
+      expect(mockRetainInCache).toHaveBeenCalledWith(
+        "file:///local/photo.jpg",
+        attachment.filePath,
+      );
+      expect(RNFS.unlink).not.toHaveBeenCalled();
     });
 
     it("marks a storage RLS refusal quota_exceeded when a fresh reading confirms the quota", async () => {
@@ -621,6 +647,13 @@ describe("discardRefusedAttachment (issue #794)", () => {
 });
 
 describe("deleteAllLocalAttachments", () => {
+  it("also wipes the attachment cache (ADR-0086)", async () => {
+    (RNFS.exists as jest.Mock).mockResolvedValue(false);
+    await deleteAllLocalAttachments();
+    expect(mockDeleteAttachmentCache).toHaveBeenCalledTimes(1);
+    expect(mockResetPrefetch).toHaveBeenCalledTimes(1);
+  });
+
   it("removes the entire attachments directory when it exists", async () => {
     (RNFS.exists as jest.Mock).mockResolvedValue(true);
 

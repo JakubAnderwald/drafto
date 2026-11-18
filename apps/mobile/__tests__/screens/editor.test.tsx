@@ -1,7 +1,13 @@
 import React from "react";
 import * as ReactNative from "react-native";
 
-import { serializeEditorContent, type TipTapDoc } from "@drafto/shared";
+import {
+  IMAGE_RENDER_STATUS_MESSAGE_TYPE,
+  serializeEditorContent,
+  toAttachmentUrl,
+  toLocalAttachmentSrc,
+  type TipTapDoc,
+} from "@drafto/shared";
 
 import { render, fireEvent, act } from "../helpers/test-utils";
 import EditorScreen from "../../app/notes/[id]";
@@ -81,16 +87,35 @@ jest.mock("@10play/tentap-editor", () => ({
   darkEditorTheme: { toolbar: {}, webview: {}, webviewContainer: {} },
 }));
 
+let mockEditorOnMessage: ((event: { nativeEvent: { data: string } }) => void) | undefined;
 jest.mock("@/components/editor/note-editor", () => ({
-  NoteEditor: () => null,
+  NoteEditor: (props: {
+    onMessage?: (event: { nativeEvent: { data: string } }) => void;
+    accessory?: React.ReactNode;
+  }) => {
+    mockEditorOnMessage = props.onMessage;
+    return props.accessory ?? null;
+  },
 }));
 
+let mockOnAttachmentReady: ((attachment: unknown) => Promise<void>) | undefined;
 jest.mock("@/components/editor/attachment-picker", () => ({
-  AttachmentPicker: () => null,
+  AttachmentPicker: (props: { onAttachmentReady: (attachment: unknown) => Promise<void> }) => {
+    mockOnAttachmentReady = props.onAttachmentReady;
+    return null;
+  },
 }));
 
+const mockGetSignedUrl = jest.fn().mockResolvedValue("https://signed.test/url");
 jest.mock("@/lib/data/attachments", () => ({
-  getSignedUrl: jest.fn().mockResolvedValue("https://signed.test/url"),
+  getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
+}));
+
+const mockResolveAttachmentSrc = jest.fn();
+const mockLocalAttachmentSrcFor = jest.fn();
+jest.mock("@/lib/data/attachment-resolver", () => ({
+  resolveAttachmentSrc: (...args: unknown[]) => mockResolveAttachmentSrc(...args),
+  localAttachmentSrcFor: (...args: unknown[]) => mockLocalAttachmentSrcFor(...args),
 }));
 
 type SaveHandler = (value: unknown) => Promise<boolean | void>;
@@ -423,5 +448,161 @@ describe("EditorScreen", () => {
       });
       expect(record.update).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("EditorScreen offline attachment images (ADR-0086)", () => {
+  const FILE_PATH = "user-1/note-1/photo.jpg";
+  const LOCAL_SRC = toLocalAttachmentSrc(
+    "file:///docs/attachment-cache/user-1/note-1/photo.jpg",
+    FILE_PATH,
+  );
+  const imageDoc = (src: string): TipTapDoc => ({
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "Trip" }] },
+      { type: "image", attrs: { src, alt: "photo.jpg" } },
+    ],
+  });
+
+  interface StoredNote {
+    id: string;
+    title: string;
+    content: string | null;
+    updatedAt: Date;
+    update: jest.Mock;
+  }
+
+  function storeNote(content: string | null): StoredNote {
+    const record: StoredNote = {
+      id: "note-1",
+      title: "Trip",
+      content,
+      updatedAt: new Date(),
+      update: jest.fn(async (apply: (r: StoredNote) => void) => apply(record)),
+    };
+    mockNoteLoading = false;
+    mockNote = record;
+    mockDatabaseGet.mockReturnValue({ find: jest.fn().mockResolvedValue(record) });
+    mockDatabaseWrite.mockImplementation((work: () => Promise<unknown>) => work());
+    return record;
+  }
+
+  async function settle(): Promise<void> {
+    // The resolver is a dynamic import, which takes a macrotask to settle.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  function lastBridgeOptions(): { initialContent: TipTapDoc; webviewBaseURL?: string } {
+    const calls = mockUseEditorBridge.mock.calls;
+    return calls[calls.length - 1][0] as { initialContent: TipTapDoc; webviewBaseURL?: string };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockAutoSaveHandlers.length = 0;
+    mockStateSubscribers.length = 0;
+    mockEditorFocused = false;
+    mockEditorOnMessage = undefined;
+    mockOnAttachmentReady = undefined;
+    mockResolveAttachmentSrc.mockResolvedValue(LOCAL_SRC);
+    mockLocalAttachmentSrcFor.mockReturnValue(LOCAL_SRC);
+  });
+
+  it("gives the editor a file:// base URL so cached images can load", () => {
+    storeNote(null);
+    render(<EditorScreen />);
+    expect(lastBridgeOptions().webviewBaseURL).toMatch(/^file:.*\/$/);
+  });
+
+  it("opens a note with a cached image from the cache, with no signed URL", async () => {
+    storeNote(serializeEditorContent(imageDoc(toAttachmentUrl(FILE_PATH))));
+    render(<EditorScreen />);
+    await settle();
+
+    expect(mockResolveAttachmentSrc).toHaveBeenCalledWith(FILE_PATH, "image");
+    expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    expect(lastBridgeOptions().initialContent.content[1].attrs?.src).toBe(LOCAL_SRC);
+  });
+
+  it("keeps attachment:// for an image it can't resolve offline, and still opens the note", async () => {
+    mockResolveAttachmentSrc.mockRejectedValue(new Error("offline"));
+    storeNote(serializeEditorContent(imageDoc(toAttachmentUrl(FILE_PATH))));
+    const { getByDisplayValue } = render(<EditorScreen />);
+    await settle();
+
+    expect(getByDisplayValue("Trip")).toBeTruthy();
+    expect(lastBridgeOptions().initialContent.content[1].attrs?.src).toBe(
+      toAttachmentUrl(FILE_PATH),
+    );
+  });
+
+  it("does not save a note opened with cached images and not edited (#654)", async () => {
+    const record = storeNote(serializeEditorContent(imageDoc(toAttachmentUrl(FILE_PATH))));
+    mockGetJSON.mockResolvedValue(imageDoc(LOCAL_SRC));
+    render(<EditorScreen />);
+    await settle();
+
+    const { saveContent } = latestSaveHandlers();
+    await act(async () => {
+      await expect(saveContent(undefined)).resolves.toBe(false);
+    });
+    expect(record.update).not.toHaveBeenCalled();
+  });
+
+  it("inserts an attached image with its local src and stores attachment://", async () => {
+    const record = storeNote(null);
+    mockGetJSON.mockResolvedValue({ type: "doc", content: [{ type: "paragraph" }] });
+    render(<EditorScreen />);
+    await settle();
+
+    const attachment = {
+      filePath: FILE_PATH,
+      fileName: "photo.jpg",
+      mimeType: "image/jpeg",
+      localUri: "file:///docs/attachment-cache/user-1/note-1/photo.jpg",
+    };
+    expect(mockOnAttachmentReady).toBeDefined();
+    await act(async () => {
+      await mockOnAttachmentReady?.(attachment);
+    });
+
+    expect(mockLocalAttachmentSrcFor).toHaveBeenCalledWith(attachment);
+    expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    const shown = mockSetContent.mock.calls[mockSetContent.mock.calls.length - 1][0] as TipTapDoc;
+    expect(shown.content[shown.content.length - 1].attrs?.src).toBe(LOCAL_SRC);
+    expect(record.content).toContain(toAttachmentUrl(FILE_PATH));
+    expect(record.content).not.toContain("file://");
+    expect(record.content).not.toContain("#drafto-attachment=");
+  });
+
+  it("mirrors the WebView's image report in accessible status views", async () => {
+    storeNote(null);
+    const { queryByTestId, getByLabelText } = render(<EditorScreen />);
+    await settle();
+    expect(queryByTestId("editor-image-status")).toBeNull();
+
+    act(() => {
+      mockEditorOnMessage?.({ nativeEvent: { data: "not a report" } });
+      mockEditorOnMessage?.({
+        nativeEvent: {
+          data: JSON.stringify({
+            type: IMAGE_RENDER_STATUS_MESSAGE_TYPE,
+            images: [
+              { name: "photo.jpg", rendered: true, height: 240, local: true },
+              { name: "gone.png", rendered: false, height: 16, local: false },
+            ],
+          }),
+        },
+      });
+    });
+
+    expect(getByLabelText("Image shown: photo.jpg")).toBeTruthy();
+    expect(getByLabelText("Image not loaded: gone.png")).toBeTruthy();
   });
 });

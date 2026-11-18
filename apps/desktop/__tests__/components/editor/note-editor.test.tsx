@@ -38,4 +38,16 @@ describe("NoteEditor (desktop)", () => {
     expect(props).not.toHaveProperty("injectedJavaScript");
     expect(props.exclusivelyUseCustomOnMessage).toBe(false);
   });
+
+  it("lets the WebView load cached attachment files, and nothing more (ADR-0086)", () => {
+    render(<NoteEditor editor={{} as EditorBridge} />);
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+
+    const props = mockRichText.mock.calls[mockRichText.mock.calls.length - 1][0];
+    expect(props.allowFileAccessFromFileURLs).toBe(false);
+    expect(props.allowUniversalAccessFromFileURLs).toBe(false);
+    expect(props.originWhitelist).toEqual(expect.arrayContaining(["file://*", "https://*"]));
+  });
 });

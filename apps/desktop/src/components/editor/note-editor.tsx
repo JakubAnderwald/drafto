@@ -6,6 +6,7 @@ import type { WebViewMessageEvent } from "react-native-webview";
 
 import { useTheme } from "@/providers/theme-provider";
 import { colors } from "@/theme/tokens";
+import { EDITOR_WEBVIEW_FILE_ACCESS_PROPS } from "@/lib/editor-webview";
 
 interface NoteEditorProps {
   editor: EditorBridge;
@@ -20,7 +21,7 @@ interface NoteEditorProps {
    * kept only for backwards compatibility. With it false, tentap still handles
    * its messages AND this callback receives every message (callers must filter
    * for their own payloads) — used by the find bar to read match counts posted
-   * from the injected engine.
+   * from the injected engine, and by the image render status (ADR-0086).
    */
   onMessage?: (event: WebViewMessageEvent) => void;
 }
@@ -53,6 +54,10 @@ export function NoteEditor({ editor, onMessage }: NoteEditorProps) {
         exclusivelyUseCustomOnMessage={false}
         style={[styles.editor, { backgroundColor: semantic.bg }]}
         scrollEnabled={true}
+        // Cached attachment images are file:// URLs under the editor's base
+        // URL (ADR-0086).
+        {...EDITOR_WEBVIEW_FILE_ACCESS_PROPS}
+        originWhitelist={[...EDITOR_WEBVIEW_FILE_ACCESS_PROPS.originWhitelist]}
         // No `injectedJavaScript` here: it would replace TenTap's own script,
         // which installs every bridge's CSS. The editor's stylesheet ships
         // through the core bridge instead (see editor-bridge-extensions.ts).

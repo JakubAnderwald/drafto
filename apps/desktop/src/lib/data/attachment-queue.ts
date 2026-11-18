@@ -8,7 +8,6 @@ import {
   StorageQuotaError,
   buildAttachmentStoragePath,
   isStorageQuotaError,
-  localAttachmentFileName,
   safeAttachmentFileName,
   wouldExceedQuota,
 } from "@drafto/shared";
@@ -19,6 +18,12 @@ import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
 import type { PickedFile } from "./attachments";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
+import {
+  deleteAttachmentCache,
+  prepareCacheFile,
+  retainInCache,
+} from "@/lib/data/attachment-cache";
+import { resetAttachmentPrefetch } from "@/lib/data/attachment-prefetch";
 
 /** What one processPendingUploads() run did. */
 export interface UploadResult {
@@ -28,21 +33,21 @@ export interface UploadResult {
   storageFull: number;
 }
 
+// Where picked files waited for upload before the attachment cache (ADR-0086).
+// Files still pending there upload from it and then move into the cache.
 const ATTACHMENTS_DIR_NAME = "attachments";
 
 function getAttachmentsDir(): string {
   return `${RNFS.DocumentDirectoryPath}/${ATTACHMENTS_DIR_NAME}`;
 }
 
-async function saveFileLocally(file: PickedFile): Promise<string> {
-  const dir = getAttachmentsDir();
-  const exists = await RNFS.exists(dir);
-  if (!exists) {
-    await RNFS.mkdir(dir);
-  }
-
-  const localFileName = localAttachmentFileName(generateId(), file.fileName);
-  const destination = `${dir}/${localFileName}`;
+/**
+ * Copy a picked file into the attachment cache, at its storage path. It is
+ * uploaded from there and kept afterwards as the cached copy, so the image
+ * shows offline from the moment it is attached.
+ */
+async function saveFileLocally(file: PickedFile, filePath: string): Promise<string> {
+  const destination = await prepareCacheFile(filePath);
 
   // Use the decoded POSIX path from the native picker — `file.uri` is a
   // percent-encoded file:// URL (e.g. macOS NFD-decomposed ö becomes %CC%88),
@@ -65,7 +70,7 @@ export async function queueAttachment(
   // one note never share an object; the display name stays without it.
   const fileName = safeAttachmentFileName(file.fileName);
   const { filePath } = buildAttachmentStoragePath(file.fileName, userId, noteId);
-  const localUri = await saveFileLocally(file);
+  const localUri = await saveFileLocally(file, filePath);
   const remoteId = generateId();
 
   const attachment = await database.write(async () => {
@@ -138,12 +143,9 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     });
   });
 
-  // Clean up local file after successful upload
-  try {
-    await RNFS.unlink(localPath);
-  } catch {
-    // Non-critical: local file cleanup can fail silently
-  }
+  // Keep the file as the attachment's cached copy (moved there if it was
+  // picked before the cache existed), so it still shows offline.
+  await retainInCache(localUri, attachment.filePath);
 }
 
 /**
@@ -374,13 +376,15 @@ export async function processPendingUploads(): Promise<UploadResult> {
 }
 
 /**
- * Delete the entire local attachments directory (and every cached file in it).
- * Used on sign-out and on the cross-account identity guard so one account's
- * downloaded/queued attachment files can't leak to the next account on the
- * device. Best-effort: a deletion failure is logged and swallowed so it never
- * blocks sign-out.
+ * Delete every local attachment file: the attachment cache (ADR-0086) and the
+ * older attachments directory. Used on sign-out and on the cross-account
+ * identity guard so one account's downloaded/queued attachment files can't
+ * leak to the next account on the device. Best-effort: a deletion failure is
+ * logged and swallowed so it never blocks sign-out.
  */
 export async function deleteAllLocalAttachments(): Promise<void> {
+  await deleteAttachmentCache();
+  resetAttachmentPrefetch();
   try {
     const dir = getAttachmentsDir();
     const exists = await RNFS.exists(dir);

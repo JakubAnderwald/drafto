@@ -5,10 +5,14 @@ import type { EditorBridge } from "@10play/tentap-editor";
 import { render } from "../helpers/test-utils";
 import { NoteEditor } from "@/components/editor/note-editor";
 
+const mockRichTextProps = jest.fn();
 jest.mock("@10play/tentap-editor", () => {
   const { Text: MockText } = require("react-native");
   return {
-    RichText: () => <MockText>body</MockText>,
+    RichText: (props: Record<string, unknown>) => {
+      mockRichTextProps(props);
+      return <MockText>body</MockText>;
+    },
     Toolbar: () => <MockText>toolbar</MockText>,
     DEFAULT_TOOLBAR_ITEMS: [],
   };
@@ -35,5 +39,19 @@ describe("NoteEditor", () => {
 
     expect(getByText("body")).toBeTruthy();
     expect(getByText("toolbar")).toBeTruthy();
+  });
+
+  it("lets the WebView load cached attachment files, and nothing more (ADR-0086)", () => {
+    const onMessage = jest.fn();
+    render(<NoteEditor editor={editor} onMessage={onMessage} />);
+
+    const props = mockRichTextProps.mock.calls[mockRichTextProps.mock.calls.length - 1][0];
+    expect(props.allowFileAccess).toBe(true);
+    expect(props.allowFileAccessFromFileURLs).toBe(false);
+    expect(props.allowUniversalAccessFromFileURLs).toBe(false);
+    expect(props.originWhitelist).toEqual(expect.arrayContaining(["file://*", "https://*"]));
+    // TenTap's bridges keep receiving their messages alongside ours.
+    expect(props.onMessage).toBe(onMessage);
+    expect(props.exclusivelyUseCustomOnMessage).toBe(false);
   });
 });

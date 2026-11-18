@@ -19,7 +19,9 @@ import {
   withTimeout,
 } from "@drafto/shared";
 import type { ContentBaseline, TipTapDoc, TipTapNode } from "@drafto/shared";
-import { getSignedUrl } from "@/lib/data";
+import { localAttachmentSrcFor, resolveAttachmentSrc } from "@/lib/data";
+import { editorWebViewBaseUrl } from "@/lib/editor-webview";
+import { useImageRenderStatus } from "@/hooks/use-image-render-status";
 import { colors, fontFamily, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -27,6 +29,7 @@ import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { CalendarIcon } from "@/components/ui/icons/calendar-icon";
 import { ClockIcon } from "@/components/ui/icons/clock-icon";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { ImageRenderStatus } from "@/components/editor/image-render-status";
 import { EDITOR_BRIDGE_EXTENSIONS } from "@/components/editor/editor-bridge-extensions";
 import { FindBar } from "@/components/editor/find-bar";
 import {
@@ -65,11 +68,13 @@ function isImageMimeType(mimeType: string | null | undefined): boolean {
 async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
   const attachmentUrl = toAttachmentUrl(attachment.filePath);
   if (isImageMimeType(attachment.mimeType)) {
-    // tentap's image node renders `<img src>` directly, so embed a signed URL
-    // for this session; the save pipeline rewrites it back to attachment:// in
-    // the DB and later loads resolve a fresh signed URL on demand.
-    const signedUrl = await getSignedUrl(attachment.filePath);
-    return { type: "image", attrs: { src: signedUrl, alt: attachment.fileName } };
+    // tentap's image node renders `<img src>` directly, so show the picked file
+    // itself, kept in the attachment cache: it appears at once, online or
+    // offline, with no network call. The save pipeline rewrites the local src
+    // back to attachment:// in the DB (ADR-0086). Never rejects: with no local
+    // copy it falls back to attachment://, which the next load resolves.
+    const src = await localAttachmentSrcFor(attachment);
+    return { type: "image", attrs: { src, alt: attachment.fileName } };
   }
   return {
     type: "paragraph",
@@ -247,9 +252,19 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
     avoidIosKeyboard: false,
     bridgeExtensions: EDITOR_BRIDGE_EXTENSIONS,
     initialContent: "",
+    // A file:// base URL lets the editor show cached attachment images
+    // (ADR-0086); see NoteEditor for the WebView's file access.
+    webviewBaseURL: editorWebViewBaseUrl(),
     onChange: handleEditorChange,
   });
   editorRef.current = editor;
+
+  // Whether each image in the note rendered (ADR-0086), for screen readers and
+  // the E2E checks. Reached through a ref by the load effect, which must not
+  // depend on it.
+  const imageStatus = useImageRenderStatus(editor, editorReady);
+  const refreshImageStatusRef = useRef(imageStatus.refresh);
+  refreshImageStatusRef.current = imageStatus.refresh;
 
   // Gate content loads on tentap's real readiness signal instead of polling
   // editor.getJSON(). A resolved getJSON() only proves the WebView bridge can
@@ -377,13 +392,15 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
           // never-settling signed-URL fetch can't strand the loading overlay: a
           // resolution failure/timeout degrades images to placeholders rather
           // than blanking the whole (otherwise valid) note.
+          // Cached images resolve to their local file, with no network (ADR-0086).
           const resolved = await withTimeout(
-            resolveImageUrlsOrFallback(tiptapDoc, getSignedUrl),
+            resolveImageUrlsOrFallback(tiptapDoc, resolveAttachmentSrc),
             RESOLVE_TIMEOUT_MS,
             tiptapDoc,
           );
           if (cancelled || noteIdRef.current !== targetNoteId) return;
           editorRef.current?.setContent(resolved);
+          refreshImageStatusRef.current();
           await seedBaselineAndMarkLoaded();
         } catch (err) {
           // Intentionally do NOT call editor.setContent("") or markLoaded()
@@ -449,6 +466,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
           content: [...(currentJson.content ?? []), node],
         };
         editor.setContent(appended);
+        refreshImageStatusRef.current();
         // setContent doesn't reliably trigger onChange in tentap. Persist
         // directly, addressing the note by id rather than via the prop closure
         // so a mid-flight note switch can't reroute the write. Supersede any
@@ -543,10 +561,15 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
     resetFind();
   }, [resetFind]);
 
-  const handleEditorMessage = useCallback((event: WebViewMessageEvent) => {
-    const result = parseFindResult(event);
-    if (result) setFindMatch(result);
-  }, []);
+  const { handleMessage: handleImageStatusMessage } = imageStatus;
+  const handleEditorMessage = useCallback(
+    (event: WebViewMessageEvent) => {
+      const result = parseFindResult(event);
+      if (result) setFindMatch(result);
+      handleImageStatusMessage(event);
+    },
+    [handleImageStatusMessage],
+  );
 
   // React to native Find menu commands. Every command opens the bar (only when a
   // note is loaded); next/prev also step. Refocus on repeated Cmd+F is handled by
@@ -607,6 +630,7 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
 
       <View style={styles.editorContainer}>
         <NoteEditor editor={editor} onMessage={handleEditorMessage} />
+        <ImageRenderStatus images={imageStatus.images} />
         {findVisible && note && (
           <FindBar
             query={findQuery}

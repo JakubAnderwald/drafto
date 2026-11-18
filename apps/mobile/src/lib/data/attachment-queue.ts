@@ -8,7 +8,6 @@ import {
   StorageQuotaError,
   buildAttachmentStoragePath,
   isStorageQuotaError,
-  localAttachmentFileName,
   safeAttachmentFileName,
   storageFullMessage,
   wouldExceedQuota,
@@ -19,6 +18,13 @@ import { database, Attachment } from "@/db";
 import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
+import {
+  deleteAttachmentCache,
+  prepareCacheFile,
+  retainInCache,
+} from "@/lib/data/attachment-cache";
+import { resetAttachmentPrefetch } from "@/lib/data/attachment-prefetch";
+import { clearSignedUrlCache } from "@/lib/data/signed-url-cache";
 
 interface PickedFile {
   uri: string;
@@ -27,20 +33,22 @@ interface PickedFile {
   fileSize: number;
 }
 
+// Where picked files waited for upload before the attachment cache (ADR-0086).
+// Files still pending there upload from it and then move into the cache.
 const ATTACHMENTS_DIR_NAME = "attachments";
 
 function getAttachmentsDir(): Directory {
   return new Directory(Paths.document, ATTACHMENTS_DIR_NAME);
 }
 
-function saveFileLocally(file: PickedFile): string {
-  const dir = getAttachmentsDir();
-  if (!dir.exists) {
-    dir.create();
-  }
-  const localFileName = localAttachmentFileName(generateId(), file.fileName);
+/**
+ * Copy a picked file into the attachment cache, at its storage path. It is
+ * uploaded from there and kept afterwards as the cached copy, so the image
+ * shows offline from the moment it is attached.
+ */
+function saveFileLocally(file: PickedFile, filePath: string): string {
   const source = new File(file.uri);
-  const destination = new File(dir, localFileName);
+  const destination = prepareCacheFile(filePath);
   source.copy(destination);
 
   if (!destination.exists || destination.size === 0) {
@@ -63,7 +71,7 @@ export async function queueAttachment(
   // one note never share an object; the display name stays without it.
   const fileName = safeAttachmentFileName(file.fileName);
   const { filePath } = buildAttachmentStoragePath(file.fileName, userId, noteId);
-  const localUri = saveFileLocally(file);
+  const localUri = saveFileLocally(file, filePath);
   const remoteId = generateId();
 
   const attachment = await database.write(async () => {
@@ -157,12 +165,9 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     });
   });
 
-  // Clean up local file after successful upload
-  try {
-    localFile.delete();
-  } catch {
-    // Non-critical: local file cleanup can fail silently
-  }
+  // Keep the file as the attachment's cached copy (moved there if it was
+  // picked before the cache existed), so it still shows offline.
+  retainInCache(localUri, attachment.filePath);
 }
 
 /**
@@ -362,8 +367,8 @@ const uploadsInFlight = new Map<string, Promise<boolean>>();
  */
 export function uploadAttachment(attachment: Attachment): Promise<boolean> {
   // A sync can fetch the queue while a direct upload is still running and reach
-  // this attachment after that upload has finished. The upload deleted the
-  // local copy, so trying again would fail and mark an uploaded file "failed".
+  // this attachment after that upload has finished. The upload cleared the
+  // row's localUri, so trying again would fail and mark an uploaded file "failed".
   // (WatermelonDB hands out one cached instance per record, so the status read
   // here is current.)
   if (attachment.uploadStatus === "uploaded") return Promise.resolve(true);
@@ -419,13 +424,17 @@ export function uploadAttachment(attachment: Attachment): Promise<boolean> {
 }
 
 /**
- * Delete the entire local attachments directory (and every cached file in it).
- * Used on sign-out and on the cross-account identity guard so one account's
+ * Delete every local attachment file: the attachment cache (ADR-0086) and the
+ * older attachments directory, and forget the signed URLs handed out. Used on
+ * sign-out and on the cross-account identity guard so one account's
  * downloaded/queued attachment files can't leak to the next account on the
  * device. Best-effort: a deletion failure is logged and swallowed so it never
  * blocks sign-out.
  */
 export async function deleteAllLocalAttachments(): Promise<void> {
+  deleteAttachmentCache();
+  clearSignedUrlCache();
+  resetAttachmentPrefetch();
   try {
     const dir = getAttachmentsDir();
     if (dir.exists) {
@@ -441,16 +450,18 @@ export function cleanupOrphanedFiles(): void {
     const dir = getAttachmentsDir();
     if (!dir.exists) return;
 
-    // Cleanup runs asynchronously — fire and forget
+    // Cleanup runs asynchronously — fire and forget. Every row that still
+    // points at a file keeps it (a failed or quota-refused upload's file is
+    // its only copy), as on desktop.
     database
       .get<Attachment>("attachments")
-      .query(Q.where("upload_status", "pending"))
+      .query(Q.where("local_uri", Q.notEq(null)))
       .fetch()
-      .then((pending) => {
-        const pendingUris = new Set(pending.map((a) => a.localUri));
+      .then((withLocalUri) => {
+        const activeUris = new Set(withLocalUri.map((a) => a.localUri));
 
         for (const item of dir.list()) {
-          if (!pendingUris.has(item.uri)) {
+          if (!activeUris.has(item.uri)) {
             try {
               item.delete();
             } catch {
