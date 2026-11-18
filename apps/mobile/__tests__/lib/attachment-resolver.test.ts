@@ -5,7 +5,9 @@ import { toLocalAttachmentSrc } from "@drafto/shared";
 const mockGetCachedAttachmentUri = jest.fn();
 const mockDownloadToCache = jest.fn();
 const mockEvict = jest.fn();
+const mockCache = { generation: 0 };
 jest.mock("@/lib/data/attachment-cache", () => ({
+  getAttachmentCacheGeneration: () => mockCache.generation,
   getCachedAttachmentUri: (...args: unknown[]) => mockGetCachedAttachmentUri(...args),
   downloadToCache: (...args: unknown[]) => mockDownloadToCache(...args),
   evictAttachmentCache: () => mockEvict(),
@@ -25,6 +27,7 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCache.generation = 0;
   mockGetCachedAttachmentUri.mockReturnValue(null);
   mockGetCachedSignedUrl.mockResolvedValue("https://signed/photo.jpg");
   mockDownloadToCache.mockResolvedValue(CACHED_URI);
@@ -42,9 +45,19 @@ describe("resolveAttachmentSrc", () => {
 
   it("uses a signed URL for an uncached image and caches it in the background", async () => {
     await expect(resolveAttachmentSrc(FILE_PATH)).resolves.toBe("https://signed/photo.jpg");
-    expect(mockDownloadToCache).toHaveBeenCalledWith(FILE_PATH, "https://signed/photo.jpg");
+    expect(mockDownloadToCache).toHaveBeenCalledWith(FILE_PATH, "https://signed/photo.jpg", 0);
     await flush();
     expect(mockEvict).toHaveBeenCalled();
+  });
+
+  it("caches for the session the resolve began in, even if a sign-out came during the URL wait", async () => {
+    mockGetCachedSignedUrl.mockImplementation(async () => {
+      mockCache.generation = 1; // signed out (cache wiped) while the URL was fetched
+      return "https://signed/photo.jpg";
+    });
+    await resolveAttachmentSrc(FILE_PATH);
+    // downloadToCache refuses a stale generation, so nothing lands in the next cache.
+    expect(mockDownloadToCache).toHaveBeenCalledWith(FILE_PATH, "https://signed/photo.jpg", 0);
   });
 
   it("keeps the signed URL when the background download fails", async () => {

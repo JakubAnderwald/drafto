@@ -10,6 +10,7 @@ import {
   downloadToCache,
   evictAttachmentCache,
   flushAttachmentCacheIndex,
+  getAttachmentCacheGeneration,
   getAttachmentCacheState,
   getCachedAttachmentUri,
   holdCacheFile,
@@ -49,6 +50,9 @@ jest.mock("@/lib/generate-id", () => ({
 const CACHE = "file:///docs/attachment-cache";
 const put = (relativePath: string, size: number, mtime = 1_000) =>
   fakeFs.files.set(`${CACHE}/${relativePath}`, { size, mtime });
+const filesUnder = (dir: string) => [...fakeFs.files.keys()].filter((key) => key.startsWith(dir));
+// The fake's File class, to make one call fail.
+const FakeFile = fakeFs.module.File as { prototype: { size: number; delete: () => void } };
 
 beforeEach(() => {
   deleteAttachmentCache();
@@ -136,6 +140,30 @@ describe("downloadToCache", () => {
     await expect(pending).resolves.toBeNull();
     expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(false);
   });
+
+  it("leaves no file of a download that completes after a wipe, even in the next session's cache", async () => {
+    let finish: (file: { size: number; mtime: number }) => void = () => undefined;
+    fakeFs.download.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const old = downloadToCache("u/n/a.jpg", "https://signed/a");
+    deleteAttachmentCache();
+    // The next account's session recreates the cache before the old download ends.
+    fakeFs.download.mockResolvedValueOnce({ size: 4, mtime: 1 });
+    await expect(downloadToCache("u/m/b.jpg", "https://signed/b")).resolves.toBe(
+      `${CACHE}/u/m/b.jpg`,
+    );
+
+    finish({ size: 3, mtime: 1 });
+    await expect(old).resolves.toBeNull();
+    expect(filesUnder(CACHE)).toEqual([`${CACHE}/u/m/b.jpg`]);
+  });
+
+  it("downloads nothing for work that began before a sign-out", async () => {
+    const startedIn = getAttachmentCacheGeneration();
+    deleteAttachmentCache();
+    await expect(downloadToCache("u/n/a.jpg", "https://signed/a", startedIn)).resolves.toBeNull();
+    expect(fakeFs.download).not.toHaveBeenCalled();
+    expect(fakeFs.files.size).toBe(0);
+  });
 });
 
 describe("retainInCache", () => {
@@ -162,6 +190,19 @@ describe("retainInCache", () => {
   it("does nothing for a file that no longer exists", () => {
     retainInCache("file:///docs/attachments/gone.jpg", "u/n/a.jpg");
     expect(fakeFs.files.size).toBe(0);
+  });
+
+  it("never throws, so a cache failure can't fail an upload already recorded", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    put("u/n/a.jpg", 10);
+    getAttachmentCacheState(); // the index is loaded, so the next size read is the record
+    const size = jest.spyOn(FakeFile.prototype, "size", "get").mockImplementation(() => {
+      throw new Error("EIO");
+    });
+    expect(() => retainInCache(`${CACHE}/u/n/a.jpg`, "u/n/a.jpg")).not.toThrow();
+    size.mockRestore();
+    expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+    warn.mockRestore();
   });
 });
 
@@ -247,6 +288,40 @@ describe("evictAttachmentCache", () => {
     rows([]);
     await eviction;
     expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+  });
+
+  it("keeps a file it could not delete in the index, so it is retried", async () => {
+    put("u/n/old.jpg", 50, 1);
+    put("u/n/new.jpg", 50, 2);
+    const remove = jest.spyOn(FakeFile.prototype, "delete").mockImplementationOnce(() => {
+      throw new Error("EBUSY");
+    });
+    await evictAttachmentCache(60);
+    remove.mockRestore();
+    expect(fakeFs.files.has(`${CACHE}/u/n/old.jpg`)).toBe(true);
+    expect(getAttachmentCacheState().totalBytes).toBe(100);
+
+    await evictAttachmentCache(60);
+    expect(fakeFs.files.has(`${CACHE}/u/n/old.jpg`)).toBe(false);
+    expect(getAttachmentCacheState().totalBytes).toBe(50);
+  });
+
+  it("runs once more for a call that joined it, counting a file written meanwhile", async () => {
+    put("u/n/a.jpg", 50, 1);
+    put("u/n/b.jpg", 50, 2);
+    let releaseRows: (rows: unknown[]) => void = () => undefined;
+    mockUnsyncedRows.mockReturnValueOnce(new Promise((resolve) => (releaseRows = resolve)));
+    const first = evictAttachmentCache(60);
+    fakeFs.download.mockResolvedValue({ size: 50, mtime: 1 });
+    await downloadToCache("u/n/c.jpg", "https://signed/c");
+    const joined = evictAttachmentCache(60);
+    expect(joined).toBe(first);
+
+    releaseRows([]);
+    await joined;
+
+    expect(filesUnder(CACHE)).toEqual([`${CACHE}/u/n/c.jpg`]);
+    expect(getAttachmentCacheState().totalBytes).toBe(50);
   });
 
   it("never throws", async () => {
@@ -373,6 +448,22 @@ describe("removeOrphanedCacheFiles", () => {
     expect(fakeFs.files.has(`${CACHE}/.partial/id-1.part`)).toBe(false);
   });
 
+  it("keeps a running download's partial file, deleting only leftovers", async () => {
+    fakeFs.files.set(`${CACHE}/.partial/old.part`, { size: 3, mtime: 1 });
+    let finish: (file: { size: number; mtime: number }) => void = () => undefined;
+    fakeFs.download.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const running = downloadToCache("u/n/a.jpg", "https://signed/a");
+    const partial = `${CACHE}/.partial/id-${mockIdCounter}.part`;
+    fakeFs.files.set(partial, { size: 1, mtime: 1 }); // the download is writing it
+
+    await removeOrphanedCacheFiles();
+
+    expect(fakeFs.files.has(`${CACHE}/.partial/old.part`)).toBe(false);
+    expect(fakeFs.files.has(partial)).toBe(true);
+    finish({ size: 6, mtime: 1 });
+    await expect(running).resolves.toBe(`${CACHE}/u/n/a.jpg`);
+  });
+
   it("never throws", async () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     put("u/n/a.jpg", 1);
@@ -380,6 +471,21 @@ describe("removeOrphanedCacheFiles", () => {
     await expect(removeOrphanedCacheFiles()).resolves.toBeUndefined();
     expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
     warn.mockRestore();
+  });
+});
+
+describe("deleteFromCache", () => {
+  it("keeps a file it could not delete in the index, so the cleanup retries it", () => {
+    put("u/n/a.jpg", 5);
+    getAttachmentCacheState();
+    const remove = jest.spyOn(FakeFile.prototype, "delete").mockImplementationOnce(() => {
+      throw new Error("EBUSY");
+    });
+    deleteFromCache("u/n/a.jpg");
+    remove.mockRestore();
+    expect(getAttachmentCacheState().isCached("u/n/a.jpg")).toBe(true);
+    deleteFromCache("u/n/a.jpg");
+    expect(getAttachmentCacheState().isCached("u/n/a.jpg")).toBe(false);
   });
 });
 

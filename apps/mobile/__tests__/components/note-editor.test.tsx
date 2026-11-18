@@ -49,7 +49,10 @@ describe("NoteEditor", () => {
     expect(props.allowFileAccess).toBe(true);
     expect(props.allowFileAccessFromFileURLs).toBe(false);
     expect(props.allowUniversalAccessFromFileURLs).toBe(false);
-    expect(props.originWhitelist).toEqual(expect.arrayContaining(["file://*", "https://*"]));
+    // The complete list: an extra entry (such as an unrestricted "*") fails.
+    expect([...props.originWhitelist].sort()).toEqual(
+      ["about:*", "data:*", "file://*", "http://*", "https://*"].sort(),
+    );
     // TenTap's bridges keep receiving their messages alongside ours.
     expect(props.onMessage).toBe(onMessage);
     expect(props.exclusivelyUseCustomOnMessage).toBe(false);

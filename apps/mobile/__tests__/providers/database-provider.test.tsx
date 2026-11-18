@@ -868,14 +868,20 @@ describe("DatabaseProvider attachment prefetch (ADR-0086)", () => {
     errorSpy.mockRestore();
   });
 
-  it("cleans up orphaned attachment files once, after the first sync", async () => {
+  it("cleans up orphaned attachment files once, after the first sync completes", async () => {
     const mockCleanup = cleanupOrphanedFiles as jest.Mock;
     mockCleanup.mockResolvedValue(undefined);
+    let finishSync: (value: { remoteChangeCount: number }) => void = () => undefined;
+    mockSyncDatabase.mockImplementationOnce(() => new Promise((resolve) => (finishSync = resolve)));
     renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
+    await flushEffects();
+    expect(mockCleanup).not.toHaveBeenCalled();
+
+    finishSync({ remoteChangeCount: 0 });
     await waitFor(() => expect(mockCleanup).toHaveBeenCalledTimes(1));
-    expect(mockSyncDatabase.mock.invocationCallOrder[0]).toBeLessThan(
-      mockCleanup.mock.invocationCallOrder[0],
-    );
+    await flushEffects();
+    expect(mockCleanup).toHaveBeenCalledTimes(1);
   });
 
   it("does not prefetch when no user is signed in", async () => {

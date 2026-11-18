@@ -41,10 +41,15 @@ const index = new AttachmentCacheIndex();
 let indexSaveTimer: ReturnType<typeof setTimeout> | null = null;
 // One download per attachment at a time.
 const downloadsInFlight = new Map<string, Promise<string | null>>();
+// The partial file name of every download still running, in any generation:
+// the orphan cleanup never deletes one of these.
+const activePartials = new Set<string>();
 // Files written for an attachment whose row isn't in the database yet, by
 // relative path: neither eviction nor the orphan cleanup may delete them.
 const held = new Map<string, number>();
 let evictionInFlight: Promise<void> | null = null;
+// Set by a call that joined the running eviction: it runs once more.
+let evictAgain = false;
 
 export function getAttachmentCacheDir(): Directory {
   return new Directory(Paths.document, ATTACHMENT_CACHE_DIR_NAME);
@@ -66,11 +71,14 @@ export function prepareCacheFile(filePath: string): File {
   return file;
 }
 
-function safeDelete(item: File | Directory): void {
+/** Delete `item` if it exists. True when it is gone; false when deleting it failed. */
+function safeDelete(item: File | Directory): boolean {
   try {
     if (item.exists) item.delete();
+    return true;
   } catch {
     // Best-effort: a leftover file is evicted or cleaned up later.
+    return false;
   }
 }
 
@@ -222,14 +230,22 @@ export function copyIntoCache(sourceUri: string, filePath: string): string {
   return destination.uri;
 }
 
+/** The cache's current generation; pass it to `downloadToCache` from work that awaits first. */
+export function getAttachmentCacheGeneration(): number {
+  return generation;
+}
+
 async function download(filePath: string, url: string, startedIn: number): Promise<string | null> {
   const destination = cacheFileFor(filePath);
   if (destination.exists && destination.size > 0) return destination.uri;
 
+  // Each download writes to a file of its own (a fresh id), so one a wipe
+  // overtook never writes into a later session's partial file.
   const partialDir = new Directory(getAttachmentCacheDir(), PARTIAL_DIR_NAME);
   partialDir.create({ intermediates: true, idempotent: true });
   const partialName = `${generateId()}.part`;
   const partial = new File(partialDir, partialName);
+  activePartials.add(partialName);
   try {
     await File.downloadFileAsync(url, partial, { idempotent: true });
     // Everything below is synchronous, so the cache can't be wiped part-way.
@@ -243,7 +259,10 @@ async function download(filePath: string, url: string, startedIn: number): Promi
     return placed.uri;
   } finally {
     // `partial` now names the moved file, so address the leftover by name.
+    // Deleted even after a wipe: the name is this download's own, so an
+    // obsolete download leaves nothing in a later session's cache.
     safeDelete(new File(partialDir, partialName));
+    activePartials.delete(partialName);
   }
 }
 
@@ -252,9 +271,16 @@ async function download(filePath: string, url: string, startedIn: number): Promi
  * The file is written beside the cache and moved into place once complete, so
  * a half-written file is never shown. Concurrent calls for one attachment share
  * a download. Resolves to the cached file's URI, or null when the cache was
- * wiped (sign-out) while it ran. Rejects when the download fails.
+ * wiped (sign-out) while it ran, or since `startedIn` (the generation the
+ * caller's work began in, before it awaited the signed URL). Rejects when the
+ * download fails.
  */
-export function downloadToCache(filePath: string, url: string): Promise<string | null> {
+export function downloadToCache(
+  filePath: string,
+  url: string,
+  startedIn: number = generation,
+): Promise<string | null> {
+  if (startedIn !== generation) return Promise.resolve(null);
   const key = attachmentCacheRelativePath(filePath);
   const running = downloadsInFlight.get(key);
   if (running) return running;
@@ -268,12 +294,18 @@ export function downloadToCache(filePath: string, url: string): Promise<string |
 /**
  * Keep an uploaded image's local file as its cached copy. A file picked
  * before the cache existed lives in the old attachments folder: it is moved
- * into the cache. If the move fails the file is deleted, as before.
+ * into the cache. If the move fails the file is deleted, as before. Never
+ * throws: it runs after the upload is recorded, so a cache failure must not
+ * fail the upload.
  */
 export function retainInCache(localUri: string, filePath: string): void {
   const target = cacheFileFor(filePath);
   if (target.uri === localUri) {
-    if (target.exists) noteWritten(filePath, target);
+    try {
+      if (target.exists) noteWritten(filePath, target);
+    } catch (error) {
+      console.warn("Failed to record the cached attachment:", error);
+    }
     return;
   }
   const source = new File(localUri);
@@ -288,10 +320,13 @@ export function retainInCache(localUri: string, filePath: string): void {
   }
 }
 
-/** Delete the cached copy of the attachment stored at `filePath`, if there is one. */
+/**
+ * Delete the cached copy of the attachment stored at `filePath`, if there is
+ * one. A file that can't be deleted stays in the index, so the orphan cleanup
+ * retries it.
+ */
 export function deleteFromCache(filePath: string): void {
-  safeDelete(cacheFileFor(filePath));
-  noteRemoved(attachmentCacheRelativePath(filePath));
+  if (safeDelete(cacheFileFor(filePath))) noteRemoved(attachmentCacheRelativePath(filePath));
 }
 
 // --- Eviction and cleanup ---
@@ -306,14 +341,23 @@ async function unsyncedCachePaths(): Promise<Set<string>> {
 
 /**
  * Delete `relativePaths` from the cache, skipping any file held now, and
- * stopping if the cache was wiped meanwhile.
+ * stopping if the cache was wiped meanwhile. A file that can't be deleted
+ * stays in the index (and its bytes in the total), so a later pass retries it.
  */
 function deleteAll(relativePaths: readonly string[], startedIn: number): void {
   for (const relativePath of relativePaths) {
     if (generation !== startedIn) return;
     if (held.has(relativePath)) continue;
-    safeDelete(fileAt(relativePath));
-    noteRemoved(relativePath);
+    if (safeDelete(fileAt(relativePath))) noteRemoved(relativePath);
+  }
+}
+
+/** Delete what downloads an app exit cut short, keeping every running download's file. */
+function removeLeftoverPartials(): void {
+  const dir = new Directory(getAttachmentCacheDir(), PARTIAL_DIR_NAME);
+  if (!dir.exists) return;
+  for (const item of dir.list()) {
+    if (!activePartials.has(item.name)) safeDelete(item);
   }
 }
 
@@ -334,12 +378,21 @@ async function evict(maxBytes: number): Promise<void> {
 /**
  * Delete the least recently used cached files until the cache fits in
  * `maxBytes`. A file whose attachment hasn't reached the server, or whose
- * row is still being written, is never deleted. One eviction runs at a time;
- * never throws.
+ * row is still being written, is never deleted. One eviction runs at a time:
+ * a call made while one runs joins it, and it then runs once more, so a file
+ * written after its snapshot is counted. Never throws.
  */
 export function evictAttachmentCache(maxBytes: number = ATTACHMENT_CACHE_MAX_BYTES): Promise<void> {
-  if (evictionInFlight) return evictionInFlight;
-  evictionInFlight = evict(maxBytes)
+  if (evictionInFlight) {
+    evictAgain = true;
+    return evictionInFlight;
+  }
+  evictionInFlight = (async () => {
+    do {
+      evictAgain = false;
+      await evict(maxBytes);
+    } while (evictAgain);
+  })()
     .catch((error: unknown) => {
       console.warn("Attachment cache eviction failed:", error);
     })
@@ -389,9 +442,7 @@ export async function removeOrphanedCacheFiles(): Promise<void> {
       .map((entry) => entry.relativePath)
       .filter((relativePath) => !keep.has(relativePath));
     deleteAll(orphans, startedIn);
-    if (generation === startedIn && downloadsInFlight.size === 0) {
-      safeDelete(new Directory(getAttachmentCacheDir(), PARTIAL_DIR_NAME));
-    }
+    if (generation === startedIn) removeLeftoverPartials();
   } catch (error) {
     console.warn("Attachment cache cleanup failed:", error);
   }

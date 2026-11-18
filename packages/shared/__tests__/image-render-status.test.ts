@@ -85,9 +85,17 @@ describe("IMAGE_RENDER_STATUS_SCRIPT at runtime", () => {
     const posted: string[] = [];
     const timers: (() => void)[] = [];
     const root = { querySelectorAll: () => images };
+    const observers: { callback: () => void; options: { attributeFilter?: string[] } }[] = [];
+    class MutationObserver {
+      constructor(private readonly callback: () => void) {}
+      observe(_target: unknown, options: { attributeFilter?: string[] }) {
+        observers.push({ callback: this.callback, options });
+      }
+    }
     const window: Record<string, unknown> = {
       ReactNativeWebView: { postMessage: (data: string) => posted.push(data) },
       addEventListener: () => undefined,
+      MutationObserver,
     };
     const document = {
       body: root,
@@ -99,15 +107,17 @@ describe("IMAGE_RENDER_STATUS_SCRIPT at runtime", () => {
       return timers.length;
     };
     const inject = () =>
-      new Function("window", "document", "setTimeout", IMAGE_RENDER_STATUS_SCRIPT)(
-        window,
-        document,
-        setTimeout,
-      );
+      new Function(
+        "window",
+        "document",
+        "setTimeout",
+        "MutationObserver",
+        IMAGE_RENDER_STATUS_SCRIPT,
+      )(window, document, setTimeout, MutationObserver);
     const flush = () => {
       while (timers.length) timers.shift()?.();
     };
-    return { posted, inject, flush };
+    return { posted, inject, flush, observers };
   }
 
   it("reports each image's state, named by alt text or by the path in its src", () => {
@@ -142,5 +152,22 @@ describe("IMAGE_RENDER_STATUS_SCRIPT at runtime", () => {
     harness.inject();
     harness.flush();
     expect(harness.posted).toHaveLength(2);
+  });
+
+  it("reports again when only an image's alt text changes", () => {
+    const photo = img({ alt: "before.jpg", src: "file:///a.jpg" }, true, 100);
+    const harness = run([photo]);
+    harness.inject();
+    harness.flush();
+    expect(harness.observers).toHaveLength(1);
+    expect(harness.observers[0].options.attributeFilter).toEqual(
+      expect.arrayContaining(["src", "alt"]),
+    );
+
+    photo.attrs.alt = "after.jpg";
+    harness.observers[0].callback();
+    harness.flush();
+    expect(harness.posted).toHaveLength(2);
+    expect(parseImageRenderStatus(harness.posted[1])?.[0].name).toBe("after.jpg");
   });
 });

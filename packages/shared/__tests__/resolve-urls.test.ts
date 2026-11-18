@@ -332,7 +332,7 @@ describe("attachment reference kinds", () => {
     );
   });
 
-  it("resolves a path used as both an image and a link once, as an image", async () => {
+  it("resolves a path used as both an image and a link once per kind, so the link stays openable", async () => {
     const blocks: BlockNoteBlock[] = [
       {
         type: "paragraph",
@@ -346,11 +346,74 @@ describe("attachment reference kinds", () => {
         children: [],
       },
       { type: "image", props: { url: "attachment://u/n/pic.jpg" }, children: [] },
+      { type: "image", props: { url: "attachment://u/n/pic.jpg" }, children: [] },
     ];
-    const resolver = vi.fn().mockResolvedValue("resolved");
-    await resolveBlockNoteImageUrls(blocks, resolver);
-    expect(resolver).toHaveBeenCalledTimes(1);
+    const local = toLocalAttachmentSrc("file:///c/pic.jpg", "u/n/pic.jpg");
+    const resolver = vi.fn(async (_filePath: string, kind: string) =>
+      kind === "image" ? local : "https://signed/pic.jpg",
+    );
+    const result = await resolveBlockNoteImageUrls(blocks, resolver);
+    expect(resolver).toHaveBeenCalledTimes(2);
     expect(resolver).toHaveBeenCalledWith("u/n/pic.jpg", "image");
+    expect(resolver).toHaveBeenCalledWith("u/n/pic.jpg", "link");
+    expect((result[0].content as { href?: string }[])[0].href).toBe("https://signed/pic.jpg");
+    expect(result[1].props?.url).toBe(local);
+    expect(result[2].props?.url).toBe(local);
+  });
+
+  it("gives a TipTap link mark to an image the link's URL, and the image node its local src", async () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        { type: "image", attrs: { src: "attachment://u/n/pic.jpg" } },
+        { type: "file", attrs: { src: "attachment://u/n/pic.jpg" } },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "pic",
+              marks: [{ type: "link", attrs: { href: "attachment://u/n/pic.jpg" } }],
+            },
+          ],
+        },
+      ],
+    };
+    const local = toLocalAttachmentSrc("file:///c/pic.jpg", "u/n/pic.jpg");
+    const resolver = vi.fn(async (_filePath: string, kind: string) =>
+      kind === "image" ? local : "https://signed/pic.jpg",
+    );
+    const result = await resolveTipTapImageUrls(doc, resolver);
+    expect(result.content[0].attrs?.src).toBe(local);
+    expect(result.content[1].attrs?.src).toBe("https://signed/pic.jpg");
+    expect(result.content[2].content?.[0].marks?.[0].attrs?.href).toBe("https://signed/pic.jpg");
+  });
+
+  it("leaves the link unresolved when only its link resolve fails (offline)", async () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [
+        { type: "image", attrs: { src: "attachment://u/n/pic.jpg" } },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "pic",
+              marks: [{ type: "link", attrs: { href: "attachment://u/n/pic.jpg" } }],
+            },
+          ],
+        },
+      ],
+    };
+    const local = toLocalAttachmentSrc("file:///c/pic.jpg", "u/n/pic.jpg");
+    const resolver = vi.fn(async (_filePath: string, kind: string) => {
+      if (kind === "link") throw new Error("offline");
+      return local;
+    });
+    const result = await resolveTipTapImageUrls(doc, resolver);
+    expect(result.content[0].attrs?.src).toBe(local);
+    expect(result.content[1].content?.[0].marks?.[0].attrs?.href).toBe("attachment://u/n/pic.jpg");
   });
 
   it("leaves a src that fails to resolve (offline) as attachment:// and resolves the rest", async () => {

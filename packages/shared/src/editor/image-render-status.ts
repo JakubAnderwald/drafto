@@ -26,7 +26,8 @@ export interface ImageRenderState {
 
 /**
  * JavaScript to inject into the editor WebView. Installs the reporter once per
- * page (an image load or error, a DOM change or a resize schedules a report)
+ * page (an image load or error, a DOM change, including an image's src or
+ * alt, or a resize schedules a report)
  * and asks for a fresh report each time it is injected. A report is posted
  * only when it differs from the previous one. It reads the DOM and never
  * changes it, so it can't fire the editor's onChange.
@@ -77,7 +78,7 @@ export const IMAGE_RENDER_STATUS_SCRIPT = `(function(){
     document.addEventListener('error', onImageEvent, true);
     if (w.MutationObserver) {
       new MutationObserver(schedule).observe(document.body, {
-        subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'style', 'width', 'height']
+        subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'alt', 'style', 'width', 'height']
       });
     }
     w.addEventListener('resize', schedule);

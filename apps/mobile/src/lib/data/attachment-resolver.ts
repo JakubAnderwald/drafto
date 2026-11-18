@@ -4,6 +4,7 @@ import type { AttachmentRefKind } from "@drafto/shared";
 import {
   downloadToCache,
   evictAttachmentCache,
+  getAttachmentCacheGeneration,
   getCachedAttachmentUri,
 } from "@/lib/data/attachment-cache";
 import { getCachedSignedUrl } from "@/lib/data/signed-url-cache";
@@ -11,9 +12,13 @@ import { getCachedSignedUrl } from "@/lib/data/signed-url-cache";
 // Picks the src the editor shows for an attachment (ADR-0086). Mirrors
 // apps/desktop/src/lib/data/attachment-resolver.ts.
 
-/** Cache an image just viewed online; a failure only means it isn't cached yet. */
-function cacheInBackground(filePath: string, signedUrl: string): void {
-  downloadToCache(filePath, signedUrl)
+/**
+ * Cache an image just viewed online; a failure only means it isn't cached yet.
+ * `startedIn` is the cache generation the resolve began in: a sign-out while
+ * the signed URL was awaited means the image is not cached at all.
+ */
+function cacheInBackground(filePath: string, signedUrl: string, startedIn: number): void {
+  downloadToCache(filePath, signedUrl, startedIn)
     .then((uri) => (uri ? evictAttachmentCache() : undefined))
     .catch((error: unknown) => {
       console.warn("Failed to cache attachment for offline use:", error);
@@ -34,12 +39,14 @@ export async function resolveAttachmentSrc(
   filePath: string,
   kind: AttachmentRefKind = "image",
 ): Promise<string> {
+  // Taken before any await, so a sign-out meanwhile is noticed.
+  const startedIn = getAttachmentCacheGeneration();
   if (kind === "image") {
     const cached = getCachedAttachmentUri(filePath);
     if (cached) return toLocalAttachmentSrc(cached, filePath);
   }
   const signedUrl = await getCachedSignedUrl(filePath);
-  if (kind === "image") cacheInBackground(filePath, signedUrl);
+  if (kind === "image") cacheInBackground(filePath, signedUrl, startedIn);
   return signedUrl;
 }
 

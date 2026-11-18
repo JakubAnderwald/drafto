@@ -48,6 +48,9 @@ describe("NoteEditor (desktop)", () => {
     const props = mockRichText.mock.calls[mockRichText.mock.calls.length - 1][0];
     expect(props.allowFileAccessFromFileURLs).toBe(false);
     expect(props.allowUniversalAccessFromFileURLs).toBe(false);
-    expect(props.originWhitelist).toEqual(expect.arrayContaining(["file://*", "https://*"]));
+    // The complete list: an extra entry (such as an unrestricted "*") fails.
+    expect([...props.originWhitelist].sort()).toEqual(
+      ["about:*", "data:*", "file://*", "http://*", "https://*"].sort(),
+    );
   });
 });

@@ -125,4 +125,29 @@ describe("createAttachmentPrefetcher", () => {
     await prefetcher.prefetch();
     expect(deps.listCandidates).toHaveBeenCalledTimes(3);
   });
+
+  it("lets a download the sign-out overtook finish without evicting or counting toward the next pass", async () => {
+    let finishDownload: (uri: string | null) => void = () => undefined;
+    const { deps, prefetcher } = setup({
+      download: vi
+        .fn<AttachmentPrefetchDeps["download"]>()
+        .mockImplementationOnce(() => new Promise((resolve) => (finishDownload = resolve)))
+        .mockImplementation(async (filePath: string) => `file:///c/${filePath}`),
+    });
+    const old = prefetcher.prefetch();
+    await vi.waitFor(() => expect(deps.download).toHaveBeenCalledTimes(1));
+    prefetcher.reset();
+
+    // The old download completes successfully after the wipe. The native
+    // downloadToCache resolves null then and deletes its file (its own tests
+    // cover that); even a URI here must not let the old pass go on.
+    finishDownload("file:///c/a");
+    await old;
+    expect(deps.download).toHaveBeenCalledTimes(1);
+    expect(deps.evict).not.toHaveBeenCalled();
+
+    vi.mocked(deps.listCandidates).mockResolvedValue([]);
+    await prefetcher.prefetch();
+    expect(deps.listCandidates).toHaveBeenCalledTimes(2);
+  });
 });

@@ -18,7 +18,8 @@ export type AttachmentRefKind = "image" | "link";
 
 /**
  * Turns an attachment's storage path into the URL to show. `kind` says what
- * refers to it; a path used both ways is resolved once, as "image".
+ * refers to it; a path used both ways is resolved once per kind, so a link to
+ * an image keeps a URL the platform can open (never the image's local src).
  */
 export type UrlResolver = (filePath: string, kind: AttachmentRefKind) => Promise<string>;
 
@@ -38,24 +39,32 @@ interface AttachmentRef {
   kind: AttachmentRefKind;
 }
 
-/** Resolve each distinct attachment:// URL once, keeping the ones that resolved. */
-async function resolveRefs(
-  refs: AttachmentRef[],
-  resolver: UrlResolver,
-): Promise<Map<string, string>> {
-  const kinds = new Map<string, AttachmentRefKind>();
-  for (const ref of refs) {
-    if (kinds.get(ref.url) !== "image") kinds.set(ref.url, ref.kind);
-  }
+/** What each attachment:// URL resolved to, per kind of reference. */
+type ResolvedRefs = Record<AttachmentRefKind, Map<string, string>>;
+
+/** Resolve each distinct attachment:// URL once per kind, keeping the ones that resolved. */
+async function resolveRefs(refs: AttachmentRef[], resolver: UrlResolver): Promise<ResolvedRefs> {
+  const wanted = new Map<string, AttachmentRef>();
+  for (const ref of refs) wanted.set(`${ref.kind}:${ref.url}`, ref);
   const settled = await Promise.allSettled(
-    [...kinds].map(async ([url, kind]) => {
+    [...wanted.values()].map(async ({ url, kind }) => {
       const resolved = await resolver(extractFilePath(url), kind);
-      return [url, resolved] as const;
+      return { url, kind, resolved };
     }),
   );
-  return new Map(
-    settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : [])),
-  );
+  const result: ResolvedRefs = { image: new Map(), link: new Map() };
+  for (const outcome of settled) {
+    if (outcome.status === "fulfilled") {
+      const { url, kind, resolved } = outcome.value;
+      result[kind].set(url, resolved);
+    }
+  }
+  return result;
+}
+
+/** The kind of reference an image / file block or node makes. */
+function blockKind(type: string): AttachmentRefKind {
+  return type === "image" ? "image" : "link";
 }
 
 const BLOCKNOTE_ATTACHMENT_BLOCK_TYPES = new Set(["image", "file"]);
@@ -82,7 +91,7 @@ function collectBlockNoteImageUrls(blocks: BlockNoteBlock[]): AttachmentRef[] {
     if (BLOCKNOTE_ATTACHMENT_BLOCK_TYPES.has(block.type) && typeof block.props?.url === "string") {
       const url = block.props.url;
       if (isAttachmentUrl(url)) {
-        urls.push({ url, kind: block.type === "image" ? "image" : "link" });
+        urls.push({ url, kind: blockKind(block.type) });
       }
     }
     if (Array.isArray(block.content)) {
@@ -97,42 +106,41 @@ function collectBlockNoteImageUrls(blocks: BlockNoteBlock[]): AttachmentRef[] {
 
 function applyResolvedInlineUrls(
   content: BlockNoteInlineContent[] | undefined,
-  urlMap: Map<string, string>,
+  links: Map<string, string>,
 ): BlockNoteInlineContent[] | undefined {
   if (!content) return content;
   return content.map((item) => {
     if (item.type !== "link") return item;
     const nextHref =
-      typeof item.href === "string" && urlMap.has(item.href) ? urlMap.get(item.href)! : item.href;
+      typeof item.href === "string" && links.has(item.href) ? links.get(item.href)! : item.href;
     return {
       ...item,
       href: nextHref,
-      content: applyResolvedInlineUrls(item.content, urlMap),
+      content: applyResolvedInlineUrls(item.content, links),
     };
   });
 }
 
-function applyResolvedUrls(
-  blocks: BlockNoteBlock[],
-  urlMap: Map<string, string>,
-): BlockNoteBlock[] {
+function applyResolvedUrls(blocks: BlockNoteBlock[], resolved: ResolvedRefs): BlockNoteBlock[] {
   return blocks.map((block) => {
     const newBlock = { ...block };
     if (
       BLOCKNOTE_ATTACHMENT_BLOCK_TYPES.has(newBlock.type) &&
-      typeof newBlock.props?.url === "string" &&
-      urlMap.has(newBlock.props.url)
+      typeof newBlock.props?.url === "string"
     ) {
-      newBlock.props = { ...newBlock.props, url: urlMap.get(newBlock.props.url)! };
+      const urls = resolved[blockKind(newBlock.type)];
+      if (urls.has(newBlock.props.url)) {
+        newBlock.props = { ...newBlock.props, url: urls.get(newBlock.props.url)! };
+      }
     }
     if (Array.isArray(newBlock.content)) {
       newBlock.content = applyResolvedInlineUrls(
         newBlock.content as BlockNoteInlineContent[],
-        urlMap,
+        resolved.link,
       );
     }
     if (newBlock.children) {
-      newBlock.children = applyResolvedUrls(newBlock.children, urlMap);
+      newBlock.children = applyResolvedUrls(newBlock.children, resolved);
     }
     return newBlock;
   });
@@ -155,7 +163,7 @@ function collectTipTapImageUrls(nodes: TipTapNode[]): AttachmentRef[] {
     if (TIPTAP_ATTACHMENT_NODE_TYPES.has(node.type) && typeof node.attrs?.src === "string") {
       const src = node.attrs.src;
       if (isAttachmentUrl(src)) {
-        urls.push({ url: src, kind: node.type === "image" ? "image" : "link" });
+        urls.push({ url: src, kind: blockKind(node.type) });
       }
     }
     if (Array.isArray(node.marks)) {
@@ -176,30 +184,30 @@ function collectTipTapImageUrls(nodes: TipTapNode[]): AttachmentRef[] {
   return urls;
 }
 
-function applyResolvedTipTapUrls(nodes: TipTapNode[], urlMap: Map<string, string>): TipTapNode[] {
+function applyResolvedTipTapUrls(nodes: TipTapNode[], resolved: ResolvedRefs): TipTapNode[] {
   return nodes.map((node) => {
     const newNode = { ...node };
-    if (
-      TIPTAP_ATTACHMENT_NODE_TYPES.has(newNode.type) &&
-      typeof newNode.attrs?.src === "string" &&
-      urlMap.has(newNode.attrs.src)
-    ) {
-      newNode.attrs = { ...newNode.attrs, src: urlMap.get(newNode.attrs.src)! };
+    if (TIPTAP_ATTACHMENT_NODE_TYPES.has(newNode.type) && typeof newNode.attrs?.src === "string") {
+      const urls = resolved[blockKind(newNode.type)];
+      if (urls.has(newNode.attrs.src)) {
+        newNode.attrs = { ...newNode.attrs, src: urls.get(newNode.attrs.src)! };
+      }
     }
     if (Array.isArray(newNode.marks)) {
+      const links = resolved.link;
       newNode.marks = newNode.marks.map<TipTapMark>((mark) => {
         if (
           mark.type === "link" &&
           typeof mark.attrs?.href === "string" &&
-          urlMap.has(mark.attrs.href)
+          links.has(mark.attrs.href)
         ) {
-          return { ...mark, attrs: { ...mark.attrs, href: urlMap.get(mark.attrs.href)! } };
+          return { ...mark, attrs: { ...mark.attrs, href: links.get(mark.attrs.href)! } };
         }
         return mark;
       });
     }
     if (newNode.content) {
-      newNode.content = applyResolvedTipTapUrls(newNode.content, urlMap);
+      newNode.content = applyResolvedTipTapUrls(newNode.content, resolved);
     }
     return newNode;
   });

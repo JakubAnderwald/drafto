@@ -1,3 +1,4 @@
+import RNFS from "react-native-fs";
 import { attachmentCacheRelativePath } from "@drafto/shared";
 
 import {
@@ -10,6 +11,7 @@ import {
   downloadToCache,
   evictAttachmentCache,
   flushAttachmentCacheIndex,
+  getAttachmentCacheGeneration,
   getAttachmentCacheState,
   getCachedAttachmentUri,
   holdCacheFile,
@@ -136,6 +138,8 @@ jest.mock("@/lib/generate-id", () => ({ generateId: () => `id-${++mockIds}` }));
 const CACHE = "/docs/attachment-cache";
 const put = (relativePath: string, size: number, mtime = 1_000) =>
   mockFiles.set(`${CACHE}/${relativePath}`, { size, mtime });
+const filesUnder = (dir: string) => [...mockFiles.keys()].filter((path) => path.startsWith(dir));
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Forget everything in memory, keeping every file (as a restart does). */
 async function restart(): Promise<void> {
@@ -226,6 +230,31 @@ describe("downloadToCache", () => {
     expect(mockFiles.has(`${CACHE}/u/n/a.jpg`)).toBe(false);
   });
 
+  it("leaves no file of a download that completes after a wipe, even in the next session's cache", async () => {
+    let finish: (value: { statusCode: number; size: number }) => void = () => undefined;
+    mockDownload.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const old = downloadToCache("u/n/a.jpg", "https://signed/a");
+    while (mockDownload.mock.calls.length === 0) await tick();
+    await deleteAttachmentCache();
+    // The next account's session recreates the cache before the old download ends.
+    mockDownload.mockResolvedValueOnce({ statusCode: 200, size: 4 });
+    await expect(downloadToCache("u/m/b.jpg", "https://signed/b")).resolves.toBe(
+      `file://${CACHE}/u/m/b.jpg`,
+    );
+
+    finish({ statusCode: 200, size: 3 });
+    await expect(old).resolves.toBeNull();
+    expect(filesUnder(CACHE)).toEqual([`${CACHE}/u/m/b.jpg`]);
+  });
+
+  it("downloads nothing for work that began before a sign-out", async () => {
+    const startedIn = getAttachmentCacheGeneration();
+    await deleteAttachmentCache();
+    await expect(downloadToCache("u/n/a.jpg", "https://signed/a", startedIn)).resolves.toBeNull();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockFiles.size).toBe(0);
+  });
+
   it("never recreates the cache for a download a sign-out overtook after it finished", async () => {
     mockDownload.mockResolvedValue({ statusCode: 200, size: 3 });
     let wipe: Promise<void> | null = null;
@@ -274,6 +303,17 @@ describe("copyIntoCache", () => {
     expect(mockMkdir).not.toHaveBeenCalled();
     expect(mockFiles.has(`${CACHE}/u/n/a.jpg`)).toBe(false);
   });
+
+  it("rejects, rather than hand out a deleted file, when a sign-out wipes the cache during the copy", async () => {
+    mockFiles.set("/picker/a.jpg", { size: 7, mtime: 1 });
+    jest.mocked(RNFS.copyFile).mockImplementationOnce(async (from: string, to: string) => {
+      mockFiles.set(to, { ...mockFiles.get(from)! });
+      await deleteAttachmentCache();
+    });
+    await expect(copyIntoCache("/picker/a.jpg", "u/n/a.jpg")).rejects.toBeInstanceOf(
+      AttachmentCacheWipedError,
+    );
+  });
 });
 
 describe("retainInCache", () => {
@@ -308,6 +348,15 @@ describe("retainInCache", () => {
     mockMoveFailures.next = true;
     await retainInCache("file:///docs/attachments/id_a.jpg", "u/n/a.jpg");
     expect(mockFiles.size).toBe(0);
+  });
+
+  it("never throws, so a cache failure can't fail an upload already recorded", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    put("u/n/a.jpg", 5);
+    jest.mocked(RNFS.stat).mockRejectedValueOnce(new Error("EIO"));
+    await expect(retainInCache(`file://${CACHE}/u/n/a.jpg`, "u/n/a.jpg")).resolves.toBeUndefined();
+    expect(mockFiles.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+    warn.mockRestore();
   });
 });
 
@@ -389,6 +438,38 @@ describe("evictAttachmentCache", () => {
     expect(mockHooks.readDirCalls).toBe(walks);
   });
 
+  it("keeps a file it could not delete in the index, so it is retried", async () => {
+    put("u/n/old.jpg", 50, 1);
+    put("u/n/new.jpg", 50, 2);
+    jest.mocked(RNFS.unlink).mockRejectedValueOnce(new Error("EBUSY"));
+    await evictAttachmentCache(60);
+    expect(mockFiles.has(`${CACHE}/u/n/old.jpg`)).toBe(true);
+    expect((await getAttachmentCacheState()).totalBytes).toBe(100);
+
+    await evictAttachmentCache(60);
+    expect(mockFiles.has(`${CACHE}/u/n/old.jpg`)).toBe(false);
+    expect((await getAttachmentCacheState()).totalBytes).toBe(50);
+  });
+
+  it("runs once more for a call that joined it, counting a file written meanwhile", async () => {
+    put("u/n/a.jpg", 50, 1);
+    put("u/n/b.jpg", 50, 2);
+    let releaseRows: (rows: unknown[]) => void = () => undefined;
+    mockUnsyncedRows.mockReturnValueOnce(new Promise((resolve) => (releaseRows = resolve)));
+    const first = evictAttachmentCache(60);
+    await tick();
+    mockDownload.mockResolvedValue({ statusCode: 200, size: 50 });
+    await downloadToCache("u/n/c.jpg", "https://signed/c");
+    const joined = evictAttachmentCache(60);
+    expect(joined).toBe(first);
+
+    releaseRows([]);
+    await joined;
+
+    expect(filesUnder(CACHE)).toEqual([`${CACHE}/u/n/c.jpg`]);
+    expect((await getAttachmentCacheState()).totalBytes).toBe(50);
+  });
+
   it("does nothing while the cache fits, and never throws", async () => {
     put("u/n/a.jpg", 10);
     await evictAttachmentCache(100);
@@ -460,6 +541,37 @@ describe("removeOrphanedCacheFiles", () => {
     await expect(removeOrphanedCacheFiles()).resolves.toBeUndefined();
     expect(mockFiles.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
     warn.mockRestore();
+  });
+});
+
+describe("removeOrphanedCacheFiles and running downloads", () => {
+  it("keeps a running download's partial file, deleting only leftovers", async () => {
+    mockFiles.set(`${CACHE}/.partial/old.part`, { size: 3, mtime: 1 });
+    let finish: (value: { statusCode: number; size: number }) => void = () => undefined;
+    mockDownload.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const running = downloadToCache("u/n/a.jpg", "https://signed/a");
+    while (mockDownload.mock.calls.length === 0) await tick();
+    const partial = `${CACHE}/.partial/id-${mockIds}.part`;
+    mockFiles.set(partial, { size: 1, mtime: 1 }); // the download is writing it
+
+    await removeOrphanedCacheFiles();
+
+    expect(mockFiles.has(`${CACHE}/.partial/old.part`)).toBe(false);
+    expect(mockFiles.has(partial)).toBe(true);
+    finish({ statusCode: 200, size: 6 });
+    await expect(running).resolves.toBe(`file://${CACHE}/u/n/a.jpg`);
+  });
+});
+
+describe("deleteFromCache", () => {
+  it("keeps a file it could not delete in the index, so the cleanup retries it", async () => {
+    put("u/n/a.jpg", 5);
+    await getAttachmentCacheState();
+    jest.mocked(RNFS.unlink).mockRejectedValueOnce(new Error("EBUSY"));
+    await deleteFromCache("u/n/a.jpg");
+    expect((await getAttachmentCacheState()).isCached("u/n/a.jpg")).toBe(true);
+    await deleteFromCache("u/n/a.jpg");
+    expect((await getAttachmentCacheState()).isCached("u/n/a.jpg")).toBe(false);
   });
 });
 
