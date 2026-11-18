@@ -12,7 +12,7 @@ const mockUseNetworkStatus = useNetworkStatus as jest.Mock;
 // Import render after mocks are set up
 import { render, screen, act } from "../helpers/test-utils";
 import { OfflineBanner } from "@/components/offline-banner";
-import { RECONNECTED_HOLD_MS } from "@/hooks/use-offline-banner-state";
+import { RECONNECTED_HOLD_MS } from "@drafto/shared";
 
 function setConnected(isConnected: boolean) {
   mockUseNetworkStatus.mockReturnValue({ isConnected, isInternetReachable: isConnected });

@@ -155,3 +155,9 @@ export {
   fontSizes,
 } from "./design-tokens";
 export type { SemanticColors } from "./design-tokens";
+export {
+  RECONNECTED_HOLD_MS,
+  initialOfflineBannerVariant,
+  nextOfflineBannerVariant,
+} from "./network/offline-banner";
+export type { OfflineBannerEvent, OfflineBannerVariant } from "./network/offline-banner";

@@ -1,6 +1,7 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import type { OfflineBannerVariant } from "@drafto/shared";
 
-import { useOfflineBannerState, type OfflineBannerVariant } from "@/hooks/use-offline-banner-state";
+import { useOfflineBannerState } from "@/hooks/use-offline-banner-state";
 
 interface OfflineBannerContextValue {
   /** The banner to show on every screen, or null for none. */

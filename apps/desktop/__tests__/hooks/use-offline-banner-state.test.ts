@@ -1,8 +1,11 @@
 import { renderHook, act } from "@testing-library/react-native";
+import { RECONNECTED_HOLD_MS } from "@drafto/shared";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
-import { RECONNECTED_HOLD_MS, useOfflineBannerState } from "@/hooks/use-offline-banner-state";
+import { useOfflineBannerState } from "@/hooks/use-offline-banner-state";
 
+// The state machine itself is tested in packages/shared (offline-banner.test.ts).
+// These tests cover only the wiring: this app's network status and the hold timer.
 jest.mock("@/hooks/use-network-status", () => ({
   useNetworkStatus: jest.fn(),
 }));
@@ -23,47 +26,15 @@ describe("useOfflineBannerState", () => {
     jest.useRealTimers();
   });
 
-  it("shows nothing for an app that starts online", () => {
-    setConnected(true);
-
-    const { result } = renderHook(() => useOfflineBannerState());
-
-    expect(result.current).toBeNull();
-  });
-
-  it("shows the offline banner while there is no connection", () => {
+  it("starts from the network status", () => {
     setConnected(false);
-
-    const { result } = renderHook(() => useOfflineBannerState());
-
-    expect(result.current).toBe("offline");
-  });
-
-  it("goes offline, then 'reconnected', then hides after the hold", () => {
-    setConnected(true);
-    const { result, rerender } = renderHook(() => useOfflineBannerState());
-    expect(result.current).toBeNull();
-
-    setConnected(false);
-    rerender({});
-    expect(result.current).toBe("offline");
+    expect(renderHook(() => useOfflineBannerState()).result.current).toBe("offline");
 
     setConnected(true);
-    rerender({});
-    expect(result.current).toBe("reconnected");
-
-    act(() => {
-      jest.advanceTimersByTime(RECONNECTED_HOLD_MS - 1);
-    });
-    expect(result.current).toBe("reconnected");
-
-    act(() => {
-      jest.advanceTimersByTime(1);
-    });
-    expect(result.current).toBeNull();
+    expect(renderHook(() => useOfflineBannerState()).result.current).toBeNull();
   });
 
-  it("goes straight back to 'offline' when the connection drops during the hold", () => {
+  it("follows the network and hides 'reconnected' once the hold has run", () => {
     setConnected(false);
     const { result, rerender } = renderHook(() => useOfflineBannerState());
 
@@ -71,30 +42,26 @@ describe("useOfflineBannerState", () => {
     rerender({});
     expect(result.current).toBe("reconnected");
 
-    setConnected(false);
-    rerender({});
-    expect(result.current).toBe("offline");
-
-    // The cancelled hold timer must not hide the banner while still offline.
     act(() => {
-      jest.advanceTimersByTime(RECONNECTED_HOLD_MS * 2);
+      jest.advanceTimersByTime(RECONNECTED_HOLD_MS);
     });
-    expect(result.current).toBe("offline");
-
-    setConnected(true);
-    rerender({});
-    expect(result.current).toBe("reconnected");
+    expect(result.current).toBeNull();
   });
 
-  it("clears the hold timer on unmount", () => {
+  it("cancels the hold timer when the connection drops again, and on unmount", () => {
     setConnected(false);
     const { rerender, unmount } = renderHook(() => useOfflineBannerState());
     setConnected(true);
     rerender({});
     expect(jest.getTimerCount()).toBe(1);
 
-    unmount();
+    setConnected(false);
+    rerender({});
+    expect(jest.getTimerCount()).toBe(0);
 
+    setConnected(true);
+    rerender({});
+    unmount();
     expect(jest.getTimerCount()).toBe(0);
   });
 });

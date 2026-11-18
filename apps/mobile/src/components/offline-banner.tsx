@@ -1,8 +1,8 @@
 import { View, Text, StyleSheet, type LayoutChangeEvent } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import type { OfflineBannerVariant } from "@drafto/shared";
 import { StatusBar } from "expo-status-bar";
 
-import type { OfflineBannerVariant } from "@/hooks/use-offline-banner-state";
 import { colors, fontSizes, spacing } from "@/theme/tokens";
 
 interface OfflineBannerProps {

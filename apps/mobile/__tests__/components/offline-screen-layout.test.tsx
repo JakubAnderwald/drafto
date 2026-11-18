@@ -13,7 +13,7 @@ import {
   OfflineBannerProvider,
   useOfflineBannerHeaderOffset,
 } from "@/providers/offline-banner-provider";
-import { RECONNECTED_HOLD_MS } from "@/hooks/use-offline-banner-state";
+import { RECONNECTED_HOLD_MS } from "@drafto/shared";
 import { spacing } from "@/theme/tokens";
 
 jest.mock("@/hooks/use-network-status", () => ({
