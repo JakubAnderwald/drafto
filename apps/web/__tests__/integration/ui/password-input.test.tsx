@@ -54,20 +54,29 @@ describe("PasswordInput", () => {
     expect(screen.getByRole("button", { name: "Hide password" })).toHaveAttribute("type", "button");
   });
 
-  it("goes back to hidden when its form submits", async () => {
+  it("stays revealed when its form submits", async () => {
     const user = userEvent.setup();
+    const onSubmit = vi.fn((e: React.FormEvent) => e.preventDefault());
     render(
-      <form onSubmit={(e) => e.preventDefault()}>
+      <form onSubmit={onSubmit}>
         <PasswordInput id="pw" aria-label="Password" />
         <button type="submit">Go</button>
       </form>,
     );
 
     await user.click(screen.getByRole("button", { name: "Show password" }));
-    expect(screen.getByLabelText("Password")).toHaveAttribute("type", "text");
-
     await user.click(screen.getByRole("button", { name: "Go" }));
-    expect(screen.getByLabelText("Password")).toHaveAttribute("type", "password");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Password")).toHaveAttribute("type", "text");
+    expect(screen.getByRole("button", { name: "Hide password" })).toBeInTheDocument();
+  });
+
+  it("hides Edge's built-in reveal and clear buttons", () => {
+    renderField();
+
+    const input = screen.getByLabelText("Password");
+    expect(input.className).toContain("[&::-ms-reveal]:hidden");
+    expect(input.className).toContain("[&::-ms-clear]:hidden");
   });
 
   it("keeps autofill and validation attributes in both states", async () => {

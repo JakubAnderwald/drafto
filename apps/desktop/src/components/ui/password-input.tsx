@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useRef, useState, type Ref } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { TextInput } from "react-native";
 import { PASSWORD_VISIBILITY_LABELS } from "@drafto/shared";
 
@@ -9,54 +9,60 @@ import { useTheme } from "@/providers/theme-provider";
 
 export type PasswordInputProps = Omit<InputProps, "secureTextEntry" | "rightIcon">;
 
-function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
-  if (typeof ref === "function") ref(value);
-  else if (ref) (ref as { current: T | null }).current = value;
-}
-
 /**
  * A password field with a show/hide toggle in the Input's right slot. Hidden by default; the
  * caller's `autoComplete` / `textContentType` stay on the same field in both states. The
  * toggle's testID is `${testID}-toggle`.
  *
  * react-native-macos swaps the native view (secure ↔ plain text field) when `secureTextEntry`
- * changes, which drops keyboard focus, so the field is focused again after each toggle.
+ * changes, which drops keyboard focus. So when the field had focus at the moment of the toggle
+ * (the user was typing and clicked the eye), it is focused again afterwards, with the caret put
+ * at the end: AppKit selects the whole text of a field that becomes first responder, and the
+ * next keystroke would replace the password. When the field did not have focus (keyboard or
+ * VoiceOver users on the toggle itself), focus stays where it is.
  */
 export const PasswordInput = forwardRef<TextInput, PasswordInputProps>(function PasswordInput(
-  { testID, editable, ...props },
+  { testID, editable, value, onFocus, onBlur, ...props },
   ref,
 ) {
   const { semantic } = useTheme();
   const [visible, setVisible] = useState(false);
   const inputRef = useRef<TextInput | null>(null);
-  const toggled = useRef(false);
+  const focused = useRef(false);
+  const refocusAfterToggle = useRef(false);
 
-  const setRefs = useCallback(
-    (node: TextInput | null) => {
-      inputRef.current = node;
-      assignRef(ref, node);
-    },
-    [ref],
-  );
+  useImperativeHandle<TextInput | null, TextInput | null>(ref, () => inputRef.current, []);
 
   useEffect(() => {
-    if (!toggled.current) return;
-    toggled.current = false;
-    inputRef.current?.focus();
-  }, [visible]);
+    if (!refocusAfterToggle.current) return;
+    refocusAfterToggle.current = false;
+    const field = inputRef.current;
+    if (!field) return;
+    field.focus();
+    field.setSelection(value.length, value.length);
+  }, [visible, value]);
 
   const toggle = () => {
-    toggled.current = true;
+    refocusAfterToggle.current = focused.current;
     setVisible((v) => !v);
   };
 
   return (
     <Input
       {...props}
-      ref={setRefs}
+      ref={inputRef}
       testID={testID}
       editable={editable}
+      value={value}
       secureTextEntry={!visible}
+      onFocus={(e) => {
+        focused.current = true;
+        onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        focused.current = false;
+        onBlur?.(e);
+      }}
       rightIcon={
         <IconButton
           onPress={toggle}

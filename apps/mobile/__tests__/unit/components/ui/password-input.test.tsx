@@ -71,21 +71,91 @@ describe("PasswordInput", () => {
     assertField();
   });
 
-  it("uses the visible-password keyboard on Android while revealed", () => {
-    Object.defineProperty(Platform, "OS", { value: "android", configurable: true });
-    const { getByTestId, getByLabelText } = renderField();
+  it.each(["android", "ios"] as const)(
+    "only flips secureTextEntry on %s, never the keyboard type",
+    (os) => {
+      Object.defineProperty(Platform, "OS", { value: os, configurable: true });
+      const { getByTestId, getByLabelText, rerender } = renderField();
 
-    expect(getByTestId("password-input").props.keyboardType).toBeUndefined();
-    fireEvent.press(getByLabelText("Show password"));
-    expect(getByTestId("password-input").props.keyboardType).toBe("visible-password");
+      expect(getByTestId("password-input").props.keyboardType).toBeUndefined();
+      fireEvent.press(getByLabelText("Show password"));
+      expect(getByTestId("password-input").props.keyboardType).toBeUndefined();
+
+      rerender(
+        <PasswordInput
+          value="S01visible42"
+          onChangeText={() => {}}
+          keyboardType="ascii-capable"
+          testID="password-input"
+        />,
+      );
+      expect(getByTestId("password-input").props.keyboardType).toBe("ascii-capable");
+    },
+  );
+
+  describe("hiding the value while the field is focused", () => {
+    function renderWithRef() {
+      const ref = createRef<TextInput>();
+      const utils = render(
+        <PasswordInput
+          ref={ref}
+          value="S01visible42"
+          onChangeText={() => {}}
+          testID="password-input"
+        />,
+      );
+      // The mocked TextInput shares one blur mock across instances, so count from here.
+      const blur = jest.spyOn(ref.current as TextInput, "blur");
+      blur.mockClear();
+      return { ...utils, blur };
+    }
+
+    it("ends the edit on iOS, so UIKit does not wipe the field on the next keystroke", () => {
+      Object.defineProperty(Platform, "OS", { value: "ios", configurable: true });
+      const { getByTestId, blur } = renderWithRef();
+
+      fireEvent(getByTestId("password-input"), "focus");
+      fireEvent.press(getByTestId("password-input-toggle"));
+      expect(blur).not.toHaveBeenCalled();
+      expect(getByTestId("password-input").props.secureTextEntry).toBe(false);
+
+      fireEvent.press(getByTestId("password-input-toggle"));
+      expect(blur).toHaveBeenCalledTimes(1);
+      expect(getByTestId("password-input").props.secureTextEntry).toBe(true);
+    });
+
+    it("leaves focus alone on iOS when the field is not focused", () => {
+      Object.defineProperty(Platform, "OS", { value: "ios", configurable: true });
+      const { getByTestId, blur } = renderWithRef();
+
+      fireEvent(getByTestId("password-input"), "focus");
+      fireEvent(getByTestId("password-input"), "blur");
+      fireEvent.press(getByTestId("password-input-toggle"));
+      fireEvent.press(getByTestId("password-input-toggle"));
+      expect(blur).not.toHaveBeenCalled();
+    });
+
+    it("leaves focus alone on Android", () => {
+      Object.defineProperty(Platform, "OS", { value: "android", configurable: true });
+      const { getByTestId, blur } = renderWithRef();
+
+      fireEvent(getByTestId("password-input"), "focus");
+      fireEvent.press(getByTestId("password-input-toggle"));
+      fireEvent.press(getByTestId("password-input-toggle"));
+      expect(blur).not.toHaveBeenCalled();
+      expect(getByTestId("password-input").props.secureTextEntry).toBe(true);
+    });
   });
 
-  it("keeps the caller's keyboard on iOS while revealed", () => {
-    Object.defineProperty(Platform, "OS", { value: "ios", configurable: true });
-    const { getByTestId, getByLabelText } = renderField({ keyboardType: "ascii-capable" });
+  it("passes focus and blur through to the caller", () => {
+    const onFocus = jest.fn();
+    const onBlur = jest.fn();
+    const { getByTestId } = renderField({ onFocus, onBlur });
 
-    fireEvent.press(getByLabelText("Show password"));
-    expect(getByTestId("password-input").props.keyboardType).toBe("ascii-capable");
+    fireEvent(getByTestId("password-input"), "focus");
+    fireEvent(getByTestId("password-input"), "blur");
+    expect(onFocus).toHaveBeenCalledTimes(1);
+    expect(onBlur).toHaveBeenCalledTimes(1);
   });
 
   it("disables the toggle while the field is not editable", () => {
@@ -107,5 +177,13 @@ describe("PasswordInput", () => {
     render(<PasswordInput ref={ref} value="" onChangeText={() => {}} />);
 
     expect(ref.current).toBeTruthy();
+    expect(typeof ref.current?.focus).toBe("function");
+  });
+
+  it("forwards a callback ref", () => {
+    const ref = jest.fn();
+    render(<PasswordInput ref={ref} value="" onChangeText={() => {}} />);
+
+    expect(ref).toHaveBeenCalledWith(expect.objectContaining({ focus: expect.any(Function) }));
   });
 });

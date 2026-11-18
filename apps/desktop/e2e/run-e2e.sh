@@ -42,6 +42,32 @@ sleep 1
 if has_element "Email" && has_element "Password" && has_element "Log in"; then
   : "${E2E_TEST_EMAIL:?E2E_TEST_EMAIL must be set (see apps/web/.env.local)}"
   : "${E2E_TEST_PASSWORD:?E2E_TEST_PASSWORD must be set (see apps/web/.env.local)}"
+
+  # ──────────────────────────────────────────────
+  echo ""
+  echo "TEST 0: Login password field has a show/hide toggle (PrimeTestLab 10668, S-01)"
+  # ──────────────────────────────────────────────
+  # Runs only from the login screen, and before the real password is typed: the field is
+  # empty, so nothing secret is ever revealed in the window or a screenshot. It ends hidden
+  # again, so the sign-in below types into a secure field.
+  if has_element "Show password"; then
+    pass "Password field offers 'Show password'"
+    if click_element_by_desc "Show password" && wait_for_ui && has_element "Hide password"; then
+      pass "Toggle switches to 'Hide password'"
+      click_element_by_desc "Hide password" || true
+      wait_for_ui
+      if has_element "Show password"; then
+        pass "Toggle switches back to 'Show password'"
+      else
+        fail "Password toggle" "'Show password' not back after clicking 'Hide password'"
+      fi
+    else
+      fail "Password toggle" "'Hide password' not found after clicking 'Show password'"
+    fi
+  else
+    fail "Password toggle" "No 'Show password' control on the login screen"
+  fi
+
   click_element_by_desc "Email"
   cliclick t:"$E2E_TEST_EMAIL"
   click_element_by_desc "Password"
@@ -62,6 +88,10 @@ if has_element "Email" && has_element "Password" && has_element "Log in"; then
     echo "Error: Login did not complete within 15s — aborting." >&2
     exit 1
   fi
+else
+  echo ""
+  echo "TEST 0: Login password field has a show/hide toggle"
+  echo "  ⏭  Skipped — the app is already signed in (sign out to run it)"
 fi
 
 # Notebook name is set up here so the cleanup teardown can find it later.

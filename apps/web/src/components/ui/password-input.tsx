@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useRef, useState, type Ref } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { PASSWORD_VISIBILITY_LABELS } from "@drafto/shared";
 import { cn } from "@/lib/cn";
 import { IconButton } from "@/components/ui/icon-button";
@@ -11,47 +11,34 @@ export interface PasswordInputProps extends Omit<InputProps, "type"> {
   wrapperClassName?: string;
 }
 
-function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
-  if (typeof ref === "function") ref(value);
-  else if (ref) (ref as { current: T | null }).current = value;
-}
-
 /**
  * A password field with a show/hide toggle. The input stays `type="password"` until the user
- * asks to see it, and goes back to hidden when its form submits, so browsers' save-password
- * prompts still see a password field. `id`, `name` and `autoComplete` stay on the same element
- * in both states, so password managers keep matching it.
+ * asks to see it, and stays as the user left it when its form submits. `id`, `name` and
+ * `autoComplete` stay on the same element in both states, so password managers keep matching it.
+ *
+ * Edge draws its own reveal button inside password fields (`::-ms-reveal`), which would sit
+ * next to this toggle, so the input hides it.
  */
 export const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(
   function PasswordInput({ wrapperClassName, className, disabled, id, ...props }, ref) {
     const [visible, setVisible] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
 
-    const setRefs = useCallback(
-      (node: HTMLInputElement | null) => {
-        inputRef.current = node;
-        assignRef(ref, node);
-      },
-      [ref],
+    useImperativeHandle<HTMLInputElement | null, HTMLInputElement | null>(
+      ref,
+      () => inputRef.current,
+      [],
     );
-
-    useEffect(() => {
-      const form = inputRef.current?.form;
-      if (!form) return;
-      const hide = () => setVisible(false);
-      form.addEventListener("submit", hide);
-      return () => form.removeEventListener("submit", hide);
-    }, []);
 
     return (
       <div className={cn("relative", wrapperClassName)}>
         <Input
           {...props}
-          ref={setRefs}
+          ref={inputRef}
           id={id}
           disabled={disabled}
           type={visible ? "text" : "password"}
-          className={cn("pr-10", className)}
+          className={cn("pr-10 [&::-ms-clear]:hidden [&::-ms-reveal]:hidden", className)}
         />
         <IconButton
           size="sm"
