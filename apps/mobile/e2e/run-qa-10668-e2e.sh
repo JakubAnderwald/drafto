@@ -19,16 +19,21 @@ set -euo pipefail
 #   android|ios           platform (default: android)
 #   --before              run against a build without the fixes: every report
 #                         check is expected to FAIL, and is listed as
-#                         "reproduced". Exits non-zero if any of them passes,
+#                         "reproduced" only when it measured the element and
+#                         found it wrong. Exits non-zero if any of them passes,
 #                         because that check can't tell a fixed build from a
-#                         broken one.
+#                         broken one, and if any could not measure (a check
+#                         error, the element missing, a missing flow): "NOT
+#                         MEASURED" proves nothing either way.
 #   --allow-host-offline  iOS only: the simulator has no airplane mode, so the
 #                         offline legs take this whole Mac offline with
-#                         apps/desktop/e2e/in-test/lib/net.sh (sudo; a root
-#                         watchdog restores the network after NET_WATCHDOG_S,
-#                         default 120 s). Without it the offline legs are
-#                         skipped. This also cuts off anything else on the Mac,
-#                         a Claude session included, until the leg ends.
+#                         apps/desktop/e2e/in-test/lib/net.sh (sudo, kept alive
+#                         for the run; a root watchdog restores the network
+#                         after NET_WATCHDOG_S, default 300 s here, which covers
+#                         a leg's offline phase and capture). Without it the
+#                         offline legs are skipped. This also cuts off anything
+#                         else on the Mac, a Claude session included, until
+#                         the leg ends.
 #   --device              adb serial or simulator UDID (default: the only
 #                         emulator, or the booted simulator)
 #   --out                 where screenshots, hierarchy dumps, logs and the
@@ -46,11 +51,17 @@ set -euo pipefail
 # project; QA_ENV_FILE=<file> reads another file). Offline legs on Android
 # need a release APK built against dev, because a debug build loses Metro
 # (10.0.2.2:8081) in airplane mode; see docs/architecture/testing.md,
-# "Offline flows on Android". The runner refuses an installed build whose
-# bundle names the production project.
+# "Offline flows on Android". The runner refuses an installed build (APK or
+# .app, debug or release) that names the production project anywhere, or
+# whose expo-constants app.config doesn't name the dev project.
 #
 # Contract with the flows (the env the runner passes to each one):
-#   RUN_ID, E2E_TEST_EMAIL, E2E_TEST_PASSWORD   always
+#   RUN_ID, E2E_TEST_EMAIL   always, as -e arguments
+#   MAESTRO_E2E_TEST_PASSWORD
+#                       always, in the environment and never in argv (where
+#                       `ps` shows it): Maestro hands every MAESTRO_* shell
+#                       variable to the flow. A flow that also runs under
+#                       `-e E2E_TEST_PASSWORD=…` reads it as 01-login.yaml does.
 #   QA_KEEP_OFFLINE=1   Android offline flows: leave airplane mode on at the
 #                       end (their onFlowComplete restores it only when this is
 #                       unset), so the host check sees the offline screen. The
@@ -170,6 +181,7 @@ case "$NEXT_PUBLIC_SUPABASE_URL" in
     ;;
 esac
 export E2E_TEST_PASSWORD
+export MAESTRO_E2E_TEST_PASSWORD="$E2E_TEST_PASSWORD"
 
 RUN_ID="${RUN_ID:-$(date +%s)}"
 MODE_LABEL=$([ "$BEFORE" = 1 ] && echo before || echo after)
@@ -181,14 +193,19 @@ RESULTS="$OUT/results.tsv"
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT/run.log"; }
 
-# Maestro logs each typed text, the password included: scrub it from every
-# text file the run saved. The value is read from the environment, not argv.
+# Maestro logs each typed text, the password included (its --debug-output,
+# which run_flow points under $OUT, keeps the commands it ran): scrub it from
+# every file under $OUT that contains it, whatever its name. grep and perl
+# read the value from a pipe and the environment, never from argv.
 redact_out() {
-  find "$OUT" -type f \( -name '*.log' -o -name '*.json' -o -name '*.txt' -o -name '*.html' -o -name '*.xml' \) \
-    -exec perl -pi -e 's/\Q$ENV{E2E_TEST_PASSWORD}\E/[redacted]/g' {} + 2> /dev/null || true
+  { printf '%s\n' "$E2E_TEST_PASSWORD" | LC_ALL=C grep -r -l -F --null -f - "$OUT" 2> /dev/null || true; } |
+    xargs -0 -r perl -pi -e 's/\Q$ENV{E2E_TEST_PASSWORD}\E/[redacted]/g' 2> /dev/null || true
 }
 
 # record <step> <row> <pass|fail|error|skip> <expect-before: fail|any> <detail>
+# expect-before `fail` marks the row that measures a report bug (a host check,
+# or a flow that is its own check): --before needs it to fail cleanly. Rows
+# that only get the app to a screen are `any`.
 record() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$(printf '%s' "$5" | tr '\t\n' '  ')" >> "$RESULTS"
   log "   [$3] $1 / $2${5:+ — $5}"
@@ -203,7 +220,8 @@ if [ "$PLATFORM" = android ]; then
       exit 2
     }
   fi
-  adb_sh() { "$ADB" -s "$DEVICE" shell "$@"; }
+  # `adb shell` reads stdin: never let it eat a caller's here-doc or loop input.
+  adb_sh() { "$ADB" -s "$DEVICE" shell "$@" < /dev/null; }
 else
   if [ -z "$DEVICE" ]; then
     DEVICE="$(xcrun simctl list devices booted | grep -Eo '\([0-9A-F-]{36}\)' | tr -d '()' || true)"
@@ -218,10 +236,15 @@ fi
 ORIG_NAV_MODE=""
 ORIG_NIGHT=""
 NET_ARMED=0
+SUDO_KEEPALIVE_PID=""
 cleanup() {
   local status=$?
   set +e
-  if [ "$NET_ARMED" = 1 ]; then net_restore_if_needed; fi
+  if [ "$NET_ARMED" = 1 ]; then
+    net_restore_if_needed
+    rm -f "$RUN_DIR/.hdr-anon"
+  fi
+  if [ -n "$SUDO_KEEPALIVE_PID" ]; then kill "$SUDO_KEEPALIVE_PID" 2> /dev/null; fi
   if [ "$PLATFORM" = android ]; then
     adb_sh cmd connectivity airplane-mode disable > /dev/null 2>&1
     if [ "$KEEP_DEVICE_STATE" = 0 ]; then
@@ -242,12 +265,34 @@ trap cleanup EXIT
 if [ "$ALLOW_HOST_OFFLINE" = 1 ]; then
   RUN_DIR="$OUT/net"
   mkdir -p "$RUN_DIR"
-  NET_WATCHDOG_S="${NET_WATCHDOG_S:-120}"
+  # The watchdog starts at net_off and must outlast the whole offline part of a
+  # leg: a fresh Maestro iOS driver, two cold starts with 30 s waits, a 15 s
+  # banner wait, then `maestro hierarchy` for the capture. That can pass 120 s
+  # (net.sh's default), and a network that comes back early makes the app
+  # reconnect and the check read the wrong screen.
+  NET_WATCHDOG_S="${NET_WATCHDOG_S:-300}"
+  # net_wait_online's inputs: the Supabase URL and a header file.
+  SB_URL="$NEXT_PUBLIC_SUPABASE_URL"
+  (
+    umask 077
+    if [ -n "${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}" ]; then
+      printf 'apikey: %s\n' "$NEXT_PUBLIC_SUPABASE_ANON_KEY" > "$RUN_DIR/.hdr-anon"
+    else
+      : > "$RUN_DIR/.hdr-anon"
+    fi
+  )
   # shellcheck source=../../desktop/e2e/in-test/lib/net.sh
   source "$NET_SH"
   NET_ARMED=1
   log "Taking this Mac offline needs sudo; caching the timestamp now."
   sudo -v
+  # Keep it alive for the run (as the in-test harness does): the first
+  # offline leg comes several Maestro runs in, past sudo's 5-minute default.
+  (while kill -0 $$ 2> /dev/null; do
+    sudo -n true 2> /dev/null
+    sleep 45
+  done) > /dev/null 2>&1 &
+  SUDO_KEEPALIVE_PID=$!
 fi
 
 host_offline() {
@@ -255,30 +300,17 @@ host_offline() {
     log "   sudo timestamp expired; run sudo -v and retry"
     return 1
   }
-  # net.sh's own net_wait_idle counts any xcodebuild, and Maestro's iOS driver
-  # runs as `xcodebuild test-without-building`, so wait only for real builds,
-  # releases and the support runs.
-  local end=$(($(date +%s) + 600))
-  while pgrep -fl 'fastlane|xcodebuild|/gym |support-agent\.sh|nightly-(support|audit)\.sh' |
-    grep -v 'test-without-building' | grep -q .; do
-    [ "$(date +%s)" -lt "$end" ] || {
-      log "   a build or support run is still active; not taking the Mac offline"
-      return 1
-    }
-    log "   waiting: a build or support run is active"
-    sleep 20
-  done
+  # net_busy skips Maestro's own iOS driver (`xcodebuild test-without-building`).
+  net_wait_idle 600 || {
+    log "   a build or support run is still active; not taking the Mac offline"
+    return 1
+  }
   net_off
 }
 
 host_online() {
   net_on || return 1
-  local end=$(($(date +%s) + 60))
-  while [ "$(date +%s)" -lt "$end" ]; do
-    curl -s -o /dev/null -m 3 "$NEXT_PUBLIC_SUPABASE_URL/auth/v1/health" && return 0
-    sleep 1
-  done
-  return 1
+  net_wait_online 60
 }
 
 # --- Maestro, captures and checks ---
@@ -290,9 +322,12 @@ run_flow() {
   shift 2
   local status=0
   log "-- $step: $flow $*"
+  # --debug-output keeps Maestro's commands JSON and log (typed text included)
+  # under $OUT, where redact_out scrubs them, instead of ~/.maestro/tests.
   (cd "$OUT" && "$MAESTRO" --device "$DEVICE" test --test-output-dir "$OUT/maestro/$step" \
-    -e RUN_ID="$RUN_ID" -e E2E_TEST_EMAIL="$E2E_TEST_EMAIL" -e E2E_TEST_PASSWORD="$E2E_TEST_PASSWORD" \
-    "$@" "$E2E_DIR/$flow") > "$OUT/$step.maestro.log" 2>&1 || status=$?
+    --debug-output "$OUT/maestro/$step" \
+    -e RUN_ID="$RUN_ID" -e E2E_TEST_EMAIL="$E2E_TEST_EMAIL" \
+    "$@" "$E2E_DIR/$flow") < /dev/null > "$OUT/$step.maestro.log" 2>&1 || status=$?
   redact_out
   if [ "$status" != 0 ]; then tail -15 "$OUT/$step.maestro.log" | sed 's/^/      /'; fi
   return "$status"
@@ -301,13 +336,13 @@ run_flow() {
 # capture <name>: the hierarchy, a screenshot and (Android) the window dump.
 capture() {
   local name="$1"
-  "$MAESTRO" --device "$DEVICE" hierarchy --no-reinstall-driver > "$OUT/$name.hierarchy.json" 2> "$OUT/$name.hierarchy.log" ||
-    "$MAESTRO" --device "$DEVICE" hierarchy > "$OUT/$name.hierarchy.json" 2>> "$OUT/$name.hierarchy.log" || true
+  "$MAESTRO" --device "$DEVICE" hierarchy --no-reinstall-driver < /dev/null > "$OUT/$name.hierarchy.json" 2> "$OUT/$name.hierarchy.log" ||
+    "$MAESTRO" --device "$DEVICE" hierarchy < /dev/null > "$OUT/$name.hierarchy.json" 2>> "$OUT/$name.hierarchy.log" || true
   if [ "$PLATFORM" = android ]; then
     adb_sh dumpsys window > "$OUT/$name.dumpsys.txt" 2>&1 || true
-    "$ADB" -s "$DEVICE" exec-out screencap -p > "$OUT/$name.png" 2> /dev/null || true
+    "$ADB" -s "$DEVICE" exec-out screencap -p < /dev/null > "$OUT/$name.png" 2> /dev/null || true
   else
-    xcrun simctl io "$DEVICE" screenshot "$OUT/$name.png" > /dev/null 2>&1 || true
+    xcrun simctl io "$DEVICE" screenshot "$OUT/$name.png" < /dev/null > /dev/null 2>&1 || true
   fi
 }
 
@@ -323,13 +358,15 @@ check() {
     nav-mode) args=(--dumpsys "$OUT/$name.dumpsys.txt" --density "$OUT/$name.density.txt") ;;
     *) args=(--hierarchy "$OUT/$name.hierarchy.json") ;;
   esac
-  output="$(node "$CHECKS" "$kind" "${args[@]}" "$@" 2>&1)" || status=$?
+  output="$(node "$CHECKS" "$kind" "${args[@]}" "$@" 2>&1 < /dev/null)" || status=$?
   printf '%s\n' "$output" > "$OUT/$name.$kind.json"
   local reason
   reason="$(printf '%s' "$output" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).reason)}catch{console.log(s.split("\n")[0])}})')"
   case "$status" in
     0) record "$step" "$kind" pass "$expect" "$reason" ;;
     1) record "$step" "$kind" fail "$expect" "$reason" ;;
+    # 2: bad input, or nothing to measure (the element or a precondition is
+    # missing). Never a reproduction.
     *) record "$step" "$kind" error "$expect" "$reason" ;;
   esac
 }
@@ -342,7 +379,7 @@ want() {
   if [ -n "$ONLY" ] && ! printf '%s' "$flow" | grep -Eq -- "$ONLY"; then return 1; fi
   if ! flow_exists "$flow"; then
     if [ "$REQUIRE_ALL" = 1 ]; then
-      record "$step" flow fail fail "flow $flow does not exist"
+      record "$step" flow error fail "flow $flow does not exist"
     else
       record "$step" flow skip fail "flow $flow does not exist yet"
     fi
@@ -365,14 +402,16 @@ flow_step() {
 
 # layout_step <step> <flow> <check> [check flags...] — the flow, then a capture and a host check.
 # Maestro env for the flow comes from FLOW_ENV (an array), set by the caller.
+# The host check is the measurement (expect-before fail); the flow only gets
+# the app to the screen, so its row is `any`.
 layout_step() {
   local step="$1" flow="$2" kind="$3"
   shift 3
   want "$step" "$flow" || return 0
   if run_flow "$step" "$flow" ${FLOW_ENV[@]+"${FLOW_ENV[@]}"}; then
-    record "$step" flow pass fail "$flow"
+    record "$step" flow pass any "$flow"
   else
-    record "$step" flow fail fail "$flow failed before its check point (see $step.maestro.log)"
+    record "$step" flow fail any "$flow failed before its check point (see $step.maestro.log)"
   fi
   capture "$step"
   check "$step" "$step" fail "$kind" "$@"
@@ -403,16 +442,29 @@ if [ "$PLATFORM" = android ]; then
   # The Supabase URL is not inlined into the Hermes bundle: it ships in
   # assets/app.config (expo-constants `extra`). So grep the whole APK for the
   # prod ref, and require the dev ref in app.config.
-  if unzip -p "$OUT/installed.apk" | LC_ALL=C grep -a -q "$PROD_REF"; then
-    rm -f "$OUT/installed.apk"
+  # Each extraction goes to a file before grep reads it: in `unzip -p | grep -q`
+  # grep exits at the first match, unzip dies of SIGPIPE (141), and pipefail
+  # turns the match into "no match", which would let a production APK through.
+  apk_text="$OUT/installed.apk.contents"
+  unzip_status=0
+  unzip -p "$OUT/installed.apk" > "$apk_text" 2> /dev/null || unzip_status=$?
+  if [ "$unzip_status" -gt 1 ]; then
+    rm -f "$OUT/installed.apk" "$apk_text"
+    echo "ERROR: could not read the installed APK (unzip exit $unzip_status)." >&2
+    exit 2
+  fi
+  if LC_ALL=C grep -a -q -F "$PROD_REF" "$apk_text"; then
+    rm -f "$OUT/installed.apk" "$apk_text"
     echo "ERROR: the installed APK contains the production ref ($PROD_REF). Build it against dev." >&2
     exit 2
   fi
-  if ! unzip -p "$OUT/installed.apk" assets/app.config 2> /dev/null | LC_ALL=C grep -a -q "$DEV_REF"; then
-    rm -f "$OUT/installed.apk"
+  unzip -p "$OUT/installed.apk" assets/app.config > "$apk_text" 2> /dev/null || : > "$apk_text"
+  if ! LC_ALL=C grep -a -q -F "$DEV_REF" "$apk_text"; then
+    rm -f "$OUT/installed.apk" "$apk_text"
     echo "ERROR: the installed APK's assets/app.config does not name the dev project ($DEV_REF)." >&2
     exit 2
   fi
+  rm -f "$apk_text"
   if unzip -l "$OUT/installed.apk" assets/index.android.bundle > /dev/null 2>&1; then
     log "Installed build: release bundle, dev project, no production ref"
   else
@@ -437,14 +489,32 @@ else
     echo "ERROR: $APP_ID is not installed on $DEVICE" >&2
     exit 2
   fi
-  if [ -f "$app_dir/main.jsbundle" ]; then
-    if grep -q "$PROD_REF" "$app_dir/main.jsbundle"; then
-      echo "ERROR: the installed app's bundle points at production ($PROD_REF). Build it against dev." >&2
+  # As on Android, the Supabase URL ships in expo-constants' app.config
+  # (EXConstants.bundle/app.config), not in main.jsbundle, and debug builds
+  # carry it too. So grep the whole .app for the prod ref, and require the dev
+  # ref in app.config, whatever the build.
+  prod_status=0
+  LC_ALL=C grep -r -a -q -F "$PROD_REF" "$app_dir" 2> /dev/null || prod_status=$?
+  case "$prod_status" in
+    0)
+      echo "ERROR: the installed app contains the production ref ($PROD_REF). Build it against dev." >&2
       exit 2
-    fi
-    log "Installed build: release bundle, no production ref"
+      ;;
+    1) ;;
+    *)
+      echo "ERROR: could not read the installed app at $app_dir (grep exit $prod_status)." >&2
+      exit 2
+      ;;
+  esac
+  app_config="$(find "$app_dir" -path '*/EXConstants.bundle/app.config' -print 2> /dev/null | head -1)"
+  if [ -z "$app_config" ] || ! LC_ALL=C grep -a -q -F "$DEV_REF" "$app_config"; then
+    echo "ERROR: the installed app's EXConstants.bundle/app.config does not name the dev project ($DEV_REF)." >&2
+    exit 2
+  fi
+  if [ -f "$app_dir/main.jsbundle" ]; then
+    log "Installed build: release bundle, dev project, no production ref"
   else
-    log "Installed build: debug (JS from Metro on 8081)"
+    log "Installed build: debug (JS from Metro on 8081), dev project, no production ref"
   fi
   xcrun simctl privacy "$DEVICE" grant photos "$APP_ID" > /dev/null 2>&1 || true
   xcrun simctl ui "$DEVICE" appearance light > /dev/null 2>&1 || true
@@ -478,9 +548,9 @@ if [ "$PLATFORM" = android ]; then
       sleep 1
       step="dark-nav-bar-$name"
       if run_flow "$step" "$NAV_FLOW" -e QA_THEME="$theme"; then
-        record "$step" flow pass "$expect" "system night=$night, app theme=$theme"
+        record "$step" flow pass any "system night=$night, app theme=$theme"
       else
-        record "$step" flow fail "$expect" "$NAV_FLOW failed (see $step.maestro.log)"
+        record "$step" flow fail any "$NAV_FLOW failed (see $step.maestro.log)"
       fi
       capture "$step"
       check "$step" "$step" "$expect" "nav-bar-$bar"
@@ -504,13 +574,17 @@ else
 
   # --- M-02 / M-03 and the offline-mode regressions: the Mac goes offline ---
   # offline_leg <step> <flow> <expect-before> [<check>]
+  # With a check, the check is the measurement and the phases are `any`;
+  # without one (the regression flows) <expect-before> is `any` anyway. The
+  # skip row stands in for the measurement it skips, so a --before run counts
+  # the step as skipped, not as "NOT reproduced".
   offline_leg() {
     local step="$1" flow="$2" expect="$3" kind="${4:-}"
     want "$step" "$flow" || return 0
     if run_flow "$step-prepare" "$flow" -e QA_PHASE=prepare; then
-      record "$step" prepare pass "$expect" "online phase"
+      record "$step" prepare pass any "online phase"
     else
-      record "$step" prepare fail "$expect" "online phase failed (see $step-prepare.maestro.log)"
+      record "$step" prepare fail any "online phase failed (see $step-prepare.maestro.log)"
     fi
     if [ "$ALLOW_HOST_OFFLINE" = 0 ]; then
       record "$step" offline skip "$expect" "needs --allow-host-offline (the simulator has no airplane mode)"
@@ -521,9 +595,9 @@ else
       return 0
     fi
     if run_flow "$step-offline" "$flow" -e QA_PHASE=offline; then
-      record "$step" offline pass "$expect" "offline phase"
+      record "$step" offline pass any "offline phase"
     else
-      record "$step" offline fail "$expect" "offline phase failed (see $step-offline.maestro.log)"
+      record "$step" offline fail any "offline phase failed (see $step-offline.maestro.log)"
     fi
     if [ -n "$kind" ]; then
       capture "$step"
@@ -534,9 +608,9 @@ else
       return 0
     fi
     if run_flow "$step-reconnect" "$flow" -e QA_PHASE=reconnect; then
-      record "$step" reconnect pass "$expect" "reconnect phase"
+      record "$step" reconnect pass any "reconnect phase"
     else
-      record "$step" reconnect fail "$expect" "reconnect phase failed (see $step-reconnect.maestro.log)"
+      record "$step" reconnect fail any "reconnect phase failed (see $step-reconnect.maestro.log)"
     fi
   }
   offline_leg offline-image ios-only/09-attach-image-offline.yaml fail image-rendered
@@ -592,16 +666,28 @@ const lines = [
   "| Step | Result | Checks |",
   "| --- | --- | --- |",
 ];
+// A step's measurements are its expect-before `fail` rows. In --before, only
+// a measurement that ran and failed cleanly (exit 1) is a reproduction. An
+// error (a check's exit 2: bad input or the element missing; a flow that
+// doesn't exist under --require-all) measured nothing, so it proves nothing
+// either way and counts as bad. A step whose measurements were all skipped is
+// skipped, not "NOT reproduced".
 for (const [step, list] of steps) {
   const failed = list.some((r) => r.status === "fail" || r.status === "error");
   const errored = list.some((r) => r.status === "error");
   const skipped = list.every((r) => r.status === "skip");
   const partial = !skipped && list.some((r) => r.status === "skip");
-  const expectFail = list.some((r) => r.expect === "fail");
+  const measures = list.filter((r) => r.expect === "fail");
+  const reportCheck = measures.length > 0;
+  const measureSkipped = reportCheck && measures.every((r) => r.status === "skip");
   let result;
   if (skipped) result = "skipped";
-  else if (isBefore && expectFail) {
-    if (failed) result = "reproduced";
+  else if (isBefore && reportCheck) {
+    if (errored) {
+      result = "NOT MEASURED";
+      bad++;
+    } else if (measures.some((r) => r.status === "fail")) result = "reproduced";
+    else if (measureSkipped) result = "skipped (its check didn't run)";
     else {
       result = "NOT reproduced";
       bad++;
@@ -609,7 +695,8 @@ for (const [step, list] of steps) {
   } else if (failed) {
     result = isBefore && !errored ? "failed (not a report check)" : "FAILED";
     if (!isBefore || errored) bad++;
-  } else result = partial ? "passed (a leg was skipped)" : "passed";
+  } else if (measureSkipped) result = "skipped (its check didn't run)";
+  else result = partial ? "passed (a leg was skipped)" : "passed";
   const checks = list.map((r) => `${r.row}: ${r.status}${r.detail ? ` (${r.detail})` : ""}`).join("<br>");
   lines.push(`| ${step} | ${result} | ${checks.replace(/\|/g, "\\|")} |`);
 }

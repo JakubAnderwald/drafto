@@ -46,7 +46,10 @@ appId: eu.drafto.mobile
 - inputText: ${E2E_TEST_EMAIL}
 - tapOn: "Sign in to your Drafto account"
 - tapOn: "Your password"
-- inputText: ${E2E_TEST_PASSWORD}
+# -e E2E_TEST_PASSWORD=… or, from run-qa-10668-e2e.sh, MAESTRO_E2E_TEST_PASSWORD in
+# the environment (Maestro passes MAESTRO_* shell variables to flows), which keeps
+# the password out of the maestro command line that `ps` shows.
+- inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
 - tapOn: "Sign in to your Drafto account"
 - tapOn:
     id: "login-button"
