@@ -7,7 +7,13 @@ on_login_screen() { ax_has desc "Log in"; }
 on_signup_screen() { ! ax_has desc "Log in" && ax_has desc "Sign up"; }
 on_waiting_screen() { ax_has desc "Check approval status"; }
 on_main_screen() { ax_has desc "New notebook"; }
-menu_open() { ax_has id logout-button || ax_has desc "Sign out"; }
+# The App menu's "Sign out" item. It is an RN view labelled by its AXDescription;
+# the sign-out confirmation's native "Sign out" button carries the label as its
+# AXTitle, so an element titled "Sign out" is never the menu item.
+menu_sign_out_item() {
+  ax_dump | jq -c 'map(select(.desc == "Sign out" and .title != "Sign out" and ((.w // 0) > 0) and ((.h // 0) > 0))) | first // empty'
+}
+menu_open() { ax_has id logout-button || ax_has id app-menu || [ -n "$(menu_sign_out_item)" ]; }
 menu_closed() { ! menu_open; }
 delete_panel_open() { ax_has id delete-account-input || ax_has desc "Type DELETE to confirm"; }
 editor_present() { ax_dump | jq -e 'any(.[]; .role == "AXWebArea" and .desc == "RichTextEditor")' > /dev/null; }
@@ -28,10 +34,85 @@ open_app_menu() {
   press_until 5 menu_open id app-menu-trigger || press_until 5 menu_open desc "App menu"
 }
 
+# choose_sign_out — with the App menu open, pick "Sign out"; succeeds once the
+# menu has closed (the confirmation opens next).
+choose_sign_out() {
+  local attempt
+  press_until 3 menu_closed id logout-button && return 0
+  for attempt in 1 2 3; do
+    press_el "$(menu_sign_out_item)" && poll 3 menu_closed && return 0
+  done
+  return 1
+}
+
+# Every sign-out asks first (useSafeSignOut, PrimeTestLab report 10668 S-02).
+# Alert.alert on RN macOS is an NSAlert sheet on the main window. Its buttons
+# are AppKit NSButtons in the order given, Cancel first, so Cancel is the
+# default (Return) and the confirm button must be pressed by its label:
+# "Sign out", or "Sign out anyway" when changes are still unsynced. NSButtons
+# expose that label as AXTitle; AXDescription is the fallback.
+sign_out_confirm_button() {
+  ax_dump | jq -c '
+    def label_is_confirm: . == "Sign out" or . == "Sign out anyway";
+    map(select(.role == "AXButton" and .id != "logout-button" and ((.w // 0) > 0) and ((.h // 0) > 0)))
+    | (map(select(.title | label_is_confirm)) | first)
+      // (map(select(.desc | label_is_confirm)) | first)
+      // empty'
+}
+sign_out_confirm_open() { [ -n "$(sign_out_confirm_button)" ]; }
+sign_out_confirm_closed() { ! sign_out_confirm_open; }
+
+# sign_out_confirm_copy — which message the open confirmation shows: synced,
+# unsynced ("N changes haven't synced and will be lost."), unknown (the count
+# failed) or unread. The texts are in packages/shared/src/constants.ts.
+sign_out_confirm_copy() {
+  local copy
+  copy=$(ax_dump | jq -r '
+    [.[] | .value, .title, .desc | strings] as $t
+    | if any($t[]; startswith("Everything is synced")) then "synced"
+      elif any($t[]; test("^[0-9]+ changes? (hasn.t|haven.t) synced")) then "unsynced"
+      elif any($t[]; startswith("Any changes that haven")) then "unknown"
+      else empty end' 2> /dev/null)
+  if [ -z "$copy" ]; then
+    if ocr_has "Everything is synced"; then
+      copy=synced
+    elif ocr_has "synced and will be lost"; then
+      copy=unsynced
+    elif ocr_has "Any changes that"; then
+      copy=unknown
+    fi
+  fi
+  printf '%s' "${copy:-unread}"
+}
+
+# confirm_sign_out [timeout_s] — wait for the sign-out confirmation, record its
+# copy in SIGN_OUT_COPY, press its confirm button (AXPress, then the
+# focus-and-Space / click press) and wait up to timeout_s for the Log In screen.
+confirm_sign_out() {
+  local timeout=${1:-45} attempt el
+  SIGN_OUT_COPY=unread
+  if ! poll 30 sign_out_confirm_open; then
+    log "   the sign-out confirmation did not appear; screen reads: $(ocr_text | redact)"
+    return 1
+  fi
+  SIGN_OUT_COPY=$(sign_out_confirm_copy)
+  for attempt in 1 2 3 4 5 6; do
+    el=$(sign_out_confirm_button)
+    [ -n "$el" ] || break
+    if [ "$attempt" -gt 2 ] || ! ax_native_press "$el"; then
+      press_el "$el"
+    fi
+    poll 5 sign_out_confirm_closed && break
+    log "   press on the sign-out confirmation had no visible effect (attempt $attempt)"
+  done
+  sign_out_confirm_closed || return 1
+  poll "$timeout" on_login_screen
+}
+
 sign_out_via_menu() {
   open_app_menu || return 1
-  press_until 3 menu_closed id logout-button || press_until 3 menu_closed desc "Sign out" || return 1
-  ax_wait 45 desc "Log in"
+  choose_sign_out || return 1
+  confirm_sign_out 45
 }
 
 # log_in <check> — on the Log In screen, enter the throwaway credentials and

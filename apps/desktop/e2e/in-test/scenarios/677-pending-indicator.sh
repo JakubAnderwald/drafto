@@ -207,7 +207,7 @@ else
   settle 30 ||
     fail_step "sync status '$(sync_help)' with $(db_pending) pending local change(s) — not signing out (desktop sign-out wipes local data)"
   sign_out_via_menu || fail_step "could not sign out through the App menu"
-  step_end PASS "signed out at Synced with 0 pending; login screen shown"
+  step_end PASS "signed out at Synced with 0 pending (confirmation: $SIGN_OUT_COPY); login screen shown"
 fi
 sleep 2
 

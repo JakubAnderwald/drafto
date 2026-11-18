@@ -50,7 +50,7 @@ else
   settle 30 ||
     fail_step "sync status '$(sync_help)' with $(db_pending) pending local change(s) — not signing out (desktop sign-out wipes local data)"
   sign_out_via_menu || fail_step "could not sign out through the App menu"
-  step_end PASS "signed out at Synced with 0 pending; login screen shown"
+  step_end PASS "signed out at Synced with 0 pending (confirmation: $SIGN_OUT_COPY); login screen shown"
 fi
 sleep 2
 # Baseline for A1b, taken before the sign-up: the old build pulled as soon as
@@ -310,14 +310,18 @@ t0=$(date +%s)
 open_app_menu || fail_step "the App menu did not open"
 h_before=$(sync_help)
 p_before=$(db_pending)
-press_until 3 menu_closed id logout-button || press_until 3 menu_closed desc "Sign out" || fail_step "Sign out did not respond"
-ax_wait 20 desc "Log in" || fail_step "the login screen did not appear within 20 s"
+choose_sign_out || fail_step "Sign out did not respond"
+# Every sign-out asks first; the last sync should have pushed the edit before
+# the dialog opened, so it should read "Everything is synced…".
+confirm_sign_out 20 || fail_step "no login screen within 20 s of confirming the sign-out (confirmation: ${SIGN_OUT_COPY:-unread})"
 secs=$(($(date +%s) - t0))
-poll 20 sb_has_marker "$M4" || fail_step "the edit made right before sign-out is NOT on the server (lost)"
-if [ "${p_before:-0}" -gt 0 ] 2> /dev/null; then
-  step_end PASS "signed out with $p_before local change(s) unsynced (indicator: '$h_before'); login screen after ${secs}s; the edit reached the server"
+poll 20 sb_has_marker "$M4" || fail_step "the edit made right before sign-out is NOT on the server (lost; confirmation: $SIGN_OUT_COPY)"
+if [ "$SIGN_OUT_COPY" = unsynced ] || [ "$SIGN_OUT_COPY" = unknown ]; then
+  step_end WARN "the confirmation read '$SIGN_OUT_COPY' instead of the synced copy, though the edit reached the server"
+elif [ "${p_before:-0}" -gt 0 ] 2> /dev/null; then
+  step_end PASS "signed out with $p_before local change(s) unsynced (indicator: '$h_before'); confirmation: $SIGN_OUT_COPY; login screen after ${secs}s; the edit reached the server"
 else
-  step_end WARN "nothing was pending locally at sign-out (indicator: '$h_before'), so the flush was not exercised; the edit is on the server"
+  step_end WARN "nothing was pending locally at sign-out (indicator: '$h_before'), so the flush was not exercised; confirmation: $SIGN_OUT_COPY; the edit is on the server"
 fi
 
 # ── C13. Sign back in ───────────────────────────────────────────────────────

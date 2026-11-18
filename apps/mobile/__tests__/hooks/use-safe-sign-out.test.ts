@@ -1,8 +1,10 @@
 import { Alert, type AlertButton } from "react-native";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
+import { SIGN_OUT_SYNCED_MESSAGE, SIGN_OUT_UNKNOWN_MESSAGE } from "@drafto/shared";
 
 import {
   PRE_SIGN_OUT_SYNC_TIMEOUT_MS,
+  describeSignOut,
   describeUnsyncedLoss,
   useSafeSignOut,
 } from "@/hooks/use-safe-sign-out";
@@ -24,8 +26,15 @@ jest.mock("@/lib/data/unsynced-changes", () => ({
 }));
 
 /** The buttons of the confirmation the hook raised. */
-function alertButtons(alert: jest.SpyInstance): AlertButton[] {
-  return (alert.mock.calls[0][2] ?? []) as AlertButton[];
+function alertButtons(alert: jest.SpyInstance, call = 0): AlertButton[] {
+  return (alert.mock.calls[call][2] ?? []) as AlertButton[];
+}
+
+/** Answers every confirmation with its destructive confirm button. */
+function confirmEveryAlert(): jest.SpyInstance {
+  return jest
+    .spyOn(Alert, "alert")
+    .mockImplementation((_title, _message, buttons) => buttons?.[1]?.onPress?.());
 }
 
 describe("useSafeSignOut", () => {
@@ -46,16 +55,109 @@ describe("useSafeSignOut", () => {
     expect(describeUnsyncedLoss(4)).toBe("4 changes haven't synced and will be lost.");
   });
 
-  it("signs out without the provider's repeat flush once nothing is pending", async () => {
+  it("words the confirmation for synced, unsynced and unknown counts", () => {
+    expect(describeSignOut(0)).toEqual({
+      message: SIGN_OUT_SYNCED_MESSAGE,
+      confirmLabel: "Sign out",
+    });
+    expect(describeSignOut(2)).toEqual({
+      message: "2 changes haven't synced and will be lost.",
+      confirmLabel: "Sign out anyway",
+    });
+    expect(describeSignOut(null)).toEqual({
+      message: SIGN_OUT_UNKNOWN_MESSAGE,
+      confirmLabel: "Sign out",
+    });
+  });
+
+  it("asks before signing out even when everything is synced", async () => {
+    // PrimeTestLab report 10668 (S-02): one tap on Sign Out wiped the device without asking.
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const { result } = renderHook(() => useSafeSignOut());
+
+    act(() => {
+      void result.current.signOut();
+    });
+    await waitFor(() => {
+      expect(alert).toHaveBeenCalledTimes(1);
+    });
+
+    expect(alert).toHaveBeenCalledWith(
+      "Sign out?",
+      SIGN_OUT_SYNCED_MESSAGE,
+      expect.any(Array),
+      expect.objectContaining({ cancelable: true }),
+    );
+    const buttons = alertButtons(alert);
+    expect(buttons.map((button) => button.text)).toEqual(["Cancel", "Sign out"]);
+    expect(buttons[0].style).toBe("cancel");
+    expect(buttons[1].style).toBe("destructive");
+    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(result.current.isSigningOut).toBe(true);
+
+    await act(async () => {
+      buttons[1].onPress?.();
+    });
+
+    // Nothing to push, so neither a last sync nor the provider's repeat flush.
+    expect(mockSync).not.toHaveBeenCalled();
+    expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
+    expect(result.current.isSigningOut).toBe(false);
+  });
+
+  it("keeps the session on Cancel when everything is synced", async () => {
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const { result } = renderHook(() => useSafeSignOut());
+
+    act(() => {
+      void result.current.signOut();
+    });
+    await waitFor(() => {
+      expect(alert).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {
+      alertButtons(alert)[0].onPress?.();
+    });
+
+    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(result.current.isSigningOut).toBe(false);
+  });
+
+  it("treats dismissing the synced confirmation as Cancel", async () => {
+    jest.spyOn(Alert, "alert").mockImplementation((_title, _message, _buttons, options) => {
+      options?.onDismiss?.();
+    });
     const { result } = renderHook(() => useSafeSignOut());
 
     await act(async () => {
       await result.current.signOut();
     });
 
-    expect(mockSync).not.toHaveBeenCalled();
-    expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
+    expect(mockSignOut).not.toHaveBeenCalled();
     expect(result.current.isSigningOut).toBe(false);
+  });
+
+  it("ignores a second sign-out while the confirmation is open", async () => {
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const { result } = renderHook(() => useSafeSignOut());
+
+    act(() => {
+      void result.current.signOut();
+    });
+    await waitFor(() => {
+      expect(alert).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(alert).toHaveBeenCalledTimes(1);
+    expect(mockCountUnsyncedChanges).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      alertButtons(alert)[1].onPress?.();
+    });
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
   });
 
   it("writes a debounced editor save before it counts", async () => {
@@ -70,6 +172,7 @@ describe("useSafeSignOut", () => {
       order.push("counted");
       return 0;
     });
+    confirmEveryAlert();
     const { result } = renderHook(() => useSafeSignOut());
 
     await act(async () => {
@@ -91,7 +194,7 @@ describe("useSafeSignOut", () => {
       }),
     );
     mockCountUnsyncedChanges.mockResolvedValueOnce(2).mockResolvedValueOnce(0);
-    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const alert = confirmEveryAlert();
     const { result } = renderHook(() => useSafeSignOut());
 
     let done: Promise<void> = Promise.resolve();
@@ -103,6 +206,7 @@ describe("useSafeSignOut", () => {
     });
     expect(mockCountUnsyncedChanges).toHaveBeenCalledTimes(1);
     expect(mockSignOut).not.toHaveBeenCalled();
+    expect(alert).not.toHaveBeenCalled();
 
     await act(async () => {
       finishSync();
@@ -110,7 +214,9 @@ describe("useSafeSignOut", () => {
     });
 
     expect(mockCountUnsyncedChanges).toHaveBeenCalledTimes(2);
-    expect(alert).not.toHaveBeenCalled();
+    // The last sync pushed everything, so the one confirmation says so.
+    expect(alert).toHaveBeenCalledTimes(1);
+    expect(alert.mock.calls[0][1]).toBe(SIGN_OUT_SYNCED_MESSAGE);
     expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
   });
 
@@ -140,6 +246,7 @@ describe("useSafeSignOut", () => {
       expect.any(Array),
       expect.objectContaining({ cancelable: true }),
     );
+    expect(alertButtons(alert).map((button) => button.text)).toEqual(["Cancel", "Sign out anyway"]);
     expect(mockSignOut).not.toHaveBeenCalled();
   });
 
@@ -166,7 +273,7 @@ describe("useSafeSignOut", () => {
     expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
   });
 
-  it("treats dismissing the confirmation as Cancel", async () => {
+  it("treats dismissing the unsynced confirmation as Cancel", async () => {
     mockCountUnsyncedChanges.mockResolvedValue(1);
     jest.spyOn(Alert, "alert").mockImplementation((_title, _message, _buttons, options) => {
       options?.onDismiss?.();
@@ -181,21 +288,56 @@ describe("useSafeSignOut", () => {
     expect(result.current.isSigningOut).toBe(false);
   });
 
-  it("signs out as before, with the provider's flush, when the count cannot be read", async () => {
+  it("warns generically and signs out with the provider's flush when the count cannot be read", async () => {
     jest.spyOn(console, "error").mockImplementation(() => {});
     mockCountUnsyncedChanges.mockRejectedValue(new Error("SQLite busy"));
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const { result } = renderHook(() => useSafeSignOut());
+
+    act(() => {
+      void result.current.signOut();
+    });
+    await waitFor(() => {
+      expect(alert).toHaveBeenCalledTimes(1);
+    });
+
+    expect(alert).toHaveBeenCalledWith(
+      "Sign out?",
+      SIGN_OUT_UNKNOWN_MESSAGE,
+      expect.any(Array),
+      expect.objectContaining({ cancelable: true }),
+    );
+    expect(alertButtons(alert).map((button) => button.text)).toEqual(["Cancel", "Sign out"]);
+    expect(mockSync).not.toHaveBeenCalled();
+    expect(mockSignOut).not.toHaveBeenCalled();
+
+    await act(async () => {
+      alertButtons(alert)[1].onPress?.();
+    });
+
+    // A failed count must not trap the user in the account.
+    expect(mockSignOut).toHaveBeenCalledWith();
+  });
+
+  it("keeps the session on Cancel when the count cannot be read", async () => {
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    mockCountUnsyncedChanges.mockRejectedValue(new Error("SQLite busy"));
+    jest
+      .spyOn(Alert, "alert")
+      .mockImplementation((_title, _message, buttons) => buttons?.[0]?.onPress?.());
     const { result } = renderHook(() => useSafeSignOut());
 
     await act(async () => {
       await result.current.signOut();
     });
 
-    expect(mockSignOut).toHaveBeenCalledWith();
+    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(result.current.isSigningOut).toBe(false);
   });
 
   it("tells the user when sign-out itself fails", async () => {
     const error = jest.spyOn(console, "error").mockImplementation(() => {});
-    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const alert = confirmEveryAlert();
     mockSignOut.mockRejectedValue(new Error("storage locked"));
     const { result } = renderHook(() => useSafeSignOut());
 
@@ -204,7 +346,12 @@ describe("useSafeSignOut", () => {
     });
 
     expect(error).toHaveBeenCalledWith("Sign-out failed:", expect.any(Error));
-    expect(alert).toHaveBeenCalledWith("Couldn't sign out", "Check your connection and try again.");
+    expect(alert).toHaveBeenCalledTimes(2);
+    expect(alert.mock.calls[0][0]).toBe("Sign out?");
+    expect(alert).toHaveBeenLastCalledWith(
+      "Couldn't sign out",
+      "Check your connection and try again.",
+    );
     expect(result.current.isSigningOut).toBe(false);
   });
 });
