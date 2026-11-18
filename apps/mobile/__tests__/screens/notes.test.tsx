@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import NotesListScreen from "../../app/notebooks/[id]";
-import { FAB_SIZE } from "@/components/ui/fab";
+import { FAB_MARGIN, FAB_SIZE, LIST_RESTING_PADDING } from "@/components/ui/fab";
 import { spacing } from "@/theme/tokens";
 
 const mockedInsets = jest.mocked(useSafeAreaInsets);
@@ -265,8 +265,20 @@ describe("NotesListScreen", () => {
       const { UNSAFE_getByType } = render(<NotesListScreen />);
 
       const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
-      expect(content.paddingBottom).toBeGreaterThanOrEqual(spacing.xl + FAB_SIZE + 48);
+      // FAB margin + system inset under the button, the button, then a FAB
+      // margin of breathing room above it.
+      expect(content.paddingBottom).toBe(FAB_SIZE + FAB_MARGIN * 2 + 48);
       expect(content.paddingTop ?? content.paddingVertical).toBe(spacing.sm);
+    });
+
+    it("keeps only the nav-bar clearance while the create bar hides the button", () => {
+      const { getByTestId, queryByTestId, UNSAFE_getByType } = render(<NotesListScreen />);
+
+      fireEvent.press(getByTestId("add"));
+
+      expect(queryByTestId("add")).toBeNull();
+      const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
+      expect(content.paddingBottom).toBe(LIST_RESTING_PADDING + 48);
     });
   });
 });

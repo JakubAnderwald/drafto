@@ -1,11 +1,12 @@
 import React from "react";
 import { Alert, FlatList, StyleSheet } from "react-native";
+import { BottomTabBarHeightContext } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Q } from "@nozbe/watermelondb";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import NotebooksScreen from "../../app/(tabs)/index";
-import { FAB_MARGIN, FAB_SIZE } from "@/components/ui/fab";
+import { FAB_MARGIN, FAB_SIZE, LIST_RESTING_PADDING } from "@/components/ui/fab";
 import { spacing } from "@/theme/tokens";
 
 const mockedInsets = jest.mocked(useSafeAreaInsets);
@@ -89,29 +90,49 @@ describe("NotebooksScreen", () => {
 
   describe("bottom tab bar (PrimeTestLab 10668 M-01)", () => {
     // The tab bar already takes the system inset, so adding it again here
-    // would float the button a nav-bar's height above the tab bar.
+    // would float the button a nav-bar's height above the tab bar. The tab
+    // navigator provides BottomTabBarHeightContext, which is how the FAB
+    // knows it is on a tab screen.
+    function renderInTabs() {
+      return render(
+        <BottomTabBarHeightContext.Provider value={49}>
+          <NotebooksScreen />
+        </BottomTabBarHeightContext.Provider>,
+      );
+    }
+
     beforeEach(() => {
       mockedInsets.mockReturnValue({ top: 24, bottom: 48, left: 0, right: 0 });
       mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
     });
 
     it("does not add the system inset under the tab bar", () => {
-      const { getByTestId } = render(<NotebooksScreen />);
+      const { getByTestId } = renderInTabs();
 
       expect(StyleSheet.flatten(getByTestId("add").props.style).bottom).toBe(spacing.xl);
     });
 
     it("labels the add button for screen readers", () => {
-      const { getByRole } = render(<NotebooksScreen />);
+      const { getByRole } = renderInTabs();
 
       expect(getByRole("button", { name: "New notebook" })).toBeTruthy();
     });
 
     it("pads the list so the last notebook clears the add button only", () => {
-      const { UNSAFE_getByType } = render(<NotebooksScreen />);
+      const { UNSAFE_getByType } = renderInTabs();
 
       const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
       expect(content.paddingBottom).toBe(FAB_SIZE + FAB_MARGIN * 2);
+    });
+
+    it("drops back to the resting padding while the create bar hides the button", () => {
+      const { getByTestId, queryByTestId, UNSAFE_getByType } = renderInTabs();
+
+      fireEvent.press(getByTestId("add"));
+
+      expect(queryByTestId("add")).toBeNull();
+      const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
+      expect(content.paddingBottom).toBe(LIST_RESTING_PADDING);
     });
   });
 

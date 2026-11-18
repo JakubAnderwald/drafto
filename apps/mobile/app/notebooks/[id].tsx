@@ -23,7 +23,7 @@ import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Fab, useFabListPadding } from "@/components/ui/fab";
+import { Fab, useFabLayout } from "@/components/ui/fab";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
@@ -40,20 +40,20 @@ export default function NotesListScreen() {
   const { semantic } = useTheme();
   const haptics = useHaptics();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
-  // A pushed stack screen has no tab bar under it, so on an edge-to-edge
-  // Android (and above the iOS home indicator) the FAB and the list's last row
-  // must clear the system bar themselves.
-  const listPadding = useFabListPadding(true);
-  const listContentStyle = useMemo(
-    () => [styles.list, { paddingBottom: listPadding }],
-    [styles.list, listPadding],
-  );
 
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // The FAB hides while the create bar is open; the list then drops back to
+  // its resting padding. useFabLayout adds the system-bar inset only off the
+  // tab navigator, whose tab bar already takes it.
+  const { listPaddingBottom } = useFabLayout(!creating);
+  const listContentStyle = useMemo(
+    () => [styles.list, { paddingBottom: listPaddingBottom }],
+    [styles.list, listPaddingBottom],
+  );
 
   const handleCreate = async () => {
     const trimmed = newTitle.trim();
@@ -282,7 +282,6 @@ export default function NotesListScreen() {
         <Fab
           testID="add"
           accessibilityLabel="New note"
-          clearSystemBottomInset
           onPress={() => {
             haptics.light();
             setCreating(true);
