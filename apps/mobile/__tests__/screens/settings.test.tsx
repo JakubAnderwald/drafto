@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Platform, type AlertButton } from "react-native";
+import { Alert, type AlertButton } from "react-native";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
   describeAccountDeletionFailure,
@@ -8,7 +8,6 @@ import {
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import SettingsScreen from "../../app/(tabs)/settings";
-import { SystemBars } from "@/components/system-bars";
 
 const mockSignOut = jest.fn();
 const mockDeleteAccount = jest.fn();
@@ -59,12 +58,6 @@ jest.mock("@/hooks/use-haptics", () => ({
     error: jest.fn(),
     selection: jest.fn(),
   }),
-}));
-
-// SystemBars restyles the Android navigation bar; the native module is not linked under jest.
-const mockSetNavigationBarStyle = jest.fn();
-jest.mock("expo-navigation-bar", () => ({
-  setStyle: (...args: unknown[]) => mockSetNavigationBarStyle(...args),
 }));
 
 const OFFLINE_NOTE = "Deleting your account needs an internet connection.";
@@ -359,22 +352,6 @@ describe("SettingsScreen", () => {
       expect(getByTestId("theme-option-system").props.accessibilityState).toEqual({
         selected: false,
       });
-    });
-
-    it("restyles the Android navigation bar when the theme is switched", () => {
-      jest.replaceProperty(Platform, "OS", "android");
-      const { getByLabelText } = render(
-        <>
-          <SettingsScreen />
-          <SystemBars />
-        </>,
-      );
-
-      fireEvent.press(getByLabelText("Dark theme"));
-      expect(mockSetNavigationBarStyle).toHaveBeenLastCalledWith("dark");
-
-      fireEvent.press(getByLabelText("Light theme"));
-      expect(mockSetNavigationBarStyle).toHaveBeenLastCalledWith("light");
     });
   });
 });

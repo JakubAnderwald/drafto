@@ -61,9 +61,12 @@ env:
     selected: true
 
 # --- Back to the Notebooks tab, where QA saw the bar ---
+# Wait on the add button: it is only on the Notebooks list, while the "Notebooks" text
+# is also the tab label, which is on screen in Settings too.
 - tapOn: "Notebooks"
 - extendedWaitUntil:
-    visible: "Notebooks"
+    visible:
+      id: "add"
     timeout: 10000
 - waitForAnimationToEnd
 - takeScreenshot: nav-bar-${THEME}

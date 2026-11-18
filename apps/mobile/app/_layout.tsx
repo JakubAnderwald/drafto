@@ -187,7 +187,6 @@ function ThemedStack() {
           <Stack.Screen name="search" options={searchScreenOptions} />
         </Stack>
       </View>
-      <SystemBars />
     </>
   );
 }
@@ -195,6 +194,8 @@ function ThemedStack() {
 export default function RootLayout() {
   return (
     <ThemeProvider>
+      {/* Above RouteGuard, so the bars follow the theme on the launch loading screen too. */}
+      <SystemBars />
       <AuthProvider>
         <ToastProvider>
           <DatabaseProvider>

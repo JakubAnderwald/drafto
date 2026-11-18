@@ -1,56 +1,90 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as NavigationBar from "expo-navigation-bar";
 
 import { useTheme } from "@/providers/theme-provider";
 
-/** The two navigation-bar styles SystemBars ever sets: an explicit light or dark bar. */
-export type SystemBarStyle = "light" | "dark";
+/** The colour of the system bars' content (icons, text, buttons): always explicit. */
+export type SystemBarContentStyle = "light" | "dark";
 
 /**
- * The navigation-bar style for the resolved in-app theme.
+ * The content style of both system bars for the resolved in-app theme: light
+ * content on a dark theme, dark content on a light one.
  *
- * Always explicit. "auto" and "inverted" read the OS colour scheme, so passing
- * either would bring back the bug this fixes: the bar following the OS while
- * the app is themed the other way (ADR-0087).
+ * Both calls SystemBars makes name the colour of the bar's *content*:
+ * expo-status-bar's `style` and expo-navigation-bar's `setButtonStyleAsync`. So
+ * a dark theme passes "light" to both. expo-navigation-bar's `setStyle` is the
+ * odd one out: it names the colour of the *bar* (`setStyle("dark")` gives light
+ * buttons), so a call to it would need the opposite mapping. Don't "align" a
+ * mix of the two, that brings back the bug this fixes (ADR-0087).
+ *
+ * Never "auto" or "inverted": both read the OS colour scheme, so the bar would
+ * follow the OS while the app is themed the other way.
  */
-export function navigationBarStyleFor(isDark: boolean): SystemBarStyle {
-  return isDark ? "dark" : "light";
+export function systemBarContentStyleFor(isDark: boolean): SystemBarContentStyle {
+  return isDark ? "light" : "dark";
+}
+
+/**
+ * Sets the Android navigation bar's button style, and with it the 3-button
+ * contrast scrim. Never throws or rejects.
+ *
+ * Not `NavigationBar.setStyle`: in expo-navigation-bar 55 it starts the native
+ * `setButtonStyleAsync` and drops the promise, so a rejection (say, no current
+ * activity while the JS context outlives it) would be an unhandled rejection.
+ * The public `setButtonStyleAsync` makes the same native call and returns the
+ * promise. It is marked deprecated in favour of `setStyle`; if a release drops
+ * it, the typecheck fails here.
+ */
+async function applyNavigationBarButtonStyle(style: SystemBarContentStyle): Promise<void> {
+  try {
+    await NavigationBar.setButtonStyleAsync(style);
+  } catch (error) {
+    // Cosmetic and retried on the next theme change or resume. The mobile app has
+    // no error reporter, so warn like its other best-effort native calls.
+    console.warn("[SystemBars] Could not style the navigation bar:", error);
+  }
 }
 
 /**
  * Keeps the OS system bars in step with the in-app theme.
  *
- * - Status bar (iOS and Android): light content on a dark theme, dark content
- *   on a light one, through expo-status-bar.
+ * - Status bar (iOS and Android): through expo-status-bar.
  * - Navigation bar (Android only): React Native's edge-to-edge setup picks the
  *   bar's light/dark appearance from the OS theme when the activity is created,
  *   and on 3-button navigation Android paints its contrast scrim from that flag.
  *   With the OS in Light and Drafto in Dark that is a 90%-white bar under a dark
- *   tab bar. Setting the style from `isDark` makes the scrim follow the app.
+ *   tab bar. Setting the button style from `isDark` makes the scrim follow the app.
  *
  * "System" needs nothing extra: `isDark` comes from `useColorScheme()`, which
  * updates when the OS theme changes. The style is re-applied whenever the app
  * comes back to the foreground, because a recreated activity resets the flag to
- * the OS value while the JS context lives on.
+ * the OS value while the JS context lives on. That listener is added once and
+ * reads the latest style from a ref, so it never applies a style captured at an
+ * older render.
  */
 export function SystemBars() {
   const { isDark } = useTheme();
+  const style = systemBarContentStyleFor(isDark);
+  const latestStyle = useRef(style);
+
+  useEffect(() => {
+    latestStyle.current = style;
+    if (Platform.OS !== "android") return;
+    void applyNavigationBarButtonStyle(style);
+  }, [style]);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
 
-    const style = navigationBarStyleFor(isDark);
-    NavigationBar.setStyle(style);
-
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") {
-        NavigationBar.setStyle(style);
+        void applyNavigationBarButtonStyle(latestStyle.current);
       }
     });
     return () => subscription.remove();
-  }, [isDark]);
+  }, []);
 
-  return <StatusBar style={isDark ? "light" : "dark"} />;
+  return <StatusBar style={style} />;
 }

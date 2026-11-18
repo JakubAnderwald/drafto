@@ -17,10 +17,12 @@ The in-app theme ([ADR-0005](./0005-dark-mode-implementation.md) on web; `apps/m
 - Add `expo-navigation-bar` (the SDK 55 version, `~55.0.17`, installed with `npx expo install`). It is a first-party Expo module. Do **not** add its config plugin: the plugin's `enforceContrast` option writes the theme attribute, which React Native's runtime `enableEdgeToEdge()` overrides after the theme is applied, so it would do nothing.
 - Add `apps/mobile/src/components/system-bars.tsx`. `SystemBars` is the one place that keeps the OS system bars in step with the in-app theme:
   - It renders `expo-status-bar`'s `StatusBar` (light content on Dark, dark content on Light), which moves out of `app/_layout.tsx`.
-  - On Android it calls `NavigationBar.setStyle(isDark ? "dark" : "light")` whenever the resolved `isDark` changes. That sets `isAppearanceLightNavigationBars` on the activity window, so the scrim and the buttons follow the app theme.
-  - It re-applies the style when the app returns to the foreground (`AppState` `active`), because a recreated activity resets the flag to the OS value while the JS context lives on.
+  - On Android it calls `NavigationBar.setButtonStyleAsync(isDark ? "light" : "dark")` whenever the resolved `isDark` changes. That sets `isAppearanceLightNavigationBars` on the activity window, so the scrim and the buttons follow the app theme. The call is awaited inside a `try`/`catch` and a failure is logged with `console.warn`, since the style is cosmetic and is retried on the next theme change or resume.
+  - It does not use `NavigationBar.setStyle`, the replacement the library recommends. In `expo-navigation-bar` 55.0.17, `setStyle` maps the bar style to a button style, then starts the same native `setButtonStyleAsync` and drops its promise, so a rejection (no current activity while the JS context outlives it) cannot be caught and surfaces as an unhandled rejection. `setButtonStyleAsync` is marked deprecated; if a release removes it, the typecheck fails and we move to whatever `setStyle` then returns.
+  - The two style names mean opposite things, which is why the code maps them in one place (`systemBarContentStyleFor`): `setStyle` names the **bar** colour (`setStyle("dark")` gives light buttons), while `setButtonStyleAsync` and `expo-status-bar`'s `style` name the **content** colour. On a dark theme both bars get `"light"`.
+  - It re-applies the style when the app returns to the foreground (`AppState` `active`), because a recreated activity resets the flag to the OS value while the JS context lives on. The listener is added once and reads the latest style from a ref.
   - It never passes `"auto"` or `"inverted"`. Both read the OS colour scheme, which is the bug again.
-- `app/_layout.tsx` mounts `<SystemBars />` where the `StatusBar` was.
+- `app/_layout.tsx` mounts `<SystemBars />` once, directly under `ThemeProvider` and above `RouteGuard`, so the bars follow the theme on the launch loading screen as well as in the app.
 - "System" needs no extra code. `isDark` comes from `useColorScheme()`, which updates when the OS theme changes. `MainActivity` declares `uiMode` in `configChanges`, so the activity is not recreated and the effect re-runs.
 - The Settings theme options get `testID="theme-option-<system|light|dark>"` so Maestro can select them by id.
 - The scrim stays on (contrast enforcement is kept). We only control its light/dark flag.
@@ -31,9 +33,9 @@ The in-app theme ([ADR-0005](./0005-dark-mode-implementation.md) on web; `apps/m
 - **Positive**: No new native code of our own and no config plugin; the module autolinks and every release lane already runs `expo prebuild --clean`.
 - **Negative**: A new native module, so the next mobile release is a minor version bump and dev clients need a rebuild.
 - **Negative**: At cold start the bar follows the OS for a moment, until the stored preference loads from SecureStore. The status bar already behaves the same way.
-- **Negative**: React Native `Modal` windows (only `DeleteAccountDialog`) run their own `enableEdgeToEdge()` from the OS theme and copy only the status-bar appearance, so the bar can still show the OS scrim behind that dialog's dim. This is left as a follow-up.
+- **Negative**: React Native `Modal` windows (only `DeleteAccountDialog`) run their own `enableEdgeToEdge()` from the OS theme and copy only the status-bar appearance, so the bar can still show the OS scrim behind that dialog's dim. `SystemBars` styles only the activity window. This is a tracked follow-up (for example, replacing that `Modal` with an in-tree overlay, which stays in the activity window), not part of this change.
 - **Neutral**: iOS has no navigation bar. `SystemBars` skips the call there, so iOS behaviour is unchanged (the `StatusBar` only moved). Web and macOS have no navigation bar either; macOS window chrome following the in-app theme (`NSApp.appearance`) is a separate follow-up.
-- **Neutral**: Expo's docs warn that `setStyle` has no effect on the Android 15 emulator. The E2E check (`apps/mobile/e2e/android-only/11-dark-nav-bar.yaml` plus the host-side `apr=` flag and pixel checks) runs on API 34, the QA device's Android 14.
+- **Neutral**: Expo's docs warn that `setStyle` (and so the same native call through `setButtonStyleAsync`) has no effect on the Android 15 emulator. The E2E check (`apps/mobile/e2e/android-only/11-dark-nav-bar.yaml` plus the host-side `apr=` flag and pixel checks) runs on API 34, the QA device's Android 14.
 
 ## Alternatives Considered
 
@@ -41,4 +43,5 @@ The in-app theme ([ADR-0005](./0005-dark-mode-implementation.md) on web; `apps/m
 - **`NavigationBar.setStyle("auto")`**: reads the OS scheme, the same bug. Rejected.
 - **Turn off contrast enforcement** (set `window.isNavigationBarContrastEnforced = false` after `super.onCreate`, through a config plugin or a `MainActivity` override): the 3-button bar becomes fully transparent and shows the tab bar's exact colour. It needs native code that `prebuild` regenerates, and it is not needed if the scrim follows the flag. Kept as the fallback if the device check shows the scrim ignores the flag.
 - **The `expo-navigation-bar` config plugin's `enforceContrast: false`**: overridden at runtime by React Native's `enableEdgeToEdge()`, so it would have no effect. Rejected.
-- **`setBackgroundColorAsync` / `setButtonStyleAsync`**: the first does nothing under edge-to-edge and the second is deprecated in favour of `setStyle`. Rejected.
+- **`setBackgroundColorAsync`**: does nothing under edge-to-edge. Rejected.
+- **`setStyle`** (the non-deprecated call): drops the native promise, so a failure is an unhandled rejection. Rejected in favour of `setButtonStyleAsync`, see Decision.

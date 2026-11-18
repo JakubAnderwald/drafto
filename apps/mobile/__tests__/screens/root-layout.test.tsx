@@ -1,5 +1,6 @@
 import React from "react";
 import { Platform } from "react-native";
+import * as NavigationBar from "expo-navigation-bar";
 
 import { render } from "../helpers/test-utils";
 
@@ -25,12 +26,13 @@ jest.mock("expo-router", () => ({
   }),
 }));
 
+const mockAuth = { isLoading: false };
 jest.mock("@/providers/auth-provider", () => ({
   AuthProvider: ({ children }: { children: React.ReactNode }) => children,
   useAuth: () => ({
     user: { id: "user-1" },
     isApproved: true,
-    isLoading: false,
+    isLoading: mockAuth.isLoading,
     isCheckingApproval: false,
     isRecovering: false,
   }),
@@ -46,11 +48,6 @@ jest.mock("@/lib/oauth", () => ({ configureGoogleSignIn: jest.fn() }));
 jest.mock("@/lib/performance", () => ({
   markStartupBegin: jest.fn(),
   markStartupEnd: jest.fn(),
-}));
-// SystemBars restyles the Android navigation bar; the native module is not linked under jest.
-const mockSetNavigationBarStyle = jest.fn();
-jest.mock("expo-navigation-bar", () => ({
-  setStyle: (...args: unknown[]) => mockSetNavigationBarStyle(...args),
 }));
 
 import RootLayout from "../../app/_layout";
@@ -142,9 +139,17 @@ describe("RootLayout screen options", () => {
 });
 
 describe("RootLayout system bars", () => {
+  // The jest.setup.js mock: SystemBars styles the Android navigation bar through it.
+  const setButtonStyle = NavigationBar.setButtonStyleAsync as jest.Mock;
+
+  beforeEach(() => {
+    mockScreens.length = 0;
+    setButtonStyle.mockClear();
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
-    mockSetNavigationBarStyle.mockClear();
+    mockAuth.isLoading = false;
   });
 
   it("mounts SystemBars, which styles the Android navigation bar from the app theme", () => {
@@ -152,10 +157,21 @@ describe("RootLayout system bars", () => {
 
     render(<RootLayout />);
 
-    expect(mockSetNavigationBarStyle).toHaveBeenCalled();
-    for (const [style] of mockSetNavigationBarStyle.mock.calls) {
+    expect(setButtonStyle).toHaveBeenCalled();
+    for (const [style] of setButtonStyle.mock.calls) {
       expect(["light", "dark"]).toContain(style);
     }
+  });
+
+  it("styles the navigation bar on the launch loading screen, before auth finishes", () => {
+    jest.replaceProperty(Platform, "OS", "android");
+    mockAuth.isLoading = true;
+
+    const { getByTestId } = render(<RootLayout />);
+
+    expect(getByTestId("route-guard-loading")).toBeTruthy();
+    expect(mockScreens).toHaveLength(0);
+    expect(setButtonStyle).toHaveBeenCalled();
   });
 
   it("leaves the navigation bar alone on iOS", () => {
@@ -163,6 +179,6 @@ describe("RootLayout system bars", () => {
 
     render(<RootLayout />);
 
-    expect(mockSetNavigationBarStyle).not.toHaveBeenCalled();
+    expect(setButtonStyle).not.toHaveBeenCalled();
   });
 });

@@ -5,11 +5,8 @@ import * as SecureStore from "expo-secure-store";
 import * as NavigationBar from "expo-navigation-bar";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
-import { SystemBars, navigationBarStyleFor } from "@/components/system-bars";
+import { SystemBars, systemBarContentStyleFor } from "@/components/system-bars";
 import { useTheme, type ThemePreference } from "@/providers/theme-provider";
-
-// The native module is not linked under jest; only the style calls matter here.
-jest.mock("expo-navigation-bar", () => ({ setStyle: jest.fn() }));
 
 const mockStatusBar = jest.fn();
 jest.mock("expo-status-bar", () => ({
@@ -19,7 +16,8 @@ jest.mock("expo-status-bar", () => ({
   },
 }));
 
-const setStyle = NavigationBar.setStyle as jest.Mock;
+// Mocked in jest.setup.js. It takes the *button* (content) colour: "light" buttons on a dark bar.
+const setButtonStyle = NavigationBar.setButtonStyleAsync as jest.Mock;
 const getItemAsync = SecureStore.getItemAsync as jest.Mock;
 
 type AppStateListener = (state: AppStateStatus) => void;
@@ -63,14 +61,15 @@ function ThemeSwitcher() {
   );
 }
 
-function lastStyle() {
-  return setStyle.mock.calls[setStyle.mock.calls.length - 1]?.[0];
+/** The last button style set: "light" means a dark bar, "dark" a light one. */
+function lastButtonStyle() {
+  return setButtonStyle.mock.calls[setButtonStyle.mock.calls.length - 1]?.[0];
 }
 
-describe("navigationBarStyleFor", () => {
-  it("maps the resolved theme to an explicit style", () => {
-    expect(navigationBarStyleFor(true)).toBe("dark");
-    expect(navigationBarStyleFor(false)).toBe("light");
+describe("systemBarContentStyleFor", () => {
+  it("gives light content on a dark theme and dark content on a light one", () => {
+    expect(systemBarContentStyleFor(true)).toBe("light");
+    expect(systemBarContentStyleFor(false)).toBe("dark");
   });
 });
 
@@ -78,6 +77,7 @@ describe("SystemBars", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     getItemAsync.mockResolvedValue(null);
+    setButtonStyle.mockImplementation(() => Promise.resolve());
     jest.replaceProperty(Platform, "OS", "android");
   });
 
@@ -92,7 +92,8 @@ describe("SystemBars", () => {
 
     render(<SystemBars />);
 
-    await waitFor(() => expect(lastStyle()).toBe("dark"));
+    // Light buttons, so Android paints the dark contrast scrim.
+    await waitFor(() => expect(lastButtonStyle()).toBe("light"));
     expect(mockStatusBar).toHaveBeenLastCalledWith({ style: "light" });
   });
 
@@ -103,7 +104,7 @@ describe("SystemBars", () => {
 
     render(<SystemBars />);
 
-    await waitFor(() => expect(lastStyle()).toBe("light"));
+    await waitFor(() => expect(lastButtonStyle()).toBe("dark"));
     expect(mockStatusBar).toHaveBeenLastCalledWith({ style: "dark" });
   });
 
@@ -114,15 +115,15 @@ describe("SystemBars", () => {
 
     const { rerender } = render(<SystemBars />);
     await waitFor(() => expect(getItemAsync).toHaveBeenCalled());
-    expect(lastStyle()).toBe("light");
+    expect(lastButtonStyle()).toBe("dark");
 
     scheme.mockReturnValue("dark");
     rerender(<SystemBars />);
-    expect(lastStyle()).toBe("dark");
+    expect(lastButtonStyle()).toBe("light");
 
     scheme.mockReturnValue("light");
     rerender(<SystemBars />);
-    expect(lastStyle()).toBe("light");
+    expect(lastButtonStyle()).toBe("dark");
   });
 
   it("restyles the bar as soon as the user switches theme in the app", async () => {
@@ -136,13 +137,13 @@ describe("SystemBars", () => {
       </>,
     );
     await waitFor(() => expect(getItemAsync).toHaveBeenCalled());
-    expect(lastStyle()).toBe("light");
+    expect(lastButtonStyle()).toBe("dark");
 
     fireEvent.press(getByTestId("switch-dark"));
-    expect(lastStyle()).toBe("dark");
+    expect(lastButtonStyle()).toBe("light");
 
     fireEvent.press(getByTestId("switch-light"));
-    expect(lastStyle()).toBe("light");
+    expect(lastButtonStyle()).toBe("dark");
   });
 
   it("re-applies the style when the app returns to the foreground", async () => {
@@ -151,15 +152,74 @@ describe("SystemBars", () => {
     const appState = spyOnAppState();
 
     render(<SystemBars />);
-    await waitFor(() => expect(lastStyle()).toBe("dark"));
+    await waitFor(() => expect(lastButtonStyle()).toBe("light"));
 
-    setStyle.mockClear();
+    setButtonStyle.mockClear();
     act(() => appState.emit("background"));
-    expect(setStyle).not.toHaveBeenCalled();
+    expect(setButtonStyle).not.toHaveBeenCalled();
 
     act(() => appState.emit("active"));
-    expect(setStyle).toHaveBeenCalledTimes(1);
-    expect(setStyle).toHaveBeenCalledWith("dark");
+    expect(setButtonStyle).toHaveBeenCalledTimes(1);
+    expect(setButtonStyle).toHaveBeenCalledWith("light");
+  });
+
+  it("subscribes to AppState once and re-applies the latest theme on resume", async () => {
+    mockOsScheme("light");
+    const appState = spyOnAppState();
+    const addEventListener = AppState.addEventListener as jest.Mock;
+
+    const { getByTestId } = render(
+      <>
+        <ThemeSwitcher />
+        <SystemBars />
+      </>,
+    );
+    await waitFor(() => expect(getItemAsync).toHaveBeenCalled());
+
+    fireEvent.press(getByTestId("switch-dark"));
+    fireEvent.press(getByTestId("switch-light"));
+    fireEvent.press(getByTestId("switch-dark"));
+
+    expect(addEventListener).toHaveBeenCalledTimes(1);
+    expect(appState.remove).not.toHaveBeenCalled();
+
+    setButtonStyle.mockClear();
+    act(() => appState.emit("active"));
+    expect(setButtonStyle).toHaveBeenCalledTimes(1);
+    expect(setButtonStyle).toHaveBeenCalledWith("light");
+  });
+
+  it("catches a rejected native call instead of leaving an unhandled rejection", async () => {
+    const failure = new Error("Current activity is no longer available");
+    setButtonStyle.mockImplementation(() => Promise.reject(failure));
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockOsScheme("light");
+    const appState = spyOnAppState();
+
+    render(<SystemBars />);
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+
+    act(() => appState.emit("active"));
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+    expect(warn).toHaveBeenCalledWith("[SystemBars] Could not style the navigation bar:", failure);
+  });
+
+  it("catches a native call that throws synchronously", async () => {
+    const failure = new Error("Cannot find native module 'ExpoNavigationBar'");
+    setButtonStyle.mockImplementation(() => {
+      throw failure;
+    });
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockOsScheme("light");
+    spyOnAppState();
+
+    expect(() => render(<SystemBars />)).not.toThrow();
+    await waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        "[SystemBars] Could not style the navigation bar:",
+        failure,
+      ),
+    );
   });
 
   it("drops its AppState listener on unmount", () => {
@@ -181,7 +241,7 @@ describe("SystemBars", () => {
     render(<SystemBars />);
     await waitFor(() => expect(mockStatusBar).toHaveBeenLastCalledWith({ style: "light" }));
 
-    expect(setStyle).not.toHaveBeenCalled();
+    expect(setButtonStyle).not.toHaveBeenCalled();
     expect(addEventListener).not.toHaveBeenCalled();
   });
 
@@ -208,8 +268,8 @@ describe("SystemBars", () => {
     );
     act(() => appState.emit("active"));
 
-    expect(setStyle.mock.calls.length).toBeGreaterThan(0);
-    for (const [style] of setStyle.mock.calls) {
+    expect(setButtonStyle.mock.calls.length).toBeGreaterThan(0);
+    for (const [style] of setButtonStyle.mock.calls) {
       expect(["light", "dark"]).toContain(style);
     }
   });
