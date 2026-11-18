@@ -146,12 +146,22 @@ const ALL_FLOWS = [
   "ios-only/09-attach-image-offline.yaml",
   "ios-only/10-offline-banner-header.yaml",
 ];
-const FAKE_RUNNER = (() => {
-  const repo = path.join(root, "repo");
+// Only the flows that existed before the report PRs: the login and the
+// rewritten 05/06 offline flows. The default runner, so the "skipped until it
+// exists" cases hold whichever report flows the real repo has by now.
+const BASE_FLOWS = [
+  "01-login.yaml",
+  "android-only/05-offline-mode.yaml",
+  "android-only/06-offline-notebook-sync.yaml",
+  "ios-only/05-offline-mode.yaml",
+  "ios-only/06-offline-notebook-sync.yaml",
+];
+function fakeRunner(name, flows) {
+  const repo = path.join(root, name);
   const e2e = path.join(repo, "apps", "mobile", "e2e");
   mkdirSync(path.join(e2e, "android-only"), { recursive: true });
   mkdirSync(path.join(e2e, "ios-only"), { recursive: true });
-  for (const flow of ALL_FLOWS) {
+  for (const flow of flows) {
     writeFileSync(path.join(e2e, flow), "appId: eu.drafto.mobile\n---\n- launchApp\n");
   }
   copyFileSync(RUNNER, path.join(e2e, "run-qa-10668-e2e.sh"));
@@ -159,7 +169,9 @@ const FAKE_RUNNER = (() => {
   symlinkSync(path.join(REPO, "apps", "desktop", "e2e"), path.join(repo, "apps", "desktop", "e2e"));
   symlinkSync(path.join(REPO, "scripts"), path.join(repo, "scripts"));
   return path.join(e2e, "run-qa-10668-e2e.sh");
-})();
+}
+const FAKE_RUNNER = fakeRunner("repo", ALL_FLOWS);
+const BASE_RUNNER = fakeRunner("base-repo", BASE_FLOWS);
 
 /** A fake installed iOS app: EXConstants.bundle/app.config, plus any extra files. */
 function fakeApp(files = {}) {
@@ -174,7 +186,7 @@ function fakeApp(files = {}) {
 
 function run(
   args,
-  { apk = `BUNDLE=var a=1\nCONFIG=${DEV_CONFIG}`, env = {}, runner = RUNNER } = {},
+  { apk = `BUNDLE=var a=1\nCONFIG=${DEV_CONFIG}`, env = {}, runner = BASE_RUNNER } = {},
 ) {
   const id = Math.random().toString(36).slice(2);
   const fakeApk = path.join(root, `apk-${id}`);
