@@ -16,7 +16,7 @@ test.describe("Login", () => {
     await page.goto("/login");
 
     await page.getByLabel("Email").fill(email);
-    await fillSecret(page.getByLabel("Password"), password);
+    await fillSecret(page.getByLabel("Password", { exact: true }), password);
     await page.getByRole("button", { name: "Log in" }).click();
 
     // Should redirect away from login on success
@@ -40,7 +40,7 @@ test.describe("Login", () => {
     await expect(page).toHaveURL(/\/login$/);
 
     await page.getByLabel("Email").fill(email);
-    await fillSecret(page.getByLabel("Password"), password);
+    await fillSecret(page.getByLabel("Password", { exact: true }), password);
     await page.getByRole("button", { name: "Log in" }).click();
 
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 15000 });
@@ -58,7 +58,7 @@ test.describe("Login", () => {
     await page.goto("/login");
 
     await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Password").fill("definitely-wrong-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("definitely-wrong-password-123");
     await page.getByRole("button", { name: "Log in" }).click();
 
     // Should show error and stay on login page
@@ -70,7 +70,7 @@ test.describe("Login", () => {
     await page.goto("/login");
 
     await page.getByLabel("Email").fill("nonexistent-e2e-user@example.com");
-    await page.getByLabel("Password").fill("some-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("some-password-123");
     await page.getByRole("button", { name: "Log in" }).click();
 
     // Should show error and stay on login page
@@ -88,7 +88,7 @@ test.describe("Auth page smoke tests", () => {
 
     await expect(page.getByRole("heading", { name: "Create Account" })).toBeVisible();
     await expect(page.getByLabel("Email")).toBeVisible();
-    await expect(page.getByLabel("Password")).toBeVisible();
+    await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign up" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();
     await expect(page.getByPlaceholder("Min. 6 characters")).toBeVisible();
@@ -98,13 +98,13 @@ test.describe("Auth page smoke tests", () => {
     await page.goto("/signup");
 
     await page.getByLabel("Email").fill("test@example.com");
-    await page.getByLabel("Password").fill("abc");
+    await page.getByLabel("Password", { exact: true }).fill("abc");
     await page.getByRole("button", { name: "Sign up" }).click();
 
     // HTML5 minLength validation should prevent submission — form stays on page
     await expect(page).toHaveURL(/\/signup/);
     // The password field should still be visible (form not submitted)
-    await expect(page.getByLabel("Password")).toBeVisible();
+    await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
   });
 
   test("forgot-password page renders correctly", async ({ page }) => {
@@ -120,8 +120,8 @@ test.describe("Auth page smoke tests", () => {
     await page.goto("/reset-password");
 
     await expect(page.getByRole("heading", { name: "Reset Password" })).toBeVisible();
-    await expect(page.getByLabel("New Password")).toBeVisible();
-    await expect(page.getByLabel("Confirm Password")).toBeVisible();
+    await expect(page.getByLabel("New Password", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Confirm Password", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Reset password" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Back to login" })).toBeVisible();
   });
@@ -129,8 +129,8 @@ test.describe("Auth page smoke tests", () => {
   test("reset-password validation catches mismatched passwords", async ({ page }) => {
     await page.goto("/reset-password");
 
-    await page.getByLabel("New Password").fill("abc123");
-    await page.getByLabel("Confirm Password").fill("xyz789");
+    await page.getByLabel("New Password", { exact: true }).fill("abc123");
+    await page.getByLabel("Confirm Password", { exact: true }).fill("xyz789");
     await page.getByRole("button", { name: "Reset password" }).click();
 
     await expect(page.getByText("Passwords do not match")).toBeVisible({ timeout: 5000 });
@@ -153,6 +153,54 @@ test.describe("Auth page smoke tests", () => {
     // Forgot Password → Login
     await page.getByRole("link", { name: "Back to login" }).click();
     await expect(page).toHaveURL(/\/login/);
+  });
+});
+
+test.describe("Password visibility toggle", () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  // Dummy value only: once revealed it is a plain text field, so its value would land in the
+  // report's ARIA snapshot (ADR-0056). Never reveal E2E_TEST_PASSWORD.
+  const DUMMY = "visibility-check-123";
+
+  async function expectToggles(page: Page, label: string, nth = 0) {
+    const field = page.getByLabel(label, { exact: true });
+    await field.fill(DUMMY);
+    await expect(field).toHaveAttribute("type", "password");
+
+    await page.getByRole("button", { name: "Show password" }).nth(nth).click();
+    await expect(field).toHaveAttribute("type", "text");
+    await expect(field).toHaveValue(DUMMY);
+
+    await page.getByRole("button", { name: "Hide password" }).click();
+    await expect(field).toHaveAttribute("type", "password");
+    await expect(field).toHaveValue(DUMMY);
+  }
+
+  test("login password can be shown and hidden", async ({ page }) => {
+    await page.goto("/login");
+    await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute(
+      "autocomplete",
+      "current-password",
+    );
+    await expectToggles(page, "Password");
+  });
+
+  test("sign-up password can be shown and hidden", async ({ page }) => {
+    await page.goto("/signup");
+    await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute(
+      "autocomplete",
+      "new-password",
+    );
+    await expectToggles(page, "Password");
+  });
+
+  test("each reset-password field has its own toggle", async ({ page }) => {
+    await page.goto("/reset-password");
+    await expect(page.getByRole("button", { name: "Show password" })).toHaveCount(2);
+
+    await expectToggles(page, "New Password", 0);
+    await expectToggles(page, "Confirm Password", 1);
   });
 });
 
@@ -195,7 +243,7 @@ test.describe("Sign-up with email confirmation", () => {
 
     await page.goto("/signup");
     await page.getByLabel("Email").fill("new-e2e-user@example.com");
-    await page.getByLabel("Password").fill("e2e-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("e2e-password-123");
     await page.getByRole("button", { name: "Sign up" }).click();
 
     await expect(page.getByRole("heading", { name: "Check Your Email" })).toBeVisible({

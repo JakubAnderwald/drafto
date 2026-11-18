@@ -1,6 +1,6 @@
 # Authentication
 
-**Status:** shipped **Updated:** 2026-10-25
+**Status:** shipped **Updated:** 2026-11-18
 
 ## What it is
 
@@ -68,6 +68,7 @@ A signed-in user can permanently delete their own account from inside the app on
 | Confirmation word (`ACCOUNT_DELETE_CONFIRMATION`)                                                                                                            | `packages/shared/src/constants.ts`                                                                                                                                 |
 | One-click approve (email link)                                                                                                                               | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`                                                                                                       |
 | Signed approval token helper                                                                                                                                 | `apps/web/src/lib/approval-tokens.ts`                                                                                                                              |
+| Show/hide password field (`PasswordInput`): web, mobile, desktop (+ desktop's View-based `EyeIcon`); shared toggle labels `PASSWORD_VISIBILITY_LABELS`       | `apps/{web,mobile,desktop}/src/components/ui/password-input.tsx`, `apps/desktop/src/components/ui/icons/eye-icon.tsx`, `packages/shared/src/constants.ts`          |
 | Mobile login screen                                                                                                                                          | `apps/mobile/app/(auth)/login.tsx`                                                                                                                                 |
 | Mobile signup screen                                                                                                                                         | `apps/mobile/app/(auth)/signup.tsx`                                                                                                                                |
 | Mobile forgot password                                                                                                                                       | `apps/mobile/app/(auth)/forgot-password.tsx`                                                                                                                       |
@@ -195,6 +196,17 @@ Email confirmation is on in both Supabase projects, so `supabase.auth.signUp()` 
   - **Web** keeps `emailRedirectTo: <origin>/auth/callback`. In the browser that signed up, the callback exchanges the code and the user lands signed in, on the waiting screen. In any other browser the exchange fails and the callback redirects to `/login?error=auth-callback-error`. The login page now shows a fixed explanation for that (`AuthCallbackErrorNotice`), which disappears once the user submits the form. The address is confirmed either way.
 - **When sign-up does return a session** (confirmation turned off, e.g. a local Supabase), behaviour is unchanged: mobile and desktop route through the auth state change, and web pushes to `/waiting-for-approval`.
 - **Operator check.** `https://drafto.eu/login?confirmed=1` must be allowed under Supabase Auth → URL Configuration → Redirect URLs in dev and prod. Both allow `https://drafto.eu/**`, which covers it, including mobile's form with `&sb_flow_id=…`. An exact `https://drafto.eu/login?confirmed=1` entry alone would cover only desktop. If it were missing, Supabase would fall back to the Site URL and the user would land on drafto.eu without the notice.
+
+## Show/hide password
+
+Every password field (login, sign-up, and both reset-password fields) is a `PasswordInput`, which wraps the platform's `Input` and adds an eye toggle (PrimeTestLab report 10668, S-01). There is no change-password screen; account deletion asks for `DELETE`, not a password.
+
+- **Hidden by default.** The toggle's accessible name is "Show password" while hidden and "Hide password" while shown (`PASSWORD_VISIBILITY_LABELS`). Each reset-password field has its own toggle. On mobile and desktop the toggle's testID is `${field testID}-toggle` (`password-input-toggle`, `signup-password-input-toggle`, `new-password-input-toggle`, `confirm-password-input-toggle`); on web its `data-testid` is `${input id}-toggle`.
+- **Autofill keeps working.** The toggle only flips `type` / `secureTextEntry`. `id`, `name`, `autoComplete` and `textContentType` stay on the same field. Login uses `current-password` (web) / `password` (apps); sign-up and reset use `new-password` on every platform. Before this, the mobile and desktop sign-up field said `autoComplete="password"`, and the web inputs had no `autoComplete` at all.
+- **Web** puts an `IconButton` (`type="button"`, so it never submits) inside the field, and switches the field back to hidden when its form submits, so the browser's save-password prompt still sees a password field.
+- **Android** uses `keyboardType="visible-password"` while the value is shown, so keyboards still don't suggest or learn from it.
+- **macOS** draws the eye with Views (react-native-svg renders 0×0 there) and focuses the field again after a toggle, because react-native-macos swaps the native secure and plain text fields when `secureTextEntry` changes.
+- **Tests.** Web e2e locators use `getByLabel("Password", { exact: true })`: the toggle's name "Show password" contains "Password", so a non-exact locator matches two elements and fails strict mode (including in `auth.setup.ts`). Only dummy values are ever revealed in Playwright (`auth.spec.ts`, "Password visibility toggle") and Maestro (`apps/mobile/e2e/09-password-visibility.yaml`): a revealed field ends up in reports and screenshots. Maestro can't reach the reset form without a recovery session, so jest covers it.
 
 ## Approval checks on mobile and desktop
 

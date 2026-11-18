@@ -210,4 +210,21 @@ describe("Signup page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Signup failed");
     expect(screen.getByRole("button", { name: "Sign up" })).not.toBeDisabled();
   });
+
+  it("lets the user show and hide the password, with new-password autofill", async () => {
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<SignupPage />);
+    });
+
+    const password = screen.getByLabelText("Password");
+    expect(password).toHaveAttribute("type", "password");
+    expect(password).toHaveAttribute("autocomplete", "new-password");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");
+
+    await user.click(screen.getByRole("button", { name: "Show password" }));
+    expect(password).toHaveAttribute("type", "text");
+    await user.click(screen.getByRole("button", { name: "Hide password" }));
+    expect(password).toHaveAttribute("type", "password");
+  });
 });

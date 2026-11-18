@@ -158,4 +158,17 @@ describe("SignupScreen", () => {
       expect(getByText("Back to login").props.dismissTo).toBe(true);
     });
   });
+
+  it("tags the password as a new password and lets the user show it", () => {
+    const { getByTestId } = render(<SignupScreen />);
+
+    const field = () => getByTestId("signup-password-input");
+    // "password" would hint the current password; a sign-up field takes a new one.
+    expect(field().props.autoComplete).toBe("new-password");
+    expect(field().props.textContentType).toBe("newPassword");
+    expect(field().props.secureTextEntry).toBe(true);
+
+    fireEvent.press(getByTestId("signup-password-input-toggle"));
+    expect(field().props.secureTextEntry).toBe(false);
+  });
 });
