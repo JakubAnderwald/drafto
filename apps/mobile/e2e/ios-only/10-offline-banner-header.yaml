@@ -1,0 +1,206 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+  - offline
+  - requires-host-offline
+---
+# iOS 10: the offline banner no longer covers the header's Back button
+# (PrimeTestLab report 10668, M-03, iOS side).
+#
+# On 1.4.7 the banner was drawn over the whole app (position absolute, zIndex
+# 100) and padded by the status bar, so it covered the top ~32 pt of the 44 pt
+# navigation bar: the note editor's "Notes" Back button, the notebook's
+# "Notebooks" Back button and the search button. Now each screen draws the
+# banner below its own header.
+#
+# Two checks:
+#   - Here: each tap on the Back button (id "BackButton") and the search button
+#     while offline must work; the old banner covered their centres.
+#   - After the offline phase: the host check `banner-clear-of-back`
+#     (scripts/lib/maestro-layout-checks.mjs), which run-qa-10668-e2e.sh runs on
+#     `maestro hierarchy`. It fails when the banner overlaps the Back button or
+#     sits above the header. So the offline phase ENDS on the note editor.
+#
+# The simulator has no airplane mode and shares the Mac's network, so the
+# runner takes the whole Mac offline between phases (net.sh, sudo):
+#   bash apps/mobile/e2e/run-qa-10668-e2e.sh ios --allow-host-offline --only 10-offline-banner
+#
+#   QA_PHASE=prepare    online: a notebook with one note
+#   QA_PHASE=offline    the Mac is offline: cold start, Back taps, ends on the note
+#   QA_PHASE=reconnect  online again: the banner goes
+#
+# Logs in when the app shows Log In, otherwise reuses the session.
+# Required env: -e RUN_ID=$(date +%s) (the same for all three phases)
+# For the login: -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+# Uses "NB <RUN_ID>" with "Note <RUN_ID>", the pair flow 08 leaves earlier in a
+# runner pass, and creates them when they are missing; the E2E stale purge
+# removes them. iOS merges a row's icon and text into one label: "[^A-Za-z]*"
+# skips the icon without matching "OffImg NB <RUN_ID>" or "Attach NB <RUN_ID>".
+
+- assertTrue:
+    condition: ${typeof QA_PHASE !== 'undefined' && ['prepare', 'offline', 'reconnect'].includes(QA_PHASE)}
+    label: "Needs -e QA_PHASE=prepare|offline|reconnect: run it through run-qa-10668-e2e.sh ios --allow-host-offline"
+
+# --- Phase: prepare (online) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'prepare'}
+    commands:
+      - launchApp
+      - runFlow:
+          when:
+            visible: "Log In"
+          commands:
+            - tapOn: "you@example.com"
+            - inputText: ${E2E_TEST_EMAIL}
+            - tapOn: "Sign in to your Drafto account"
+            - tapOn: "Your password"
+            - inputText: ${E2E_TEST_PASSWORD}
+            - tapOn: "Sign in to your Drafto account"
+            - tapOn:
+                id: "login-button"
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 60000
+      - waitForAnimationToEnd
+      - runFlow:
+          when:
+            notVisible: "[^A-Za-z]*NB ${RUN_ID}"
+          commands:
+            - tapOn:
+                id: "add"
+            - assertVisible: "Notebook name"
+            - inputText: "NB ${RUN_ID}"
+            - tapOn:
+                id: "checkmark"
+            - extendedWaitUntil:
+                visible: "[^A-Za-z]*NB ${RUN_ID}"
+                timeout: 10000
+      - tapOn: "[^A-Za-z]*NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible:
+            id: "notes-list-screen"
+          timeout: 10000
+      - tapOn:
+          id: "swipe-hint-dismiss"
+          optional: true
+      - runFlow:
+          when:
+            notVisible: ".*Note ${RUN_ID}.*"
+          commands:
+            - tapOn:
+                id: "add"
+            - assertVisible: "Note title (optional)"
+            - inputText: "Note ${RUN_ID}"
+            - tapOn:
+                id: "checkmark"
+            - extendedWaitUntil:
+                visible: ".*Note ${RUN_ID}.*"
+                timeout: 10000
+            - waitForAnimationToEnd
+      - tapOn:
+          id: "BackButton"
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 10000
+
+# --- Phase: offline (the runner has taken the Mac offline) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'offline'}
+    commands:
+      # A cold start with no network
+      - stopApp
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible:
+            id: "offline-banner"
+          timeout: 15000
+      - takeScreenshot: qa-10668-m03-ios-offline-notebooks-tab
+
+      # The Notebooks tab's search button; Search opens as a sheet with its own
+      # header, and the banner hangs below that header too.
+      - tapOn:
+          id: "search-button"
+      - extendedWaitUntil:
+          visible: "Search notes and notebooks..."
+          timeout: 10000
+      - takeScreenshot: qa-10668-m03-ios-offline-search
+      - tapOn:
+          id: "search-close"
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 10000
+
+      # The notebook screen's Back button
+      - tapOn: "[^A-Za-z]*NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible:
+            id: "notes-list-screen"
+          timeout: 10000
+      - assertVisible:
+          id: "offline-banner"
+      - tapOn:
+          id: "BackButton"
+      - extendedWaitUntil:
+          notVisible:
+            id: "notes-list-screen"
+          timeout: 10000
+      - assertVisible:
+          id: "search-button"
+
+      # The note editor's "Notes" Back button, the one the report names
+      - tapOn: "[^A-Za-z]*NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible:
+            id: "notes-list-screen"
+          timeout: 10000
+      - tapOn: ".*Note ${RUN_ID}.*"
+      - extendedWaitUntil:
+          visible:
+            id: "editor-window"
+          timeout: 15000
+      - tapOn:
+          id: "BackButton"
+      - extendedWaitUntil:
+          notVisible:
+            id: "editor-window"
+          timeout: 10000
+      - assertVisible:
+          id: "notes-list-screen"
+
+      # End on the note editor: the host check reads this screen
+      - tapOn: ".*Note ${RUN_ID}.*"
+      - extendedWaitUntil:
+          visible:
+            id: "editor-window"
+          timeout: 15000
+      - waitForAnimationToEnd
+      - assertVisible:
+          id: "offline-banner"
+      - assertVisible:
+          id: "BackButton"
+      - takeScreenshot: qa-10668-m03-ios-offline-note
+
+# --- Phase: reconnect (online again) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'reconnect'}
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      # "Back online — syncing..." shows for 2 s after the connection returns.
+      - extendedWaitUntil:
+          notVisible:
+            id: "offline-banner"
+          timeout: 30000
