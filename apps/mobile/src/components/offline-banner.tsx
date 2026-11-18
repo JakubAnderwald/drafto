@@ -1,7 +1,6 @@
 import { View, Text, StyleSheet, type LayoutChangeEvent } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { OfflineBannerVariant } from "@drafto/shared";
-import { StatusBar } from "expo-status-bar";
 
 import { colors, fontSizes, spacing } from "@/theme/tokens";
 
@@ -20,6 +19,11 @@ interface OfflineBannerProps {
  * whatever comes after it is pushed down, so it can never cover a header's
  * Back button or take its taps (PrimeTestLab report 10668, M-03).
  * OfflineScreenLayout decides where it goes.
+ *
+ * It never sets the status bar itself: with one StatusBar per banner, whichever
+ * mounted last won, so a banner's style outlived its screen or lost to the root
+ * one. SystemBars alone picks the status bar's style, and gives it light content
+ * while a banner covers it (see `useOfflineBannerCoversStatusBar`).
  */
 export function OfflineBanner({ variant, topInset = 0, onLayout }: OfflineBannerProps) {
   const reconnected = variant === "reconnected";
@@ -36,8 +40,6 @@ export function OfflineBanner({ variant, topInset = 0, onLayout }: OfflineBanner
         { paddingTop: topInset + spacing.xs },
       ]}
     >
-      {/* Under the status bar, white icons read on the red or green strip in either theme. */}
-      {topInset > 0 ? <StatusBar style="light" /> : null}
       <View style={styles.content}>
         <Ionicons
           name={reconnected ? "wifi" : "cloud-offline-outline"}

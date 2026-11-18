@@ -11,12 +11,14 @@ import {
   AUTO_DISMISS_MS,
   MAX_VISIBLE_TOASTS,
   SLIDE_DISTANCE,
+  toastTopOffset,
 } from "@/components/toast";
+import type { FocusedOfflineBanner } from "@/providers/offline-banner-provider";
 import { spacing } from "@/theme/tokens";
 
-let mockBannerOffset = 0;
+let mockFocusedBanner: FocusedOfflineBanner | null = null;
 jest.mock("@/providers/offline-banner-provider", () => ({
-  useOfflineBannerHeaderOffset: () => mockBannerOffset,
+  useFocusedOfflineBanner: () => mockFocusedBanner,
 }));
 
 type ShowToast = ReturnType<typeof useToast>["showToast"];
@@ -74,15 +76,27 @@ describe("ToastProvider", () => {
     expect(style.bottom).toBeUndefined();
   });
 
-  it("starts below the offline banner while it hangs under the header", () => {
-    mockBannerOffset = 28;
+  it("starts below the offline banner while it hangs under the focused screen's header", () => {
+    mockFocusedBanner = { headerless: false, height: 28 };
     try {
       const { getByTestId } = renderToasts();
 
       const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
       expect(style.top).toBe(HEADER_BOTTOM + 28 + spacing.sm);
     } finally {
-      mockBannerOffset = 0;
+      mockFocusedBanner = null;
+    }
+  });
+
+  it("on a headerless screen, only clears the banner at the top instead of adding it to a header", () => {
+    mockFocusedBanner = { headerless: true, height: 47 + 28 };
+    try {
+      const { getByTestId } = renderToasts();
+
+      const style = StyleSheet.flatten(getByTestId("toast-container").props.style);
+      expect(style.top).toBe(HEADER_BOTTOM + spacing.sm);
+    } finally {
+      mockFocusedBanner = null;
     }
   });
 
@@ -207,5 +221,21 @@ describe("ToastProvider", () => {
     const error = jest.spyOn(console, "error").mockImplementation(() => {});
     expect(() => render(<CaptureToast />)).toThrow("useToast must be used within a ToastProvider");
     error.mockRestore();
+  });
+});
+
+describe("toastTopOffset", () => {
+  it("starts just below the header with no banner on the focused screen", () => {
+    expect(toastTopOffset(91, null)).toBe(91 + spacing.sm);
+  });
+
+  it("adds a banner that hangs below the header", () => {
+    expect(toastTopOffset(91, { headerless: false, height: 28 })).toBe(91 + 28 + spacing.sm);
+  });
+
+  it("clears a headerless screen's top banner, never starting higher than below a header", () => {
+    expect(toastTopOffset(91, { headerless: true, height: 75 })).toBe(91 + spacing.sm);
+    // A taller banner (large text) pushes the toasts below it.
+    expect(toastTopOffset(91, { headerless: true, height: 120 })).toBe(120 + spacing.sm);
   });
 });

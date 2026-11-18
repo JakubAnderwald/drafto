@@ -1,8 +1,10 @@
 import React from "react";
+import * as ReactNative from "react-native";
 import { Platform } from "react-native";
 import * as NavigationBar from "expo-navigation-bar";
 
-import { render } from "../helpers/test-utils";
+import { render, act, fireEvent, waitFor } from "../helpers/test-utils";
+import { fakeNavigation, type FakeNavigation } from "../helpers/fake-navigation";
 
 // The header options registered for each route in app/_layout.tsx.
 
@@ -15,29 +17,54 @@ type ScreenOptions =
 type ScreenProps = { name: string; options?: ScreenOptions };
 
 type ScreenLayout = (props: {
-  route: { name: string };
+  route: { key: string; name: string };
+  navigation: FakeNavigation;
   options: { headerShown?: boolean };
   children: React.ReactElement;
 }) => React.ReactElement;
 
+/** A route the mock Stack draws, the way native-stack keeps every pushed screen mounted. */
+type MockRoute = { key: string; name: string; headerShown?: boolean; navigation: FakeNavigation };
+
 const mockScreens: ScreenProps[] = [];
-const mockStack: { screenLayout?: ScreenLayout } = {};
+const mockStack: { screenLayout?: ScreenLayout; routes: MockRoute[] } = { routes: [] };
 jest.mock("expo-router", () => ({
   useRouter: () => ({ replace: jest.fn(), push: jest.fn(), back: jest.fn(), dismissTo: jest.fn() }),
   useSegments: () => ["(tabs)"],
-  // Renders one stand-in note screen through the navigator's screenLayout, the
-  // way native-stack wraps each screen's content (below its header).
+  // Renders each mocked route through the navigator's screenLayout, the way
+  // native-stack wraps each screen's content (below its header). With no routes
+  // set, one stand-in note screen.
   Stack: Object.assign(
     ({ children, screenLayout }: { children: React.ReactNode; screenLayout?: ScreenLayout }) => {
       mockStack.screenLayout = screenLayout;
+      const { Fragment: MockFragment } = jest.requireActual("react");
       const { Text: MockText } = jest.requireActual("react-native");
-      const screen = <MockText testID="note-screen-content">note</MockText>;
+      const { fakeNavigation: makeNavigation } = jest.requireActual("../helpers/fake-navigation");
+      const routes: MockRoute[] = mockStack.routes.length
+        ? mockStack.routes
+        : [{ key: "note-1", name: "notes/[id]", navigation: makeNavigation() }];
       return (
         <>
           {children}
-          {screenLayout
-            ? screenLayout({ route: { name: "notes/[id]" }, options: {}, children: screen })
-            : screen}
+          {routes.map(({ key, name, headerShown, navigation }) => {
+            const screen = (
+              <MockText testID={name === "notes/[id]" ? "note-screen-content" : `screen-${key}`}>
+                {name}
+              </MockText>
+            );
+            return (
+              <MockFragment key={key}>
+                {screenLayout
+                  ? screenLayout({
+                      route: { key, name },
+                      navigation,
+                      options: { headerShown },
+                      children: screen,
+                    })
+                  : screen}
+              </MockFragment>
+            );
+          })}
         </>
       );
     },
@@ -48,6 +75,14 @@ jest.mock("expo-router", () => ({
       },
     },
   ),
+}));
+
+// Drawn as a host view, so a test can count the mounted StatusBars and read their style.
+jest.mock("expo-status-bar", () => ({
+  StatusBar: ({ style }: { style: string }) => {
+    const { View: MockView } = jest.requireActual("react-native");
+    return <MockView testID="status-bar" accessibilityLabel={style} />;
+  },
 }));
 
 jest.mock("@/hooks/use-network-status", () => ({
@@ -248,5 +283,120 @@ describe("RootLayout offline banner", () => {
 
     expect(queryByTestId("offline-banner")).toBeNull();
     expect(getByTestId("note-screen-content")).toBeTruthy();
+  });
+});
+
+describe("RootLayout status bar", () => {
+  const mockedNetwork = jest.mocked(useNetworkStatus);
+  const OFFLINE = { isConnected: false, isInternetReachable: false };
+
+  /** The style of the one StatusBar in the tree: SystemBars' (the banner has none). */
+  function statusBarStyle(view: ReturnType<typeof render>) {
+    const bars = view.getAllByTestId("status-bar");
+    expect(bars).toHaveLength(1);
+    return bars[0].props.accessibilityLabel;
+  }
+
+  function layOutBanner(view: ReturnType<typeof render>, index: number, height: number) {
+    act(() => {
+      fireEvent(view.getAllByTestId("offline-banner")[index], "layout", {
+        nativeEvent: { layout: { x: 0, y: 0, width: 390, height } },
+      });
+    });
+  }
+
+  const login = (): MockRoute => ({
+    key: "login-1",
+    name: "(auth)/login",
+    headerShown: false,
+    navigation: fakeNavigation(),
+  });
+
+  beforeEach(() => {
+    jest.replaceProperty(Platform, "OS", "ios");
+    // A Light app, whose own status bar has dark content.
+    jest.spyOn(ReactNative, "useColorScheme").mockReturnValue("light");
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mockedNetwork.mockReturnValue({ isConnected: true, isInternetReachable: true });
+    mockStack.routes = [];
+    mockAuth.isLoading = false;
+  });
+
+  it("offline on login: light content over the red banner at the top", async () => {
+    mockedNetwork.mockReturnValue(OFFLINE);
+    mockStack.routes = [login()];
+
+    const view = render(<RootLayout />);
+
+    await waitFor(() => expect(statusBarStyle(view)).toBe("light"));
+  });
+
+  it("pushing sign-up, which has a header, goes back to the theme's style", async () => {
+    mockedNetwork.mockReturnValue(OFFLINE);
+    const loginRoute = login();
+    mockStack.routes = [loginRoute];
+    const view = render(<RootLayout />);
+    await waitFor(() => expect(statusBarStyle(view)).toBe("light"));
+
+    // Login stays mounted under sign-up, banner and all, but is no longer focused.
+    loginRoute.navigation.setFocused(false);
+    mockStack.routes = [
+      loginRoute,
+      { key: "signup-1", name: "(auth)/signup", navigation: fakeNavigation() },
+    ];
+    view.rerender(<RootLayout />);
+    layOutBanner(view, 1, 28);
+
+    expect(view.getAllByTestId("offline-banner")).toHaveLength(2);
+    expect(statusBarStyle(view)).toBe("dark");
+
+    // Back to login: light again.
+    mockStack.routes = [loginRoute];
+    view.rerender(<RootLayout />);
+    loginRoute.navigation.setFocused(true);
+
+    expect(statusBarStyle(view)).toBe("light");
+  });
+
+  it("cold start offline: light over the loading screen's banner, then the theme under a header", async () => {
+    mockedNetwork.mockReturnValue(OFFLINE);
+    mockAuth.isLoading = true;
+
+    const view = render(<RootLayout />);
+
+    expect(view.getByTestId("route-guard-loading")).toBeTruthy();
+    await waitFor(() => expect(statusBarStyle(view)).toBe("light"));
+
+    // Auth finishes and the app opens on a note, which has a header.
+    mockAuth.isLoading = false;
+    view.rerender(<RootLayout />);
+
+    expect(view.getByTestId("note-screen-content")).toBeTruthy();
+    expect(statusBarStyle(view)).toBe("dark");
+  });
+
+  it("cold start offline straight onto login keeps light content", async () => {
+    mockedNetwork.mockReturnValue(OFFLINE);
+    mockAuth.isLoading = true;
+    mockStack.routes = [login()];
+
+    const view = render(<RootLayout />);
+    await waitFor(() => expect(statusBarStyle(view)).toBe("light"));
+
+    mockAuth.isLoading = false;
+    view.rerender(<RootLayout />);
+
+    expect(statusBarStyle(view)).toBe("light");
+  });
+
+  it("online, login keeps the theme's style", async () => {
+    mockStack.routes = [login()];
+
+    const view = render(<RootLayout />);
+
+    await waitFor(() => expect(statusBarStyle(view)).toBe("dark"));
   });
 });

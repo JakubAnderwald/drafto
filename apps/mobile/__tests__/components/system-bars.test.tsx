@@ -9,9 +9,17 @@ import {
   MIN_NAVIGATION_BAR_STYLE_API_LEVEL,
   SystemBars,
   canStyleNavigationBar,
+  statusBarContentStyleFor,
   systemBarContentStyleFor,
 } from "@/components/system-bars";
+import { OfflineScreenLayout } from "@/components/navigation/offline-screen-layout";
+import { useNetworkStatus } from "@/hooks/use-network-status";
+import { OfflineBannerProvider } from "@/providers/offline-banner-provider";
 import { useTheme, type ThemePreference } from "@/providers/theme-provider";
+
+jest.mock("@/hooks/use-network-status", () => ({
+  useNetworkStatus: jest.fn(() => ({ isConnected: true, isInternetReachable: true })),
+}));
 
 const mockStatusBar = jest.fn();
 jest.mock("expo-status-bar", () => ({
@@ -115,6 +123,18 @@ describe("canStyleNavigationBar", () => {
     jest.replaceProperty(Platform, "OS", "ios");
     mockApiLevel("18.0");
     expect(canStyleNavigationBar()).toBe(false);
+  });
+});
+
+describe("statusBarContentStyleFor", () => {
+  it("follows the theme while no banner covers the status bar", () => {
+    expect(statusBarContentStyleFor(true, false)).toBe("light");
+    expect(statusBarContentStyleFor(false, false)).toBe("dark");
+  });
+
+  it("is light over the banner at the top of a headerless screen, in either theme", () => {
+    expect(statusBarContentStyleFor(true, true)).toBe("light");
+    expect(statusBarContentStyleFor(false, true)).toBe("light");
   });
 });
 
@@ -342,5 +362,50 @@ describe("SystemBars", () => {
     for (const [style] of setButtonStyle.mock.calls) {
       expect(["light", "dark"]).toContain(style);
     }
+  });
+});
+
+describe("SystemBars with the offline banner", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getItemAsync.mockResolvedValue("light");
+    setButtonStyle.mockImplementation(() => Promise.resolve());
+    jest.replaceProperty(Platform, "OS", "android");
+    mockApiLevel(34);
+    jest
+      .mocked(useNetworkStatus)
+      .mockReturnValue({ isConnected: false, isInternetReachable: false });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.mocked(useNetworkStatus).mockReturnValue({ isConnected: true, isInternetReachable: true });
+  });
+
+  function renderWithScreen(headerless: boolean) {
+    mockOsScheme("light");
+    spyOnAppState();
+    return render(
+      <OfflineBannerProvider>
+        <SystemBars />
+        <OfflineScreenLayout screenKey="screen-1" headerless={headerless}>
+          <Text>screen</Text>
+        </OfflineScreenLayout>
+      </OfflineBannerProvider>,
+    );
+  }
+
+  it("gives the status bar light content over a headerless screen's banner, but not the navigation bar", async () => {
+    renderWithScreen(true);
+
+    await waitFor(() => expect(lastButtonStyle()).toBe("dark"));
+    expect(mockStatusBar).toHaveBeenLastCalledWith({ style: "light" });
+  });
+
+  it("keeps the theme's style when the banner hangs below a header", async () => {
+    renderWithScreen(false);
+
+    await waitFor(() => expect(lastButtonStyle()).toBe("dark"));
+    expect(mockStatusBar).toHaveBeenLastCalledWith({ style: "dark" });
   });
 });

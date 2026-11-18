@@ -36,6 +36,9 @@ const PUBLIC_AUTH_SCREENS = new Set(["login", "signup", "forgot-password", "rese
 
 const RESET_PASSWORD_SCREEN = "reset-password";
 
+/** The launch loading view's key with the OfflineBannerProvider (it has no route). */
+const LOADING_SCREEN_KEY = "route-guard-loading";
+
 export function RouteGuard({ children }: { children: React.ReactNode }) {
   const { user, isApproved, isLoading, isCheckingApproval, isRecovering } = useAuth();
   const { semantic } = useTheme();
@@ -94,7 +97,7 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
   // No header here either, so an offline banner takes the top of the screen.
   if (isLoading) {
     return (
-      <OfflineScreenLayout headerless>
+      <OfflineScreenLayout screenKey={LOADING_SCREEN_KEY} headerless>
         <View
           style={[styles.loadingContainer, { backgroundColor: semantic.bg }]}
           testID="route-guard-loading"

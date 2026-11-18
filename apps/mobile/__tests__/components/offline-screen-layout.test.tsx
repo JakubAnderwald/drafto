@@ -3,6 +3,7 @@ import { Text } from "react-native";
 import { SafeAreaInsetsContext, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { render, fireEvent, act } from "../helpers/test-utils";
+import { fakeNavigation } from "../helpers/fake-navigation";
 import {
   OfflineScreenLayout,
   offlineScreenLayout,
@@ -11,7 +12,8 @@ import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import {
   OfflineBannerProvider,
-  useOfflineBannerHeaderOffset,
+  useFocusedOfflineBanner,
+  useOfflineBannerCoversStatusBar,
 } from "@/providers/offline-banner-provider";
 import { RECONNECTED_HOLD_MS } from "@drafto/shared";
 import { spacing } from "@/theme/tokens";
@@ -19,7 +21,6 @@ import { spacing } from "@/theme/tokens";
 jest.mock("@/hooks/use-network-status", () => ({
   useNetworkStatus: jest.fn(),
 }));
-jest.mock("expo-status-bar", () => ({ StatusBar: () => null }));
 
 const mockUseNetworkStatus = jest.mocked(useNetworkStatus);
 
@@ -34,7 +35,7 @@ function setConnected(isConnected: boolean) {
 function Probe() {
   const insets = useSafeAreaInsets();
   const bannerHeight = useOfflineBannerHeight();
-  const headerOffset = useOfflineBannerHeaderOffset();
+  const headerOffset = useFocusedOfflineBanner()?.height ?? 0;
   return (
     <Text testID="probe">
       {JSON.stringify({ top: insets.top, bottom: insets.bottom, bannerHeight, headerOffset })}
@@ -55,7 +56,7 @@ function renderLayout(headerless = false) {
   return render(
     <SafeAreaInsetsContext.Provider value={DEVICE_INSETS}>
       <OfflineBannerProvider>
-        <OfflineScreenLayout headerless={headerless}>
+        <OfflineScreenLayout screenKey="screen-1" headerless={headerless}>
           <Probe />
         </OfflineScreenLayout>
       </OfflineBannerProvider>
@@ -131,7 +132,7 @@ describe("OfflineScreenLayout", () => {
       expect.arrayContaining([{ paddingTop: 24 + spacing.xs }]),
     );
     // Bottom insets are untouched, so the 3-button navigation bar is still cleared.
-    expect(probe(getByTestId)).toEqual({ top: 0, bottom: 48, bannerHeight: 52, headerOffset: 0 });
+    expect(probe(getByTestId)).toEqual({ top: 0, bottom: 48, bannerHeight: 52, headerOffset: 52 });
   });
 
   it("headerless and online: the screen pads for the status bar itself, as before", () => {
@@ -153,7 +154,7 @@ describe("OfflineScreenLayout", () => {
       view.rerender(
         <SafeAreaInsetsContext.Provider value={DEVICE_INSETS}>
           <OfflineBannerProvider>
-            <OfflineScreenLayout>
+            <OfflineScreenLayout screenKey="screen-1">
               <Probe />
             </OfflineScreenLayout>
           </OfflineBannerProvider>
@@ -186,7 +187,7 @@ describe("OfflineScreenLayout", () => {
     // A new element each time, so the provider re-renders and reads the network again.
     const tree = () => (
       <OfflineBannerProvider>
-        <OfflineScreenLayout>
+        <OfflineScreenLayout screenKey="screen-1">
           <Screen />
         </OfflineScreenLayout>
       </OfflineBannerProvider>
@@ -204,7 +205,7 @@ describe("OfflineScreenLayout", () => {
     setConnected(false);
 
     const { queryByTestId } = render(
-      <OfflineScreenLayout>
+      <OfflineScreenLayout screenKey="screen-1">
         <Text>screen</Text>
       </OfflineScreenLayout>,
     );
@@ -224,7 +225,12 @@ describe("offlineScreenLayout (a navigator's screenLayout)", () => {
     return render(
       <SafeAreaInsetsContext.Provider value={DEVICE_INSETS}>
         <OfflineBannerProvider>
-          {offlineScreenLayout({ route: { name }, options: { headerShown }, children: screen })}
+          {offlineScreenLayout({
+            route: { key: `${name}-1`, name },
+            navigation: fakeNavigation(),
+            options: { headerShown },
+            children: screen,
+          })}
         </OfflineBannerProvider>
       </SafeAreaInsetsContext.Provider>,
     );
@@ -252,5 +258,167 @@ describe("offlineScreenLayout (a navigator's screenLayout)", () => {
 
     expect(queryByTestId("offline-banner")).toBeNull();
     expect(getByTestId("screen")).toBeTruthy();
+  });
+});
+
+describe("the focused screen, as the provider sees it", () => {
+  /** Reads what the overlays outside the navigator (toasts, the status bar) see. */
+  function OverlayProbe() {
+    const banner = useFocusedOfflineBanner();
+    const coversStatusBar = useOfflineBannerCoversStatusBar();
+    return <Text testID="overlay">{JSON.stringify({ banner, coversStatusBar })}</Text>;
+  }
+
+  function overlay(getByTestId: (id: string) => { props: { children: unknown } }) {
+    return JSON.parse(String(getByTestId("overlay").props.children)) as {
+      banner: { headerless: boolean; height: number } | null;
+      coversStatusBar: boolean;
+    };
+  }
+
+  type Screen = {
+    key: string;
+    name: string;
+    headerShown?: boolean;
+    navigation: ReturnType<typeof fakeNavigation>;
+  };
+
+  /** A stack of mounted screens, each drawn through the navigator's screenLayout. */
+  function stack(screens: Screen[]) {
+    return (
+      <SafeAreaInsetsContext.Provider value={DEVICE_INSETS}>
+        <OfflineBannerProvider>
+          {screens.map(({ key, name, headerShown, navigation }) => (
+            <React.Fragment key={key}>
+              {offlineScreenLayout({
+                route: { key, name },
+                navigation,
+                options: { headerShown },
+                children: <Text testID={`screen-${key}`}>{name}</Text>,
+              })}
+            </React.Fragment>
+          ))}
+          <OverlayProbe />
+        </OfflineBannerProvider>
+      </SafeAreaInsetsContext.Provider>
+    );
+  }
+
+  /** Lays out the banner of one screen, found through the screen it sits above. */
+  function layOutBannerOf(view: ReturnType<typeof render>, index: number, height: number) {
+    act(() => {
+      fireEvent(view.getAllByTestId("offline-banner")[index], "layout", {
+        nativeEvent: { layout: { x: 0, y: 0, width: 390, height } },
+      });
+    });
+  }
+
+  beforeEach(() => {
+    setConnected(false);
+  });
+
+  it("offline login: the banner covers the status bar, and toasts clear it at the top", () => {
+    const login: Screen = {
+      key: "login-1",
+      name: "(auth)/login",
+      headerShown: false,
+      navigation: fakeNavigation(),
+    };
+
+    const view = render(stack([login]));
+    layOutBannerOf(view, 0, 52);
+
+    expect(overlay(view.getByTestId)).toEqual({
+      banner: { headerless: true, height: 52 },
+      coversStatusBar: true,
+    });
+  });
+
+  it("pushing sign-up, which has a header, hands both to the new screen; going back restores login", () => {
+    const login: Screen = {
+      key: "login-1",
+      name: "(auth)/login",
+      headerShown: false,
+      navigation: fakeNavigation(),
+    };
+    const signup: Screen = { key: "signup-1", name: "(auth)/signup", navigation: fakeNavigation() };
+
+    const view = render(stack([login]));
+    layOutBannerOf(view, 0, 52);
+
+    // The push: login stays mounted underneath but blurs; sign-up mounts focused.
+    login.navigation.setFocused(false);
+    view.rerender(stack([login, signup]));
+    layOutBannerOf(view, 1, 28);
+
+    expect(overlay(view.getByTestId)).toEqual({
+      banner: { headerless: false, height: 28 },
+      coversStatusBar: false,
+    });
+
+    // Back: sign-up unmounts and login is focused again.
+    view.rerender(stack([login]));
+    login.navigation.setFocused(true);
+
+    expect(overlay(view.getByTestId)).toEqual({
+      banner: { headerless: true, height: 52 },
+      coversStatusBar: true,
+    });
+  });
+
+  it("an unfocused screen laying out its banner never moves the toasts", () => {
+    const notebook: Screen = {
+      key: "notebook-1",
+      name: "notebooks/[id]",
+      navigation: fakeNavigation(false),
+    };
+    const note: Screen = { key: "note-1", name: "notes/[id]", navigation: fakeNavigation() };
+
+    const view = render(stack([notebook, note]));
+    layOutBannerOf(view, 1, 28);
+    // The screen underneath lays out later (say, a rotation) with another height.
+    layOutBannerOf(view, 0, 40);
+
+    expect(overlay(view.getByTestId).banner).toEqual({ headerless: false, height: 28 });
+  });
+
+  it("forgets the screen's height once it unmounts", () => {
+    const note: Screen = { key: "note-1", name: "notes/[id]", navigation: fakeNavigation() };
+
+    const view = render(stack([note]));
+    layOutBannerOf(view, 0, 28);
+    view.rerender(stack([]));
+
+    expect(overlay(view.getByTestId)).toEqual({ banner: null, coversStatusBar: false });
+  });
+
+  it("a blur that arrives after the next screen's focus doesn't clear the new screen", () => {
+    const first: Screen = { key: "a", name: "notebooks/[id]", navigation: fakeNavigation() };
+    const second: Screen = {
+      key: "b",
+      name: "(auth)/login",
+      headerShown: false,
+      navigation: fakeNavigation(false),
+    };
+
+    const view = render(stack([first, second]));
+    second.navigation.setFocused(true);
+    first.navigation.setFocused(false);
+
+    expect(overlay(view.getByTestId).coversStatusBar).toBe(true);
+  });
+
+  it("online: nothing covers the status bar, even on a headerless screen", () => {
+    setConnected(true);
+    const login: Screen = {
+      key: "login-1",
+      name: "(auth)/login",
+      headerShown: false,
+      navigation: fakeNavigation(),
+    };
+
+    const view = render(stack([login]));
+
+    expect(overlay(view.getByTestId)).toEqual({ banner: null, coversStatusBar: false });
   });
 });

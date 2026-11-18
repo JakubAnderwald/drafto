@@ -3,6 +3,7 @@ import { AppState, Platform } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as NavigationBar from "expo-navigation-bar";
 
+import { useOfflineBannerCoversStatusBar } from "@/providers/offline-banner-provider";
 import { useTheme } from "@/providers/theme-provider";
 
 /** The colour of the system bars' content (icons, text, buttons): always explicit. */
@@ -52,6 +53,20 @@ export function canStyleNavigationBar(): boolean {
 }
 
 /**
+ * The status bar's content style: light while the offline banner covers it
+ * (the red or green strip at the top of a screen without a header, where white
+ * icons read in either theme), and the theme's style otherwise.
+ *
+ * The navigation bar never takes this override: the banner is at the top.
+ */
+export function statusBarContentStyleFor(
+  isDark: boolean,
+  bannerCoversStatusBar: boolean,
+): SystemBarContentStyle {
+  return bannerCoversStatusBar ? "light" : systemBarContentStyleFor(isDark);
+}
+
+/**
  * Sets the Android navigation bar's button style, and with it the 3-button
  * contrast scrim. Never throws or rejects.
  *
@@ -83,6 +98,12 @@ async function applyNavigationBarButtonStyle(style: SystemBarContentStyle): Prom
  *   With the OS in Light and Drafto in Dark that is a 90%-white bar under a dark
  *   tab bar. Setting the button style from `isDark` makes the scrim follow the app.
  *
+ * This is the app's only StatusBar. The offline banner doesn't mount one: a
+ * StatusBar per banner meant whichever mounted last won, so a headerless
+ * screen's light style stayed on under a pushed screen with a header, or lost
+ * to this one on an offline cold start. The banner's position comes from the
+ * OfflineBannerProvider, which knows the focused screen.
+ *
  * "System" needs nothing extra: `isDark` comes from `useColorScheme()`, which
  * updates when the OS theme changes. The style is re-applied whenever the app
  * comes back to the foreground, because a recreated activity resets the flag to
@@ -92,6 +113,7 @@ async function applyNavigationBarButtonStyle(style: SystemBarContentStyle): Prom
  */
 export function SystemBars() {
   const { isDark } = useTheme();
+  const bannerCoversStatusBar = useOfflineBannerCoversStatusBar();
   const style = systemBarContentStyleFor(isDark);
   const latestStyle = useRef(style);
 
@@ -112,5 +134,5 @@ export function SystemBars() {
     return () => subscription.remove();
   }, []);
 
-  return <StatusBar style={style} />;
+  return <StatusBar style={statusBarContentStyleFor(isDark, bannerCoversStatusBar)} />;
 }

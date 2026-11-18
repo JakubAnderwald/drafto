@@ -60,11 +60,12 @@ describe("OfflineBanner", () => {
     expect(mockStatusBar).not.toHaveBeenCalled();
   });
 
-  it("at the top of a headerless screen, fills the status-bar area and lightens its icons", () => {
+  it("at the top of a headerless screen, fills the status-bar area but leaves its style to SystemBars", () => {
     const { getByTestId } = render(<OfflineBanner variant="offline" topInset={47} />);
 
     expect(bannerStyle(getByTestId).paddingTop).toBe(47 + spacing.xs);
-    expect(mockStatusBar).toHaveBeenCalledWith({ style: "light" });
+    // A StatusBar of its own would stay in effect under a pushed screen with a header.
+    expect(mockStatusBar).not.toHaveBeenCalled();
   });
 
   it("reports its layout, so the screen can offset its keyboard by it", () => {

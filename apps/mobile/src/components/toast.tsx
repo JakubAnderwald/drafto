@@ -14,7 +14,10 @@ import { getDefaultHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaFrame, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useTheme } from "@/providers/theme-provider";
-import { useOfflineBannerHeaderOffset } from "@/providers/offline-banner-provider";
+import {
+  useFocusedOfflineBanner,
+  type FocusedOfflineBanner,
+} from "@/providers/offline-banner-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
@@ -42,6 +45,21 @@ const ANIMATION_MS = 250;
 export const SLIDE_DISTANCE = -spacing.sm;
 /** Older toasts are dropped beyond this many, so a burst can't fill the screen. */
 export const MAX_VISIBLE_TOASTS = 2;
+
+/**
+ * Where the toast stack starts, given where a header would end and the banner
+ * on the focused screen (null while that screen shows none).
+ *
+ * - Below a header the banner hangs under it, so toasts start below both.
+ * - On a headerless screen the banner is at the very top, over the status bar,
+ *   so toasts only need to clear it; they never sit higher than they would
+ *   without it.
+ */
+export function toastTopOffset(headerBottom: number, banner: FocusedOfflineBanner | null): number {
+  if (!banner) return headerBottom + spacing.sm;
+  if (banner.headerless) return Math.max(headerBottom, banner.height) + spacing.sm;
+  return headerBottom + banner.height + spacing.sm;
+}
 
 const ICON_MAP: Record<ToastType, keyof typeof Ionicons.glyphMap> = {
   info: "information-circle-outline",
@@ -151,8 +169,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   // as this app's headers (on Android it allows 64 dp for the 56 dp stack
   // header), so toasts always start below the header's buttons.
   const headerBottom = getDefaultHeaderHeight(frame, false, insets.top);
-  // While offline the banner hangs below the header, so toasts start below it.
-  const bannerOffset = useOfflineBannerHeaderOffset();
+  // The banner on the screen the user is looking at, not on whichever screen laid one out last.
+  const focusedBanner = useFocusedOfflineBanner();
 
   const commit = useCallback((next: ToastMessage[]) => {
     toastsRef.current = next;
@@ -189,7 +207,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           editor's attachment row, and inside the header they hid its back button. */}
       <View
         testID="toast-container"
-        style={[styles.container, { top: headerBottom + bannerOffset + spacing.sm }]}
+        style={[styles.container, { top: toastTopOffset(headerBottom, focusedBanner) }]}
         pointerEvents="none"
       >
         {toasts.map((t) => (
