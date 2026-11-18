@@ -1328,6 +1328,32 @@ A stopped run's unpushed `chore(wip)` commits plus a push to the PR branch leave
 
 To turn resuming off, set `FACTORY_IMPLEMENT_RESUME=0` in the plist. The deadline facts and the prompt's Time budget stay. See [ADR-0084](../adr/0084-factory-implement-deadline-and-resume.md).
 
+#### Resume drill
+
+To rehearse a resume by hand, on a scratch card:
+
+1. Unload the job, so a 5-minute tick can't take the card or reset the checkout between your two runs:
+
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist
+   ```
+
+2. Put a scratch card in **In Progress** with an approved plan.
+3. Run the implement stage once with a short cap and let it stop. Hitting the cap and stopping itself with `action=incomplete` at the soft deadline are both recorded as resumable, so either counts. `FACTORY_AUTOPULL=0` is read only by the loop wrapper (`scripts/factory-agent-loop.sh`); it is kept so pasting the command into the wrapper doesn't reset the tree. Don't export `FACTORY_IMPLEMENT_DETACHED`, so both runs stay in the foreground.
+
+   ```bash
+   FACTORY_AUTOPULL=0 FACTORY_IMPLEMENT_TIMEOUT_SEC=<short> bash scripts/factory-agent.sh --implement --phase C
+   ```
+
+4. Run the same command again. Change nothing in between: the resume conditions above all have to hold.
+5. In the day's implement log, `logs/factory/factory-agent-implement-<YYYY-MM-DD>.log`, check for `Issue #<n>: recorded resumable session <id>` from the first run, then `Issue #<n>: resume session <id>` from the second, with the same `<id>`. A `fresh session <id> (no resume: <reason>)` line means the drill failed, and the reason says why.
+6. Check that the second run appended to the same transcript: `ls -l ~/.claude/projects/*/<id>.jsonl` shows one file, and it grew after the second run.
+7. Reload the job, then close the scratch card or move it out of In Progress:
+
+   ```bash
+   launchctl load ~/Library/LaunchAgents/eu.drafto.factory.plist
+   ```
+
 ### Detached implement runs
 
 With `FACTORY_IMPLEMENT_DETACHED=1` ([ADR-0085](../adr/0085-detached-implement-runs.md)), `--implement` prepares a card as before (slot, worktree, install, resume decision), then starts the claude call detached and goes on: `started detached implement run <runId> (pid <p>, slot <s>, cap 2700s until <iso>, …); a later tick collects it`. The other modes keep their 5-minute cadence while it runs. The next `--implement` ticks report it (`detached implement run <runId> is running`) and skip the card. Once it has ended, one collects it (`collecting detached implement run <runId> (exit <code>, …)`) and the usual implement lines follow. `--watch` and `--release` leave a card alone while a run holds it, until it is collected.
