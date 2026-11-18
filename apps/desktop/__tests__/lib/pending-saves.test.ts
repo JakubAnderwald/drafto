@@ -1,11 +1,17 @@
 import { renderHook, act } from "@testing-library/react-native";
 
 import { useAutoSave } from "@/hooks/use-auto-save";
-import { flushPendingSaves, registerPendingSave } from "@/lib/pending-saves";
+import {
+  countSavesWritten,
+  flushPendingSaves,
+  forgetFailedSaves,
+  registerPendingSave,
+} from "@/lib/pending-saves";
 
 describe("pending saves", () => {
   beforeEach(() => {
     jest.useFakeTimers();
+    forgetFailedSaves();
   });
 
   afterEach(() => {
@@ -80,7 +86,65 @@ describe("pending saves", () => {
   it("settles even when a flush fails", async () => {
     const unregister = registerPendingSave(() => Promise.reject(new Error("disk full")));
 
-    await expect(flushPendingSaves()).resolves.toBeUndefined();
+    await expect(flushPendingSaves()).resolves.toBe(false);
     unregister();
+  });
+
+  it("reports a write that failed, even after the editor unmounts", async () => {
+    const onSave = jest.fn().mockRejectedValue(new Error("disk full"));
+    const { result, unmount } = renderHook(() => useAutoSave<string>({ onSave }));
+
+    act(() => {
+      result.current.trigger("lost text");
+    });
+    await act(async () => {
+      await expect(flushPendingSaves()).resolves.toBe(false);
+    });
+    unmount();
+
+    await expect(flushPendingSaves()).resolves.toBe(false);
+    forgetFailedSaves();
+    await expect(flushPendingSaves()).resolves.toBe(true);
+  });
+
+  it("clears a failed write once the same auto-save writes again", async () => {
+    const onSave = jest.fn().mockRejectedValueOnce(new Error("busy")).mockResolvedValue(true);
+    const { result } = renderHook(() => useAutoSave<string>({ onSave }));
+
+    act(() => {
+      result.current.trigger("first");
+    });
+    await act(async () => {
+      await expect(flushPendingSaves()).resolves.toBe(false);
+    });
+
+    act(() => {
+      result.current.trigger("second");
+    });
+    await act(async () => {
+      await expect(flushPendingSaves()).resolves.toBe(true);
+    });
+  });
+
+  it("counts writes, but not saves that wrote nothing", async () => {
+    const onSave = jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const { result } = renderHook(() => useAutoSave<string>({ onSave }));
+    const before = countSavesWritten();
+
+    act(() => {
+      result.current.trigger("edited");
+    });
+    await act(async () => {
+      await flushPendingSaves();
+    });
+    expect(countSavesWritten()).toBe(before + 1);
+
+    act(() => {
+      result.current.trigger("unchanged");
+    });
+    await act(async () => {
+      await flushPendingSaves();
+    });
+    expect(countSavesWritten()).toBe(before + 1);
   });
 });

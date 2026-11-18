@@ -3,7 +3,13 @@ import { renderHook, act, waitFor } from "@testing-library/react-native";
 import { SIGN_OUT_SYNCED_MESSAGE, SIGN_OUT_UNKNOWN_MESSAGE } from "@drafto/shared";
 
 import { PRE_SIGN_OUT_SYNC_TIMEOUT_MS, useSafeSignOut } from "@/hooks/use-safe-sign-out";
-import { registerPendingSave } from "@/lib/pending-saves";
+import {
+  flushPendingSaves,
+  forgetFailedSaves,
+  recordSaveFailed,
+  recordSaveWritten,
+  registerPendingSave,
+} from "@/lib/pending-saves";
 
 const mockSignOut = jest.fn();
 jest.mock("@/providers/auth-provider", () => ({
@@ -38,6 +44,7 @@ describe("useSafeSignOut", () => {
     mockSignOut.mockResolvedValue(undefined);
     mockSync.mockResolvedValue(undefined);
     mockCountUnsyncedChanges.mockResolvedValue(0);
+    forgetFailedSaves();
   });
 
   afterEach(() => {
@@ -519,6 +526,86 @@ describe("useSafeSignOut", () => {
 
     expect(mockSignOut).not.toHaveBeenCalled();
     expect(result.current.isSigningOut).toBe(false);
+  });
+
+  it("keeps the provider's flush when an editor save changes an already-unsynced note while the dialog is open", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockSync.mockRejectedValue(new Error("offline"));
+    // The same note is pending before and after, so the count alone cannot see the new text.
+    mockCountUnsyncedChanges.mockResolvedValue(1);
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const { result } = renderHook(() => useSafeSignOut());
+
+    act(() => {
+      void result.current.signOut();
+    });
+    await waitFor(() => {
+      expect(alert).toHaveBeenCalledTimes(1);
+    });
+    recordSaveWritten({});
+
+    await act(async () => {
+      alertButtons(alert)[1].onPress?.();
+    });
+
+    expect(mockCountUnsyncedChanges).toHaveBeenCalledTimes(3);
+    expect(mockSignOut).toHaveBeenCalledWith();
+  });
+
+  it("warns generically when an editor save failed before the confirmation", async () => {
+    // The failed edit is not in the database, so a count of 0 would wrongly say all is synced.
+    recordSaveFailed({});
+    const alert = confirmEveryAlert();
+    const { result } = renderHook(() => useSafeSignOut());
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(alert).toHaveBeenCalledTimes(1);
+    expect(alert.mock.calls[0][1]).toBe(SIGN_OUT_UNKNOWN_MESSAGE);
+    // The user was told unsynced changes would be lost and confirmed.
+    expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
+    // The wiped database's failed saves no longer count against the next account.
+    await expect(flushPendingSaves()).resolves.toBe(true);
+  });
+
+  it("stays signed in when an editor save fails after the dialog showed a count", async () => {
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const { result } = renderHook(() => useSafeSignOut());
+
+    act(() => {
+      void result.current.signOut();
+    });
+    await waitFor(() => {
+      expect(alert).toHaveBeenCalledTimes(1);
+    });
+    expect(alert.mock.calls[0][1]).toBe(SIGN_OUT_SYNCED_MESSAGE);
+    recordSaveFailed({});
+
+    await act(async () => {
+      alertButtons(alert)[1].onPress?.();
+    });
+
+    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenLastCalledWith(
+      "Couldn't save your last edit",
+      "You're still signed in. Signing out now would lose that edit.",
+    );
+    expect(result.current.isSigningOut).toBe(false);
+
+    // The next attempt warns that changes would be lost, and confirming it signs out.
+    act(() => {
+      void result.current.signOut();
+    });
+    await waitFor(() => {
+      expect(alert).toHaveBeenCalledTimes(3);
+    });
+    expect(alert.mock.calls[2][1]).toBe(SIGN_OUT_UNKNOWN_MESSAGE);
+    await act(async () => {
+      alertButtons(alert, 2)[1].onPress?.();
+    });
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
   });
 
   it("tells the user when sign-out itself fails", async () => {

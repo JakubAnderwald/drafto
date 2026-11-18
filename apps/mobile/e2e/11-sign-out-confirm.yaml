@@ -3,7 +3,9 @@ tags:
   - qa-10668
 env:
   # Default: Cancel only. Pass -e SIGN_OUT_CONFIRM=1 to also confirm (see below).
-  SIGN_OUT_CONFIRM: "0"
+  # Maestro defines -e values first and this block after them, so a literal here
+  # would overwrite the flag: keep a passed value and default to "0".
+  SIGN_OUT_CONFIRM: "${typeof SIGN_OUT_CONFIRM === 'undefined' ? '0' : SIGN_OUT_CONFIRM}"
 ---
 # Flow 11: Sign-out confirmation (PrimeTestLab report 10668, S-02)
 # Tests: Settings "Sign Out" always asks first. With everything synced the

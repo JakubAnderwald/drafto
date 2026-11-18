@@ -88,23 +88,41 @@ cancel_sign_out() {
 # packages/shared/src/account/sign-out-copy.ts (the unsynced wording there, the
 # others from the SIGN_OUT_* constants in packages/shared/src/constants.ts);
 # packages/shared/__tests__/sign-out-copy.test.ts pins the unsynced pattern.
+# Only text inside the confirmation counts: the AX dump covers every window, so
+# the texts are those under the confirm button's nearest sheet or dialog-window
+# ancestor, and a note in the window behind that starts "Everything is synced"
+# cannot pass for the dialog's copy. OCR, the fallback when AX exposes no copy,
+# reads the whole window, so there the loss wordings win over the synced one.
 sign_out_confirm_copy() {
   local copy text
   copy=$(ax_dump | jq -r '
-    [.[] | .value, .title, .desc | strings] as $t
-    | if any($t[]; startswith("Everything is synced")) then "synced"
-      elif any($t[]; test("^[0-9]+ changes? (hasn.t|haven.t) synced")) then "unsynced"
-      elif any($t[]; startswith("Any changes that haven")) then "unknown"
-      else empty end' 2> /dev/null)
+    def visible: ((.w // 0) > 0) and ((.h // 0) > 0);
+    def label_is_confirm: . == "Sign out" or . == "Sign out anyway";
+    . as $all
+    | ($all | map(select(.role == "AXButton" and .id != "logout-button" and visible
+        and ((.title | label_is_confirm) or (.desc | label_is_confirm)))) | first) as $btn
+    | if $btn == null then empty else
+        ($all | map(. as $e | select(
+            (.role == "AXSheet" or .subrole == "AXDialog" or .subrole == "AXSystemDialog")
+            and ($btn.path | startswith($e.path + "/"))))
+          | max_by(.path | length)) as $sheet
+        | if $sheet == null then empty else
+            [$all[] | select(.path | startswith($sheet.path + "/")) | .value, .title, .desc | strings] as $t
+            | if any($t[]; test("^[0-9]+ changes? (hasn.t|haven.t) synced")) then "unsynced"
+              elif any($t[]; startswith("Any changes that haven")) then "unknown"
+              elif any($t[]; startswith("Everything is synced")) then "synced"
+              else empty end
+          end
+      end' 2> /dev/null)
   if [ -z "$copy" ]; then
     # One capture and OCR pass, matched case-insensitively like ocr_has.
     text=$(ocr_text 2> /dev/null)
-    if grep -qiF "Everything is synced" <<< "$text"; then
-      copy=synced
-    elif grep -qiF "synced and will be lost" <<< "$text"; then
+    if grep -qiF "synced and will be lost" <<< "$text"; then
       copy=unsynced
     elif grep -qiF "Any changes that" <<< "$text"; then
       copy=unknown
+    elif grep -qiF "Everything is synced" <<< "$text"; then
+      copy=synced
     fi
   fi
   printf '%s' "${copy:-unread}"
@@ -115,9 +133,9 @@ sign_out_confirm_copy() {
 # (AXPress, then the focus-and-Space / click press) and wait up to timeout_s for
 # the Log In screen.
 # Mode "synced" (the default) is for callers that settled first and expect
-# nothing pending: when the dialog warns of a loss (the unsynced or unknown copy,
-# or a "Sign out anyway" button) it answers Cancel instead and fails, so the
-# harness never accepts data loss by accident. Mode "any" confirms whatever the
+# nothing pending: unless the dialog reads as the synced copy (it warns of a
+# loss, or its copy could not be read) it answers Cancel instead and fails, so
+# the harness never accepts data loss by accident. Mode "any" confirms whatever the
 # dialog says; only pass it when losing unsynced changes is acceptable.
 confirm_sign_out() {
   local timeout=${1:-45} mode=${2:-synced} attempt el
@@ -131,8 +149,8 @@ confirm_sign_out() {
   if [ "$SIGN_OUT_COPY" = unread ] && jq -e '.title == "Sign out anyway" or .desc == "Sign out anyway"' <<< "$el" > /dev/null 2>&1; then
     SIGN_OUT_COPY=unsynced
   fi
-  if [ "$mode" != any ] && { [ "$SIGN_OUT_COPY" = unsynced ] || [ "$SIGN_OUT_COPY" = unknown ]; }; then
-    log "   the sign-out confirmation reads '$SIGN_OUT_COPY' (unsynced changes would be lost): not confirming"
+  if [ "$mode" != any ] && [ "$SIGN_OUT_COPY" != synced ]; then
+    log "   the sign-out confirmation reads '$SIGN_OUT_COPY', not the synced copy (unsynced changes could be lost): not confirming"
     cancel_sign_out || log "   could not press Cancel on the sign-out confirmation"
     return 1
   fi

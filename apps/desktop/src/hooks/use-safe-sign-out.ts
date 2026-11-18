@@ -3,7 +3,7 @@ import { Alert } from "react-native";
 import { SIGN_OUT_CONFIRM_TITLE, describeSignOut, withTimeout } from "@drafto/shared";
 
 import { countUnsyncedChanges } from "@/lib/data/unsynced-changes";
-import { flushPendingSaves } from "@/lib/pending-saves";
+import { countSavesWritten, flushPendingSaves, forgetFailedSaves } from "@/lib/pending-saves";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 
@@ -31,11 +31,17 @@ function confirmSignOut(pending: number | null): Promise<boolean> {
  * Whether the sign-out may skip the provider's last flush. Only when nothing is pending beyond
  * what the confirmation told the user: the dialog can stay open for any length of time, so the
  * count is taken again once the user has confirmed. A change made meanwhile, or a count that can
- * no longer be read, gets the provider's (bounded) flush instead of being wiped silently. A count
- * that failed before the dialog counts as 0 shown, so a recount of 0 still skips the flush.
+ * no longer be read, gets the provider's (bounded) flush instead of being wiped silently. So does
+ * an editor save written since the count (`savedSinceCount`): it can change a note that was
+ * already counted as unsynced, which leaves the count as it was. A count that failed before the
+ * dialog counts as 0 shown, so a recount of 0 still skips the flush.
  */
-function canSkipFinalSync(shown: number | null, now: number | null): boolean {
-  return now !== null && now <= (shown ?? 0);
+function canSkipFinalSync(
+  shown: number | null,
+  now: number | null,
+  savedSinceCount: boolean,
+): boolean {
+  return !savedSinceCount && now !== null && now <= (shown ?? 0);
 }
 
 export interface SafeSignOut {
@@ -48,7 +54,9 @@ export interface SafeSignOut {
  * the local database, so it first writes any debounced editor save, and when changes are
  * pending it lets one more sync run and counts again. Then it shows exactly one confirmation:
  * how many changes are still unsynced (offline, or the sync failed), that everything is
- * synced, or, when the count failed, that unsynced changes would be lost.
+ * synced, or, when the count failed or an editor save could not be written, that unsynced
+ * changes would be lost. An editor save that fails after a definite count was shown stops the
+ * sign-out instead, so the next attempt can warn about it.
  *
  * `isSigningOut` is true while the last sync runs and once the user has confirmed, never while
  * the confirmation is open. A confirmation never blocks a later sign-out either: if the native
@@ -87,26 +95,40 @@ export function useSafeSignOut(): SafeSignOut {
     try {
       // An edit still inside an editor's save debounce is not in the database yet, so it would
       // be neither counted nor synced. Write it first.
-      await flushPendingSaves();
+      const saved = await flushPendingSaves();
+      let writesAtCount = countSavesWritten();
       let pending = await countPending();
       if (pending !== null && pending > 0) {
         setIsSigningOut(true);
         // Bounded: a hung request must not hang sign-out.
         await withTimeout<unknown>(sync(), PRE_SIGN_OUT_SYNC_TIMEOUT_MS, null);
+        writesAtCount = countSavesWritten();
         pending = await countPending();
         setIsSigningOut(false);
       }
+      // An edit whose save failed is in no count: warn that changes would be lost rather than
+      // show a number (or "Everything is synced") that leaves it out.
+      const shown = saved ? pending : null;
 
       busyRef.current = false;
-      const confirmed = await confirmSignOut(pending);
+      const confirmed = await confirmSignOut(shown);
       // A newer attempt superseded this one: its own confirmation is the one that counts.
       if (!isCurrent() || !confirmed) return;
       busyRef.current = true;
       setIsSigningOut(true);
 
-      await flushPendingSaves();
+      const savedNow = await flushPendingSaves();
+      if (!savedNow && shown !== null) {
+        // An editor save failed after the dialog showed a count it is not part of: signing out
+        // would wipe that edit without the user having been told.
+        Alert.alert(
+          "Couldn't save your last edit",
+          "You're still signed in. Signing out now would lose that edit.",
+        );
+        return;
+      }
       const stillPending = await countPending();
-      if (canSkipFinalSync(pending, stillPending)) {
+      if (canSkipFinalSync(shown, stillPending, countSavesWritten() !== writesAtCount)) {
         // Nothing to push, or only the changes the user chose to drop after the last sync could
         // not push them: the provider's flush would only repeat that attempt.
         await signOut({ skipFinalSync: true });
@@ -115,6 +137,8 @@ export function useSafeSignOut(): SafeSignOut {
         // trap the user in the account, so sign out with the provider's own last flush.
         await signOut();
       }
+      // The database those failed saves were meant for is gone.
+      forgetFailedSaves();
     } catch (error) {
       console.error("Sign-out failed:", error);
       Alert.alert("Couldn't sign out", "Check your connection and try again.");

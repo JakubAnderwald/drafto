@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEBOUNCE_MS } from "@drafto/shared";
 
-import { registerPendingSave } from "@/lib/pending-saves";
+import { recordSaveFailed, recordSaveWritten, registerPendingSave } from "@/lib/pending-saves";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
@@ -22,6 +22,8 @@ export function useAutoSave<T>({ onSave, delayMs = DEBOUNCE_MS }: UseAutoSaveOpt
   const pendingValueRef = useRef<{ value: T } | null>(null);
   // The save that is writing right now, so a flush can wait for it too.
   const inFlightRef = useRef<Promise<void> | null>(null);
+  // This hook's identity in the pending-saves registry, which sign-out reads.
+  const ownerRef = useRef<object>({});
 
   useEffect(() => {
     onSaveRef.current = onSave;
@@ -31,8 +33,11 @@ export function useAutoSave<T>({ onSave, delayMs = DEBOUNCE_MS }: UseAutoSaveOpt
     setStatus("saving");
     try {
       const written = await onSaveRef.current(value);
+      if (written !== false) recordSaveWritten(ownerRef.current);
       setStatus(written === false ? "idle" : "saved");
     } catch {
+      // The edit is not in the database: sign-out must not count it as safe.
+      recordSaveFailed(ownerRef.current);
       setStatus("error");
     }
   }, []);
