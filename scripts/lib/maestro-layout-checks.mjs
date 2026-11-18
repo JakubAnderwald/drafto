@@ -85,7 +85,14 @@ export function flattenHierarchy(root) {
 
 function matches(value, pattern) {
   if (value === undefined || value === null || value === "") return false;
-  return pattern instanceof RegExp ? pattern.test(String(value)) : String(value) === pattern;
+  if (!(pattern instanceof RegExp)) return String(value) === pattern;
+  // A /g or /y RegExp's test() starts at lastIndex and moves it: test each
+  // value from 0, and leave the caller's lastIndex as it was.
+  const { lastIndex } = pattern;
+  pattern.lastIndex = 0;
+  const found = pattern.test(String(value));
+  pattern.lastIndex = lastIndex;
+  return found;
 }
 
 /**
@@ -147,7 +154,9 @@ export function verticalOverlap(a, b) {
  * The navigationBars inset frame from `dumpsys window`, e.g.
  * `InsetsSource id=… type=navigationBars frame=[0,2274][1080,2400] visible=true`.
  * The dump lists the source more than once (per display and per window);
- * prefer a visible one with an area. Null when there is none.
+ * prefer a visible one with an area. Null when there is none. A hidden frame
+ * (`visible=false`) is returned only when no visible one is listed, with
+ * `visible: false`: the checks don't measure against it.
  */
 export function parseNavigationBarFrame(dumpsys) {
   const re =
@@ -369,6 +378,9 @@ export function sampleLuminance(png, region, { cols = 8, rows = 3 } = {}) {
  * in; the screenshot may be scaled from it.
  */
 export function navBarSampleRegion(frame, png, screenWidth = frame.right) {
+  if (!Number.isFinite(screenWidth) || screenWidth <= 0) {
+    throw new Error(`screen width must be a positive number, not ${screenWidth}`);
+  }
   const scale = png.width / screenWidth;
   return {
     left: (frame.left + frame.width * 0.02) * scale,
@@ -411,6 +423,12 @@ export function fabAboveNavBar(hierarchy, dumpsys, { fabId = "add", tolerance = 
   if (fabs.length === 0) return unmeasured(check, `no element with id "${fabId}" on screen`, {});
   if (!navBar)
     return unmeasured(check, "dumpsys has no navigationBars frame", { fab: boundsOf(fabs) });
+  if (!navBar.visible) {
+    return unmeasured(check, "the nav bar is hidden (visible=false)", {
+      fab: boundsOf(fabs),
+      navBar,
+    });
+  }
   if (navBar.width < navBar.height) {
     return unmeasured(check, "the nav bar is at the side; run the check in portrait", {
       navBar,
@@ -548,22 +566,71 @@ export function bannerClearOfBack(
   );
 }
 
+/** The editor's E2E image status views (ADR-0086), one per image in the note. */
+export const IMAGE_PROBE_IDS = {
+  rendered: "editor-image-rendered",
+  missing: "editor-image-missing",
+};
+const IMAGE_PROBE_LABEL = /^Image (?:shown|not loaded): /;
+
 /**
- * M-02: the note's images rendered. A WebView exposes an <img> to the
- * accessibility tree under its alt text (the file name); a broken image is
- * drawn as a small icon plus that text, a loaded one at the photo's size.
- * Passes when at least one image matches and every match is at least
- * <minHeight> tall.
+ * M-02: the note's images rendered. <alt> picks the images by file name.
+ *
+ * An E2E probe build (ADR-0086) has a status view per image, testID
+ * `editor-image-rendered` or `editor-image-missing`, labelled "Image shown:
+ * <name>" or "Image not loaded: <name>". When any probe for <alt> is on
+ * screen, the probes alone decide: it passes when none says missing. Any
+ * other node with a matching label (the WebView's <img>, a caption or a link
+ * that names the file) is ignored then, so a short caption can't fail a
+ * loaded image.
+ *
+ * Without probes, it reads the WebView's own nodes: a WebView exposes an
+ * <img> to the accessibility tree under its alt text (the file name); a
+ * broken image is drawn as a small icon plus that text, a loaded one at the
+ * photo's size. It passes when at least one image matches and every match is
+ * at least <minHeight> tall.
  */
 export function imageRendered(
   hierarchy,
   { alt = /\.(jpe?g|png|gif|webp|heic)$/i, minHeight = 100 } = {},
 ) {
   const check = "image-rendered";
-  const images = findNodes(flattenHierarchy(hierarchy), { text: alt });
+  const nodes = flattenHierarchy(hierarchy);
+  const probes = findNodes(nodes, {
+    id: new RegExp(`^(?:${IMAGE_PROBE_IDS.rendered}|${IMAGE_PROBE_IDS.missing})$`),
+  }).filter((node) =>
+    matches(String(node.attributes.accessibilityText ?? "").replace(IMAGE_PROBE_LABEL, ""), alt),
+  );
+  if (probes.length) {
+    const missing = probes.filter(
+      (node) => node.attributes["resource-id"] === IMAGE_PROBE_IDS.missing,
+    );
+    const details = {
+      by: "probe",
+      images: probes.map((node) => ({
+        label: node.attributes.accessibilityText,
+        bounds: node.bounds,
+      })),
+    };
+    if (missing.length) {
+      return verdict(
+        check,
+        false,
+        `${missing.length} of ${probes.length} images did not load (${IMAGE_PROBE_IDS.missing})`,
+        details,
+      );
+    }
+    return verdict(
+      check,
+      true,
+      `${probes.length} image(s) rendered (${IMAGE_PROBE_IDS.rendered})`,
+      details,
+    );
+  }
+  const images = findNodes(nodes, { text: alt });
   if (!images.length) return unmeasured(check, `no image matching ${alt} on screen`, {});
   const short = images.filter((node) => node.bounds.height < minHeight);
-  const details = { images: boundsOf(images), minHeight };
+  const details = { by: "alt", images: boundsOf(images), minHeight };
   if (short.length) {
     return verdict(
       check,
@@ -584,22 +651,44 @@ export const NAV_BAR_THRESHOLDS = { darkMax: 0.25, lightMin: 0.6 };
  *     0.6 (light);
  *   - the focused Drafto window's appearance: no LIGHT_NAVIGATION_BARS flag
  *     (dark) or the flag set (light).
+ *
+ * The two come from different reads (<dumpsys>, then the screenshot), so a
+ * bar still repainting could pair one state's flags with another's pixels.
+ * Given <dumpsysAfter>, a second dump taken after the screenshot, it measures
+ * only when both dumps show the same nav-bar frame and the same Drafto
+ * window appearance: the screenshot was taken in that settled state.
  */
 export function navBarMatches(
   expect,
   png,
   dumpsys,
-  { pkg = "eu.drafto.mobile", screenWidth, thresholds = NAV_BAR_THRESHOLDS } = {},
+  { pkg = "eu.drafto.mobile", screenWidth, thresholds = NAV_BAR_THRESHOLDS, dumpsysAfter } = {},
 ) {
   if (expect !== "dark" && expect !== "light")
     throw new Error(`expect must be dark or light, not ${expect}`);
   const check = `nav-bar-${expect}`;
   const navBar = parseNavigationBarFrame(dumpsys);
   if (!navBar) return unmeasured(check, "dumpsys has no navigationBars frame", {});
+  if (!navBar.visible)
+    return unmeasured(check, "the nav bar is hidden (visible=false)", { navBar });
   const appearance = parseWindowAppearance(dumpsys, pkg);
   if (!appearance) return unmeasured(check, `no ${pkg} window in dumpsys`, { navBar });
   if (!appearance.focused) {
     return unmeasured(check, `${pkg} is not the focused window`, { navBar, appearance });
+  }
+  if (dumpsysAfter !== undefined) {
+    const navBarAfter = parseNavigationBarFrame(dumpsysAfter);
+    const appearanceAfter = parseWindowAppearance(dumpsysAfter, pkg);
+    if (
+      JSON.stringify(navBarAfter) !== JSON.stringify(navBar) ||
+      JSON.stringify(appearanceAfter) !== JSON.stringify(appearance)
+    ) {
+      return unmeasured(
+        check,
+        "the nav bar or the Drafto window's appearance changed while the screenshot was taken",
+        { navBar, navBarAfter, appearance, appearanceAfter },
+      );
+    }
   }
   const region = navBarSampleRegion(navBar, png, screenWidth ?? navBar.right);
   const luminance = sampleLuminance(png, region);
@@ -633,16 +722,18 @@ export function navBarMatches(
   );
 }
 
-/** Evidence for the run log: the nav bar's frame and the mode its height implies. */
+/**
+ * Evidence for the run log: the nav bar's frame and the mode its height
+ * implies. A mode it can't tell (no frame, no density, an odd height)
+ * measured nothing, so it is unmeasured, not a fail.
+ */
 export function navModeReport(dumpsys, densityText) {
   const navBar = parseNavigationBarFrame(dumpsys);
   const density = parseDensity(densityText);
   const mode = navigationMode(navBar, density);
-  return verdict("nav-mode", mode !== "unknown", `navigation mode: ${mode}`, {
-    navBar,
-    density,
-    mode,
-  });
+  const details = { navBar, density, mode };
+  if (mode === "unknown") return unmeasured("nav-mode", "navigation mode: unknown", details);
+  return verdict("nav-mode", true, `navigation mode: ${mode}`, details);
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +748,8 @@ Checks (each prints one JSON line; exit 0 pass, 1 fail, 2 bad input or nothing t
   banner-clear-of-back       --hierarchy <json> [--banner-id offline-banner] [--banner-text <regex>]
                              [--back-label <regex>] [--tolerance 2]
   image-rendered             --hierarchy <json> [--alt <regex>] [--min-height 100]
-  nav-bar-dark | nav-bar-light --screenshot <png> --dumpsys <txt> [--screen-width <px>]
+  nav-bar-dark | nav-bar-light --screenshot <png> --dumpsys <txt> [--dumpsys-after <txt>]
+                             [--screen-width <px>]
   nav-mode                   --dumpsys <txt> --density <wm density output file>
   bounds                     --hierarchy <json> (--id <regex> | --text <regex>)
 
@@ -733,7 +825,10 @@ export function runCli(argv, read = (file) => readFileSync(file)) {
           check === "nav-bar-dark" ? "dark" : "light",
           decodePng(read(requireFlag(flags, "screenshot"))),
           text("dumpsys"),
-          { screenWidth: numberFlag(flags, "screen-width", undefined) },
+          {
+            screenWidth: numberFlag(flags, "screen-width", undefined),
+            dumpsysAfter: flags["dumpsys-after"] ? text("dumpsys-after") : undefined,
+          },
         );
         break;
       case "nav-mode":
@@ -771,5 +866,7 @@ export function runCli(argv, read = (file) => readFileSync(file)) {
 if (isMainModule(import.meta.url)) {
   const { code, output } = runCli(process.argv.slice(2));
   (code === 2 && !output.startsWith("{") ? process.stderr : process.stdout).write(`${output}\n`);
-  process.exit(code);
+  // Not process.exit(): on macOS a write to a pipe is asynchronous, and exit
+  // would drop what hasn't been flushed yet.
+  process.exitCode = code;
 }

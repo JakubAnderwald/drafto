@@ -15,7 +15,7 @@ onFlowComplete:
 # Run on a release APK built against dev (docs/architecture/testing.md,
 # "Offline flows on Android"): a debug build loads its JavaScript from Metro
 # at 10.0.2.2:8081, which airplane mode cuts off.
-# Tests: offline banner, offline note creation, offline editing, data
+# Tests: offline banner, offline note creation, opening a note offline, data
 # persistence across an offline cold start, sync on reconnect.
 
 - launchApp

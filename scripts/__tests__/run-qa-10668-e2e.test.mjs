@@ -50,10 +50,13 @@ writeFileSync(
 // The "APK" is a text file of BUNDLE= and CONFIG= lines. The unzip stand-in
 // lists the bundle, prints assets/app.config, or prints the whole "APK". Like a
 // real multi-MB APK, it keeps writing after the part that matters, so a
-// `unzip -p | grep -q` reader that stops early kills it with SIGPIPE.
+// `unzip -p | grep -q` reader that stops early kills it with SIGPIPE. With
+// FAKE_UNZIP_FAIL set, extracting the whole "APK" writes its first bytes and
+// then fails, as a corrupt archive does (app.config still reads fine).
 stub(
   "unzip",
   `if [ "$1" = -l ]; then grep -q BUNDLE "$2"; exit; fi
+if [ -n "\${FAKE_UNZIP_FAIL:-}" ] && [ -z "$3" ]; then head -c 20 "$2"; exit 3; fi
 if [ "$3" = assets/app.config ]; then sed -n 's/^CONFIG=//p' "$2"; else cat "$2"; fi
 head -c 8000000 /dev/zero`,
 );
@@ -76,8 +79,10 @@ esac`,
 );
 // Maestro: logs its argv to MAESTRO_ARGV_LOG, reads stdin, prints
 // FAKE_HIERARCHY for \`hierarchy\`, logs the typed password (from the
-// MAESTRO_ env var a flow reads) to stdout and to a commands JSON under
-// --debug-output, as a real run does, and fails any flow named in FAIL_FLOWS.
+// MAESTRO_ env var a flow reads) to stdout and, JSON-escaped, to a commands
+// JSON under --debug-output, as a real run does. A flow named in FAIL_FLOWS
+// fails an assertion (a "… FAILED" command line); one in BROKEN_FLOWS exits
+// before running any command, as when the driver doesn't start.
 stub(
   "maestro",
   `printf '%s\\n' "$*" >> "\${MAESTRO_ARGV_LOG:-/dev/null}"
@@ -85,14 +90,16 @@ cat > /dev/null
 [ "$1" = --device ] && shift 2
 if [ "$1" = hierarchy ]; then [ -n "\${FAKE_HIERARCHY:-}" ] && cat "$FAKE_HIERARCHY"; exit 0; fi
 flow="\${@: -1}"
+case " \${BROKEN_FLOWS:-} " in *" $(basename "$flow") "*) echo "Unable to launch the driver"; exit 1 ;; esac
 debug="" prev=""
 for arg in "$@"; do [ "$prev" = --debug-output ] && debug="$arg"; prev="$arg"; done
 echo "Input text \${MAESTRO_E2E_TEST_PASSWORD:-}"
 if [ -n "$debug" ]; then
   mkdir -p "$debug"
-  printf '{"inputText":"%s"}\\n' "\${MAESTRO_E2E_TEST_PASSWORD:-}" > "$debug/commands-flow.json"
+  printf '%s' "\${MAESTRO_E2E_TEST_PASSWORD:-}" |
+    perl -ne 's/(["\\\\])/\\\\$1/g; print "{\\"inputText\\":\\"$_\\"}\\n"' > "$debug/commands-flow.json"
 fi
-case " \${FAIL_FLOWS:-} " in *" $(basename "$flow") "*) echo "Assertion failed"; exit 1 ;; esac
+case " \${FAIL_FLOWS:-} " in *" $(basename "$flow") "*) echo "Assert that id: probe is visible FAILED"; exit 1 ;; esac
 exit 0`,
 );
 stub(
@@ -260,6 +267,30 @@ describe("run-qa-10668-e2e.sh", () => {
     assert.ok(!result.stdout.includes(PASSWORD));
   });
 
+  it("scrubs a password with quotes and backslashes, JSON-escaped forms included", () => {
+    // Nothing stops the test account's password from holding a " or a \, and
+    // Maestro's commands JSON escapes both, so a scrub of the raw value alone
+    // would miss them there.
+    const quoted = 'Fa"ke\\Pass-4711';
+    const envFile = path.join(root, "quoted.env");
+    writeFileSync(
+      envFile,
+      `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:9\nE2E_TEST_EMAIL=e2e@example.com\nE2E_TEST_PASSWORD='${quoted}'\n`,
+    );
+    const result = run(["android"], { env: { QA_ENV_FILE: envFile } });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.ok(!result.logs.maestro.includes(quoted), "the password reached maestro's argv");
+    const commands = readdirSync(path.join(result.out, "maestro"), { recursive: true })
+      .filter((file) => String(file).endsWith("commands-flow.json"))
+      .map((file) => JSON.parse(readFileSync(path.join(result.out, "maestro", file), "utf8")));
+    assert.ok(commands.length > 0, "the debug output was kept");
+    for (const command of commands) assert.equal(command.inputText, "[redacted]");
+    const saved = savedText(result.out);
+    assert.ok(saved.includes("Input text [redacted]"));
+    assert.ok(!saved.includes(quoted));
+    assert.ok(!saved.includes(JSON.stringify(quoted).slice(1, -1)));
+  });
+
   it("fails the run when a flow fails, and --require-all fails a missing flow", () => {
     const failed = run(["android"], { env: { FAIL_FLOWS: "05-offline-mode.yaml" } });
     assert.equal(failed.status, 1);
@@ -291,6 +322,17 @@ describe("run-qa-10668-e2e.sh", () => {
     assert.equal(result.status, 2, result.stdout + result.stderr);
     assert.match(result.stderr, /contains the production ref/);
     assert.ok(!existsSync(path.join(result.out, "installed.apk.contents")));
+  });
+
+  it("refuses an APK it could only partly read, even with a dev app.config", () => {
+    // The whole-APK extraction writes a little and then fails, so the prod-ref
+    // scan saw only part of it: that must stop the run, not pass as "no prod".
+    const result = run(["android"], { env: { FAKE_UNZIP_FAIL: "1" } });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /could not read the installed APK \(unzip exit 3\)/);
+    assert.equal(result.logs.maestro, "", "maestro ran against an unchecked build");
+    assert.ok(!existsSync(path.join(result.out, "installed.apk.contents")));
+    assert.ok(!existsSync(path.join(result.out, "installed.apk")));
   });
 
   it("refuses an installed build whose app.config does not name the dev project", () => {
@@ -364,6 +406,35 @@ describe("run-qa-10668-e2e.sh", () => {
     assert.match(missing.summary, /\| fab-above-nav-bar \| NOT MEASURED \|.*does not exist/);
   });
 
+  it("in --before, a report flow is 'reproduced' only when one of its commands failed", () => {
+    const reproduced = run(["android", "--before", "--only", "09-password-visibility"], {
+      runner: FAKE_RUNNER,
+      env: { FAIL_FLOWS: "09-password-visibility.yaml" },
+    });
+    assert.equal(reproduced.status, 0, reproduced.stdout);
+    assert.match(reproduced.summary, /\| password-visibility \| reproduced \|/);
+
+    // Maestro exited before running a command (its driver didn't start): an
+    // error, which measured nothing.
+    const broken = run(["android", "--before", "--only", "09-password-visibility"], {
+      runner: FAKE_RUNNER,
+      env: { BROKEN_FLOWS: "09-password-visibility.yaml" },
+    });
+    assert.equal(broken.status, 1, broken.stdout);
+    assert.match(
+      broken.summary,
+      /\| password-visibility \| NOT MEASURED \| flow: error \(maestro exited 1 before any command/,
+    );
+
+    // After the fixes, it fails the run either way.
+    const after = run(["android", "--only", "09-password-visibility"], {
+      runner: FAKE_RUNNER,
+      env: { BROKEN_FLOWS: "09-password-visibility.yaml" },
+    });
+    assert.equal(after.status, 1);
+    assert.match(after.summary, /\| password-visibility \| FAILED \|/);
+  });
+
   it("in --before, an iOS offline check skipped without host-offline is skipped", () => {
     const result = run(["ios", "--before", "--only", "09-attach-image-offline"], {
       runner: FAKE_RUNNER,
@@ -393,6 +464,28 @@ describe("run-qa-10668-e2e.sh", () => {
       "-setnetworkserviceenabled Wi-Fi off\n-setnetworkserviceenabled Wi-Fi on\n",
     );
     assert.ok(!existsSync(path.join(result.out, "net", ".hdr-anon")));
+  });
+
+  it("brings the Mac back online when an offline leg's flow fails", () => {
+    const result = run(["ios", "--allow-host-offline", "--only", "09-attach-image-offline"], {
+      runner: FAKE_RUNNER,
+      env: {
+        FAKE_APP: fakeApp(),
+        FAKE_HIERARCHY: path.join(FIXTURES, "android-note-image-rendered.json"),
+        FAIL_FLOWS: "09-attach-image-offline.yaml",
+      },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.summary, /\| offline-image \| FAILED \|.*offline: fail/);
+    // Off, then on again by the leg itself, not left to the watchdog.
+    assert.equal(
+      result.logs.net,
+      "-setnetworkserviceenabled Wi-Fi off\n-setnetworkserviceenabled Wi-Fi on\n",
+    );
+    assert.match(
+      readFileSync(path.join(result.out, "results.tsv"), "utf8"),
+      /^offline-image\treconnect\t/m,
+    );
   });
 
   it("refuses an env file pointing at production, and bad arguments", () => {

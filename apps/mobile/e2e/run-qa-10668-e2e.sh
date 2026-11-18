@@ -23,8 +23,9 @@ set -euo pipefail
 #                         found it wrong. Exits non-zero if any of them passes,
 #                         because that check can't tell a fixed build from a
 #                         broken one, and if any could not measure (a check
-#                         error, the element missing, a missing flow): "NOT
-#                         MEASURED" proves nothing either way.
+#                         error, the element missing, a missing flow, a flow
+#                         Maestro exited on before any of its commands
+#                         failed): "NOT MEASURED" proves nothing either way.
 #   --allow-host-offline  iOS only: the simulator has no airplane mode, so the
 #                         offline legs take this whole Mac offline with
 #                         apps/desktop/e2e/in-test/lib/net.sh (sudo, kept alive
@@ -195,11 +196,15 @@ log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT/run.log"; }
 
 # Maestro logs each typed text, the password included (its --debug-output,
 # which run_flow points under $OUT, keeps the commands it ran): scrub it from
-# every file under $OUT that contains it, whatever its name. grep and perl
-# read the value from a pipe and the environment, never from argv.
+# every file under $OUT that contains it, whatever its name. The commands JSON
+# holds it JSON-escaped (a `"` as `\"`, a `\` as `\\`), so both forms go.
+# grep and perl read the value from a pipe and the environment, never argv.
 redact_out() {
-  { printf '%s\n' "$E2E_TEST_PASSWORD" | LC_ALL=C grep -r -l -F --null -f - "$OUT" 2> /dev/null || true; } |
-    xargs -0 -r perl -pi -e 's/\Q$ENV{E2E_TEST_PASSWORD}\E/[redacted]/g' 2> /dev/null || true
+  {
+    printf '%s\n' "$E2E_TEST_PASSWORD" | perl -ne 'chomp; print "$_\n"; s/(["\\])/\\$1/g; print "$_\n"' |
+      LC_ALL=C grep -r -l -F --null -f - "$OUT" 2> /dev/null || true
+  } |
+    xargs -0 -r perl -pi -e 'BEGIN { $p = $ENV{E2E_TEST_PASSWORD}; ($j = $p) =~ s/(["\\])/\\$1/g } s/\Q$j\E/[redacted]/g; s/\Q$p\E/[redacted]/g' 2> /dev/null || true
 }
 
 # record <step> <row> <pass|fail|error|skip> <expect-before: fail|any> <detail>
@@ -339,8 +344,11 @@ capture() {
   "$MAESTRO" --device "$DEVICE" hierarchy --no-reinstall-driver < /dev/null > "$OUT/$name.hierarchy.json" 2> "$OUT/$name.hierarchy.log" ||
     "$MAESTRO" --device "$DEVICE" hierarchy < /dev/null > "$OUT/$name.hierarchy.json" 2>> "$OUT/$name.hierarchy.log" || true
   if [ "$PLATFORM" = android ]; then
+    # A dump before and after the screenshot: the nav-bar checks measure only
+    # when both show the same state, so the pixels and the flags agree.
     adb_sh dumpsys window > "$OUT/$name.dumpsys.txt" 2>&1 || true
     "$ADB" -s "$DEVICE" exec-out screencap -p < /dev/null > "$OUT/$name.png" 2> /dev/null || true
+    adb_sh dumpsys window > "$OUT/$name.dumpsys-after.txt" 2>&1 || true
   else
     xcrun simctl io "$DEVICE" screenshot "$OUT/$name.png" < /dev/null > /dev/null 2>&1 || true
   fi
@@ -353,7 +361,10 @@ check() {
   shift 4
   local args=() status=0 output
   case "$kind" in
-    nav-bar-dark | nav-bar-light) args=(--screenshot "$OUT/$name.png" --dumpsys "$OUT/$name.dumpsys.txt") ;;
+    nav-bar-dark | nav-bar-light)
+      args=(--screenshot "$OUT/$name.png" --dumpsys "$OUT/$name.dumpsys.txt"
+        --dumpsys-after "$OUT/$name.dumpsys-after.txt")
+      ;;
     fab-above-nav-bar) args=(--hierarchy "$OUT/$name.hierarchy.json" --dumpsys "$OUT/$name.dumpsys.txt") ;;
     nav-mode) args=(--dumpsys "$OUT/$name.dumpsys.txt" --density "$OUT/$name.density.txt") ;;
     *) args=(--hierarchy "$OUT/$name.hierarchy.json") ;;
@@ -373,6 +384,16 @@ check() {
 
 flow_exists() { [ -f "$E2E_DIR/$1" ]; }
 
+# flow_command_failed <step>: whether Maestro ran the step's flow and one of
+# its commands failed, as its log says ("Assert that … FAILED", or a command
+# with "status": "FAILED" in the commands JSON). A Maestro that exits non-zero
+# without one never measured anything: its driver didn't start, the YAML
+# didn't parse, the device went away.
+flow_command_failed() {
+  LC_ALL=C grep -r -q -E '[[:space:]]FAILED[[:space:]]*$|"status"[[:space:]]*:[[:space:]]*"FAILED"' \
+    "$OUT/$1.maestro.log" "$OUT/maestro/$1" 2> /dev/null
+}
+
 # want <step> <flow>: whether to run a report step (exists, and matches --only).
 want() {
   local step="$1" flow="$2"
@@ -389,14 +410,20 @@ want() {
 }
 
 # flow_step <step> <flow> <expect-before> [maestro -e args...]: a flow judged by Maestro alone.
+# A failure counts as `fail` only when one of the flow's commands failed;
+# otherwise Maestro never got to the flow's checks, and it is an `error`
+# (under --before, NOT MEASURED rather than reproduced).
 flow_step() {
-  local step="$1" flow="$2" expect="$3"
+  local step="$1" flow="$2" expect="$3" status=0
   shift 3
   want "$step" "$flow" || return 0
-  if run_flow "$step" "$flow" "$@"; then
+  run_flow "$step" "$flow" "$@" || status=$?
+  if [ "$status" = 0 ]; then
     record "$step" flow pass "$expect" "$flow"
-  else
+  elif flow_command_failed "$step"; then
     record "$step" flow fail "$expect" "$flow failed (see $step.maestro.log)"
+  else
+    record "$step" flow error "$expect" "maestro exited $status before any command of $flow failed: a driver, parse or setup error (see $step.maestro.log)"
   fi
 }
 
@@ -667,10 +694,11 @@ const lines = [
   "| --- | --- | --- |",
 ];
 // A step's measurements are its expect-before `fail` rows. In --before, only
-// a measurement that ran and failed cleanly (exit 1) is a reproduction. An
-// error (a check's exit 2: bad input or the element missing; a flow that
-// doesn't exist under --require-all) measured nothing, so it proves nothing
-// either way and counts as bad. A step whose measurements were all skipped is
+// a measurement that ran and failed cleanly (exit 1, or a flow command that
+// failed) is a reproduction. An error (a check's exit 2: bad input or the
+// element missing; a flow that doesn't exist under --require-all; a flow
+// Maestro exited on before any command failed) measured nothing, so it
+// proves nothing either way and counts as bad. A step whose measurements were all skipped is
 // skipped, not "NOT reproduced".
 for (const [step, list] of steps) {
   const failed = list.some((r) => r.status === "fail" || r.status === "error");

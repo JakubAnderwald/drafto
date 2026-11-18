@@ -209,6 +209,19 @@ describe("findNodes / screenRect / verticalOverlap", () => {
     assert.equal(findNodes(nodes, { text: "offline" }).length, 0);
   });
 
+  it("tests a global RegExp from the start for every node, and leaves its lastIndex", () => {
+    const nodes = flattenHierarchy({
+      children: [
+        { attributes: { "resource-id": "add", bounds: "[0,0][10,10]" } },
+        { attributes: { "resource-id": "add", bounds: "[0,20][10,30]" } },
+      ],
+    });
+    const pattern = /add/g;
+    pattern.lastIndex = 1;
+    assert.equal(findNodes(nodes, { id: pattern }).length, 2);
+    assert.equal(pattern.lastIndex, 1);
+  });
+
   it("skips nodes with no area", () => {
     const flat = flattenHierarchy({
       attributes: { bounds: "[0,0][10,10]" },
@@ -389,6 +402,28 @@ describe("decodePng / luminance", () => {
     // An even-sized sample averages the two middle values.
     assert.ok(sampleLuminance(png, region, { cols: 2, rows: 1 }) < 0.02);
   });
+
+  it("takes the mean of the two middle values of an even sample", () => {
+    // A 4x1 image, black on the left half and white on the right: two
+    // samples, one of each, so either middle value alone would be 0 or 1.
+    const png = decodePng(
+      encodePng({
+        width: 4,
+        height: 1,
+        color: (x) => (x < 2 ? [0, 0, 0, 255] : [255, 255, 255, 255]),
+      }),
+    );
+    const region = { left: 0, right: 4, top: 0, bottom: 1 };
+    assert.equal(sampleLuminance(png, region, { cols: 2, rows: 1 }), 0.5);
+  });
+
+  it("rejects a screen width that isn't positive", () => {
+    const png = decodePng(screencap(DARK_SCRIM));
+    const navBar = parseNavigationBarFrame(text("dumpsys-window-3button-light.txt"));
+    for (const width of [0, -1080, Number.NaN]) {
+      assert.throws(() => navBarSampleRegion(navBar, png, width), /positive number/);
+    }
+  });
 });
 
 describe("fabAboveNavBar (M-01, Android)", () => {
@@ -419,6 +454,16 @@ describe("fabAboveNavBar (M-01, Android)", () => {
       fabAboveNavBar(tree("android-notebook-fab-no-inset.json"), gesture, { tolerance: 11 }).pass,
       true,
     );
+  });
+
+  it("measures nothing against a hidden nav bar", () => {
+    const hidden = threeButton.replace(
+      "type=navigationBars frame=[0,2274][1080,2400] visible=true",
+      "type=navigationBars frame=[0,2274][1080,2400] visible=false",
+    );
+    const result = fabAboveNavBar(tree("android-notebook-fab-no-inset.json"), hidden);
+    assert.equal(result.measured, false);
+    assert.match(result.reason, /hidden/);
   });
 
   it("measures nothing without a FAB, a nav bar, or in landscape", () => {
@@ -540,6 +585,47 @@ describe("imageRendered (M-02)", () => {
     assert.equal(imageRendered(tree("android-note-image-rendered.json")).pass, true);
   });
 
+  it("lets the E2E probe views decide when a build has them", () => {
+    // A loaded image's probe plus a short caption that names the same file:
+    // the caption alone would fail the alt-text reading.
+    const withProbes = (probeId, probeLabel) => ({
+      attributes: { bounds: "[0,0][1080,2400]" },
+      children: [
+        {
+          attributes: {
+            "resource-id": probeId,
+            accessibilityText: probeLabel,
+            bounds: "[0,400][5,1147]",
+          },
+        },
+        { attributes: { text: "attachment-photo.jpg", bounds: "[42,1160][600,1200]" } },
+      ],
+    });
+    const loaded = imageRendered(
+      withProbes("editor-image-rendered", "Image shown: attachment-photo.jpg"),
+    );
+    assert.equal(loaded.pass, true, loaded.reason);
+    assert.equal(loaded.details.by, "probe");
+    const missing = imageRendered(
+      withProbes("editor-image-missing", "Image not loaded: attachment-photo.jpg"),
+    );
+    assert.equal(missing.pass, false);
+    assert.match(missing.reason, /1 of 1 images did not load/);
+    // An anchored --alt matches the file name inside the probe's label.
+    assert.equal(
+      imageRendered(withProbes("editor-image-rendered", "Image shown: attachment-photo.jpg"), {
+        alt: /^attachment-photo\.jpg$/,
+      }).details.by,
+      "probe",
+    );
+    // A probe for another file doesn't count: the caption is read instead.
+    const other = imageRendered(withProbes("editor-image-rendered", "Image shown: other.png"), {
+      alt: /^attachment-photo\.jpg$/,
+    });
+    assert.equal(other.details.by, "alt");
+    assert.equal(other.pass, false);
+  });
+
   it("measures nothing when no image matches, and honours alt and min height", () => {
     assert.equal(imageRendered(tree("android-notebook-fab-no-inset.json")).measured, false);
     const otherAlt = imageRendered(tree("android-note-image-rendered.json"), {
@@ -599,8 +685,36 @@ describe("navBarMatches (M-04)", () => {
     assert.match(noWindow.reason, /no com\.example window/);
     const unfocused = navBarMatches("dark", darkShot, text("dumpsys-window-launcher-focused.txt"));
     assert.match(unfocused.reason, /not the focused/);
-    for (const result of [noBar, noWindow, unfocused]) assert.equal(result.measured, false);
+    const hidden = navBarMatches(
+      "dark",
+      darkShot,
+      text("dumpsys-window-3button-dark.txt").replace(
+        "type=navigationBars frame=[0,2274][1080,2400] visible=true",
+        "type=navigationBars frame=[0,2274][1080,2400] visible=false",
+      ),
+    );
+    assert.match(hidden.reason, /hidden/);
+    for (const result of [noBar, noWindow, unfocused, hidden]) {
+      assert.equal(result.measured, false);
+    }
     assert.throws(() => navBarMatches("dim", darkShot, ""), /dark or light/);
+  });
+
+  it("measures only when the dumps before and after the screenshot agree", () => {
+    const dark = text("dumpsys-window-3button-dark.txt");
+    const settled = navBarMatches("dark", darkShot, dark, { dumpsysAfter: dark });
+    assert.equal(settled.pass, true, settled.reason);
+    // The window's flags changed between the two dumps: the bar was repainting.
+    const repainting = navBarMatches("dark", darkShot, dark, {
+      dumpsysAfter: text("dumpsys-window-3button-app-dark-light-bar.txt"),
+    });
+    assert.equal(repainting.measured, false);
+    assert.match(repainting.reason, /changed while the screenshot was taken/);
+    // So did the frame (3-button to gesture).
+    const resized = navBarMatches("dark", darkShot, dark, {
+      dumpsysAfter: text("dumpsys-window-gesture.txt"),
+    });
+    assert.equal(resized.measured, false);
   });
 
   it("scales the frame to a screenshot of another size", () => {
@@ -629,7 +743,20 @@ describe("navModeReport", () => {
     );
     assert.equal(report.pass, true);
     assert.equal(report.details.mode, "three-button");
-    assert.equal(navModeReport("", "").pass, false);
+  });
+
+  it("measures nothing when it can't tell the mode", () => {
+    const unknown = navModeReport("", "");
+    assert.equal(unknown.pass, false);
+    assert.equal(unknown.measured, false);
+    assert.equal(unknown.details.mode, "unknown");
+    // A 36dp bar is neither a 3-button bar nor a gesture handle.
+    const odd = navModeReport(
+      "InsetsSource id=1 type=navigationBars frame=[0,2306][1080,2400] visible=true",
+      "Physical density: 420",
+    );
+    assert.equal(odd.measured, false);
+    assert.equal(odd.details.navBar.height, 94);
   });
 });
 
@@ -764,6 +891,18 @@ describe("runCli", () => {
         ["nav-mode", "--dumpsys", "dumpsys-window-gesture.txt", "--density", "wm-density-420.txt"],
         0,
       ],
+      [
+        [
+          "nav-bar-dark",
+          "--screenshot",
+          "dark.png",
+          "--dumpsys",
+          "dumpsys-window-3button-dark.txt",
+          "--dumpsys-after",
+          "dumpsys-window-3button-dark.txt",
+        ],
+        0,
+      ],
       [["bounds", "--hierarchy", "android-notebook-fab-no-inset.json", "--id", "add"], 0],
       [
         ["bounds", "--hierarchy", "android-notebook-fab-no-inset.json", "--text", "Nothing here"],
@@ -797,6 +936,17 @@ describe("runCli", () => {
         "--dumpsys",
         "dumpsys-window-launcher-focused.txt",
       ],
+      [
+        "nav-bar-dark",
+        "--screenshot",
+        "dark.png",
+        "--dumpsys",
+        "dumpsys-window-3button-dark.txt",
+        "--dumpsys-after",
+        "dumpsys-window-3button-app-dark-light-bar.txt",
+      ],
+      // Unmeasured (exit 2), not a measured fail (exit 1): no frame, no density.
+      ["nav-mode", "--dumpsys", "wm-density-420.txt", "--density", "wm-density-420.txt"],
     ];
     for (const argv of cases) {
       const result = runCli(argv, read);
@@ -823,6 +973,21 @@ describe("runCli", () => {
       runCli(["bounds", "--hierarchy", "android-note-image-broken.json"], read).output,
       /--id or --text/,
     );
+    files.set("dark.png", screencap(DARK_SCRIM));
+    const zeroWidth = runCli(
+      [
+        "nav-bar-dark",
+        "--screenshot",
+        "dark.png",
+        "--dumpsys",
+        "dumpsys-window-3button-dark.txt",
+        "--screen-width",
+        "0",
+      ],
+      read,
+    );
+    assert.equal(zeroWidth.code, 2);
+    assert.match(JSON.parse(zeroWidth.output).reason, /positive number/);
     files.set("garbage.json", Buffer.from("not json"));
     assert.equal(runCli(["image-rendered", "--hierarchy", "garbage.json"], read).code, 2);
   });

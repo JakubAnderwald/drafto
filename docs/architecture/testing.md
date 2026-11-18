@@ -124,18 +124,25 @@ export _JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'
 (cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a)
 APK=android/app/build/outputs/apk/release/app-release.apk
 
-# Guard: the APK must name the dev project and never the production one.
-# The Supabase URL is not in the Hermes bundle: expo-constants ships it in
-# assets/app.config, so check that file for dev and the whole APK for prod.
-if unzip -p "$APK" assets/app.config | LC_ALL=C grep -a -q huhzactreblzcogqkbsd \
-  && ! unzip -p "$APK" | LC_ALL=C grep -a -q tbmjbxxseonkciqovnpl; then
+# Guard: the APK must name the dev project and never the production one, and
+# it installs only when both hold. The Supabase URL is not in the Hermes
+# bundle: expo-constants ships it in assets/app.config, so check that file for
+# dev and the whole APK for prod. Extract to files first, as the QA runner
+# does: in `unzip -p | grep -q` grep stops at the first match, and under
+# pipefail unzip's SIGPIPE turns that match into "no match". unzip exits 1 on
+# a mere warning; anything above that is a failed read, which stops here too.
+CONTENTS="$(mktemp)" && CONFIG="$(mktemp)"
+if { unzip -p "$APK" > "$CONTENTS"; [ $? -le 1 ]; } \
+  && { unzip -p "$APK" assets/app.config > "$CONFIG"; [ $? -le 1 ]; } \
+  && LC_ALL=C grep -a -q -F huhzactreblzcogqkbsd "$CONFIG" \
+  && ! LC_ALL=C grep -a -q -F tbmjbxxseonkciqovnpl "$CONTENTS"; then
   echo "dev APK: OK"
+  adb -s emulator-5554 uninstall eu.drafto.mobile  # a release-signed APK can't replace a debug one
+  adb -s emulator-5554 install "$APK"
 else
-  echo "STOP: this APK is not dev-only; don't install it"
+  echo "STOP: this APK is not dev-only, or couldn't be read; not installing it"
 fi
-
-adb -s emulator-5554 uninstall eu.drafto.mobile  # a release-signed APK can't replace a debug one
-adb -s emulator-5554 install "$APK"
+rm -f "$CONTENTS" "$CONFIG"
 ```
 
 - Gradle needs JDK 17–24, as for a debug build ([Mobile debug builds](#mobile-debug-builds)); Homebrew's `openjdk@17` works too.
@@ -148,17 +155,18 @@ adb -s emulator-5554 install "$APK"
 
 `apps/mobile/e2e/run-qa-10668-e2e.sh [android|ios] [--before] [--allow-host-offline]` runs the PrimeTestLab report 10668 flows (tagged `qa-10668`) and, after each layout flow, a host-side check from `scripts/lib/maestro-layout-checks.mjs`. Maestro can't judge these bugs itself: its `below:` / `above:` selectors compare only the top edges of two elements, and `tapOn` succeeds on a half-covered button, so a covered FAB or Back arrow passes a Maestro assertion before the fix. The checks read what the device reports instead:
 
-| Check                                      | Reads                                            | Passes when                                                                                                                                     |
-| ------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fab-above-nav-bar` (Android)              | `maestro hierarchy` + `adb shell dumpsys window` | every `add` FAB's bottom is at or above the `navigationBars` frame's top                                                                        |
-| `fab-above-home-indicator` (iOS)           | `maestro hierarchy`                              | every `add` FAB's bottom is at or above the screen height − 34 pt                                                                               |
-| `banner-clear-of-back`                     | `maestro hierarchy`                              | the offline banner (`offline-banner`, or the text "You are offline") doesn't overlap the back button and starts at or below the header's bottom |
-| `image-rendered`                           | `maestro hierarchy`                              | every image labelled with a file name is at least 100 px tall (a broken one is an icon plus its alt text)                                       |
-| `nav-bar-dark` / `nav-bar-light` (Android) | a screencap PNG + `dumpsys window`               | the nav bar's luminance is under 0.25 / over 0.6, and the focused Drafto window's `apr=` flags lack / have `LIGHT_NAVIGATION_BARS`              |
+| Check                                      | Reads                                            | Passes when                                                                                                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fab-above-nav-bar` (Android)              | `maestro hierarchy` + `adb shell dumpsys window` | every `add` FAB's bottom is at or above the `navigationBars` frame's top                                                                                                                        |
+| `fab-above-home-indicator` (iOS)           | `maestro hierarchy`                              | every `add` FAB's bottom is at or above the screen height − 34 pt                                                                                                                               |
+| `banner-clear-of-back`                     | `maestro hierarchy`                              | the offline banner (`offline-banner`, or the text "You are offline") doesn't overlap the back button and starts at or below the header's bottom                                                 |
+| `image-rendered`                           | `maestro hierarchy`                              | in an E2E probe build, no `editor-image-missing` status view for the image; otherwise every image labelled with a file name is at least 100 px tall (a broken one is an icon plus its alt text) |
+| `nav-bar-dark` / `nav-bar-light` (Android) | a screencap PNG + `dumpsys window`               | the nav bar's luminance is under 0.25 / over 0.6, and the focused Drafto window's `apr=` flags lack / have `LIGHT_NAVIGATION_BARS`                                                              |
 
 - The runner switches the emulator to 3-button navigation (`cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.threebutton`) and a light system theme (`cmd uimode night no`), the report's device, and restores both on exit (`--keep-device-state` leaves them).
-- `--before` runs against a build without the fixes and lists a report check as "reproduced" only when it measured the element and found it wrong (the check exits 1). It exits non-zero if one passes, because that check can't tell a fixed build from a broken one, and if one is "NOT MEASURED": a check error, the element or a precondition missing (no FAB on screen, Drafto not focused: the checks exit 2 for these, never 1), or a missing flow under `--require-all`. A check that didn't run (an iOS offline leg without `--allow-host-offline`) is listed as skipped.
-- Screenshots, hierarchy dumps, logs and `summary.md` go to `--out` (default under `$TMPDIR`). The screenshots show note content, so don't commit them. The runner hands Maestro the test password as `MAESTRO_E2E_TEST_PASSWORD` in the environment, not as a `-e` argument that `ps` would show (`01-login.yaml` reads either), points Maestro's `--debug-output` (its commands JSON and log, typed text included) under `--out` instead of `~/.maestro/tests`, and scrubs the password from every file under `--out`.
+- The runner takes `dumpsys window` both before and after the screenshot. The nav-bar checks measure only when both dumps show the same nav-bar frame and Drafto window flags, so the pixels and the flags come from one settled state. A hidden nav bar (`visible=false`) isn't measured either.
+- `--before` runs against a build without the fixes and lists a report check as "reproduced" only when it measured the element and found it wrong (the check exits 1). It exits non-zero if one passes, because that check can't tell a fixed build from a broken one, and if one is "NOT MEASURED": a check error, the element or a precondition missing (no FAB on screen, Drafto not focused: the checks exit 2 for these, never 1), a missing flow under `--require-all`, or a report flow that Maestro exited on before any of its commands failed (its driver didn't start, or the YAML didn't parse: the runner looks for a `FAILED` command in Maestro's log). A check that didn't run (an iOS offline leg without `--allow-host-offline`) is listed as skipped.
+- Screenshots, hierarchy dumps, logs and `summary.md` go to `--out` (default under `$TMPDIR`). The screenshots show note content, so don't commit them. The runner hands Maestro the test password as `MAESTRO_E2E_TEST_PASSWORD` in the environment, not as a `-e` argument that `ps` would show (`01-login.yaml` reads either), points Maestro's `--debug-output` (its commands JSON and log, typed text included) under `--out` instead of `~/.maestro/tests`, and scrubs the password from every file under `--out`, in its raw and JSON-escaped forms.
 - The checks are plain functions with a small CLI (`node scripts/lib/maestro-layout-checks.mjs <check> --hierarchy … --dumpsys … --screenshot …`), unit-tested with recorded fixtures in `scripts/__tests__/maestro-layout-checks.test.mjs`. Use its `bounds --hierarchy <file> --id <regex>` command to look at an element's bounds while writing a flow.
 
 ### Desktop E2E
