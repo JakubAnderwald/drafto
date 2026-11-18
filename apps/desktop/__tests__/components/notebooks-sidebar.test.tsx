@@ -326,8 +326,9 @@ describe("NotebooksSidebar — app menu and delete account", () => {
     }>;
     expect(buttons.map((b) => b.text)).toEqual(["Cancel", "Sign out"]);
     expect(buttons[1].style).toBe("destructive");
-    // The sidebar shows progress while the dialog is open.
-    expect(utils.getByTestId("sign-out-progress")).toBeTruthy();
+    // Nothing reads "Signing out…" while the user is still being asked.
+    expect(utils.queryByTestId("sign-out-progress")).toBeNull();
+    expect(utils.getByText("user@example.com")).toBeTruthy();
 
     await act(async () => {
       buttons[0].onPress?.();

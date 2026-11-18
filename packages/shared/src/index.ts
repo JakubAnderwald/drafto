@@ -160,3 +160,5 @@ export {
   fontSizes,
 } from "./design-tokens";
 export type { SemanticColors } from "./design-tokens";
+export { describeSignOut, describeUnsyncedLoss } from "./account/sign-out-copy";
+export type { SignOutCopy } from "./account/sign-out-copy";

@@ -178,8 +178,9 @@ describe("SettingsScreen", () => {
       await waitFor(() => {
         expect(alert).toHaveBeenCalledTimes(1);
       });
-      // Deletion stays unavailable while the confirmation is open.
-      expect(getByTestId("delete-account-row")).toBeDisabled();
+      // Nothing reads as signing out while the user is still being asked.
+      expect(getByLabelText("Sign out")).toBeEnabled();
+      expect(getByTestId("delete-account-row")).toBeEnabled();
 
       await act(async () => {
         alertButtons(alert)[0].onPress?.();
