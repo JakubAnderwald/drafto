@@ -54,12 +54,28 @@ if has_element "Email" && has_element "Password" && has_element "Log in"; then
   click_element_by_desc "Password"
   cliclick kd:cmd t:a ku:cmd kp:delete
   wait_for_ui
+  # The keystrokes clear the field only if the click focused it. Confirm it holds focus and
+  # is empty (retrying the click and clear once) before anything reveals it.
+  PASSWORD_CLEARED=false
+  for attempt in 1 2; do
+    if [ "$(text_field_state "Password")" = "true,0" ]; then
+      PASSWORD_CLEARED=true
+      break
+    fi
+    if [ "$attempt" = 1 ]; then
+      click_element_by_desc "Password" || true
+      cliclick kd:cmd t:a ku:cmd kp:delete
+      wait_for_ui
+    fi
+  done
   # An aborted earlier run can also leave the field revealed: hide it before the test starts.
   if has_element "Hide password"; then
     click_element_by_desc "Hide password" || true
     wait_for_ui
   fi
-  if has_element "Show password"; then
+  if [ "$PASSWORD_CLEARED" = false ]; then
+    fail "Password toggle" "Password field not confirmed focused and empty ($(text_field_state "Password")) — not revealing it"
+  elif has_element "Show password"; then
     pass "Password field offers 'Show password'"
     if click_element_by_desc "Show password" && wait_for_ui && has_element "Hide password"; then
       pass "Toggle switches to 'Hide password'"
