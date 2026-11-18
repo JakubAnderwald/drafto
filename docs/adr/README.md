@@ -117,3 +117,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0083](./0083-planner-size-estimate-and-oversize-label.md)                     | Planner Size Estimate and Oversize Label                                        | Accepted           | 2026-11-16 |
 | [0084](./0084-factory-implement-deadline-and-resume.md)                        | Factory Implement Deadline and Session Resume                                   | Accepted           | 2026-11-16 |
 | [0085](./0085-detached-implement-runs.md)                                      | Detached Implement Runs                                                         | Accepted           | 2026-11-17 |
+| [0086](./0086-offline-attachment-cache.md)                                     | Offline Attachment Cache on Mobile and Desktop                                  | Accepted           | 2026-11-18 |

@@ -1,6 +1,6 @@
 # Offline Sync
 
-**Status:** shipped **Updated:** 2026-10-12
+**Status:** shipped **Updated:** 2026-11-18
 
 ## What it is
 
@@ -24,6 +24,28 @@ is still unpushed. Mobile uploads queued attachments before pushing metadata;
 desktop uploads them after, and makes one more pass after an upload so the
 attachment's new status is pushed too.
 
+### Offline attachment cache
+
+Attachments show offline ([ADR-0086](../adr/0086-offline-attachment-cache.md)).
+Each app keeps a copy of attachment files under
+`<Documents>/attachment-cache/<storage path>`:
+
+- A picked file is copied straight there; it is uploaded from there and kept
+  after the upload. The row's `local_uri` still goes to `null` once uploaded;
+  the cache is keyed by `file_path`, so the schema is unchanged.
+- After each successful sync pass, `prefetchAttachmentImages` downloads up to
+  25 uncached images (100 MB) of notes not in the trash, newest first, on any
+  network; images over 20 MB wait until they are viewed. Opening a note also
+  caches an image it had to fetch.
+- Over its cap (300 MB mobile, 1 GB desktop) the cache evicts least recently
+  used files first, never a file whose row is `pending`, `failed` or
+  `quota_exceeded`.
+- `deleteAllLocalAttachments` (sign-out and the identity guard) wipes it.
+
+The editor shows a cached image through a `file://…#drafto-attachment=<path>`
+src; see [editor.md](./editor.md). Opening a non-image attachment still needs
+the network.
+
 ## Code paths
 
 | Concern                              | Path                                                                                                           |
@@ -35,6 +57,8 @@ attachment's new status is pushed too.
 | Mobile sync driver (pull / push)     | `apps/mobile/src/db/sync.ts`                                                                                   |
 | Mobile sync orchestration + triggers | `apps/mobile/src/providers/database-provider.tsx`                                                              |
 | Mobile attachment upload queue       | `apps/mobile/src/lib/data/attachment-queue.ts`                                                                 |
+| Attachment cache (mirrored)          | `apps/{mobile,desktop}/src/lib/data/attachment-{cache,resolver,prefetch}.ts`                                   |
+| Attachment cache policy (shared)     | `packages/shared/src/storage/attachment-cache-policy.ts`                                                       |
 | Desktop schema (must match mobile)   | `apps/desktop/src/db/schema.ts`                                                                                |
 | Desktop migrations                   | `apps/desktop/src/db/migrations.ts`                                                                            |
 | Desktop WatermelonDB instance        | `apps/desktop/src/db/index.ts`                                                                                 |
@@ -55,6 +79,7 @@ attachment's new status is pushed too.
 - [0010 — Offline Sync Strategy with WatermelonDB](../adr/0010-offline-sync-strategy.md)
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [0048 — Local Writes Trigger a Debounced Sync](../adr/0048-local-writes-trigger-debounced-sync.md)
+- [0086 — Offline Attachment Cache on Mobile and Desktop](../adr/0086-offline-attachment-cache.md)
 
 ## Cross-platform notes
 
