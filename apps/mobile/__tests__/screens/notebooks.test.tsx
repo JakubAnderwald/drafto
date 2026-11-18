@@ -1,9 +1,14 @@
 import React from "react";
-import { Alert, FlatList } from "react-native";
+import { Alert, FlatList, StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Q } from "@nozbe/watermelondb";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import NotebooksScreen from "../../app/(tabs)/index";
+import { FAB_MARGIN, FAB_SIZE } from "@/components/ui/fab";
+import { spacing } from "@/theme/tokens";
+
+const mockedInsets = jest.mocked(useSafeAreaInsets);
 
 const mockPush = jest.fn();
 jest.mock("expo-router", () => ({
@@ -79,6 +84,35 @@ describe("NotebooksScreen", () => {
     mockLoading = false;
     mockIsSyncing = false;
     mockSync.mockResolvedValue(undefined);
+    mockedInsets.mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
+  });
+
+  describe("bottom tab bar (PrimeTestLab 10668 M-01)", () => {
+    // The tab bar already takes the system inset, so adding it again here
+    // would float the button a nav-bar's height above the tab bar.
+    beforeEach(() => {
+      mockedInsets.mockReturnValue({ top: 24, bottom: 48, left: 0, right: 0 });
+      mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+    });
+
+    it("does not add the system inset under the tab bar", () => {
+      const { getByTestId } = render(<NotebooksScreen />);
+
+      expect(StyleSheet.flatten(getByTestId("add").props.style).bottom).toBe(spacing.xl);
+    });
+
+    it("labels the add button for screen readers", () => {
+      const { getByRole } = render(<NotebooksScreen />);
+
+      expect(getByRole("button", { name: "New notebook" })).toBeTruthy();
+    });
+
+    it("pads the list so the last notebook clears the add button only", () => {
+      const { UNSAFE_getByType } = render(<NotebooksScreen />);
+
+      const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
+      expect(content.paddingBottom).toBe(FAB_SIZE + FAB_MARGIN * 2);
+    });
   });
 
   it("does not show the refresh spinner for a background sync", () => {

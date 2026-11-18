@@ -24,6 +24,7 @@ import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Fab, useFabListPadding } from "@/components/ui/fab";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Notebook, Note, Attachment } from "@/db";
@@ -38,6 +39,13 @@ export default function NotebooksScreen() {
   const { semantic } = useTheme();
   const haptics = useHaptics();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // The tab bar below this screen already takes the system bottom inset, so
+  // the FAB and list only need to clear each other here.
+  const listPadding = useFabListPadding(false);
+  const listContentStyle = useMemo(
+    () => [styles.list, { paddingBottom: listPadding }],
+    [styles.list, listPadding],
+  );
 
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -286,7 +294,7 @@ export default function NotebooksScreen() {
           data={notebooks}
           keyExtractor={(item) => item.id}
           renderItem={renderNotebook}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={listContentStyle}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -299,16 +307,14 @@ export default function NotebooksScreen() {
       )}
 
       {!creating && (
-        <Pressable
+        <Fab
           testID="add"
-          style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+          accessibilityLabel="New notebook"
           onPress={() => {
             haptics.light();
             setCreating(true);
           }}
-        >
-          <Ionicons name="add" size={28} color={semantic.onPrimary} />
-        </Pressable>
+        />
       )}
     </View>
   );
@@ -371,24 +377,5 @@ const createStyles = (semantic: SemanticColors) =>
     editInput: {
       flex: 1,
       marginRight: spacing.sm,
-    },
-    fab: {
-      position: "absolute",
-      right: spacing.xl,
-      bottom: spacing.xl,
-      width: 56,
-      height: 56,
-      borderRadius: radii.full,
-      backgroundColor: colors.primary[600],
-      alignItems: "center",
-      justifyContent: "center",
-      elevation: 4,
-      shadowColor: colors.black,
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.25,
-      shadowRadius: 4,
-    },
-    fabPressed: {
-      backgroundColor: colors.primary[700],
     },
   });

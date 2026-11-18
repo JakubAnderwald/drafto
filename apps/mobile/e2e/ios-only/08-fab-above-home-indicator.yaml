@@ -1,0 +1,97 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+---
+# iOS 08: the "+" button inside a notebook sits above the home indicator
+# (PrimeTestLab report 10668, M-01, iOS side).
+#
+# On 1.4.7 the notebook screen put the FAB 20pt from the bottom of the screen,
+# so its lower 14pt sat inside the 34pt home-indicator area. The Notebooks tab
+# is fine because its tab bar takes that inset.
+#
+# This flow only sets the scene and takes screenshots: tapOn and assertVisible
+# pass on 1.4.7 too. The pass/fail check is the host check `fabAboveNavBar` in
+# scripts/lib/maestro-layout-checks.mjs, which
+# apps/mobile/e2e/run-qa-10668-e2e.sh ios runs after this flow. On iOS it reads
+# the frame of id "add" from `maestro hierarchy` and fails when the FAB's
+# bottom edge is inside the bottom safe-area inset (screen height - 34pt on a
+# Face ID iPhone). So the flow ENDS on the notebook screen.
+#
+# Run it on an iPhone simulator with a home indicator (e.g. iPhone 16, iOS 27):
+#   maestro test apps/mobile/e2e/ios-only/08-fab-above-home-indicator.yaml --platform ios -e RUN_ID=$(date +%s)
+#
+# Logs in when the app shows Log In, otherwise reuses the session.
+# Required env: -e RUN_ID=$(date +%s)
+# For the login: -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+# Leaves "NB <RUN_ID>" with "Note <RUN_ID>"; the E2E stale purge removes them.
+
+- launchApp
+
+- runFlow:
+    when:
+      visible: "Log In"
+    commands:
+      - tapOn: "you@example.com"
+      - inputText: ${E2E_TEST_EMAIL}
+      - tapOn: "Sign in to your Drafto account"
+      - tapOn: "Your password"
+      - inputText: ${E2E_TEST_PASSWORD}
+      - tapOn: "Sign in to your Drafto account"
+      - tapOn:
+          id: "login-button"
+
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 60000
+- waitForAnimationToEnd
+
+# Notebooks tab: the FAB clears the tab bar and must not be lifted by the
+# home-indicator inset a second time.
+- assertVisible:
+    id: "add"
+- takeScreenshot: qa-10668-m01-ios-notebooks-tab
+
+# A notebook with a note in it (the report's precondition). iOS merges a row's
+# icon and text into one accessibility label, hence the ".*" prefixes.
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "NB ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*NB ${RUN_ID}"
+    timeout: 10000
+- tapOn: ".*NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible:
+      id: "notes-list-screen"
+    timeout: 10000
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "Note ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Note ${RUN_ID}.*"
+    timeout: 10000
+# The create bar's input unmounts on submit, which closes the keyboard.
+- waitForAnimationToEnd
+
+# The FAB on the notebook screen. The host check measures it from here.
+- assertVisible:
+    id: "add"
+- takeScreenshot: qa-10668-m01-ios-notebook-screen
+
+# It still opens the create bar, then the flow returns to the same state.
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- tapOn:
+    id: "close"
+- assertVisible:
+    id: "add"
+- assertVisible:
+    id: "notes-list-screen"
