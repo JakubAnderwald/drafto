@@ -21,7 +21,10 @@
 // what apps/mobile/e2e/run-qa-10668-e2e.sh calls once a flow has left the app
 // on the screen to check. Each check prints one JSON line,
 // `{check, pass, reason, details}`, and exits 0 (pass), 1 (fail) or 2 (bad
-// input).
+// input, or nothing to measure). A check whose element or precondition is
+// missing (no FAB on screen, no nav bar frame, Drafto not focused) returns
+// `measured: false` and exits 2, never 1: only a measured element may fail,
+// so a `--before` run can't count a wrong screen as a reproduced bug.
 
 import { readFileSync } from "node:fs";
 import { inflateSync } from "node:zlib";
@@ -383,6 +386,14 @@ function verdict(check, pass, reason, details) {
   return { check, pass, reason, details };
 }
 
+/**
+ * The element a check must measure is absent, or a precondition for
+ * measuring it fails. Not a fail: the CLI exits 2 for it.
+ */
+function unmeasured(check, reason, details) {
+  return { check, pass: false, measured: false, reason, details };
+}
+
 function boundsOf(nodes) {
   return nodes.map((node) => node.bounds);
 }
@@ -397,12 +408,11 @@ export function fabAboveNavBar(hierarchy, dumpsys, { fabId = "add", tolerance = 
   const nodes = flattenHierarchy(hierarchy);
   const fabs = findNodes(nodes, { id: fabId });
   const navBar = parseNavigationBarFrame(dumpsys);
-  if (fabs.length === 0)
-    return verdict(check, false, `no element with id "${fabId}" on screen`, {});
+  if (fabs.length === 0) return unmeasured(check, `no element with id "${fabId}" on screen`, {});
   if (!navBar)
-    return verdict(check, false, "dumpsys has no navigationBars frame", { fab: boundsOf(fabs) });
+    return unmeasured(check, "dumpsys has no navigationBars frame", { fab: boundsOf(fabs) });
   if (navBar.width < navBar.height) {
-    return verdict(check, false, "the nav bar is at the side; run the check in portrait", {
+    return unmeasured(check, "the nav bar is at the side; run the check in portrait", {
       navBar,
     });
   }
@@ -430,8 +440,7 @@ export function fabAboveHomeIndicator(
   const check = "fab-above-home-indicator";
   const nodes = flattenHierarchy(hierarchy);
   const fabs = findNodes(nodes, { id: fabId });
-  if (fabs.length === 0)
-    return verdict(check, false, `no element with id "${fabId}" on screen`, {});
+  if (fabs.length === 0) return unmeasured(check, `no element with id "${fabId}" on screen`, {});
   const height = screenHeight ?? screenRect(nodes).bottom;
   const limit = height - safeBottom;
   const worst = Math.max(...fabs.map((fab) => fab.bounds.bottom - limit));
@@ -493,9 +502,9 @@ export function bannerClearOfBack(
   const bannerBy = banners.length ? "id" : "text";
   if (!banners.length) banners = findNodes(nodes, { text: bannerText });
   const backs = findNodes(nodes, back);
-  if (!banners.length) return verdict(check, false, "no offline banner on screen", {});
+  if (!banners.length) return unmeasured(check, "no offline banner on screen", {});
   if (!backs.length)
-    return verdict(check, false, "no back button on screen", { banner: boundsOf(banners) });
+    return unmeasured(check, "no back button on screen", { banner: boundsOf(banners) });
 
   const screen = screenRect(nodes);
   const pairs = [];
@@ -552,7 +561,7 @@ export function imageRendered(
 ) {
   const check = "image-rendered";
   const images = findNodes(flattenHierarchy(hierarchy), { text: alt });
-  if (!images.length) return verdict(check, false, `no image matching ${alt} on screen`, {});
+  if (!images.length) return unmeasured(check, `no image matching ${alt} on screen`, {});
   const short = images.filter((node) => node.bounds.height < minHeight);
   const details = { images: boundsOf(images), minHeight };
   if (short.length) {
@@ -586,11 +595,11 @@ export function navBarMatches(
     throw new Error(`expect must be dark or light, not ${expect}`);
   const check = `nav-bar-${expect}`;
   const navBar = parseNavigationBarFrame(dumpsys);
-  if (!navBar) return verdict(check, false, "dumpsys has no navigationBars frame", {});
+  if (!navBar) return unmeasured(check, "dumpsys has no navigationBars frame", {});
   const appearance = parseWindowAppearance(dumpsys, pkg);
-  if (!appearance) return verdict(check, false, `no ${pkg} window in dumpsys`, { navBar });
+  if (!appearance) return unmeasured(check, `no ${pkg} window in dumpsys`, { navBar });
   if (!appearance.focused) {
-    return verdict(check, false, `${pkg} is not the focused window`, { navBar, appearance });
+    return unmeasured(check, `${pkg} is not the focused window`, { navBar, appearance });
   }
   const region = navBarSampleRegion(navBar, png, screenWidth ?? navBar.right);
   const luminance = sampleLuminance(png, region);
@@ -642,7 +651,7 @@ export function navModeReport(dumpsys, densityText) {
 
 export const USAGE = `Usage: node scripts/lib/maestro-layout-checks.mjs <check> [--flag value]...
 
-Checks (each prints one JSON line; exit 0 pass, 1 fail, 2 bad input):
+Checks (each prints one JSON line; exit 0 pass, 1 fail, 2 bad input or nothing to measure):
   fab-above-nav-bar          --hierarchy <json> --dumpsys <txt> [--fab-id add] [--tolerance 0]
   fab-above-home-indicator   --hierarchy <json> [--fab-id add] [--safe-bottom 34] [--screen-height <pt>]
   banner-clear-of-back       --hierarchy <json> [--banner-id offline-banner] [--banner-text <regex>]
@@ -744,7 +753,8 @@ export function runCli(argv, read = (file) => readFileSync(file)) {
       default:
         return { code: 2, output: `Unknown check "${check ?? ""}"\n${USAGE}` };
     }
-    return { code: result.pass ? 0 : 1, output: JSON.stringify(result) };
+    const code = result.measured === false ? 2 : result.pass ? 0 : 1;
+    return { code, output: JSON.stringify(result) };
   } catch (error) {
     return {
       code: 2,

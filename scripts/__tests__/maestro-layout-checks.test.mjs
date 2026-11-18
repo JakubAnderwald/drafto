@@ -421,19 +421,21 @@ describe("fabAboveNavBar (M-01, Android)", () => {
     );
   });
 
-  it("fails without a FAB, a nav bar, or in landscape", () => {
-    assert.match(
-      fabAboveNavBar(tree("android-offline-note-banner-clear.json"), threeButton).reason,
-      /no element/,
-    );
-    assert.match(
-      fabAboveNavBar(tree("android-notebook-fab-no-inset.json"), "").reason,
-      /no navigationBars/,
-    );
+  it("measures nothing without a FAB, a nav bar, or in landscape", () => {
+    const noFab = fabAboveNavBar(tree("android-offline-note-banner-clear.json"), threeButton);
+    assert.match(noFab.reason, /no element/);
+    assert.equal(noFab.measured, false);
+    const noBar = fabAboveNavBar(tree("android-notebook-fab-no-inset.json"), "");
+    assert.match(noBar.reason, /no navigationBars/);
+    assert.equal(noBar.measured, false);
     const side = "type=navigationBars frame=[2274,0][2400,1080] visible=true";
-    assert.match(
-      fabAboveNavBar(tree("android-notebook-fab-no-inset.json"), side).reason,
-      /portrait/,
+    const landscape = fabAboveNavBar(tree("android-notebook-fab-no-inset.json"), side);
+    assert.match(landscape.reason, /portrait/);
+    assert.equal(landscape.measured, false);
+    // A measured result carries no `measured` flag.
+    assert.equal(
+      fabAboveNavBar(tree("android-notebook-fab-no-inset.json"), threeButton).measured,
+      undefined,
     );
   });
 });
@@ -459,7 +461,9 @@ describe("fabAboveHomeIndicator (M-01, iOS)", () => {
       fabAboveHomeIndicator(tree("ios-notebook-fab-no-inset.json"), { safeBottom: 0 }).pass,
       true,
     );
-    assert.equal(fabAboveHomeIndicator(tree("ios-offline-note-banner-clear.json")).pass, false);
+    const noFab = fabAboveHomeIndicator(tree("ios-offline-note-banner-clear.json"));
+    assert.equal(noFab.pass, false);
+    assert.equal(noFab.measured, false);
   });
 });
 
@@ -502,15 +506,15 @@ describe("bannerClearOfBack (M-03)", () => {
     assert.equal(result.details.flush, false);
   });
 
-  it("fails when either element is missing", () => {
-    assert.match(
-      bannerClearOfBack(tree("android-notebook-fab-no-inset.json")).reason,
-      /no offline banner/,
-    );
+  it("measures nothing when either element is missing", () => {
+    const noBanner = bannerClearOfBack(tree("android-notebook-fab-no-inset.json"));
+    assert.match(noBanner.reason, /no offline banner/);
+    assert.equal(noBanner.measured, false);
     const noBack = bannerClearOfBack(tree("android-offline-note-banner-clear.json"), {
       back: { accessibility: "Close" },
     });
     assert.match(noBack.reason, /no back button/);
+    assert.equal(noBack.measured, false);
   });
 
   it("falls back to the back button's own bounds when no full-width header holds it", () => {
@@ -536,12 +540,14 @@ describe("imageRendered (M-02)", () => {
     assert.equal(imageRendered(tree("android-note-image-rendered.json")).pass, true);
   });
 
-  it("fails when no image matches, and honours alt and min height", () => {
-    assert.equal(imageRendered(tree("android-notebook-fab-no-inset.json")).pass, false);
-    assert.equal(
-      imageRendered(tree("android-note-image-rendered.json"), { alt: /^other\.png$/ }).pass,
-      false,
-    );
+  it("measures nothing when no image matches, and honours alt and min height", () => {
+    assert.equal(imageRendered(tree("android-notebook-fab-no-inset.json")).measured, false);
+    const otherAlt = imageRendered(tree("android-note-image-rendered.json"), {
+      alt: /^other\.png$/,
+    });
+    assert.equal(otherAlt.pass, false);
+    assert.equal(otherAlt.measured, false);
+    assert.equal(imageRendered(tree("android-note-image-broken.json")).measured, undefined);
     assert.equal(
       imageRendered(tree("android-note-image-broken.json"), { minHeight: 40 }).pass,
       true,
@@ -585,17 +591,15 @@ describe("navBarMatches (M-04)", () => {
   });
 
   it("needs a nav bar, a Drafto window and the focus", () => {
-    assert.match(navBarMatches("dark", darkShot, "").reason, /no navigationBars/);
-    assert.match(
-      navBarMatches("dark", darkShot, text("dumpsys-window-3button-dark.txt"), {
-        pkg: "com.example",
-      }).reason,
-      /no com\.example window/,
-    );
-    assert.match(
-      navBarMatches("dark", darkShot, text("dumpsys-window-launcher-focused.txt")).reason,
-      /not the focused/,
-    );
+    const noBar = navBarMatches("dark", darkShot, "");
+    assert.match(noBar.reason, /no navigationBars/);
+    const noWindow = navBarMatches("dark", darkShot, text("dumpsys-window-3button-dark.txt"), {
+      pkg: "com.example",
+    });
+    assert.match(noWindow.reason, /no com\.example window/);
+    const unfocused = navBarMatches("dark", darkShot, text("dumpsys-window-launcher-focused.txt"));
+    assert.match(unfocused.reason, /not the focused/);
+    for (const result of [noBar, noWindow, unfocused]) assert.equal(result.measured, false);
     assert.throws(() => navBarMatches("dim", darkShot, ""), /dark or light/);
   });
 
@@ -770,6 +774,34 @@ describe("runCli", () => {
       const result = runCli(argv, read);
       assert.equal(result.code, code, `${argv.join(" ")} → ${result.output}`);
       JSON.parse(result.output);
+    }
+  });
+
+  it("returns 2, not 1, when the element to measure is absent", () => {
+    files.set("dark.png", screencap(DARK_SCRIM));
+    const cases = [
+      [
+        "fab-above-nav-bar",
+        "--hierarchy",
+        "android-offline-note-banner-clear.json",
+        "--dumpsys",
+        "dumpsys-window-3button-light.txt",
+      ],
+      ["fab-above-home-indicator", "--hierarchy", "ios-offline-note-banner-clear.json"],
+      ["banner-clear-of-back", "--hierarchy", "android-notebook-fab-no-inset.json"],
+      ["image-rendered", "--hierarchy", "android-notebook-fab-no-inset.json"],
+      [
+        "nav-bar-dark",
+        "--screenshot",
+        "dark.png",
+        "--dumpsys",
+        "dumpsys-window-launcher-focused.txt",
+      ],
+    ];
+    for (const argv of cases) {
+      const result = runCli(argv, read);
+      assert.equal(result.code, 2, `${argv.join(" ")} → ${result.output}`);
+      assert.equal(JSON.parse(result.output).measured, false);
     }
   });
 
