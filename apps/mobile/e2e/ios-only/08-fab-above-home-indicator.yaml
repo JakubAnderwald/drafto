@@ -10,12 +10,13 @@ tags:
 # is fine because its tab bar takes that inset.
 #
 # This flow only sets the scene and takes screenshots: tapOn and assertVisible
-# pass on 1.4.7 too. The pass/fail check is the host check `fabAboveNavBar` in
-# scripts/lib/maestro-layout-checks.mjs, which
-# apps/mobile/e2e/run-qa-10668-e2e.sh ios runs after this flow. On iOS it reads
-# the frame of id "add" from `maestro hierarchy` and fails when the FAB's
-# bottom edge is inside the bottom safe-area inset (screen height - 34pt on a
-# Face ID iPhone). So the flow ENDS on the notebook screen.
+# pass on 1.4.7 too. The pass/fail check is the host check
+# `fabAboveHomeIndicator` in scripts/lib/maestro-layout-checks.mjs, which
+# apps/mobile/e2e/run-qa-10668-e2e.sh ios runs after this flow as its
+# `fab-above-home-indicator` step. It reads the frame of id "add" from
+# `maestro hierarchy` and fails when the FAB's bottom edge is inside the
+# bottom safe-area inset (screen height - 34pt on a Face ID iPhone). So the
+# flow ENDS on the notebook screen.
 #
 # Run it on an iPhone simulator with a home indicator (e.g. iPhone 16, iOS 27):
 #   maestro test apps/mobile/e2e/ios-only/08-fab-above-home-indicator.yaml --platform ios -e RUN_ID=$(date +%s)
@@ -53,7 +54,11 @@ tags:
 - takeScreenshot: qa-10668-m01-ios-notebooks-tab
 
 # A notebook with a note in it (the report's precondition). iOS merges a row's
-# icon and text into one accessibility label, hence the ".*" prefixes.
+# icon glyph and text into one accessibility label, so the notebook pattern
+# allows a prefix, but only of non-letters: a bare ".*NB <RUN_ID>" would also
+# match "Attach NB <RUN_ID>" (ios-only/07) or "OffNB <RUN_ID>" (ios-only/06)
+# when a run shares one RUN_ID. The note pattern stays ".*Note <RUN_ID>.*":
+# it only searches this new notebook, which holds just that note.
 - tapOn:
     id: "add"
 - assertVisible: "Notebook name"
@@ -61,9 +66,9 @@ tags:
 - tapOn:
     id: "checkmark"
 - extendedWaitUntil:
-    visible: ".*NB ${RUN_ID}"
+    visible: "[^A-Za-z]*NB ${RUN_ID}(,.*)?"
     timeout: 10000
-- tapOn: ".*NB ${RUN_ID}"
+- tapOn: "[^A-Za-z]*NB ${RUN_ID}(,.*)?"
 - extendedWaitUntil:
     visible:
       id: "notes-list-screen"
