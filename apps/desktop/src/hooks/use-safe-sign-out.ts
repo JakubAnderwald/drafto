@@ -31,7 +31,8 @@ function confirmSignOut(pending: number | null): Promise<boolean> {
  * Whether the sign-out may skip the provider's last flush. Only when nothing is pending beyond
  * what the confirmation told the user: the dialog can stay open for any length of time, so the
  * count is taken again once the user has confirmed. A change made meanwhile, or a count that can
- * no longer be read, gets the provider's (bounded) flush instead of being wiped silently.
+ * no longer be read, gets the provider's (bounded) flush instead of being wiped silently. A count
+ * that failed before the dialog counts as 0 shown, so a recount of 0 still skips the flush.
  */
 function canSkipFinalSync(shown: number | null, now: number | null): boolean {
   return now !== null && now <= (shown ?? 0);

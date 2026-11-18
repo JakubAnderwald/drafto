@@ -471,6 +471,40 @@ describe("useSafeSignOut", () => {
     expect(mockSignOut).toHaveBeenCalledWith();
   });
 
+  it("skips the second flush when the count fails before the confirmation but reads 0 after it", async () => {
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    mockCountUnsyncedChanges.mockRejectedValueOnce(new Error("SQLite busy")).mockResolvedValue(0);
+    const alert = confirmEveryAlert();
+    const { result } = renderHook(() => useSafeSignOut());
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(alert).toHaveBeenCalledWith(
+      "Sign out?",
+      SIGN_OUT_UNKNOWN_MESSAGE,
+      expect.any(Array),
+      expect.objectContaining({ cancelable: true }),
+    );
+    // A failed first count counts as 0 shown: a recount of 0 has nothing left to push.
+    expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
+  });
+
+  it("keeps the provider's flush when the count fails before the confirmation and finds changes after it", async () => {
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    mockCountUnsyncedChanges.mockRejectedValueOnce(new Error("SQLite busy")).mockResolvedValue(2);
+    confirmEveryAlert();
+    const { result } = renderHook(() => useSafeSignOut());
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(mockSync).not.toHaveBeenCalled();
+    expect(mockSignOut).toHaveBeenCalledWith();
+  });
+
   it("keeps the session on Cancel when the count cannot be read", async () => {
     jest.spyOn(console, "error").mockImplementation(() => {});
     mockCountUnsyncedChanges.mockRejectedValue(new Error("SQLite busy"));
