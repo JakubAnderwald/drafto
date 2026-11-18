@@ -3,6 +3,7 @@ import {
   resolveBlockNoteImageUrls,
   resolveTipTapImageUrls,
   migrateSignedUrlsToAttachmentUrls,
+  withResolveTimeout,
 } from "../src/editor/resolve-urls";
 import type { BlockNoteBlock, TipTapDoc } from "../src/editor/types";
 import { toLocalAttachmentSrc } from "../src/editor/attachment-url";
@@ -411,5 +412,59 @@ describe("migrateSignedUrlsToAttachmentUrls with device-local srcs (ADR-0086)", 
     const result = migrateSignedUrlsToAttachmentUrls(blocks);
     expect(result[0].props?.url).toBe("file:///tmp/other.jpg");
     expect(result[1].props?.url).toBe("https://example.com/a.jpg");
+  });
+});
+
+describe("withResolveTimeout", () => {
+  const doc: TipTapDoc = {
+    type: "doc",
+    content: [
+      { type: "image", attrs: { src: "attachment://u/n/cached.jpg" } },
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: "report",
+            marks: [{ type: "link", attrs: { href: "attachment://u/n/report.pdf" } }],
+          },
+        ],
+      },
+    ],
+  };
+
+  it("leaves only the reference that hangs unresolved", async () => {
+    vi.useFakeTimers();
+    try {
+      const resolver = vi.fn((filePath: string) =>
+        filePath.endsWith(".pdf")
+          ? new Promise<string>(() => undefined)
+          : Promise.resolve(`file:///cache/${filePath}`),
+      );
+      const pending = resolveTipTapImageUrls(doc, withResolveTimeout(resolver, 8000));
+      await vi.advanceTimersByTimeAsync(8000);
+      const result = await pending;
+
+      expect(result.content[0].attrs?.src).toBe("file:///cache/u/n/cached.jpg");
+      expect(result.content[1].content?.[0].marks?.[0].attrs?.href).toBe(
+        "attachment://u/n/report.pdf",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes the reference kind through, and a rejection leaves that reference alone", async () => {
+    const resolver = vi.fn(async (filePath: string) => {
+      if (filePath.endsWith(".pdf")) throw new Error("offline");
+      return `file:///cache/${filePath}`;
+    });
+    const result = await resolveTipTapImageUrls(doc, withResolveTimeout(resolver, 8000));
+    expect(resolver).toHaveBeenCalledWith("u/n/cached.jpg", "image");
+    expect(resolver).toHaveBeenCalledWith("u/n/report.pdf", "link");
+    expect(result.content[0].attrs?.src).toBe("file:///cache/u/n/cached.jpg");
+    expect(result.content[1].content?.[0].marks?.[0].attrs?.href).toBe(
+      "attachment://u/n/report.pdf",
+    );
   });
 });

@@ -170,6 +170,7 @@ export {
   extractFilePathFromLocalSrc,
   attachmentCacheRelativePath,
 } from "./editor/attachment-url";
+export { withResolveTimeout } from "./editor/resolve-urls";
 export type { AttachmentRefKind, UrlResolver } from "./editor/resolve-urls";
 export {
   IMAGE_RENDER_STATUS_MESSAGE_TYPE,
@@ -180,9 +181,27 @@ export {
 } from "./editor/image-render-status";
 export type { ImageRenderState } from "./editor/image-render-status";
 export {
+  isCacheableAttachment,
   planAttachmentCacheEviction,
   selectPrefetchCandidates,
 } from "./storage/attachment-cache-policy";
+export {
+  ATTACHMENT_CACHE_INDEX_FILE_NAME,
+  AttachmentCacheIndex,
+  parseAttachmentCacheIndex,
+} from "./storage/attachment-cache-index";
+export type { AttachmentCacheFile } from "./storage/attachment-cache-index";
+export {
+  PREFETCH_MIN_INTERVAL_MS,
+  createAttachmentPrefetcher,
+} from "./storage/attachment-prefetch";
+export type {
+  AttachmentPrefetchDeps,
+  AttachmentPrefetcher,
+  PrefetchCacheState,
+  PrefetchOptions,
+  PrefetchResult,
+} from "./storage/attachment-prefetch";
 export type {
   AttachmentCacheEntry,
   PrefetchCandidate,

@@ -8,6 +8,7 @@ import {
   toAttachmentUrl,
   extractFilePathFromLocalSrc,
 } from "./attachment-url";
+import { withTimeout } from "../async/with-timeout";
 
 /**
  * What a reference to an attachment is: the src of an image (shown inline, so
@@ -20,6 +21,17 @@ export type AttachmentRefKind = "image" | "link";
  * refers to it; a path used both ways is resolved once, as "image".
  */
 export type UrlResolver = (filePath: string, kind: AttachmentRefKind) => Promise<string>;
+
+/**
+ * `resolver` with each call bounded by `ms`. A call that takes longer, or
+ * rejects, resolves to the reference's own `attachment://` URL, so that one
+ * reference is left unresolved while every other one in the note keeps what it
+ * resolved to: a link whose signed URL hangs on a network with no internet
+ * can't cost a cached image its local src.
+ */
+export function withResolveTimeout(resolver: UrlResolver, ms: number): UrlResolver {
+  return (filePath, kind) => withTimeout(resolver(filePath, kind), ms, toAttachmentUrl(filePath));
+}
 
 interface AttachmentRef {
   url: string;

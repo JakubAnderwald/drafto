@@ -72,19 +72,75 @@ export function isLocalAttachmentSrc(url: string): boolean {
   return extractFilePathFromLocalSrc(url) !== null;
 }
 
+/** Longest file or folder name APFS and ext4 accept, in bytes. */
+const MAX_CACHE_SEGMENT_LENGTH = 255;
+
+/** Longest extension kept when a cache name is shortened. */
+const MAX_CACHE_EXTENSION_LENGTH = 20;
+
+/**
+ * Marks a cache name that was changed from its storage key segment. A name
+ * kept as it is never contains it: `toStorageSafeFileName` never emits `~`.
+ */
+const CHANGED_SEGMENT_MARK = "~";
+
+/**
+ * A 64-bit hash of `text` as 16 hex characters (cyrb53's two 32-bit lanes).
+ * Not cryptographic: it only tells apart storage key segments that make the
+ * same safe name.
+ */
+function segmentHash(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const hex = (n: number) => (n >>> 0).toString(16).padStart(8, "0");
+  return `${hex(h2)}${hex(h1)}`;
+}
+
+/**
+ * The cache name for one storage key segment. A segment that is already
+ * storage-safe, lower case, at most 255 characters and doesn't start with a
+ * dot is kept as it is (every segment of a key made since keys got a unique
+ * suffix, apart from upper case). Any other segment gets its safe form plus
+ * `~` and a hash of the original before the extension, so two segments that
+ * make the same safe form (`café` / `cafe`, `photo#1` / `photo_1`, or
+ * `Photo` / `photo` on a case-insensitive disk) still get different files,
+ * and `.` / `..` can never climb out of the cache directory.
+ */
+function cacheSegment(segment: string): string {
+  const safe = toStorageSafeFileName(segment);
+  if (
+    segment.length > 0 &&
+    segment.length <= MAX_CACHE_SEGMENT_LENGTH &&
+    !segment.startsWith(".") &&
+    safe === segment &&
+    segment === segment.toLowerCase()
+  ) {
+    return segment;
+  }
+  const tag = `${CHANGED_SEGMENT_MARK}${segmentHash(segment)}`;
+  const dotIndex = safe.lastIndexOf(".");
+  const hasExtension = dotIndex > 0 && safe.length - dotIndex <= MAX_CACHE_EXTENSION_LENGTH;
+  const base = (hasExtension ? safe.slice(0, dotIndex) : safe).replace(/^\.+/, "") || "_";
+  const extension = hasExtension ? safe.slice(dotIndex) : "";
+  const room = MAX_CACHE_SEGMENT_LENGTH - tag.length - extension.length;
+  return `${base.slice(0, room)}${tag}${extension}`;
+}
+
 /**
  * Where an attachment's cached copy lives, relative to the cache directory:
- * its storage path with each segment made filesystem-safe, so older keys with
- * characters a filesystem dislikes still map to a valid file. Empty segments
- * are dropped, and `.` / `..` can never escape the cache directory.
+ * its storage path, with each segment mapped by `cacheSegment`. The mapping
+ * is one-to-one, so two attachments never share a cached file, and every
+ * name it makes is filesystem-safe and URL-safe.
  */
 export function attachmentCacheRelativePath(filePath: string): string {
-  const segments = filePath
-    .split("/")
-    .filter((segment) => segment.length > 0)
-    .map((segment) => {
-      const safe = toStorageSafeFileName(segment);
-      return safe === "" || safe === "." || safe === ".." ? "_" : safe;
-    });
-  return segments.length > 0 ? segments.join("/") : "_";
+  return filePath.split("/").map(cacheSegment).join("/");
 }

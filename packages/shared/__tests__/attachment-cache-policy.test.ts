@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isCacheableAttachment,
   planAttachmentCacheEviction,
   selectPrefetchCandidates,
   type AttachmentCacheEntry,
@@ -91,5 +92,19 @@ describe("selectPrefetchCandidates", () => {
       ),
     ).toEqual(["a"]);
     expect(selectPrefetchCandidates(rows, none, { ...limits, availableBytes: -5 })).toEqual([]);
+  });
+});
+
+describe("isCacheableAttachment", () => {
+  it.each([
+    ["image/jpeg", true],
+    ["IMAGE/PNG", true],
+    ["application/pdf", false],
+    ["video/mp4", false],
+    ["", false],
+    [null, false],
+    [undefined, false],
+  ])("%p → %p", (mimeType, expected) => {
+    expect(isCacheableAttachment(mimeType)).toBe(expected);
   });
 });

@@ -3,6 +3,15 @@
 // handling itself is per app (expo-file-system on mobile, react-native-fs on
 // desktop); keeping the decisions here keeps the two apps in step.
 
+/**
+ * Whether an attachment of this type is kept in the cache. Only images are:
+ * they are shown inline, while other files are opened on demand, online
+ * (opening one offline is out of scope).
+ */
+export function isCacheableAttachment(mimeType: string | null | undefined): boolean {
+  return typeof mimeType === "string" && mimeType.toLowerCase().startsWith("image/");
+}
+
 /** A file in the attachment cache. */
 export interface AttachmentCacheEntry {
   /** Path relative to the cache directory (`attachmentCacheRelativePath`). */
