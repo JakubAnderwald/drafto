@@ -1,0 +1,172 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+  - offline
+onFlowComplete:
+  # Back online, unless the runner asked to keep the offline screen for its
+  # host check (it turns airplane mode off itself afterwards).
+  - runFlow:
+      when:
+        true: ${typeof QA_KEEP_OFFLINE === 'undefined' || QA_KEEP_OFFLINE != '1'}
+      commands:
+        - setAirplaneMode: disabled
+---
+# PrimeTestLab 10668, M-02 (Android): an attached image still shows offline,
+# after reopening the note, after an offline cold start, and when it is
+# attached while offline (ADR-0086).
+#
+# Run by apps/mobile/e2e/run-qa-10668-e2e.sh android, which passes
+# QA_KEEP_OFFLINE=1 and then runs the `image-rendered` host check on the screen
+# this flow ends on: the note, offline, with both images. The check reads the
+# editor's image status views ("Image shown: <file name>", as tall as the image
+# on screen; "Image not loaded: <file name>" is a sliver), because the
+# WebView's own <img> nodes don't reliably reach the hierarchy.
+#
+# Standalone: maestro test apps/mobile/e2e/android-only/09-offline-image.yaml \
+#   --platform android -e RUN_ID=$(date +%s)
+# Needs a release APK built against dev (docs/architecture/testing.md, "Offline
+# flows on Android"): a debug build loads its JavaScript from Metro, which
+# airplane mode cuts off. Assumes the user is logged in (after 01-login).
+# It ends offline, so it leaves its notebook ("Attach NB <RUN_ID>", as 07 names
+# its own: give it a RUN_ID no 07 run has used) behind for
+# the E2E cleanup (apps/web/e2e/helpers/e2e-patterns.ts) to remove.
+
+# Newest photo on the device, so it is first in the photo picker
+- addMedia:
+    - "../fixtures/attachment-photo.jpg"
+
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 30000
+
+# --- Online: a notebook with one note ---
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "Attach NB ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Attach NB ${RUN_ID}"
+    timeout: 10000
+- tapOn: ".*Attach NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible: "No notes yet"
+    timeout: 10000
+    optional: true
+- tapOn:
+    id: "swipe-hint-dismiss"
+    optional: true
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "Attach ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*Attach ${RUN_ID}.*"
+    timeout: 10000
+- tapOn: ".*Attach ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible: "Attach image"
+    timeout: 20000
+
+# --- Attach the photo online ---
+# The Android photo picker labels each thumbnail "Photo taken on <date>",
+# newest first, so the first match is the photo added above.
+- tapOn: "Attach image"
+- tapOn:
+    text: "(Allow|Allow all|ALLOW)"
+    optional: true
+- extendedWaitUntil:
+    visible: "(Photo|Image|Media) taken on.*"
+    timeout: 15000
+- tapOn:
+    text: "(Photo|Image|Media) taken on.*"
+    index: 0
+- extendedWaitUntil:
+    visible: "Attachment uploaded"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      id: "editor-image-rendered"
+    timeout: 20000
+- takeScreenshot: qa-10668-offline-image-1-online
+
+# --- The report's step: go back, go offline, reopen the note ---
+- pressKey: back
+- extendedWaitUntil:
+    visible: ".*Attach ${RUN_ID}.*"
+    timeout: 10000
+- setAirplaneMode: enabled
+# The offline banner: by its testID, or by its whole text on a build
+# without one (as helpers/assert-offline-banner.yaml checks).
+- runFlow:
+    when:
+      notVisible:
+        id: "offline-banner"
+    commands:
+      - extendedWaitUntil:
+          visible: "You are offline"
+          timeout: 15000
+- tapOn: ".*Attach ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible:
+      id: "editor-image-rendered"
+    timeout: 20000
+- assertNotVisible:
+    id: "editor-image-missing"
+- takeScreenshot: qa-10668-offline-image-2-reopened-offline
+
+# --- An offline cold start: no signed URL, no WebView memory cache ---
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 30000
+# The offline banner: by its testID, or by its whole text on a build
+# without one (as helpers/assert-offline-banner.yaml checks).
+- runFlow:
+    when:
+      notVisible:
+        id: "offline-banner"
+    commands:
+      - extendedWaitUntil:
+          visible: "You are offline"
+          timeout: 15000
+- tapOn: ".*Attach NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible: ".*Attach ${RUN_ID}.*"
+    timeout: 10000
+- tapOn: ".*Attach ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible:
+      id: "editor-image-rendered"
+    timeout: 20000
+- assertNotVisible:
+    id: "editor-image-missing"
+- takeScreenshot: qa-10668-offline-image-3-cold-start-offline
+
+# --- Attach the photo again while offline: it shows at once ---
+- tapOn: "Attach image"
+- extendedWaitUntil:
+    visible: "(Photo|Image|Media) taken on.*"
+    timeout: 15000
+- tapOn:
+    text: "(Photo|Image|Media) taken on.*"
+    index: 0
+- extendedWaitUntil:
+    visible: "Attachment saved.*"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      id: "editor-image-rendered"
+      index: 1
+    timeout: 20000
+- assertNotVisible:
+    id: "editor-image-missing"
+- takeScreenshot: qa-10668-offline-image-4-attached-offline
+# Ends here, offline, on the note: the runner's host check reads this screen.
