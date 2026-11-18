@@ -1345,6 +1345,8 @@ To rehearse a resume by hand, on a scratch card:
    FACTORY_AUTOPULL=0 FACTORY_IMPLEMENT_TIMEOUT_SEC=<short> bash scripts/factory-agent.sh --implement --phase C
    ```
 
+   If you scrub the environment with `env -i …` to mimic launchd, keep `USER`, `LOGNAME` and `TMPDIR`. Without them `claude` can't read its keychain login: it exits 1 within seconds with `Not logged in · Please run /login` in the implement log, and the run spends an attempt.
+
 4. Run the same command again. Change nothing in between: the resume conditions above all have to hold.
 5. In the day's implement log, `logs/factory/factory-agent-implement-<YYYY-MM-DD>.log`, check for `Issue #<n>: recorded resumable session <id>` from the first run, then `Issue #<n>: resume session <id>` from the second, with the same `<id>`. A `fresh session <id> (no resume: <reason>)` line means the drill failed, and the reason says why.
 6. Check that the second run appended to the same transcript: `ls -l ~/.claude/projects/*/<id>.jsonl` shows one file, and it grew after the second run.
