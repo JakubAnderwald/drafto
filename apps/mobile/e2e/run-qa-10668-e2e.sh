@@ -125,6 +125,7 @@ CHECKS="$REPO_ROOT/scripts/lib/maestro-layout-checks.mjs"
 NET_SH="$REPO_ROOT/apps/desktop/e2e/in-test/lib/net.sh"
 APP_ID="eu.drafto.mobile"
 PROD_REF="tbmjbxxseonkciqovnpl"
+DEV_REF="huhzactreblzcogqkbsd"
 
 MAESTRO="${MAESTRO:-$(command -v maestro || true)}"
 [ -n "$MAESTRO" ] || MAESTRO="$HOME/.maestro/bin/maestro"
@@ -399,13 +400,21 @@ if [ "$PLATFORM" = android ]; then
     exit 2
   fi
   "$ADB" -s "$DEVICE" pull "$apk_path" "$OUT/installed.apk" > /dev/null
+  # The Supabase URL is not inlined into the Hermes bundle: it ships in
+  # assets/app.config (expo-constants `extra`). So grep the whole APK for the
+  # prod ref, and require the dev ref in app.config.
+  if unzip -p "$OUT/installed.apk" | LC_ALL=C grep -a -q "$PROD_REF"; then
+    rm -f "$OUT/installed.apk"
+    echo "ERROR: the installed APK contains the production ref ($PROD_REF). Build it against dev." >&2
+    exit 2
+  fi
+  if ! unzip -p "$OUT/installed.apk" assets/app.config 2> /dev/null | LC_ALL=C grep -a -q "$DEV_REF"; then
+    rm -f "$OUT/installed.apk"
+    echo "ERROR: the installed APK's assets/app.config does not name the dev project ($DEV_REF)." >&2
+    exit 2
+  fi
   if unzip -l "$OUT/installed.apk" assets/index.android.bundle > /dev/null 2>&1; then
-    if unzip -p "$OUT/installed.apk" assets/index.android.bundle | grep -q "$PROD_REF"; then
-      rm -f "$OUT/installed.apk"
-      echo "ERROR: the installed APK's bundle points at production ($PROD_REF). Build it against dev." >&2
-      exit 2
-    fi
-    log "Installed build: release bundle, no production ref"
+    log "Installed build: release bundle, dev project, no production ref"
   else
     log "Installed build: debug (JS from Metro at 10.0.2.2:8081; offline legs will lose it)"
   fi

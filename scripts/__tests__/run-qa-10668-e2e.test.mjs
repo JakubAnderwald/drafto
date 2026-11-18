@@ -38,8 +38,14 @@ writeFileSync(
   path.join(root, "env.local"),
   `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:9\nE2E_TEST_EMAIL=e2e@example.com\nE2E_TEST_PASSWORD=${PASSWORD}\n`,
 );
-// The "APK" is a text file; the unzip stand-in lists and prints its bundle.
-stub("unzip", `if [ "$1" = -l ]; then grep -q BUNDLE "$2"; else sed -n 's/^BUNDLE=//p' "$2"; fi`);
+// The "APK" is a text file of BUNDLE= and CONFIG= lines. The unzip stand-in
+// lists the bundle, prints assets/app.config, or prints the whole "APK".
+stub(
+  "unzip",
+  `if [ "$1" = -l ]; then grep -q BUNDLE "$2"
+elif [ "$3" = assets/app.config ]; then sed -n 's/^CONFIG=//p' "$2"
+else cat "$2"; fi`,
+);
 stub(
   "adb",
   `[ "$1" = devices ] && { printf 'List of devices attached\\nemulator-5554\\tdevice\\n'; exit 0; }
@@ -66,7 +72,10 @@ exit 0`,
 
 function run(
   args,
-  { apk = "BUNDLE=var url='https://huhzactreblzcogqkbsd.supabase.co'", env = {} } = {},
+  {
+    apk = 'BUNDLE=var a=1\nCONFIG={"extra":{"supabaseUrl":"https://huhzactreblzcogqkbsd.supabase.co"}}',
+    env = {},
+  } = {},
 ) {
   const fakeApk = path.join(root, `apk-${Math.random().toString(36).slice(2)}`);
   writeFileSync(fakeApk, `${apk}\n`);
@@ -137,12 +146,19 @@ describe("run-qa-10668-e2e.sh", () => {
     );
   });
 
-  it("refuses an installed build whose bundle names production", () => {
+  it("refuses an installed build that names production anywhere in the APK", () => {
+    // The Supabase URL ships in assets/app.config, not the Hermes bundle.
     const result = run(["android"], {
-      apk: "BUNDLE=var url='https://tbmjbxxseonkciqovnpl.supabase.co'",
+      apk: 'BUNDLE=var a=1\nCONFIG={"extra":{"supabaseUrl":"https://tbmjbxxseonkciqovnpl.supabase.co"}}',
     });
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /points at production/);
+    assert.match(result.stderr, /contains the production ref/);
+  });
+
+  it("refuses an installed build whose app.config does not name the dev project", () => {
+    const result = run(["android"], { apk: 'BUNDLE=var a=1\nCONFIG={"extra":{}}' });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /does not name the dev project/);
   });
 
   it("refuses an env file pointing at production, and bad arguments", () => {

@@ -124,15 +124,15 @@ export _JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'
 (cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a)
 APK=android/app/build/outputs/apk/release/app-release.apk
 
-# Guard: the bundle must name the dev project and never the production one.
-BUNDLE="$(mktemp)"
-unzip -p "$APK" assets/index.android.bundle > "$BUNDLE"
-if grep -q huhzactreblzcogqkbsd "$BUNDLE" && ! grep -q tbmjbxxseonkciqovnpl "$BUNDLE"; then
-  echo "dev bundle: OK"
+# Guard: the APK must name the dev project and never the production one.
+# The Supabase URL is not in the Hermes bundle: expo-constants ships it in
+# assets/app.config, so check that file for dev and the whole APK for prod.
+if unzip -p "$APK" assets/app.config | LC_ALL=C grep -a -q huhzactreblzcogqkbsd \
+  && ! unzip -p "$APK" | LC_ALL=C grep -a -q tbmjbxxseonkciqovnpl; then
+  echo "dev APK: OK"
 else
   echo "STOP: this APK is not dev-only; don't install it"
 fi
-rm -f "$BUNDLE"
 
 adb -s emulator-5554 uninstall eu.drafto.mobile  # a release-signed APK can't replace a debug one
 adb -s emulator-5554 install "$APK"
@@ -140,7 +140,7 @@ adb -s emulator-5554 install "$APK"
 
 - Gradle needs JDK 17–24, as for a debug build ([Mobile debug builds](#mobile-debug-builds)); Homebrew's `openjdk@17` works too.
 - The uninstall wipes the app's local data, so sign in again (flow `01-login.yaml`).
-- `run-qa-10668-e2e.sh` runs the same guard on whatever is installed: it pulls the APK and refuses one whose bundle names production.
+- `run-qa-10668-e2e.sh` runs the same guard on whatever is installed: it pulls the APK and refuses one that names production anywhere or whose `assets/app.config` lacks the dev ref.
 
 **iOS has no airplane mode.** Maestro's `setAirplaneMode` / `toggleAirplaneMode` are Android-only, and the simulator shares the Mac's network. The iOS offline flows (`ios-only/05`, `06` and the report-10668 ones) therefore run in phases (`-e QA_PHASE=prepare|offline|reconnect`, tagged `requires-host-offline`), and the runner below takes the whole Mac offline between them with `apps/desktop/e2e/in-test/lib/net.sh`. That needs `sudo`, cuts off everything else on the Mac (a Claude session included) until the leg ends, and is restored by a root watchdog after 120 s at most. Run it only in a foreground session you started, and skip those flows in a folder run with `--exclude-tags requires-host-offline`.
 
