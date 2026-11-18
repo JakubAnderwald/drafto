@@ -2,6 +2,8 @@ import { StyleSheet, View } from "react-native";
 import { imageRenderStatusLabel } from "@drafto/shared";
 import type { ImageRenderState } from "@drafto/shared";
 
+import { areE2EProbesEnabled } from "@/lib/e2e-probes";
+
 interface ImageRenderStatusProps {
   images: readonly ImageRenderState[];
 }
@@ -9,13 +11,14 @@ interface ImageRenderStatusProps {
 /**
  * Invisible, untouchable views that say whether each image in the editor
  * rendered (ADR-0086). The WebView's own image nodes don't reliably reach the
- * accessibility tree, so screen readers and the E2E checks read these: one per
- * image, labelled "Image shown: <name>" or "Image not loaded: <name>". A shown
- * image's view is as tall as the image on screen; a missing one is a sliver.
+ * accessibility tree, so the E2E checks read these: one per image, labelled
+ * "Image shown: <name>" or "Image not loaded: <name>". A shown image's view is
+ * as tall as the image on screen; a missing one is a sliver. Screen readers
+ * would read them too, so they render only in E2E builds (`areE2EProbesEnabled`).
  * Mirrors apps/mobile/src/components/editor/image-render-status.tsx.
  */
 export function ImageRenderStatus({ images }: ImageRenderStatusProps) {
-  if (images.length === 0) return null;
+  if (images.length === 0 || !areE2EProbesEnabled()) return null;
   return (
     <View testID="editor-image-status" pointerEvents="none" style={styles.container}>
       {images.map((image, index) => (

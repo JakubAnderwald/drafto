@@ -17,12 +17,12 @@ jest.mock("@/db", () => ({
   },
 }));
 
-const mockList = jest.fn();
+const mockCacheState = jest.fn();
 const mockDownload = jest.fn();
 const mockEvict = jest.fn();
 jest.mock("@/lib/data/attachment-cache", () => ({
   ATTACHMENT_CACHE_MAX_BYTES: 1000,
-  listAttachmentCache: () => mockList(),
+  getAttachmentCacheState: () => mockCacheState(),
   downloadToCache: (...args: unknown[]) => mockDownload(...args),
   evictAttachmentCache: () => mockEvict(),
 }));
@@ -44,7 +44,7 @@ const row = (filePath: string, fileSize: number) => ({ filePath, fileSize });
 beforeEach(() => {
   jest.clearAllMocks();
   resetAttachmentPrefetch();
-  mockList.mockResolvedValue([]);
+  mockCacheState.mockResolvedValue({ totalBytes: 0, isCached: () => false });
   mockSignedUrl.mockImplementation(async (filePath: string) => `https://signed/${filePath}`);
   mockDownload.mockImplementation(async (filePath: string) => `file:///c/${filePath}`);
   mockEvict.mockResolvedValue(undefined);
@@ -52,7 +52,10 @@ beforeEach(() => {
 
 describe("prefetchAttachmentImages", () => {
   it("downloads uncached images, newest first, within the per-pass limits, then evicts", async () => {
-    mockList.mockResolvedValue([{ relativePath: "u/n/cached.jpg", size: 10, lastUsedAt: 1 }]);
+    mockCacheState.mockResolvedValue({
+      totalBytes: 10,
+      isCached: (filePath: string) => filePath === "u/n/cached.jpg",
+    });
     mockFetchRows.mockResolvedValue([
       row("u/n/cached.jpg", 10),
       row("u/n/huge.jpg", 301),
@@ -107,6 +110,26 @@ describe("prefetchAttachmentImages", () => {
     const second = prefetchAttachmentImages();
     expect(second).toBe(first);
     await first;
+  });
+
+  it("stays within the cache's free room, by the running total", async () => {
+    mockCacheState.mockResolvedValue({ totalBytes: 850, isCached: () => false });
+    mockFetchRows.mockResolvedValue([row("u/n/a.jpg", 100), row("u/n/b.jpg", 100)]);
+    await expect(prefetchAttachmentImages()).resolves.toEqual({ downloaded: 1 });
+  });
+
+  it("starts a fresh pass after a reset (sign-out) instead of joining the old one", async () => {
+    mockFetchRows.mockResolvedValue([row("u/n/a.jpg", 10)]);
+    let finish: (uri: string | null) => void = () => undefined;
+    mockDownload.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    const old = prefetchAttachmentImages();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    resetAttachmentPrefetch();
+    const fresh = prefetchAttachmentImages();
+    expect(fresh).not.toBe(old);
+    finish(null);
+    await expect(fresh).resolves.toEqual({ downloaded: 1 });
+    await old;
   });
 
   it("never throws", async () => {

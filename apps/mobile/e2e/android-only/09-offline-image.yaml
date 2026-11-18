@@ -26,7 +26,9 @@ onFlowComplete:
 #   --platform android -e RUN_ID=$(date +%s)
 # Needs a release APK built against dev (docs/architecture/testing.md, "Offline
 # flows on Android"): a debug build loads its JavaScript from Metro, which
-# airplane mode cuts off. Assumes the user is logged in (after 01-login).
+# airplane mode cuts off. Build it with EXPO_PUBLIC_E2E_PROBES=1, which alone
+# has the image status views ("E2E probe builds" in the same doc). Assumes the
+# user is logged in (after 01-login).
 # It ends offline, so it leaves its notebook ("Attach NB <RUN_ID>", as 07 names
 # its own: give it a RUN_ID no 07 run has used) behind for
 # the E2E cleanup (apps/web/e2e/helpers/e2e-patterns.ts) to remove.

@@ -25,6 +25,8 @@ tags:
 # Self-contained ("Attach NB" / "Attach", the names 07-attach-image.yaml
 # uses: give it a RUN_ID no 07 run has used). Assumes the
 # user is logged in. Pass -e RUN_ID=<timestamp>, the same for all three phases.
+# Needs a build made with EXPO_PUBLIC_E2E_PROBES=1, which alone has the image
+# status views (docs/architecture/testing.md, "E2E probe builds").
 # iPhone simulator only (see 07-attach-image.yaml), with photo access granted:
 #   xcrun simctl privacy booted grant photos eu.drafto.mobile
 # To skip it in a folder run: --exclude-tags requires-host-offline

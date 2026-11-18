@@ -16,6 +16,7 @@ import {
   rememberContentBaseline,
   serializeEditorContent,
   serializeLoadedDoc,
+  withResolveTimeout,
   withTimeout,
 } from "@drafto/shared";
 import type { ContentBaseline, TipTapDoc, TipTapNode } from "@drafto/shared";
@@ -88,10 +89,11 @@ async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
   };
 }
 
-// Bound on image-URL resolution so a never-settling signed-URL fetch can't hang
-// a note load (and strand the loading overlay). On timeout, resolve to the
-// unresolved doc — images degrade to placeholders; attachment:// is the
-// canonical stored form, so persisting it back is non-destructive.
+// Bound on resolving each attachment reference, so a never-settling
+// signed-URL fetch can't hang a note load (and strand the loading overlay). A
+// reference that times out keeps its attachment:// src and degrades to a
+// placeholder, while the others keep what they resolved to; attachment:// is
+// the canonical stored form, so persisting it back is non-destructive.
 const RESOLVE_TIMEOUT_MS = 8000;
 
 // Bound on reading the editor back after a load to add its serialisation to
@@ -388,15 +390,15 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
           }
           const tiptapDoc = contentToTiptap(load.value);
           addBaselineSerialization(() => serializeLoadedDoc(tiptapDoc));
-          // Resolve image URLs defensively, bounded by a timeout so a
-          // never-settling signed-URL fetch can't strand the loading overlay: a
-          // resolution failure/timeout degrades images to placeholders rather
-          // than blanking the whole (otherwise valid) note.
-          // Cached images resolve to their local file, with no network (ADR-0086).
-          const resolved = await withTimeout(
-            resolveImageUrlsOrFallback(tiptapDoc, resolveAttachmentSrc),
-            RESOLVE_TIMEOUT_MS,
+          // Resolve image URLs defensively, each reference bounded by a
+          // timeout so a never-settling signed-URL fetch can't strand the
+          // loading overlay: a resolution failure/timeout degrades that one
+          // image or link to a placeholder rather than blanking the whole
+          // (otherwise valid) note, and never costs a cached image its local
+          // src (ADR-0086), which resolves with no network.
+          const resolved = await resolveImageUrlsOrFallback(
             tiptapDoc,
+            withResolveTimeout(resolveAttachmentSrc, RESOLVE_TIMEOUT_MS),
           );
           if (cancelled || noteIdRef.current !== targetNoteId) return;
           editorRef.current?.setContent(resolved);

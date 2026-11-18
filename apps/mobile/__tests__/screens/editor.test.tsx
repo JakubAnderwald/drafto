@@ -111,6 +111,11 @@ jest.mock("@/lib/data/attachments", () => ({
   getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
 }));
 
+let mockProbesEnabled = true;
+jest.mock("@/lib/e2e-probes", () => ({
+  areE2EProbesEnabled: () => mockProbesEnabled,
+}));
+
 const mockResolveAttachmentSrc = jest.fn();
 const mockLocalAttachmentSrcFor = jest.fn();
 jest.mock("@/lib/data/attachment-resolver", () => ({
@@ -512,6 +517,7 @@ describe("EditorScreen offline attachment images (ADR-0086)", () => {
     mockOnAttachmentReady = undefined;
     mockResolveAttachmentSrc.mockResolvedValue(LOCAL_SRC);
     mockLocalAttachmentSrcFor.mockReturnValue(LOCAL_SRC);
+    mockProbesEnabled = true;
   });
 
   it("gives the editor a file:// base URL so cached images can load", () => {
@@ -540,6 +546,44 @@ describe("EditorScreen offline attachment images (ADR-0086)", () => {
     expect(lastBridgeOptions().initialContent.content[1].attrs?.src).toBe(
       toAttachmentUrl(FILE_PATH),
     );
+  });
+
+  it("keeps a cached image's local src when a link in the same note never resolves", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    mockResolveAttachmentSrc.mockImplementation((_filePath: string, kind: string) =>
+      kind === "link" ? new Promise<string>(() => undefined) : Promise.resolve(LOCAL_SRC),
+    );
+    storeNote(
+      serializeEditorContent({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "report",
+                marks: [{ type: "link", attrs: { href: toAttachmentUrl(LINK_PATH) } }],
+              },
+            ],
+          },
+          { type: "image", attrs: { src: toAttachmentUrl(FILE_PATH), alt: "photo.jpg" } },
+        ],
+      }),
+    );
+    jest.useFakeTimers();
+    try {
+      render(<EditorScreen />);
+      // Each reference has its own 8 s bound: the hung link alone stays unresolved.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(8000);
+      });
+      const shown = lastBridgeOptions().initialContent;
+      expect(shown.content[1].attrs?.src).toBe(LOCAL_SRC);
+      expect(JSON.stringify(shown.content[0])).toContain(toAttachmentUrl(LINK_PATH));
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("does not save a note opened with cached images and not edited (#654)", async () => {
@@ -604,5 +648,23 @@ describe("EditorScreen offline attachment images (ADR-0086)", () => {
 
     expect(getByLabelText("Image shown: photo.jpg")).toBeTruthy();
     expect(getByLabelText("Image not loaded: gone.png")).toBeTruthy();
+  });
+
+  it("has no image status views in a build without the E2E probes", async () => {
+    mockProbesEnabled = false;
+    storeNote(null);
+    const { queryByTestId } = render(<EditorScreen />);
+    await settle();
+    act(() => {
+      mockEditorOnMessage?.({
+        nativeEvent: {
+          data: JSON.stringify({
+            type: IMAGE_RENDER_STATUS_MESSAGE_TYPE,
+            images: [{ name: "photo.jpg", rendered: true, height: 240, local: true }],
+          }),
+        },
+      });
+    });
+    expect(queryByTestId("editor-image-status")).toBeNull();
   });
 });

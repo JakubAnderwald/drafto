@@ -11,6 +11,20 @@ import { editorWebViewBaseUrl } from "@/lib/editor-webview";
 
 const message = (data: string) => ({ nativeEvent: { data } }) as WebViewMessageEvent;
 
+let mockProbesEnabled = true;
+jest.mock("@/lib/e2e-probes", () => ({
+  areE2EProbesEnabled: () => mockProbesEnabled,
+}));
+
+const REPORT = JSON.stringify({
+  type: IMAGE_RENDER_STATUS_MESSAGE_TYPE,
+  images: [{ name: "a.jpg", rendered: true, height: 10, local: true }],
+});
+
+beforeEach(() => {
+  mockProbesEnabled = true;
+});
+
 describe("ImageRenderStatus (ADR-0086)", () => {
   it("renders nothing until the WebView reports an image", () => {
     const { queryByTestId } = render(<ImageRenderStatus images={[]} />);
@@ -33,6 +47,17 @@ describe("ImageRenderStatus (ADR-0086)", () => {
     expect(shown.props.style).toEqual(expect.arrayContaining([{ height: 240 }]));
     expect(missing.props.style).toEqual(expect.arrayContaining([{ height: 1 }]));
   });
+
+  it("renders nothing in a build without the E2E probes, so screen readers never read it", () => {
+    mockProbesEnabled = false;
+    const { queryByTestId, queryByLabelText } = render(
+      <ImageRenderStatus
+        images={[{ name: "photo.jpg", rendered: true, height: 240, local: true }]}
+      />,
+    );
+    expect(queryByTestId("editor-image-status")).toBeNull();
+    expect(queryByLabelText("Image shown: photo.jpg")).toBeNull();
+  });
 });
 
 describe("useImageRenderStatus", () => {
@@ -54,6 +79,15 @@ describe("useImageRenderStatus", () => {
     expect(injectJavaScript).toHaveBeenCalledTimes(2);
   });
 
+  it("injects nothing and keeps no report in a build without the E2E probes", () => {
+    mockProbesEnabled = false;
+    const { injectJavaScript, hook } = setup(true);
+    act(() => hook.result.current.refresh());
+    act(() => hook.result.current.handleMessage(message(REPORT)));
+    expect(injectJavaScript).not.toHaveBeenCalled();
+    expect(hook.result.current.images).toEqual([]);
+  });
+
   it("keeps the latest report and ignores other messages", () => {
     const { hook } = setup(true);
     act(() => {
@@ -61,14 +95,7 @@ describe("useImageRenderStatus", () => {
     });
     expect(hook.result.current.images).toEqual([]);
     act(() => {
-      hook.result.current.handleMessage(
-        message(
-          JSON.stringify({
-            type: IMAGE_RENDER_STATUS_MESSAGE_TYPE,
-            images: [{ name: "a.jpg", rendered: true, height: 10, local: true }],
-          }),
-        ),
-      );
+      hook.result.current.handleMessage(message(REPORT));
     });
     expect(hook.result.current.images).toEqual([
       { name: "a.jpg", rendered: true, height: 10, local: true },

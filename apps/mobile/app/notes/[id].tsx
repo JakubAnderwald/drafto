@@ -39,6 +39,7 @@ import {
   rememberContentBaseline,
   serializeEditorContent,
   serializeLoadedDoc,
+  withResolveTimeout,
   withTimeout,
 } from "@drafto/shared";
 import type { ContentBaseline, TipTapDoc, TipTapNode } from "@drafto/shared";
@@ -63,10 +64,11 @@ function parseInitialContent(note: Note): TipTapDoc {
   return EMPTY_DOC;
 }
 
-// Bound on resolving a note's image srcs, so a connected network with no
-// internet can't hold the editor on its skeleton. On timeout the images keep
-// their attachment:// src and show as unavailable; the stored content is
-// unchanged. Same bound as desktop's RESOLVE_TIMEOUT_MS.
+// Bound on resolving each attachment reference in a note, so a connected
+// network with no internet can't hold the editor on its skeleton. A reference
+// that times out keeps its attachment:// src and shows as unavailable, while
+// the others (cached images above all) keep what they resolved to; the stored
+// content is unchanged. Same bound as desktop's RESOLVE_TIMEOUT_MS.
 const RESOLVE_TIMEOUT_MS = 8000;
 
 // Bound on reading the editor back once it is ready to add that serialisation
@@ -158,7 +160,7 @@ function useResolvedContent(note: Note): { content: TipTapDoc; resolving: boolea
     if (!needsResolving) return;
     let cancelled = false;
     // Cached images resolve to their local file, with no network (ADR-0086).
-    withTimeout(resolveTipTapImageUrls(parsed, resolveAttachmentSrc), RESOLVE_TIMEOUT_MS, parsed)
+    resolveTipTapImageUrls(parsed, withResolveTimeout(resolveAttachmentSrc, RESOLVE_TIMEOUT_MS))
       .then((resolved) => {
         if (!cancelled) {
           setContent(resolved);

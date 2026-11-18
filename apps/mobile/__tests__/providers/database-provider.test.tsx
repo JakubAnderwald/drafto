@@ -5,7 +5,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 
 import { syncDatabase } from "@/db/sync";
-import { processPendingUploads } from "@/lib/data/attachment-queue";
+import { cleanupOrphanedFiles, processPendingUploads } from "@/lib/data/attachment-queue";
 import { prefetchAttachmentImages } from "@/lib/data/attachment-prefetch";
 import { ensureLocalIdentity } from "@/lib/data/local-identity";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
@@ -63,6 +63,7 @@ jest.mock("@/db/sync", () => {
 
 jest.mock("@/lib/data/attachment-queue", () => ({
   processPendingUploads: jest.fn(),
+  cleanupOrphanedFiles: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock("@/lib/data/attachment-prefetch", () => ({
@@ -865,6 +866,16 @@ describe("DatabaseProvider attachment prefetch (ADR-0086)", () => {
     await flushEffects();
     expect(mockPrefetch).not.toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  it("cleans up orphaned attachment files once, after the first sync", async () => {
+    const mockCleanup = cleanupOrphanedFiles as jest.Mock;
+    mockCleanup.mockResolvedValue(undefined);
+    renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockCleanup).toHaveBeenCalledTimes(1));
+    expect(mockSyncDatabase.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCleanup.mock.invocationCallOrder[0],
+    );
   });
 
   it("does not prefetch when no user is signed in", async () => {

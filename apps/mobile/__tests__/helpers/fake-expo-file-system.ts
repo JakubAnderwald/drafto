@@ -5,6 +5,8 @@
 export interface FakeFile {
   size: number;
   mtime: number;
+  /** Contents, for a file written as text. */
+  text?: string;
 }
 
 export interface FakeFileSystem {
@@ -15,6 +17,8 @@ export interface FakeFileSystem {
   /** Set to make the next `move` throw. */
   failNextMove: { value: boolean };
   now: { value: number };
+  /** How many times a directory was listed (walks of the cache). */
+  listCalls: { value: number };
   module: Record<string, unknown>;
 }
 
@@ -24,6 +28,7 @@ export function createFakeFileSystem(root = "file:///docs"): FakeFileSystem {
   const download = jest.fn<Promise<FakeFile>, [string]>();
   const failNextMove = { value: false };
   const now = { value: 1_000 };
+  const listCalls = { value: 0 };
 
   const toUri = (parts: unknown[]): string =>
     parts
@@ -61,6 +66,7 @@ export function createFakeFileSystem(root = "file:///docs"): FakeFileSystem {
         if (key === this.uri || key.startsWith(`${this.uri}/`)) dirs.delete(key);
     }
     list() {
+      listCalls.value += 1;
       const children = new Map<string, Directory | File>();
       const prefix = `${this.uri}/`;
       for (const key of [...files.keys(), ...dirs]) {
@@ -98,6 +104,15 @@ export function createFakeFileSystem(root = "file:///docs"): FakeFileSystem {
     delete() {
       if (!files.delete(this.uri)) throw new Error(`no file ${this.uri}`);
     }
+    create() {
+      files.set(this.uri, { size: 0, mtime: now.value });
+    }
+    write(content: string) {
+      files.set(this.uri, { size: content.length, mtime: now.value, text: content });
+    }
+    textSync() {
+      return files.get(this.uri)?.text ?? "";
+    }
     copy(destination: File) {
       const file = files.get(this.uri);
       if (!file) throw new Error(`no file ${this.uri}`);
@@ -127,6 +142,7 @@ export function createFakeFileSystem(root = "file:///docs"): FakeFileSystem {
     download,
     failNextMove,
     now,
+    listCalls,
     module: { File, Directory, Paths: { document: new Directory(root) } },
   };
 }
@@ -147,4 +163,5 @@ export function resetFakeFs(): void {
   fakeFs.download.mockReset();
   fakeFs.failNextMove.value = false;
   fakeFs.now.value = 1_000;
+  fakeFs.listCalls.value = 0;
 }

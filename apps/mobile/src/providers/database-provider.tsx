@@ -8,7 +8,7 @@ import { hasLocalEdit, storageFullMessage } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
-import { processPendingUploads } from "@/lib/data/attachment-queue";
+import { cleanupOrphanedFiles, processPendingUploads } from "@/lib/data/attachment-queue";
 import type { UploadResult } from "@/lib/data/attachment-queue";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
 import { prefetchAttachmentImages } from "@/lib/data/attachment-prefetch";
@@ -343,7 +343,14 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         identityReadyRef.current = true;
-        sync();
+        // Sync first, then clean up orphaned attachment files (cleanup needs
+        // complete DB state), as on desktop.
+        sync().then(() => {
+          if (cancelled) return;
+          cleanupOrphanedFiles().catch((cleanupErr: unknown) => {
+            console.warn("[DatabaseProvider] Orphaned file cleanup failed:", cleanupErr);
+          });
+        });
       });
     } else {
       identityReadyRef.current = false;

@@ -275,11 +275,13 @@ export default function PrivacyPolicyPage() {
           </p>
           <p>
             So that the images in your notes show without a connection, these apps also keep a copy
-            of your attachments on the device: every file you attach from that device (it stays on
-            the device after it uploads), and the images in your notes, which they download from our
-            servers in the background. When the space it takes reaches a limit (300&nbsp;MB on
-            iPhone, iPad and Android, 1&nbsp;GB on macOS), the copies you have not opened for the
-            longest time are removed first; a file that has not finished uploading is never removed.
+            of your image attachments on the device: every image you attach from that device (it
+            stays on the device after it uploads), and the images in your notes, which they download
+            from our servers in the background. Other files you attach stay on the device only until
+            they upload. When the space the images take reaches a limit (300&nbsp;MB on iPhone, iPad
+            and Android, 1&nbsp;GB on macOS), the copies you have not opened for the longest time
+            are removed first; a file that has not finished uploading is never removed. The copy of
+            an image is also removed once its note is deleted.
           </p>
           <p>
             The local copy, attachments included, is erased when you sign out or delete your account

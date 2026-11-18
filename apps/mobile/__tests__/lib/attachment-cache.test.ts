@@ -1,12 +1,20 @@
 import { fakeFs, resetFakeFs } from "../helpers/fake-expo-file-system";
+import { attachmentCacheRelativePath } from "@drafto/shared";
+
 import {
   ATTACHMENT_CACHE_MAX_BYTES,
   cacheFileFor,
+  copyIntoCache,
   deleteAttachmentCache,
+  deleteFromCache,
   downloadToCache,
   evictAttachmentCache,
+  flushAttachmentCacheIndex,
+  getAttachmentCacheState,
   getCachedAttachmentUri,
+  holdCacheFile,
   listAttachmentCache,
+  removeOrphanedCacheFiles,
   retainInCache,
 } from "@/lib/data/attachment-cache";
 
@@ -17,10 +25,19 @@ jest.mock(
   () => require("../helpers/fake-expo-file-system").fakeFs.module,
 );
 
+// Eviction asks for unsynced rows (a filtered query); the cleanup asks for
+// every attachment row (an unfiltered one) and the live note ids.
 const mockUnsyncedRows = jest.fn();
+const mockAllRows = jest.fn();
+const mockNoteIds = jest.fn();
 jest.mock("@/db", () => ({
   database: {
-    get: () => ({ query: () => ({ fetch: () => mockUnsyncedRows() }) }),
+    get: (table: string) => ({
+      query: (...conditions: unknown[]) => ({
+        fetch: () => (conditions.length > 0 ? mockUnsyncedRows() : mockAllRows()),
+        fetchIds: () => (table === "notes" ? mockNoteIds() : Promise.resolve([])),
+      }),
+    }),
   },
 }));
 
@@ -34,10 +51,14 @@ const put = (relativePath: string, size: number, mtime = 1_000) =>
   fakeFs.files.set(`${CACHE}/${relativePath}`, { size, mtime });
 
 beforeEach(() => {
+  deleteAttachmentCache();
   resetFakeFs();
   mockUnsyncedRows.mockReset();
   mockUnsyncedRows.mockResolvedValue([]);
-  deleteAttachmentCache();
+  mockAllRows.mockReset();
+  mockAllRows.mockResolvedValue([]);
+  mockNoteIds.mockReset();
+  mockNoteIds.mockResolvedValue([]);
 });
 
 describe("cacheFileFor", () => {
@@ -45,8 +66,11 @@ describe("cacheFileFor", () => {
     expect(cacheFileFor("user-1/note-1/photo.jpg").uri).toBe(`${CACHE}/user-1/note-1/photo.jpg`);
   });
 
-  it("makes legacy key segments filesystem-safe", () => {
-    expect(cacheFileFor("u/n/odd#name.jpg").uri).toBe(`${CACHE}/u/n/odd_name.jpg`);
+  it("gives legacy keys that make the same safe name different files", () => {
+    expect(cacheFileFor("u/n/odd#name.jpg").uri).toBe(
+      `${CACHE}/${attachmentCacheRelativePath("u/n/odd#name.jpg")}`,
+    );
+    expect(cacheFileFor("u/n/odd#name.jpg").uri).not.toBe(cacheFileFor("u/n/odd_name.jpg").uri);
   });
 });
 
@@ -180,6 +204,51 @@ describe("evictAttachmentCache", () => {
     expect(fakeFs.files.has(`${CACHE}/u/n/uploaded.jpg`)).toBe(false);
   });
 
+  it("never evicts a just-saved file whose row isn't written yet", async () => {
+    put("u/n/old.jpg", 50, 1);
+    fakeFs.files.set("file:///picker/new.jpg", { size: 60, mtime: 1 });
+    const release = holdCacheFile("u/n/new.jpg");
+    copyIntoCache("file:///picker/new.jpg", "u/n/new.jpg");
+
+    await evictAttachmentCache(100);
+    expect(fakeFs.files.has(`${CACHE}/u/n/new.jpg`)).toBe(true);
+    expect(fakeFs.files.has(`${CACHE}/u/n/old.jpg`)).toBe(false);
+
+    release();
+    put("u/n/other.jpg", 50, 1);
+    getCachedAttachmentUri("u/n/other.jpg");
+    await evictAttachmentCache(100);
+    expect(fakeFs.files.has(`${CACHE}/u/n/new.jpg`)).toBe(false);
+  });
+
+  it("evicts by when a file was last used, not by its (copied, old) file time", async () => {
+    put("u/n/prefetched.jpg", 50, 5_000);
+    fakeFs.files.set("file:///picker/2023.jpg", { size: 50, mtime: 1 });
+    jest.spyOn(Date, "now").mockReturnValue(9_000);
+    copyIntoCache("file:///picker/2023.jpg", "u/n/2023.jpg");
+    fakeFs.files.set(`${CACHE}/u/n/2023.jpg`, { size: 50, mtime: 1 });
+    jest.restoreAllMocks();
+
+    await evictAttachmentCache(60);
+
+    expect(fakeFs.files.has(`${CACHE}/u/n/2023.jpg`)).toBe(true);
+    expect(fakeFs.files.has(`${CACHE}/u/n/prefetched.jpg`)).toBe(false);
+  });
+
+  it("deletes nothing for an eviction a sign-out overtook", async () => {
+    put("u/n/a.jpg", 500, 1);
+    let rows: (value: unknown[]) => void = () => undefined;
+    mockUnsyncedRows.mockReturnValue(new Promise((resolve) => (rows = resolve)));
+    const eviction = evictAttachmentCache(10);
+    await Promise.resolve();
+    deleteAttachmentCache();
+    // The next account's file happens to sit at the same path.
+    put("u/n/a.jpg", 500, 1);
+    rows([]);
+    await eviction;
+    expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+  });
+
   it("never throws", async () => {
     put("u/n/a.jpg", 500);
     const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -190,6 +259,127 @@ describe("evictAttachmentCache", () => {
 
   it("caps the cache at 300 MB by default", () => {
     expect(ATTACHMENT_CACHE_MAX_BYTES).toBe(300 * 1024 * 1024);
+  });
+});
+
+describe("the cache index", () => {
+  it("keeps when each file was last used across a restart", async () => {
+    put("u/n/prefetched.jpg", 50, 5_000);
+    fakeFs.files.set("file:///picker/2023.jpg", { size: 50, mtime: 1 });
+    jest.spyOn(Date, "now").mockReturnValue(9_000);
+    copyIntoCache("file:///picker/2023.jpg", "u/n/2023.jpg");
+    jest.restoreAllMocks();
+    // The copy keeps the source's old file time, as File.copy does on iOS.
+    fakeFs.files.set(`${CACHE}/u/n/2023.jpg`, { size: 50, mtime: 1 });
+    flushAttachmentCacheIndex();
+
+    // A restart: the in-memory index is gone, the files and the index file stay.
+    const kept = new Map(fakeFs.files);
+    deleteAttachmentCache();
+    for (const [uri, file] of kept) fakeFs.files.set(uri, file);
+
+    await evictAttachmentCache(60);
+    expect(fakeFs.files.has(`${CACHE}/u/n/2023.jpg`)).toBe(true);
+    expect(fakeFs.files.has(`${CACHE}/u/n/prefetched.jpg`)).toBe(false);
+  });
+
+  it("walks the cache once, then keeps a running total", async () => {
+    put("u/n/a.jpg", 10);
+    put("u/n/b.jpg", 20);
+    expect(getAttachmentCacheState().totalBytes).toBe(30);
+    const walks = fakeFs.listCalls.value;
+
+    fakeFs.download.mockResolvedValue({ size: 5, mtime: 1 });
+    await downloadToCache("u/n/c.jpg", "https://signed/c");
+    deleteFromCache("u/n/a.jpg");
+    await evictAttachmentCache(1_000);
+    await evictAttachmentCache(1_000);
+
+    const state = getAttachmentCacheState();
+    expect(state.totalBytes).toBe(25);
+    expect(state.isCached("u/n/c.jpg")).toBe(true);
+    expect(state.isCached("u/n/a.jpg")).toBe(false);
+    expect(fakeFs.listCalls.value).toBe(walks);
+  });
+
+  it("is never listed as a cached file", () => {
+    put("u/n/a.jpg", 1);
+    getCachedAttachmentUri("u/n/a.jpg");
+    flushAttachmentCacheIndex();
+    deleteAttachmentCacheIndexOnly();
+    expect(listAttachmentCache().map((entry) => entry.relativePath)).toEqual(["u/n/a.jpg"]);
+  });
+});
+
+/** Forget the in-memory index, keeping every file (as a restart does). */
+function deleteAttachmentCacheIndexOnly(): void {
+  const kept = new Map(fakeFs.files);
+  deleteAttachmentCache();
+  for (const [uri, file] of kept) fakeFs.files.set(uri, file);
+}
+
+describe("removeOrphanedCacheFiles", () => {
+  const row = (filePath: string, noteId: string, extra: Record<string, unknown> = {}) => ({
+    filePath,
+    noteId,
+    mimeType: "image/jpeg",
+    uploadStatus: "uploaded",
+    ...extra,
+  });
+
+  it("deletes files whose attachment or note is gone, keeping trashed notes' images", async () => {
+    put("u/live/a.jpg", 1);
+    put("u/trashed/b.jpg", 1);
+    put("u/deleted/c.jpg", 1);
+    put("u/live/no-row.jpg", 1);
+    put("u/live/report.pdf", 1);
+    mockAllRows.mockResolvedValue([
+      row("u/live/a.jpg", "live"),
+      row("u/trashed/b.jpg", "trashed"),
+      row("u/deleted/c.jpg", "deleted"),
+      row("u/live/report.pdf", "live", { mimeType: "application/pdf" }),
+    ]);
+    // A note in the trash still exists; a deleted one doesn't.
+    mockNoteIds.mockResolvedValue(["live", "trashed"]);
+
+    await removeOrphanedCacheFiles();
+
+    expect(fakeFs.files.has(`${CACHE}/u/live/a.jpg`)).toBe(true);
+    expect(fakeFs.files.has(`${CACHE}/u/trashed/b.jpg`)).toBe(true);
+    expect(fakeFs.files.has(`${CACHE}/u/deleted/c.jpg`)).toBe(false);
+    expect(fakeFs.files.has(`${CACHE}/u/live/no-row.jpg`)).toBe(false);
+    expect(fakeFs.files.has(`${CACHE}/u/live/report.pdf`)).toBe(false);
+    expect(getAttachmentCacheState().totalBytes).toBe(2);
+  });
+
+  it("keeps a file whose upload hasn't finished, and one still being saved", async () => {
+    put("u/deleted/pending.jpg", 1);
+    put("u/n/saving.jpg", 1);
+    mockAllRows.mockResolvedValue([
+      row("u/deleted/pending.jpg", "deleted", { uploadStatus: "pending" }),
+    ]);
+    const release = holdCacheFile("u/n/saving.jpg");
+
+    await removeOrphanedCacheFiles();
+    release();
+
+    expect(fakeFs.files.has(`${CACHE}/u/deleted/pending.jpg`)).toBe(true);
+    expect(fakeFs.files.has(`${CACHE}/u/n/saving.jpg`)).toBe(true);
+  });
+
+  it("clears leftovers of downloads an app exit cut short", async () => {
+    fakeFs.files.set(`${CACHE}/.partial/id-1.part`, { size: 3, mtime: 1 });
+    await removeOrphanedCacheFiles();
+    expect(fakeFs.files.has(`${CACHE}/.partial/id-1.part`)).toBe(false);
+  });
+
+  it("never throws", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    put("u/n/a.jpg", 1);
+    mockAllRows.mockRejectedValue(new Error("db"));
+    await expect(removeOrphanedCacheFiles()).resolves.toBeUndefined();
+    expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+    warn.mockRestore();
   });
 });
 

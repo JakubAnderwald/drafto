@@ -64,7 +64,7 @@ jest.mock("@/hooks/use-note", () => ({ useNote: jest.fn() }));
 
 const mockGetSignedUrl = jest.fn(async (filePath: string) => `https://signed.example/${filePath}`);
 const mockResolveAttachmentSrc = jest.fn(
-  async (filePath: string) => `https://signed.example/${filePath}`,
+  async (filePath: string, _kind?: string): Promise<string> => `https://signed.example/${filePath}`,
 );
 const mockLocalAttachmentSrcFor = jest.fn(
   async (attachment: { filePath: string }) => `attachment://${attachment.filePath}`,
@@ -78,6 +78,9 @@ jest.mock("@/lib/data", () => ({
 }));
 
 jest.mock("@/components/editor/note-editor", () => ({ NoteEditor: () => null }));
+
+// The image render status probes exist only in E2E builds; this suite checks them.
+jest.mock("@/lib/e2e-probes", () => ({ areE2EProbesEnabled: () => true }));
 
 jest.mock("@/components/editor/attachment-picker", () => ({
   AttachmentPicker: (props: { onAttachmentReady?: (attachment: Attachment) => void }) => {
@@ -931,6 +934,44 @@ describe("NoteEditorPanel — offline attachment images (ADR-0086)", () => {
     web.emitChange();
     await flushAsync(DEBOUNCE_MS * 2);
     expect(writes(note)).toBe(0);
+  });
+
+  it("keeps a cached image's local src when a link in the same note never resolves", async () => {
+    const LINK_PATH = "user-1/a/report.pdf";
+    mockResolveAttachmentSrc.mockImplementation((_filePath: string, kind?: string) =>
+      kind === "link" ? new Promise<string>(() => undefined) : Promise.resolve(LOCAL_SRC),
+    );
+    createRecord(
+      "a",
+      "Trip",
+      serializeEditorContent({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "report",
+                marks: [{ type: "link", attrs: { href: toAttachmentUrl(LINK_PATH) } }],
+              },
+            ],
+          },
+          { type: "image", attrs: { src: toAttachmentUrl(FILE_PATH), alt: "photo.jpg" } },
+        ],
+      }),
+    );
+    renderPanel("a");
+    await flushAsync();
+    expect(web.bridge.setContent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "doc" }),
+    );
+
+    // Each reference has its own 8 s bound: the hung link alone stays unresolved.
+    await flushAsync(8000);
+    const shown = web.currentDoc();
+    expect(shown.content[1].attrs?.src).toBe(LOCAL_SRC);
+    expect(JSON.stringify(shown.content[0])).toContain(toAttachmentUrl(LINK_PATH));
   });
 
   it("inserts an image attached offline with its local src, and stores attachment://", async () => {

@@ -7,7 +7,9 @@ import {
   FILE_TOO_LARGE_MESSAGE,
   StorageQuotaError,
   buildAttachmentStoragePath,
+  isCacheableAttachment,
   isStorageQuotaError,
+  localAttachmentFileName,
   safeAttachmentFileName,
   storageFullMessage,
   wouldExceedQuota,
@@ -19,8 +21,12 @@ import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
 import {
+  cacheFileFor,
+  copyIntoCache,
   deleteAttachmentCache,
-  prepareCacheFile,
+  deleteFromCache,
+  holdCacheFile,
+  removeOrphanedCacheFiles,
   retainInCache,
 } from "@/lib/data/attachment-cache";
 import { resetAttachmentPrefetch } from "@/lib/data/attachment-prefetch";
@@ -33,8 +39,10 @@ interface PickedFile {
   fileSize: number;
 }
 
-// Where picked files waited for upload before the attachment cache (ADR-0086).
-// Files still pending there upload from it and then move into the cache.
+// Where a picked file that isn't an image waits for upload; it is deleted once
+// uploaded. Images go to the attachment cache instead (ADR-0086), but one
+// picked before the cache existed may still be pending here: it uploads from
+// here and then moves into the cache.
 const ATTACHMENTS_DIR_NAME = "attachments";
 
 function getAttachmentsDir(): Directory {
@@ -42,13 +50,20 @@ function getAttachmentsDir(): Directory {
 }
 
 /**
- * Copy a picked file into the attachment cache, at its storage path. It is
- * uploaded from there and kept afterwards as the cached copy, so the image
- * shows offline from the moment it is attached.
+ * Copy a picked file to where it waits for upload. An image goes into the
+ * attachment cache, at its storage path: it is uploaded from there and kept
+ * afterwards as the cached copy, so it shows offline from the moment it is
+ * attached. Any other file goes to the attachments folder, as before.
  */
 function saveFileLocally(file: PickedFile, filePath: string): string {
+  if (isCacheableAttachment(file.mimeType)) return copyIntoCache(file.uri, filePath);
+
+  const dir = getAttachmentsDir();
+  if (!dir.exists) {
+    dir.create();
+  }
   const source = new File(file.uri);
-  const destination = prepareCacheFile(filePath);
+  const destination = new File(dir, localAttachmentFileName(generateId(), file.fileName));
   source.copy(destination);
 
   if (!destination.exists || destination.size === 0) {
@@ -71,26 +86,31 @@ export async function queueAttachment(
   // one note never share an object; the display name stays without it.
   const fileName = safeAttachmentFileName(file.fileName);
   const { filePath } = buildAttachmentStoragePath(file.fileName, userId, noteId);
-  const localUri = saveFileLocally(file, filePath);
-  const remoteId = generateId();
+  // Until its row exists, nothing else knows the copy is needed: keep it
+  // from eviction and the orphan cleanup meanwhile.
+  const release = holdCacheFile(filePath);
+  try {
+    const localUri = saveFileLocally(file, filePath);
+    const remoteId = generateId();
 
-  const attachment = await database.write(async () => {
-    return database.get<Attachment>("attachments").create((record) => {
-      record._raw.id = remoteId;
-      record.remoteId = remoteId;
-      record.noteId = noteId;
-      record.userId = userId;
-      record.fileName = fileName;
-      record.filePath = filePath;
-      record.fileSize = file.fileSize;
-      record.mimeType = file.mimeType;
-      record.localUri = localUri;
-      record.uploadStatus = "pending";
-      record.uploadError = null;
+    return await database.write(async () => {
+      return database.get<Attachment>("attachments").create((record) => {
+        record._raw.id = remoteId;
+        record.remoteId = remoteId;
+        record.noteId = noteId;
+        record.userId = userId;
+        record.fileName = fileName;
+        record.filePath = filePath;
+        record.fileSize = file.fileSize;
+        record.mimeType = file.mimeType;
+        record.localUri = localUri;
+        record.uploadStatus = "pending";
+        record.uploadError = null;
+      });
     });
-  });
-
-  return attachment;
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -165,9 +185,18 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     });
   });
 
-  // Keep the file as the attachment's cached copy (moved there if it was
-  // picked before the cache existed), so it still shows offline.
-  retainInCache(localUri, attachment.filePath);
+  // Keep an image as the attachment's cached copy (moved there if it was
+  // picked before the cache existed), so it still shows offline. Any other
+  // file is no longer needed.
+  if (isCacheableAttachment(attachment.mimeType)) {
+    retainInCache(localUri, attachment.filePath);
+  } else {
+    try {
+      localFile.delete();
+    } catch {
+      // Non-critical: the orphan cleanup removes it later
+    }
+  }
 }
 
 /**
@@ -343,6 +372,10 @@ export async function discardRefusedAttachment(attachment: Attachment): Promise<
   }
   if (!localUri) return;
   try {
+    if (localUri === cacheFileFor(attachment.filePath).uri) {
+      deleteFromCache(attachment.filePath);
+      return;
+    }
     const localFile = new File(localUri);
     if (localFile.exists) localFile.delete();
   } catch (err) {
@@ -445,35 +478,36 @@ export async function deleteAllLocalAttachments(): Promise<void> {
   }
 }
 
-export function cleanupOrphanedFiles(): void {
+/**
+ * Delete local attachment files nothing needs any more: files in the
+ * attachments folder no row points at, and cached files whose attachment or
+ * note is gone (`removeOrphanedCacheFiles`). Run after a sync, so the rows are
+ * complete. Never throws.
+ */
+export async function cleanupOrphanedFiles(): Promise<void> {
   try {
     const dir = getAttachmentsDir();
-    if (!dir.exists) return;
+    if (dir.exists) {
+      // Every row that still points at a file keeps it (a failed or
+      // quota-refused upload's file is its only copy), as on desktop.
+      const withLocalUri = await database
+        .get<Attachment>("attachments")
+        .query(Q.where("local_uri", Q.notEq(null)))
+        .fetch();
+      const activeUris = new Set(withLocalUri.map((a) => a.localUri));
 
-    // Cleanup runs asynchronously — fire and forget. Every row that still
-    // points at a file keeps it (a failed or quota-refused upload's file is
-    // its only copy), as on desktop.
-    database
-      .get<Attachment>("attachments")
-      .query(Q.where("local_uri", Q.notEq(null)))
-      .fetch()
-      .then((withLocalUri) => {
-        const activeUris = new Set(withLocalUri.map((a) => a.localUri));
-
-        for (const item of dir.list()) {
-          if (!activeUris.has(item.uri)) {
-            try {
-              item.delete();
-            } catch {
-              // Non-critical
-            }
+      for (const item of dir.list()) {
+        if (!activeUris.has(item.uri)) {
+          try {
+            item.delete();
+          } catch {
+            // Non-critical
           }
         }
-      })
-      .catch(() => {
-        // Non-critical cleanup
-      });
+      }
+    }
   } catch {
     // Non-critical cleanup
   }
+  await removeOrphanedCacheFiles();
 }

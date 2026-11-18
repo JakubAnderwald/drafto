@@ -105,11 +105,12 @@ describe("Privacy policy page", () => {
 
     const offline = screen.getByRole("heading", { name: "Offline data" }).parentElement
       ?.textContent;
-    expect(offline).toMatch(/keep a copy\s+of your attachments on the device/);
-    expect(offline).toMatch(/it stays on the device after it\s+uploads/);
-    expect(offline).toMatch(/300\u00a0MB on iPhone, iPad and\s+Android, 1\u00a0GB on macOS/);
+    expect(offline).toMatch(/keep a copy\s+of your image attachments on the device/);
+    expect(offline).toMatch(/stays on the device after it uploads/);
+    expect(offline).toMatch(/Other files you attach stay on the device only until\s+they upload/);
+    expect(offline).toMatch(/300\u00a0MB on iPhone, iPad\s+and Android, 1\u00a0GB on macOS/);
+    expect(offline).toMatch(/removed once its note is deleted/);
     expect(offline).toMatch(/The local copy, attachments included, is erased when you sign out/);
-    expect(offline).not.toMatch(/stay on the device only until they\s+upload/);
   });
 
   it("identifies the data controller and a contact address", () => {
