@@ -26,14 +26,21 @@ net_active_services() {
     done
 }
 
-# Things that should not lose the network mid-flight.
-net_busy() { pgrep -f 'fastlane|xcodebuild|/gym |support-agent\.sh|nightly-(support|audit)\.sh' > /dev/null; }
+# Things that should not lose the network mid-flight: builds, releases and the
+# support runs. Maestro's iOS driver runs as `xcodebuild test-without-building`
+# for as long as a Maestro session lasts; it is a test, not a build, so it
+# doesn't count (otherwise an iOS Maestro run could never go offline).
+net_busy_procs() {
+  pgrep -fl 'fastlane|xcodebuild|/gym |support-agent\.sh|nightly-(support|audit)\.sh' |
+    grep -v 'test-without-building' || true
+}
+net_busy() { [ -n "$(net_busy_procs)" ]; }
 
 net_wait_idle() {
   local end=$(($(date +%s) + ${1:-600}))
   while net_busy; do
     [ "$(date +%s)" -lt "$end" ] || return 1
-    log "   waiting: a build or support run is active ($(pgrep -fl 'fastlane|xcodebuild|support-agent' | head -1 | cut -c1-80))"
+    log "   waiting: a build or support run is active ($(net_busy_procs | head -1 | cut -c1-80))"
     sleep 20
   done
 }
