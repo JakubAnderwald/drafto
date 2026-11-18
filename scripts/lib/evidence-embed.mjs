@@ -158,10 +158,17 @@ function overflowOf(upload) {
 
 // Matched against text whose whitespace runs are collapsed to one space (see
 // screenshotMentions), so each " ?" is a single optional character and the
-// match can't backtrack badly on model output full of spaces. A separator may
-// carry a comma first ("1, 2, and 3").
+// match can't backtrack badly on model output full of spaces.
+//
+// The singular "screenshot" takes exactly one number: in "screenshot 1, 3
+// notes in the list" the 3 is a count. Only the plural "screenshots" takes a
+// list or a range, where a separator may carry a comma first ("1, 2, and 3").
+// Each number after the first must also end the phrase: a separator, closing
+// punctuation, a quote, a tag or the end of the text follows it. So
+// "screenshots 1 - 3 items" reads 1 alone, and an image is never placed under
+// a row whose text merely counts something.
 const MENTION =
-  /\bscreenshots?\b ?:? ?(#? ?\d{1,3}(?!\d)(?:(?: ?(?:, ?)?(?:&|\+|\/|-|–|—|\band\b|\bto\b|\bthrough\b)| ?,) ?#? ?\d{1,3}(?!\d))*)/gi;
+  /\bscreenshots\b ?:? ?(#? ?\d{1,3}(?!\d)(?:(?: ?(?:, ?)?(?:&|\+|\/|-|–|—|\band\b|\bto\b|\bthrough\b)| ?,) ?#? ?\d{1,3}(?!\d)(?= ?(?:$|[,.;:!?()[\]{}<"'”’*_`&+/–—-]|and\b|to\b|through\b)))*)|\bscreenshot\b ?:? ?(#? ?\d{1,3}(?!\d))/gi;
 const RANGE_SEP = /^(?:-|–|—|to|through)$/i;
 // Far more than any table cell; only bounds the work on hostile output.
 const MENTION_SCAN_MAX = 20000;
@@ -174,7 +181,8 @@ export function screenshotMentions(text) {
     .replace(/\s+/g, " ")
     .slice(0, MENTION_SCAN_MAX);
   for (const m of flat.matchAll(MENTION)) {
-    const parts = m[1].match(/\d{1,3}|-|–|—|\band\b|\bto\b|\bthrough\b|,|&|\+|\//gi) ?? [];
+    const parts =
+      (m[1] ?? m[2]).match(/\d{1,3}|-|–|—|\band\b|\bto\b|\bthrough\b|,|&|\+|\//gi) ?? [];
     let prev = null;
     let range = false;
     for (const p of parts) {
@@ -212,7 +220,9 @@ export function groupByReport(report, images) {
   const groups = [];
   parseResultTable(report).forEach((row, i) => {
     const mine = [];
-    for (const n of screenshotMentions(`${row.step} ${row.evidence}`)) {
+    // Each cell on its own: joined, a list ending the Step cell would run into
+    // the Evidence cell's first word and lose its last number.
+    for (const n of [...screenshotMentions(row.step), ...screenshotMentions(row.evidence)]) {
       if (byN.has(n) && !taken.has(n)) {
         taken.add(n);
         mine.push(byN.get(n));

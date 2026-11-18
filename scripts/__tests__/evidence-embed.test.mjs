@@ -398,6 +398,29 @@ describe("screenshotMentions", () => {
       assert.deepEqual(screenshotMentions(t), [], String(t));
     }
   });
+
+  it("gives the singular one number, so a count after it isn't read as a screenshot", () => {
+    // #819 review: each of these took the count as a second screenshot, and
+    // groupByReport then put that image under the wrong step.
+    assert.deepEqual(screenshotMentions("screenshot 1, 3 notes in the list"), [1]);
+    assert.deepEqual(screenshotMentions("screenshot 1 - 3 items"), [1]);
+    assert.deepEqual(screenshotMentions("screenshot 2 and 5 seconds later the toast"), [2]);
+    assert.deepEqual(screenshotMentions("screenshot 2, 3"), [2]);
+    assert.deepEqual(screenshotMentions("screenshot 3 shows 2 notes"), [3]);
+  });
+
+  it("reads a listed number only where it ends the phrase", () => {
+    assert.deepEqual(screenshotMentions("screenshots 1, 3 notes in the list"), [1]);
+    assert.deepEqual(screenshotMentions("screenshots 1 - 3 items"), [1]);
+    assert.deepEqual(screenshotMentions("screenshots 2 and 5 seconds later"), [2]);
+    assert.deepEqual(screenshotMentions("screenshots 2, 3 and 4 notes"), [2, 3]);
+    // A separator, closing punctuation, a quote or a tag ends it.
+    assert.deepEqual(screenshotMentions("screenshots 2 and 3 (toast)"), [2, 3]);
+    assert.deepEqual(screenshotMentions('"screenshots 2 and 3"'), [2, 3]);
+    assert.deepEqual(screenshotMentions("screenshots 2 and 3; toast shown"), [2, 3]);
+    assert.deepEqual(screenshotMentions("screenshots 2 and 3<br>toast"), [2, 3]);
+    assert.deepEqual(screenshotMentions("screenshots 2–4. Toast shown"), [2, 3, 4]);
+  });
 });
 
 describe("groupByReport", () => {
@@ -423,6 +446,33 @@ describe("groupByReport", () => {
     assert.deepEqual(
       groups.map((g) => g.images.map((i) => i.n)),
       [[2]],
+    );
+  });
+
+  it("doesn't take another step's image for a count in its own text", () => {
+    const report = table([
+      ["1", "Create 3 notes", "PASS", "screenshot 1, 3 notes in the list"],
+      ["2", "Add 3 items", "PASS", "screenshot 2 - 3 items"],
+      ["3", "Wait for the toast", "PASS", "screenshot 3"],
+    ]);
+    const { groups, other } = groupByReport(report, valid([1, 2, 3]));
+    assert.deepEqual(
+      groups.map((g) => [g.title, g.images.map((i) => i.n)]),
+      [
+        ["**Step 1** · PASS · Create 3 notes", [1]],
+        ["**Step 2** · PASS · Add 3 items", [2]],
+        ["**Step 3** · PASS · Wait for the toast", [3]],
+      ],
+    );
+    assert.deepEqual(other, []);
+  });
+
+  it("reads a list that ends the Step cell without running into the Evidence cell", () => {
+    const report = table([["1", "Check screenshots 1 and 2", "PASS", "toast shown"]]);
+    const { groups } = groupByReport(report, valid([1, 2]));
+    assert.deepEqual(
+      groups.map((g) => g.images.map((i) => i.n)),
+      [[1, 2]],
     );
   });
 
