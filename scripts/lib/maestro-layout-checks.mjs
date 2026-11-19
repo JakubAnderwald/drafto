@@ -151,6 +151,23 @@ export function verticalOverlap(a, b) {
 // ---------------------------------------------------------------------------
 
 /**
+ * `dumpsys window` without its "WINDOW MANAGER LAST ANR" section. That section
+ * comes first and is a snapshot of the window manager at the device's last
+ * ANR, kept until it reboots, with its own "WINDOW MANAGER DISPLAY CONTENTS"
+ * (windows, mCurrentFocus) inside. Read as live, it hands the checks another
+ * app run's window and nav bar. The live dump starts at "WINDOW MANAGER POLICY
+ * STATE", which follows it. Text without the section is returned as is.
+ */
+export function liveDumpsys(dumpsys) {
+  const text = String(dumpsys);
+  const start = text.search(/^WINDOW MANAGER LAST ANR\b/m);
+  if (start === -1) return text;
+  const rest = text.slice(start);
+  const end = rest.search(/^WINDOW MANAGER POLICY STATE\b/m);
+  return text.slice(0, start) + (end === -1 ? "" : rest.slice(end));
+}
+
+/**
  * The navigationBars inset frame from `dumpsys window`, e.g.
  * `InsetsSource id=… type=navigationBars frame=[0,2274][1080,2400] visible=true`.
  * The dump lists the source more than once (per display and per window);
@@ -162,7 +179,7 @@ export function parseNavigationBarFrame(dumpsys) {
   const re =
     /type=navigationBars\s+frame=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\](?:\s+visible=(true|false))?/g;
   const frames = [];
-  for (const m of String(dumpsys).matchAll(re)) {
+  for (const m of liveDumpsys(dumpsys).matchAll(re)) {
     const frame = rect(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]));
     if (frame.width > 0 && frame.height > 0) frames.push({ ...frame, visible: m[5] !== "false" });
   }
@@ -201,7 +218,7 @@ export function navigationMode(frame, densityDpi) {
  * dialog) has the focus, in which case the first window of <pkg> is used.
  */
 export function parseWindowAppearance(dumpsys, pkg = "eu.drafto.mobile") {
-  const text = String(dumpsys);
+  const text = liveDumpsys(dumpsys);
   const headerRe = /^([ \t]*)Window #\d+ Window\{([0-9a-f]+) u\d+ ([^}\s]+)\}:[ \t]*$/gm;
   const blocks = [...text.matchAll(headerRe)].map((m) => ({
     hash: m[2],
@@ -473,6 +490,11 @@ export function fabAboveHomeIndicator(
   );
 }
 
+/** Whether a node belongs to Android's System UI (the status or navigation bar). */
+function isSystemUi(node) {
+  return String(node.attributes["resource-id"] ?? "").startsWith("com.android.systemui:");
+}
+
 /** The header a back button sits in: its smallest ancestor spanning the screen's width. */
 function headerOf(nodes, index, screen) {
   let parent = nodes[index].parent;
@@ -519,7 +541,10 @@ export function bannerClearOfBack(
   let banners = findNodes(nodes, { id: bannerId });
   const bannerBy = banners.length ? "id" : "text";
   if (!banners.length) banners = findNodes(nodes, { text: bannerText });
-  const backs = findNodes(nodes, back);
+  // The 3-button nav bar's own Back key (com.android.systemui:id/back,
+  // labelled "Back") is in Maestro's hierarchy too. It is no header's back
+  // button: paired with it, every banner would sit "above the header".
+  const backs = findNodes(nodes, back).filter((node) => !isSystemUi(node));
   if (!banners.length) return unmeasured(check, "no offline banner on screen", {});
   if (!backs.length)
     return unmeasured(check, "no back button on screen", { banner: boundsOf(banners) });

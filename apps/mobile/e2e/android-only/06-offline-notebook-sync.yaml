@@ -81,6 +81,9 @@ onFlowComplete:
     from:
       text: ".*OffNest ${RUN_ID}.*"
     direction: LEFT
+# The swipe opens the row; its trash action asks to confirm.
+- tapOn:
+    id: "action-trash"
 - assertVisible: "Move to Trash"
 - tapOn: "Trash"
 - pressKey: back
@@ -89,6 +92,11 @@ onFlowComplete:
     from:
       text: ".*OffNB ${RUN_ID}"
     direction: LEFT
+# The swipe opens the row; its trash action asks to confirm the delete.
+- tapOn:
+    id: "action-trash"
+- assertVisible: "Delete Notebook"
+- tapOn: "Delete"
 - extendedWaitUntil:
     notVisible: ".*OffNB ${RUN_ID}"
     timeout: 10000

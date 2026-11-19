@@ -14,6 +14,7 @@ import {
   findNodes,
   flattenHierarchy,
   imageRendered,
+  liveDumpsys,
   navBarMatches,
   navBarSampleRegion,
   navModeReport,
@@ -304,6 +305,26 @@ describe("dumpsys window parsing", () => {
     assert.equal(dark.focused, true);
   });
 
+  it("ignores the last ANR's snapshot at the top of the dump", () => {
+    // `dumpsys window` opens with the window manager as it was at the device's
+    // last ANR (kept until reboot), its own display contents and focus included.
+    const live = text("dumpsys-window-3button-dark.txt");
+    const dump = [
+      "WINDOW MANAGER LAST ANR (dumpsys window lastanr)",
+      "  ANR time: Nov 18, 2026 9:55:09 PM",
+      "WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)",
+      text("dumpsys-window-gesture.txt"),
+      text("dumpsys-window-3button-app-dark-light-bar.txt"),
+      "WINDOW MANAGER POLICY STATE (dumpsys window policy)",
+      live,
+    ].join("\n");
+    assert.deepEqual(parseWindowAppearance(dump), parseWindowAppearance(live));
+    assert.deepEqual(parseWindowAppearance(dump).flags, []);
+    assert.equal(parseNavigationBarFrame(dump).height, 126);
+    assert.equal(liveDumpsys(live), live);
+    assert.equal(liveDumpsys(dump).includes("ANR time"), false);
+  });
+
   it("says when another window has the focus, or Drafto has none", () => {
     const launcher = parseWindowAppearance(text("dumpsys-window-launcher-focused.txt"));
     assert.equal(launcher.focused, false);
@@ -525,6 +546,21 @@ describe("bannerClearOfBack (M-03)", () => {
     assert.equal(result.pass, true);
     assert.equal(result.details.bannerBy, "id");
     assert.equal(result.details.flush, true);
+    assert.equal(result.details.pairs[0].gap, 0);
+  });
+
+  it("ignores the 3-button nav bar's own Back key (System UI)", () => {
+    const root = tree("android-offline-note-banner-clear.json");
+    root.children.push({
+      attributes: {
+        "resource-id": "com.android.systemui:id/back",
+        accessibilityText: "Back",
+        bounds: "[162,2274][350,2400]",
+      },
+    });
+    const result = bannerClearOfBack(root);
+    assert.equal(result.pass, true);
+    assert.equal(result.details.pairs.length, 1);
     assert.equal(result.details.pairs[0].gap, 0);
   });
 

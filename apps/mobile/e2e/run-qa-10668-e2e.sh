@@ -72,6 +72,10 @@ set -euo pipefail
 #                       while the Mac is offline (ending on the screen to
 #                       check), `reconnect` online again. A flow ignores a
 #                       phase it has no steps for.
+#   QA_NO_PROBES=1      android-only/09-offline-image, --before only: the build
+#                       has no E2E image probes (EXPO_PUBLIC_E2E_PROBES), so
+#                       the flow skips its probe waits and still ends offline
+#                       on the note for the host check.
 #   QA_THEME=dark|light|system
 #                       android-only/11-dark-nav-bar: the in-app theme to pick
 #                       in Settings before ending on the Notebooks tab.
@@ -561,8 +565,13 @@ if [ "$PLATFORM" = android ]; then
 
   # --- M-02 / M-03: offline image, offline banner (airplane mode) ---
   FLOW_ENV=(-e QA_KEEP_OFFLINE=1)
+  # A --before build (1.4.7) has no E2E image probes: without QA_NO_PROBES the
+  # flow stops at its first probe wait, online, and the check would measure
+  # the online image instead of the offline one.
+  if [ "$BEFORE" = 1 ]; then FLOW_ENV+=(-e QA_NO_PROBES=1); fi
   layout_step offline-image android-only/09-offline-image.yaml image-rendered
   adb_sh cmd connectivity airplane-mode disable > /dev/null 2>&1 || true
+  FLOW_ENV=(-e QA_KEEP_OFFLINE=1)
   layout_step offline-banner android-only/10-offline-banner-header.yaml banner-clear-of-back
   adb_sh cmd connectivity airplane-mode disable > /dev/null 2>&1 || true
 
