@@ -37,7 +37,7 @@ tags:
       - inputText: ${E2E_TEST_EMAIL}
       - tapOn: "Sign in to your Drafto account"
       - tapOn: "Your password"
-      - inputText: ${E2E_TEST_PASSWORD}
+      - inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
       - tapOn: "Sign in to your Drafto account"
       - tapOn:
           id: "login-button"
