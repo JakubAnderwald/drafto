@@ -513,7 +513,17 @@ describe("SwipeableRow", () => {
     });
 
     it("stops and settles the row when the peek is called off mid-slide", async () => {
-      const spring = jest.spyOn(Animated, "spring");
+      // A real spring settles on animation frames, which a loaded CI runner can
+      // stretch past waitFor's timeout; finish it at once instead.
+      const spring = jest.spyOn(Animated, "spring").mockImplementation(
+        () =>
+          ({
+            start: (callback?: (result: { finished: boolean }) => void) =>
+              callback?.({ finished: true }),
+            stop: jest.fn(),
+            reset: jest.fn(),
+          }) as unknown as Animated.CompositeAnimation,
+      );
       const { sequence, stop } = fakeSequence();
       const onPeekEnd = jest.fn();
       const { left, right } = trashActions();
