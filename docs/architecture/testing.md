@@ -118,11 +118,13 @@ npx expo prebuild --platform android --clean     # only when android/ is missing
 echo "sdk.dir=$HOME/Library/Android/sdk" > android/local.properties
 set -a
 source .env                                      # dev Supabase; exported values win over .env.production
-source ~/drafto-secrets/android-env.sh           # release keystore; never print it
+source ~/drafto-secrets/android-env.sh           # release keystore, read by Gradle at build time; never print it
 set +a
 export _JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'
-(cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a)
 APK=android/app/build/outputs/apk/release/app-release.apk
+rm -f "$APK"                                     # a failed build must leave no older APK to install
+(cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a) ||
+  echo "STOP: the release build failed; the guard below finds no APK and installs nothing"
 
 # Guard: the APK must name the dev project and never the production one, and
 # it installs only when both hold. The Supabase URL is not in the Hermes
@@ -146,6 +148,7 @@ rm -f "$CONTENTS" "$CONFIG"
 ```
 
 - Gradle needs JDK 17–24, as for a debug build ([Mobile debug builds](#mobile-debug-builds)); Homebrew's `openjdk@17` works too.
+- `expo prebuild` needs no signing secrets. The `with-android-signing.js` plugin writes a release signing config that reads the keystore variables from the environment when Gradle runs, so `android-env.sh` only has to be sourced before `assembleRelease`.
 - The uninstall wipes the app's local data, so sign in again (flow `01-login.yaml`).
 - `run-qa-10668-e2e.sh` runs the same guard on whatever is installed: it pulls the APK and refuses one that names production anywhere or whose `assets/app.config` lacks the dev ref.
 

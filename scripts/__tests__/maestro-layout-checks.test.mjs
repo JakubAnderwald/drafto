@@ -290,6 +290,7 @@ describe("dumpsys window parsing", () => {
   it("reads the focused Drafto window's apr= flags", () => {
     assert.deepEqual(parseWindowAppearance(text("dumpsys-window-3button-light.txt")), {
       window: "eu.drafto.mobile/eu.drafto.mobile.MainActivity",
+      hash: "5f1e0b7",
       focused: true,
       flags: ["LIGHT_STATUS_BARS", "LIGHT_NAVIGATION_BARS"],
     });
@@ -405,6 +406,16 @@ describe("decodePng / luminance", () => {
     assert.throws(() => decodePng(bad), /colour type 5/);
     const filter = encodePng({ width: 1, height: 1, filters: [7], color: () => [0, 0, 0, 0] });
     assert.throws(() => decodePng(filter), /bad PNG filter 7/);
+  });
+
+  it("rejects a screenshot cut off mid-write", () => {
+    const whole = encodePng({ width: 4, height: 4, color: () => [1, 2, 3, 255] });
+    assert.deepEqual(decodePng(whole).pixel(3, 3), { r: 1, g: 2, b: 3, a: 255 });
+    // The IDAT chunk declares more data than the file holds.
+    const idat = whole.indexOf("IDAT", 0, "latin1") - 4;
+    assert.throws(() => decodePng(whole.subarray(0, idat + 10)), /truncated \(in its IDAT chunk\)/);
+    // Every chunk is whole, but the file stops before IEND.
+    assert.throws(() => decodePng(whole.subarray(0, whole.length - 12)), /no IEND/);
   });
 
   it("computes WCAG relative luminance", () => {
@@ -751,6 +762,22 @@ describe("navBarMatches (M-04)", () => {
       dumpsysAfter: text("dumpsys-window-gesture.txt"),
     });
     assert.equal(resized.measured, false);
+    // Same name, frame and flags, but a new window: the activity was recreated.
+    const recreated = navBarMatches("dark", darkShot, dark, {
+      dumpsysAfter: dark.replaceAll("5f1e0b7", "6a2c9d1"),
+    });
+    assert.equal(recreated.measured, false);
+    assert.match(recreated.reason, /changed while the screenshot was taken/);
+  });
+
+  it("measures nothing with the nav bar at the side (landscape)", () => {
+    const side = text("dumpsys-window-3button-dark.txt").replace(
+      "type=navigationBars frame=[0,2274][1080,2400]",
+      "type=navigationBars frame=[0,0][126,1080]",
+    );
+    const result = navBarMatches("dark", darkShot, side);
+    assert.equal(result.measured, false);
+    assert.match(result.reason, /at the side; run the check in portrait/);
   });
 
   it("scales the frame to a screenshot of another size", () => {

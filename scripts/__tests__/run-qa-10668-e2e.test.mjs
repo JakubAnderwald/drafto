@@ -110,11 +110,13 @@ stub(
   *) : ;;
 esac`,
 );
-// The host-offline stand-ins. sudo logs its argv and runs the command after
-// its flags, except \`-b\` (the root watchdog), which it only logs.
+// The host-offline stand-ins. sudo logs its argv (as text, and as one JSON
+// array per call) and runs the command after its flags, except \`-b\` (the
+// root watchdog), which it only logs.
 stub(
   "sudo",
   `printf '%s\\n' "$*" >> "\${SUDO_LOG:-/dev/null}"
+[ -z "\${SUDO_ARGV_LOG:-}" ] || node -e 'require("fs").appendFileSync(process.env.SUDO_ARGV_LOG, JSON.stringify(process.argv.slice(1)) + "\\n")' -- "$@"
 background=0
 while [ $# -gt 0 ]; do case "$1" in -b) background=1; shift ;; -*) shift ;; *) break ;; esac; done
 [ $# -eq 0 ] || [ "$background" = 1 ] && exit 0
@@ -203,6 +205,7 @@ function run(
     adb: path.join(root, `adb-${id}.log`),
     maestro: path.join(root, `maestro-argv-${id}.log`),
     sudo: path.join(root, `sudo-${id}.log`),
+    sudoArgv: path.join(root, `sudo-argv-${id}.log`),
     net: path.join(root, `net-${id}.log`),
   };
   const childEnv = {
@@ -215,6 +218,7 @@ function run(
     ADB_LOG: logs.adb,
     MAESTRO_ARGV_LOG: logs.maestro,
     SUDO_LOG: logs.sudo,
+    SUDO_ARGV_LOG: logs.sudoArgv,
     NET_LOG: logs.net,
     ...env,
   };
@@ -456,7 +460,20 @@ describe("run-qa-10668-e2e.sh", () => {
     assert.match(result.summary, /\| offline-image \| passed \|/);
     // The keepalive loop, and the watchdog armed for 300 s (sudo -b, never run here).
     assert.match(result.logs.sudo, /^-n true$/m);
-    assert.match(result.logs.sudo, /^-n -b nohup \/bin\/sh -c .* sh 300 \S+net-restored Wi-Fi$/m);
+    const watchdogs = result.logs.sudoArgv
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((argv) => argv[1] === "-b");
+    assert.equal(watchdogs.length, 1, result.logs.sudo);
+    const [watchdog] = watchdogs;
+    assert.deepEqual(watchdog.slice(0, 5), ["-n", "-b", "nohup", "/bin/sh", "-c"]);
+    assert.deepEqual(watchdog.slice(6), [
+      "sh",
+      "300",
+      path.join(result.out, "net", "net-restored"),
+      "Wi-Fi",
+    ]);
     // Maestro's driver (xcodebuild test-without-building) didn't hold it up.
     assert.doesNotMatch(readFileSync(path.join(result.out, "run.log"), "utf8"), /waiting: a build/);
     assert.equal(

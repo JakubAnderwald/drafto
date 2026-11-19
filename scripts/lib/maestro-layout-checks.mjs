@@ -213,9 +213,11 @@ export function navigationMode(frame, densityDpi) {
  * focus as `mCurrentFocus=Window{<hash> u0 <name>}`. A window whose
  * appearance is 0 prints no `apr=` at all, so its flags are [].
  *
- * Returns {window, focused, flags}, or null when no window of <pkg> is
- * listed. `focused` is false when another window (the launcher, a system
- * dialog) has the focus, in which case the first window of <pkg> is used.
+ * Returns {window, hash, focused, flags}, or null when no window of <pkg> is
+ * listed. `hash` is the window's id in the dump: a recreated window (an
+ * activity restarted for a theme change) gets a new one under the same name.
+ * `focused` is false when another window (the launcher, a system dialog) has
+ * the focus, in which case the first window of <pkg> is used.
  */
 export function parseWindowAppearance(dumpsys, pkg = "eu.drafto.mobile") {
   const text = liveDumpsys(dumpsys);
@@ -235,7 +237,7 @@ export function parseWindowAppearance(dumpsys, pkg = "eu.drafto.mobile") {
 
   const apr = /\bapr=([A-Z_]+(?:[ \t]+[A-Z_]+)*)/.exec(block.body);
   const flags = apr ? apr[1].split(/[ \t]+/).filter(Boolean) : [];
-  return { window: block.name, focused, flags };
+  return { window: block.name, hash: block.hash, focused, flags };
 }
 
 /**
@@ -278,10 +280,14 @@ export function decodePng(buffer) {
   let offset = 8;
   let header = null;
   let palette = null;
+  let ended = false;
   const idat = [];
   while (offset + 8 <= buf.length) {
     const length = buf.readUInt32BE(offset);
     const type = buf.toString("latin1", offset + 4, offset + 8);
+    // A screenshot read while it is still being written ends mid-chunk.
+    if (offset + 12 + length > buf.length)
+      throw new Error(`PNG is truncated (in its ${type} chunk)`);
     const data = buf.subarray(offset + 8, offset + 8 + length);
     offset += 12 + length;
     if (type === "IHDR") {
@@ -297,10 +303,12 @@ export function decodePng(buffer) {
     } else if (type === "IDAT") {
       idat.push(data);
     } else if (type === "IEND") {
+      ended = true;
       break;
     }
   }
   if (!header) throw new Error("PNG has no IHDR");
+  if (!ended) throw new Error("PNG is truncated (no IEND chunk)");
   const { width, height, bitDepth, colorType, interlace } = header;
   const channels = CHANNELS[colorType];
   if (!channels) throw new Error(`unsupported PNG colour type ${colorType}`);
@@ -423,6 +431,13 @@ function unmeasured(check, reason, details) {
   return { check, pass: false, measured: false, reason, details };
 }
 
+const SIDE_BAR_REASON = "the nav bar is at the side; run the check in portrait";
+
+/** Whether a nav bar frame is at the side of the screen (landscape), not the bottom. */
+function atSide(frame) {
+  return frame.width < frame.height;
+}
+
 function boundsOf(nodes) {
   return nodes.map((node) => node.bounds);
 }
@@ -446,11 +461,7 @@ export function fabAboveNavBar(hierarchy, dumpsys, { fabId = "add", tolerance = 
       navBar,
     });
   }
-  if (navBar.width < navBar.height) {
-    return unmeasured(check, "the nav bar is at the side; run the check in portrait", {
-      navBar,
-    });
-  }
+  if (atSide(navBar)) return unmeasured(check, SIDE_BAR_REASON, { navBar });
   const worst = Math.max(...fabs.map((fab) => fab.bounds.bottom - navBar.top));
   const pass = worst <= tolerance;
   return verdict(
@@ -681,7 +692,9 @@ export const NAV_BAR_THRESHOLDS = { darkMax: 0.25, lightMin: 0.6 };
  * bar still repainting could pair one state's flags with another's pixels.
  * Given <dumpsysAfter>, a second dump taken after the screenshot, it measures
  * only when both dumps show the same nav-bar frame and the same Drafto
- * window appearance: the screenshot was taken in that settled state.
+ * window (its id included) and appearance: the screenshot was taken in that
+ * settled state. A bar at the side (landscape) is not measured: the sample
+ * region assumes a bottom bar.
  */
 export function navBarMatches(
   expect,
@@ -696,6 +709,7 @@ export function navBarMatches(
   if (!navBar) return unmeasured(check, "dumpsys has no navigationBars frame", {});
   if (!navBar.visible)
     return unmeasured(check, "the nav bar is hidden (visible=false)", { navBar });
+  if (atSide(navBar)) return unmeasured(check, SIDE_BAR_REASON, { navBar });
   const appearance = parseWindowAppearance(dumpsys, pkg);
   if (!appearance) return unmeasured(check, `no ${pkg} window in dumpsys`, { navBar });
   if (!appearance.focused) {
