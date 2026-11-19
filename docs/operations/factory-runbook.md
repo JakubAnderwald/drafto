@@ -1354,7 +1354,7 @@ To rehearse a resume by hand, on a scratch card:
 5. Run the same command again. Change nothing in between: the resume conditions above all have to hold.
 6. In the same log, check for `Issue #<n>: resume session <id>` from the second run, with the same `<id>`. A `fresh session <id> (no resume: <reason>)` line means the drill failed, and the reason says why.
 7. Check that the second run appended to the same transcript: `ls -l ~/.claude/projects/*/<id>.jsonl` still shows one file, and it is larger than the size you noted in step 4.
-8. Close the scratch card, or move it to a column the factory doesn't work: not In Progress, In Review or Testing. Remove `factory-pause` from the cards you added it to in step 2, and leave it on the ones that already had it. Only then reload the job, so its first tick can't take the scratch card:
+8. Move the scratch card to **Blocked** or **Done**, the two columns no mode reads; closing the issue too is fine. Closing it alone isn't enough: `--implement` picks cards by column, not by issue state. Any other column gets the card worked again: Ready is re-planned, and Approved merges its PR. Remove `factory-pause` from the cards you added it to in step 2, and leave it on the ones that already had it. Only then reload the job, so its first tick can't take the scratch card:
 
    ```bash
    launchctl load ~/Library/LaunchAgents/eu.drafto.factory.plist
