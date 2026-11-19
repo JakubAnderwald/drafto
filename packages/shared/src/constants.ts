@@ -39,3 +39,10 @@ export const SIGNUP_CONFIRMATION_SENT =
   "If this address is new to Drafto, we've sent it a link to confirm your account. Open the link, then log in. If you already have an account, just log in.";
 // The web login page's notice for `?confirmed=1`, where that confirmation link lands.
 export const EMAIL_CONFIRMED = "Email confirmed. Log in to continue, here or in the Drafto app.";
+// Accessible names of the show/hide toggle on every password field (login, sign-up, reset
+// password) on every platform. Web e2e locators match the field's own "Password" label with
+// `exact: true`, because "Show password" contains it.
+export const PASSWORD_VISIBILITY_LABELS = {
+  show: "Show password",
+  hide: "Hide password",
+} as const;

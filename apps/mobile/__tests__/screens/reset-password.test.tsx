@@ -264,4 +264,22 @@ describe("ResetPasswordScreen", () => {
     });
     expect(queryByText("Signing out\u2026")).toBeNull();
   });
+
+  it("gives each password field its own show/hide toggle", () => {
+    const { getByTestId } = render(<ResetPasswordScreen />);
+
+    const newField = () => getByTestId("new-password-input");
+    const confirmField = () => getByTestId("confirm-password-input");
+    expect(newField().props.secureTextEntry).toBe(true);
+    expect(confirmField().props.secureTextEntry).toBe(true);
+
+    fireEvent.press(getByTestId("new-password-input-toggle"));
+    expect(newField().props.secureTextEntry).toBe(false);
+    expect(confirmField().props.secureTextEntry).toBe(true);
+
+    fireEvent.press(getByTestId("confirm-password-input-toggle"));
+    expect(confirmField().props.secureTextEntry).toBe(false);
+    expect(newField().props.autoComplete).toBe("new-password");
+    expect(confirmField().props.autoComplete).toBe("new-password");
+  });
 });

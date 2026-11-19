@@ -11,6 +11,7 @@ interface IconButtonProps {
   accessibilityState?: AccessibilityState;
   testID?: string;
   size?: number;
+  disabled?: boolean;
   children: ReactNode;
 }
 
@@ -24,6 +25,7 @@ export function IconButton({
   accessibilityState,
   testID,
   size = 28,
+  disabled,
   children,
 }: IconButtonProps) {
   const { semantic } = useTheme();
@@ -36,8 +38,10 @@ export function IconButton({
         styles.base,
         hovered && !pressed && styles.hover,
         pressed && styles.pressed,
+        disabled && styles.disabled,
       ]}
       onPress={onPress}
+      disabled={disabled}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       accessibilityLabel={accessibilityLabel}
@@ -65,5 +69,8 @@ const createStyles = (semantic: SemanticColors, size: number) =>
     },
     pressed: {
       backgroundColor: semantic.bgMutedHover,
+    },
+    disabled: {
+      opacity: 0.5,
     },
   });

@@ -148,4 +148,29 @@ describe("Reset password page", () => {
     expect(screen.getByLabelText("New Password")).toHaveAttribute("minlength", "6");
     expect(screen.getByLabelText("Confirm Password")).toHaveAttribute("minlength", "6");
   });
+
+  it("gives each password field its own show/hide toggle", async () => {
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<ResetPasswordPage />);
+    });
+
+    const newPassword = screen.getByLabelText("New Password");
+    const confirmPassword = screen.getByLabelText("Confirm Password");
+    expect(newPassword).toHaveAttribute("autocomplete", "new-password");
+    expect(confirmPassword).toHaveAttribute("autocomplete", "new-password");
+
+    const toggles = screen.getAllByRole("button", { name: "Show password" });
+    expect(toggles).toHaveLength(2);
+    expect(toggles[0]).toHaveAttribute("aria-controls", "password");
+    expect(toggles[1]).toHaveAttribute("aria-controls", "confirmPassword");
+
+    await user.click(toggles[0]);
+    expect(newPassword).toHaveAttribute("type", "text");
+    expect(confirmPassword).toHaveAttribute("type", "password");
+
+    await user.click(screen.getByRole("button", { name: "Show password" }));
+    expect(confirmPassword).toHaveAttribute("type", "text");
+    expect(screen.getAllByRole("button", { name: "Hide password" })).toHaveLength(2);
+  });
 });

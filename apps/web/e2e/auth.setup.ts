@@ -19,7 +19,7 @@ setup("authenticate", async ({ page }) => {
   await page.goto("/login");
 
   await page.getByLabel("Email").fill(email);
-  await fillSecret(page.getByLabel("Password"), password);
+  await fillSecret(page.getByLabel("Password", { exact: true }), password);
   await page.getByRole("button", { name: "Log in" }).click();
 
   // Wait until we're redirected away from the login page. The 5s default is
