@@ -1,0 +1,89 @@
+{
+  "attributes": {
+    "bounds": "[0,0][1080,2400]"
+  },
+  "children": [
+    {
+      "attributes": {
+        "class": "android.widget.FrameLayout",
+        "bounds": "[0,0][1080,2400]"
+      },
+      "children": [
+        {
+          "attributes": {
+            "resource-id": "offline-banner",
+            "bounds": "[0,0][1080,105]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "text": "You are offline",
+                "bounds": "[380,26][760,78]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        },
+        {
+          "attributes": {
+            "class": "com.swmansion.rnscreens.CustomToolbar",
+            "bounds": "[0,105][1080,370]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "class": "android.widget.ImageButton",
+                "accessibilityText": "Navigate up",
+                "bounds": "[0,223][147,370]"
+              },
+              "children": [],
+              "clickable": true,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            },
+            {
+              "attributes": {
+                "class": "android.widget.TextView",
+                "text": "Note 1760000000",
+                "bounds": "[189,265][700,327]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        }
+      ],
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "checked": false,
+      "selected": false
+    }
+  ],
+  "clickable": false,
+  "enabled": true,
+  "focused": false,
+  "checked": false,
+  "selected": false
+}

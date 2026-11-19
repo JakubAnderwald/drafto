@@ -2,6 +2,7 @@ import { ActivityIndicator, Alert, ScrollView, StyleSheet } from "react-native";
 import { Q } from "@nozbe/watermelondb";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
+  SIGN_OUT_SYNCED_MESSAGE,
   describeAccountDeletionFailure,
   formatStorageUsage,
   type AccountDeletionResult,
@@ -259,7 +260,11 @@ describe("NotebooksSidebar — app menu and delete account", () => {
     mockSignOut.mockResolvedValue(undefined);
     mockSync.mockResolvedValue(undefined);
     mockCountUnsyncedChanges.mockResolvedValue(0);
-    jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    // Every sign-out asks first (PrimeTestLab report 10668, S-02): answer with the confirm
+    // button. Tests about the dialog itself replace this with a no-op and press its buttons.
+    jest
+      .spyOn(Alert, "alert")
+      .mockImplementation((_title, _message, buttons) => buttons?.at(-1)?.onPress?.());
   });
 
   it("shows the email and the App menu, but no account actions until the menu is opened", () => {
@@ -292,8 +297,46 @@ describe("NotebooksSidebar — app menu and delete account", () => {
     await waitFor(() => {
       expect(mockSignOut).toHaveBeenCalledTimes(1);
     });
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+    expect(Alert.alert).toHaveBeenCalledWith(
+      "Sign out?",
+      SIGN_OUT_SYNCED_MESSAGE,
+      expect.any(Array),
+      expect.anything(),
+    );
+    expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
     expect(mockDeleteAccount).not.toHaveBeenCalled();
     expect(mockSync).not.toHaveBeenCalled();
+  });
+
+  it("keeps the user row and menu trigger on Cancel of the sign-out confirmation", async () => {
+    (Alert.alert as jest.Mock).mockImplementation(() => {});
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    openAppMenu(utils);
+    fireEvent.press(utils.getByTestId("logout-button"));
+
+    await waitFor(() => {
+      expect(Alert.alert).toHaveBeenCalledTimes(1);
+    });
+    const buttons = (Alert.alert as jest.Mock).mock.calls[0][2] as Array<{
+      text: string;
+      style?: string;
+      onPress?: () => void;
+    }>;
+    expect(buttons.map((b) => b.text)).toEqual(["Cancel", "Sign out"]);
+    expect(buttons[1].style).toBe("destructive");
+    // Nothing reads "Signing out…" while the user is still being asked.
+    expect(utils.queryByTestId("sign-out-progress")).toBeNull();
+    expect(utils.getByText("user@example.com")).toBeTruthy();
+
+    await act(async () => {
+      buttons[0].onPress?.();
+    });
+
+    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(utils.getByTestId("app-menu-trigger")).toBeTruthy();
+    expect(utils.getByText("user@example.com")).toBeTruthy();
   });
 
   it("shows sign-out progress in the user row and hides the menu trigger meanwhile", async () => {
@@ -322,7 +365,9 @@ describe("NotebooksSidebar — app menu and delete account", () => {
     await waitFor(() => {
       expect(mockSignOut).toHaveBeenCalledTimes(1);
     });
-    expect(Alert.alert).not.toHaveBeenCalled();
+    // The last sync pushed everything, so the one confirmation says so.
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+    expect((Alert.alert as jest.Mock).mock.calls[0][1]).toBe(SIGN_OUT_SYNCED_MESSAGE);
   });
 
   it("keeps an open delete panel mounted but unconfirmable while a sign-out runs", async () => {
@@ -447,6 +492,7 @@ describe("NotebooksSidebar — app menu and delete account", () => {
   });
 
   it("asks before signing out with changes a last sync could not push", async () => {
+    (Alert.alert as jest.Mock).mockImplementation(() => {});
     mockCountUnsyncedChanges.mockResolvedValue(3);
     const utils = render(<NotebooksSidebar {...defaultProps} />);
 

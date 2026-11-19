@@ -303,4 +303,21 @@ describe("Login page", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  it("lets the user show and hide the password, with current-password autofill", async () => {
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    const password = screen.getByLabelText("Password");
+    expect(password).toHaveAttribute("type", "password");
+    expect(password).toHaveAttribute("autocomplete", "current-password");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");
+
+    await user.click(screen.getByRole("button", { name: "Show password" }));
+    expect(password).toHaveAttribute("type", "text");
+    await user.click(screen.getByRole("button", { name: "Hide password" }));
+    expect(password).toHaveAttribute("type", "password");
+  });
 });

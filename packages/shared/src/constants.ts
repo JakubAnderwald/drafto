@@ -39,3 +39,22 @@ export const SIGNUP_CONFIRMATION_SENT =
   "If this address is new to Drafto, we've sent it a link to confirm your account. Open the link, then log in. If you already have an account, just log in.";
 // The web login page's notice for `?confirmed=1`, where that confirmation link lands.
 export const EMAIL_CONFIRMED = "Email confirmed. Log in to continue, here or in the Drafto app.";
+
+// The confirmation mobile Settings and the desktop app menu show before every sign-out, which
+// wipes the device's local database and attachment files (useSafeSignOut). With unsynced changes
+// it says how many will be lost and confirms with SIGN_OUT_ANYWAY_LABEL instead.
+export const SIGN_OUT_CONFIRM_TITLE = "Sign out?";
+export const SIGN_OUT_SYNCED_MESSAGE =
+  "Everything is synced. Your notes will be here when you sign back in.";
+// When the unsynced count could not be read, so the dialog cannot promise nothing is lost.
+export const SIGN_OUT_UNKNOWN_MESSAGE = "Any changes that haven't synced yet will be lost.";
+export const SIGN_OUT_CONFIRM_LABEL = "Sign out";
+export const SIGN_OUT_ANYWAY_LABEL = "Sign out anyway";
+
+// Accessible names of the show/hide toggle on every password field (login, sign-up, reset
+// password) on every platform. Web e2e locators match the field's own "Password" label with
+// `exact: true`, because "Show password" contains it.
+export const PASSWORD_VISIBILITY_LABELS = {
+  show: "Show password",
+  hide: "Hide password",
+} as const;
