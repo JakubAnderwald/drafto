@@ -142,6 +142,7 @@ appId: eu.drafto.mobile
 
 # Navigate to the test notebook
 - tapOn: ".*NB ${RUN_ID}"
+- waitForAnimationToEnd
 
 - extendedWaitUntil:
     visible: "No notes yet"
