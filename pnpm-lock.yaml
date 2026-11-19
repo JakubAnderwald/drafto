@@ -171,8 +171,8 @@ importers:
         specifier: ^29.7.0
         version: 29.7.0(@types/node@24.19.2)
       react-native-dotenv:
-        specifier: ^3.4.12
-        version: 3.4.12(@babel/runtime@8.1.2)
+        specifier: ^5.0.0
+        version: 5.0.0
       typescript:
         specifier: ~6.0.3
         version: 6.0.3
@@ -3734,8 +3734,8 @@ packages:
     cpu: [arm64]
     os: [win32]
 
-  '@tybys/wasm-util@0.10.4':
-    resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
+  '@tybys/wasm-util@0.10.5':
+    resolution: {integrity: sha512-dOGOPxlaNV+G046mZzN+9C0dAcQZeSKcXiVaM0TYy/LM4ttTmgSBDxYfovcYI8Em3+eAbiAYpvWLOv8+ZVRJKA==}
 
   '@types/aria-query@5.0.4':
     resolution: {integrity: sha512-rfT93uj5s0PRL7EzccGMs3brplhcrghnDoV26NqKhCAS1hVo+WdNsPvE/yb6ilfr5hi2MEk6d5EWJTKdxg8jVw==}
@@ -5057,6 +5057,11 @@ packages:
   dotenv@17.4.2:
     resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
     engines: {node: '>=12'}
+
+  dotenv@18.0.10:
+    resolution: {integrity: sha512-89FAA1xchzK2mxVWdr5F/0rldwiueXs6zJM86rO66EzekR1iBdiXRthyG+m5GvkJaFH3C2LESzamTkgndmLT2A==}
+    engines: {node: '>=12'}
+    hasBin: true
 
   dunder-proto@1.0.1:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
@@ -7366,6 +7371,10 @@ packages:
     resolution: {integrity: sha512-LJlKCCAUFKOuZxipUdYw1NzIITEsPcgyOG9LkvRJvuKj/bRzbuRY0ARXvL0pWGpsZvn8jku+LMep2eU0seHp8g==}
     engines: {node: ^10 || ^12 || >=14}
 
+  postcss@8.5.33:
+    resolution: {integrity: sha512-RVHEU9/Pp1Fnjr/MpAJsZoADukCKhfIi15OunEYiGktIkYLkPVvC1sioWolGDS7XByMTx9m/IGbro0Js13zhnQ==}
+    engines: {node: ^10 || ^12 || >=14}
+
   posthog-js@1.448.0:
     resolution: {integrity: sha512-MX5/l3J5a/NPGCHcPDGh+UnbarZeoSed7ukfx9FKPmNXL4CAwtgsjnJFqlx+f6FpzO6Hfo7WWfUY+9WIavSwjA==}
     peerDependencies:
@@ -7677,10 +7686,8 @@ packages:
       react-native: '*'
       react-native-macos: '*'
 
-  react-native-dotenv@3.4.12:
-    resolution: {integrity: sha512-CEHSiLTaE1vwW/TgI5CIp/AXi2/O2Lz6oZwbxHGMRNLr50cUXMaR5ThHW/FIFWnrNK5VRCWB2YmFzk6p3csVkg==}
-    peerDependencies:
-      '@babel/runtime': ^7.20.6
+  react-native-dotenv@5.0.0:
+    resolution: {integrity: sha512-y63fXkOvLSDNSEG0ylOZhYvQi5oyY/vHRU+z5iATABbkyifwoUebG88LyAteiaiVsepnFaAwycm2/bytGJ2uUw==}
 
   react-native-fs@2.20.0:
     resolution: {integrity: sha512-VkTBzs7fIDUiy/XajOSNk0XazFE9l+QlMAce7lGuebZcag5CnjszB+u4BdqzwaQOdcYb5wsJIsqq4kxInIRpJQ==}
@@ -11550,7 +11557,7 @@ snapshots:
     dependencies:
       '@emnapi/core': 1.10.0
       '@emnapi/runtime': 1.11.3
-      '@tybys/wasm-util': 0.10.4
+      '@tybys/wasm-util': 0.10.5
     optional: true
 
   '@next/env@16.4.6': {}
@@ -13468,7 +13475,7 @@ snapshots:
   '@turbo/windows-arm64@2.11.11':
     optional: true
 
-  '@tybys/wasm-util@0.10.4':
+  '@tybys/wasm-util@0.10.5':
     dependencies:
       tslib: 2.9.1
     optional: true
@@ -14952,6 +14959,8 @@ snapshots:
   dotenv@16.6.1: {}
 
   dotenv@17.4.2: {}
+
+  dotenv@18.0.10: {}
 
   dunder-proto@1.0.1:
     dependencies:
@@ -18019,6 +18028,12 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.2
 
+  postcss@8.5.33:
+    dependencies:
+      nanoid: 3.3.20
+      picocolors: 1.1.1
+      source-map-js: 1.2.2
+
   posthog-js@1.448.0(@types/react@19.3.0)(react@19.2.8):
     dependencies:
       '@posthog/browser-common': 0.10.8
@@ -18279,10 +18294,9 @@ snapshots:
       react-native: 0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.1(typescript@6.0.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.8)
       react-native-macos: 0.83.0(patch_hash=6219608397352d54c530a03d8ea806aaa85128b1510eae9be8dd9800ec27d15d)(@babel/core@7.29.7)(@react-native-community/cli@18.0.1(typescript@6.0.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.3.0)(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.1(typescript@6.0.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.8))(react@19.2.8)
 
-  react-native-dotenv@3.4.12(@babel/runtime@8.1.2):
+  react-native-dotenv@5.0.0:
     dependencies:
-      '@babel/runtime': 8.1.2
-      dotenv: 17.4.2
+      dotenv: 18.0.10
 
   react-native-fs@2.20.0(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.1(typescript@6.0.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.8)):
     dependencies:
@@ -19549,7 +19563,7 @@ snapshots:
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.7
-      postcss: 8.5.32
+      postcss: 8.5.33
       rolldown: 1.0.0-rc.12(@emnapi/core@1.10.0)(@emnapi/runtime@1.11.3)
       tinyglobby: 0.2.17
     optionalDependencies:
