@@ -33,3 +33,6 @@ export {
   clearSignedUrlCache,
   getCachedSignedUrlSync,
 } from "./signed-url-cache";
+
+export { resolveAttachmentSrc, localAttachmentSrcFor } from "./attachment-resolver";
+export { prefetchAttachmentImages } from "./attachment-prefetch";

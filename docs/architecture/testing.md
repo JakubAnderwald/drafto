@@ -175,6 +175,16 @@ rm -f "$CONTENTS" "$CONFIG"
 - Screenshots, hierarchy dumps, logs and `summary.md` go to `--out` (default under `$TMPDIR`). The screenshots show note content, so don't commit them. The runner hands Maestro the test password as `MAESTRO_E2E_TEST_PASSWORD` in the environment, not as a `-e` argument that `ps` would show (`01-login.yaml` reads either), points Maestro's `--debug-output` (its commands JSON and log, typed text included) under `--out` instead of `~/.maestro/tests`, and scrubs the password from every file under `--out`, in its raw and JSON-escaped forms.
 - The checks are plain functions with a small CLI (`node scripts/lib/maestro-layout-checks.mjs <check> --hierarchy … --dumpsys … --screenshot …`), unit-tested with recorded fixtures in `scripts/__tests__/maestro-layout-checks.test.mjs`. Use its `bounds --hierarchy <file> --id <regex>` command to look at an element's bounds while writing a flow.
 
+### E2E probe builds
+
+The editor's image render status views (`editor-image-rendered` / `editor-image-missing`, labelled "Image shown: <name>" / "Image not loaded: <name>", [ADR-0086](../adr/0086-offline-attachment-cache.md)) are test-only probes. VoiceOver and TalkBack would read them to real users, so a build has them only when it was made with the flag on. Default is off: store, TestFlight and Play builds, and any build made without the flag, have no probes and no injected reporter.
+
+- **Mobile:** `EXPO_PUBLIC_E2E_PROBES=1`. `app.config.ts` puts it in `extra.e2eProbes` when the config is evaluated, and `src/lib/e2e-probes.ts` reads it. A release build evaluates the config at build time, so export the flag in the shell that builds:
+  - **Android release APK against dev** (for the offline flows, the QA 10668 report flows among them): export `EXPO_PUBLIC_E2E_PROBES=1` alongside the dev `.env` before `./gradlew assembleRelease`, so the flag is in the APK's `assets/app.config`. Check with `unzip -p "$APK" assets/app.config | grep -o '"e2eProbes":true'`.
+  - **iOS simulator build:** export `EXPO_PUBLIC_E2E_PROBES=1` before `npx expo prebuild --platform ios` and the `xcodebuild … -sdk iphonesimulator` build. A Debug build served by Metro reads the config from Metro, so start Metro with the flag exported instead (`EXPO_PUBLIC_E2E_PROBES=1 npx expo start`).
+- **Desktop:** `E2E_PROBES=1`, in the environment when Metro bundles (or in `apps/desktop/.env`, never `.env.production`). react-native-dotenv inlines it; `src/lib/e2e-probes.ts` reads it.
+- **Without the flag**, the `09` offline image Maestro flows, which assert on those `testID`s, can't pass. The QA 10668 runner's `image-rendered` host check falls back to the WebView's own `<img>` alt-text nodes in `maestro hierarchy`, which are less reliable: they don't always reach the accessibility tree.
+
 ### Desktop E2E
 
 `apps/desktop/e2e/run-e2e.sh` drives the running macOS app through System Events (AppleScript) and clicks with `cliclick`. It finds elements by their accessibility label.

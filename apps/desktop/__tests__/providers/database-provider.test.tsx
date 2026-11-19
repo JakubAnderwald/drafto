@@ -75,6 +75,7 @@ jest.mock("@/lib/data", () => ({
   cleanupOrphanedFiles: jest.fn(),
   ensureLocalIdentity: jest.fn(),
   fetchStorageUsage: jest.fn().mockResolvedValue(null),
+  prefetchAttachmentImages: jest.fn().mockResolvedValue({ downloaded: 0 }),
 }));
 
 jest.mock("@/lib/performance", () => ({
@@ -1087,5 +1088,40 @@ describe("DatabaseProvider storage-full alert (issue #794)", () => {
     await flushEffects();
 
     expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
+describe("DatabaseProvider attachment prefetch (ADR-0086)", () => {
+  const mockPrefetch = jest.requireMock("@/lib/data").prefetchAttachmentImages as jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: true });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue(NO_UPLOADS);
+    mockCleanupOrphanedFiles.mockResolvedValue(undefined);
+    mockEnsureLocalIdentity.mockResolvedValue("ready");
+    mockPrefetch.mockResolvedValue({ downloaded: 0 });
+  });
+
+  it("prefetches images after a successful sync, cancelled once the session ends", async () => {
+    const { rerender } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockPrefetch).toHaveBeenCalledTimes(1));
+    const [{ isCancelled }] = mockPrefetch.mock.calls[0] as [{ isCancelled: () => boolean }];
+    expect(isCancelled()).toBe(false);
+    mockUseAuth.mockReturnValue({ user: null, isApproved: false });
+    rerender({});
+    await flushEffects();
+    expect(isCancelled()).toBe(true);
+  });
+
+  it("does not prefetch after a failed sync", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockSyncDatabase.mockRejectedValue(new Error("boom"));
+    renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalled());
+    await flushEffects();
+    expect(mockPrefetch).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 });

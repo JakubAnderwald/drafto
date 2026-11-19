@@ -40,6 +40,20 @@ export const SIGNUP_CONFIRMATION_SENT =
 // The web login page's notice for `?confirmed=1`, where that confirmation link lands.
 export const EMAIL_CONFIRMED = "Email confirmed. Log in to continue, here or in the Drafto app.";
 
+// Offline attachment cache (ADR-0086). Mobile and desktop keep a copy of each attachment
+// under <Documents>/attachment-cache/, keyed by its storage path, so images show offline.
+export const ATTACHMENT_CACHE_DIR_NAME = "attachment-cache";
+// The editor shows a cached image through a file:// src that ends in this fragment plus
+// the URL-encoded storage path. The save path maps such a src back to attachment://, so
+// a device path never reaches the database (migrateSignedUrlsToAttachmentUrls).
+export const LOCAL_ATTACHMENT_FRAGMENT = "#drafto-attachment=";
+// One prefetch pass (after a sync) downloads at most this many images...
+export const ATTACHMENT_PREFETCH_MAX_FILES = 25;
+// ...and at most this many bytes.
+export const ATTACHMENT_PREFETCH_MAX_BYTES = 104857600; // 100MB in bytes
+// Images bigger than this are cached only once they are viewed, never prefetched.
+export const ATTACHMENT_PREFETCH_MAX_FILE_BYTES = 20971520; // 20MB in bytes
+
 // The confirmation mobile Settings and the desktop app menu show before every sign-out, which
 // wipes the device's local database and attachment files (useSafeSignOut). With unsynced changes
 // it says how many will be lost and confirms with SIGN_OUT_ANYWAY_LABEL instead.

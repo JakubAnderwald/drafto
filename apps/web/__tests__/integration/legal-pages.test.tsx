@@ -96,8 +96,30 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     expect(screen.getByText(/Effective date: March 8, 2026/)).toHaveTextContent(
-      "Last updated: November 16, 2026",
+      "Last updated: November 19, 2026",
     );
+  });
+
+  it("says the apps keep attachments on the device for offline use, and erase them on sign-out", () => {
+    render(<PrivacyPolicyPage />);
+
+    const offline = screen.getByRole("heading", { name: "Offline data" }).parentElement
+      ?.textContent;
+    expect(offline).toMatch(/keep a copy\s+of your image attachments on the device/);
+    expect(offline).toMatch(/stays on the device after it uploads/);
+    expect(offline).toMatch(/Other files you attach stay on the device only until\s+they upload/);
+    expect(offline).toMatch(/300\u00a0MB on iPhone, iPad\s+and Android, 1\u00a0GB on macOS/);
+    expect(offline).toMatch(
+      /Once you\s+delete a note permanently in that app, the copies of its images are removed the next\s+time the app starts and syncs/,
+    );
+    // The apps don't pull permanent deletions made elsewhere, so the policy
+    // mustn't promise those images go at the next sync.
+    expect(offline).not.toMatch(/on that device or another/);
+    expect(offline).toMatch(
+      /A note deleted\s+permanently anywhere else \(on the web, in another app, or by the 30-day trash cleanup\)\s+is not removed from the app, so the copies of its images stay too/,
+    );
+    expect(offline).toMatch(/Images in\s+notes in the trash are kept/);
+    expect(offline).toMatch(/The local copy, attachments included, is erased when you sign out/);
   });
 
   it("identifies the data controller and a contact address", () => {
@@ -243,9 +265,10 @@ describe("Privacy policy page", () => {
     expect(retention).toMatch(
       /Earlier versions of a note's content are deleted automatically after 30 days/,
     );
-    // Mobile sync never pulls server-side deletions, so the local copy outlives the server one.
+    // Mobile and desktop sync never apply server-side deletions (desktop's detection is inert),
+    // so the local copy outlives the server one.
     expect(retention).toMatch(
-      /On iPhone, iPad and Android, a note already synced to the device is not removed/,
+      /In the iPhone, iPad, Android and macOS apps, a note already synced to the device is\s+not removed/,
     );
     expect(retention).toMatch(/GitHub issues filed from your support emails/);
     expect(retention).toMatch(/notification emails our administrator received/);
