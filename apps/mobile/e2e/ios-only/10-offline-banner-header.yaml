@@ -27,7 +27,7 @@ tags:
 #
 #   QA_PHASE=prepare    online: a notebook with one note
 #   QA_PHASE=offline    the Mac is offline: cold start, Back taps, ends on the note
-#   QA_PHASE=reconnect  online again: the banner goes
+#   QA_PHASE=reconnect  online again: the banner on that note goes
 #
 # Logs in when the app shows Log In, otherwise reuses the session.
 # Required env: -e RUN_ID=$(date +%s) (the same for all three phases)
@@ -194,10 +194,14 @@ tags:
     when:
       true: ${QA_PHASE == 'reconnect'}
     commands:
-      - launchApp
+      # Back to the app the offline phase left on the note editor, not a fresh
+      # launch: an app that starts online never shows the banner, so the wait
+      # below would pass without the offline session reconnecting.
+      - launchApp:
+          stopApp: false
       - extendedWaitUntil:
           visible:
-            id: "search-button"
+            id: "editor-window"
           timeout: 30000
       # "Back online — syncing..." shows for 2 s after the connection returns.
       - extendedWaitUntil:

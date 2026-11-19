@@ -197,6 +197,8 @@ onFlowComplete:
 
 # Run on its own (no QA_KEEP_OFFLINE), the flow also checks that the banner
 # goes once the connection is back ("Back online — syncing..." shows for 2 s).
+# By testID, and by its text: a build from before the testID (1.4.7) has no
+# "offline-banner" to wait for, so the testID wait alone would pass at once.
 - runFlow:
     when:
       true: ${typeof QA_KEEP_OFFLINE === 'undefined' || QA_KEEP_OFFLINE != '1'}
@@ -205,4 +207,7 @@ onFlowComplete:
       - extendedWaitUntil:
           notVisible:
             id: "offline-banner"
+          timeout: 30000
+      - extendedWaitUntil:
+          notVisible: "You are offline"
           timeout: 30000
