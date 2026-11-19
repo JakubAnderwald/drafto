@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.join(HERE, "..", "..");
 const RUNNER = path.join(REPO, "apps", "mobile", "e2e", "run-qa-10668-e2e.sh");
+const NET_SH = path.join(REPO, "apps", "desktop", "e2e", "in-test", "lib", "net.sh");
 const FIXTURES = path.join(HERE, "fixtures", "maestro-layout");
 const PASSWORD = "Fake-Pass-4711";
 const DEV_CONFIG = '{"extra":{"supabaseUrl":"https://huhzactreblzcogqkbsd.supabase.co"}}';
@@ -52,11 +53,12 @@ writeFileSync(
 // real multi-MB APK, it keeps writing after the part that matters, so a
 // `unzip -p | grep -q` reader that stops early kills it with SIGPIPE. With
 // FAKE_UNZIP_FAIL set, extracting the whole "APK" writes its first bytes and
-// then fails, as a corrupt archive does (app.config still reads fine).
+// then exits with that code: 3 as a corrupt archive does, 1 as Info-ZIP does
+// after skipping an entry (app.config still reads fine).
 stub(
   "unzip",
   `if [ "$1" = -l ]; then grep -q BUNDLE "$2"; exit; fi
-if [ -n "\${FAKE_UNZIP_FAIL:-}" ] && [ -z "$3" ]; then head -c 20 "$2"; exit 3; fi
+if [ -n "\${FAKE_UNZIP_FAIL:-}" ] && [ -z "$3" ]; then head -c 20 "$2"; exit "$FAKE_UNZIP_FAIL"; fi
 if [ "$3" = assets/app.config ]; then sed -n 's/^CONFIG=//p' "$2"; else cat "$2"; fi
 head -c 8000000 /dev/zero`,
 );
@@ -82,7 +84,9 @@ esac`,
 // MAESTRO_ env var a flow reads) to stdout and, JSON-escaped, to a commands
 // JSON under --debug-output, as a real run does. A flow named in FAIL_FLOWS
 // fails an assertion (a "… FAILED" command line); one in BROKEN_FLOWS exits
-// before running any command, as when the driver doesn't start.
+// before running any command, as when the driver doesn't start. FAIL_PHASE
+// fails only the runs with that QA_PHASE. With LOG_PHASES set, each run
+// appends "maestro <flow> <phase>" to NET_LOG, next to the network calls.
 stub(
   "maestro",
   `printf '%s\\n' "$*" >> "\${MAESTRO_ARGV_LOG:-/dev/null}"
@@ -90,6 +94,9 @@ cat > /dev/null
 [ "$1" = --device ] && shift 2
 if [ "$1" = hierarchy ]; then [ -n "\${FAKE_HIERARCHY:-}" ] && cat "$FAKE_HIERARCHY"; exit 0; fi
 flow="\${@: -1}"
+phase=""
+for arg in "$@"; do case "$arg" in QA_PHASE=*) phase="\${arg#QA_PHASE=}" ;; esac; done
+[ -z "\${LOG_PHASES:-}" ] || echo "maestro $(basename "$flow") \${phase:-none}" >> "\${NET_LOG:-/dev/null}"
 case " \${BROKEN_FLOWS:-} " in *" $(basename "$flow") "*) echo "Unable to launch the driver"; exit 1 ;; esac
 debug="" prev=""
 for arg in "$@"; do [ "$prev" = --debug-output ] && debug="$arg"; prev="$arg"; done
@@ -100,6 +107,7 @@ if [ -n "$debug" ]; then
     perl -ne 's/(["\\\\])/\\\\$1/g; print "{\\"inputText\\":\\"$_\\"}\\n"' > "$debug/commands-flow.json"
 fi
 case " \${FAIL_FLOWS:-} " in *" $(basename "$flow") "*) echo "Assert that id: probe is visible FAILED"; exit 1 ;; esac
+if [ -n "\${FAIL_PHASE:-}" ] && [ "$phase" = "$FAIL_PHASE" ]; then echo "Assert that id: probe is visible FAILED"; exit 1; fi
 exit 0`,
 );
 stub(
@@ -122,17 +130,24 @@ while [ $# -gt 0 ]; do case "$1" in -b) background=1; shift ;; -*) shift ;; *) b
 [ $# -eq 0 ] || [ "$background" = 1 ] && exit 0
 exec "$@"`,
 );
+// FAKE_ETHERNET adds a second service; FAKE_NET_FAIL="<service> <on|off>",
+// several joined by "|", makes those calls fail (after logging them).
 stub(
   "networksetup",
   `if [ "$1" = -listnetworkserviceorder ]; then
   printf '(1) Wi-Fi\\n(Hardware Port: Wi-Fi, Device: en0)\\n\\n'
+  [ -z "\${FAKE_ETHERNET:-}" ] || printf '(2) Ethernet\\n(Hardware Port: Ethernet, Device: en1)\\n\\n'
 else
   printf '%s\\n' "$*" >> "\${NET_LOG:-/dev/null}"
+  case "|\${FAKE_NET_FAIL:-}|" in *"|$2 $3|"*) exit 1 ;; esac
 fi`,
 );
 stub("ipconfig", `[ "$1" = getifaddr ] && echo 10.0.0.2`);
 // Only Maestro's own iOS driver is running: not a build, so no wait.
-stub("pgrep", `echo "4242 /usr/bin/xcodebuild test-without-building -xctestrun /tmp/x.xctestrun"`);
+// FAKE_PGREP replaces the process list.
+const MAESTRO_DRIVER =
+  "4242 /usr/bin/xcodebuild test-without-building -xctestrun /var/folders/x/T/A1B2/maestro-driver-ios-config.xctestrun -destination id=1111";
+stub("pgrep", `printf '%s\\n' "\${FAKE_PGREP-${MAESTRO_DRIVER}}"`);
 stub("curl", "exit 0");
 
 // A copy of the runner in a fake repo where every report flow exists, so the
@@ -195,12 +210,16 @@ function fakeApp(files = {}) {
 
 function run(
   args,
-  { apk = `BUNDLE=var a=1\nCONFIG=${DEV_CONFIG}`, env = {}, runner = BASE_RUNNER } = {},
+  {
+    apk = `BUNDLE=var a=1\nCONFIG=${DEV_CONFIG}`,
+    env = {},
+    runner = BASE_RUNNER,
+    out = mkdtempSync(path.join(root, "out-")),
+  } = {},
 ) {
   const id = Math.random().toString(36).slice(2);
   const fakeApk = path.join(root, `apk-${id}`);
   writeFileSync(fakeApk, `${apk}\n`);
-  const out = mkdtempSync(path.join(root, "out-"));
   const logs = {
     adb: path.join(root, `adb-${id}.log`),
     maestro: path.join(root, `maestro-argv-${id}.log`),
@@ -331,12 +350,18 @@ describe("run-qa-10668-e2e.sh", () => {
   it("refuses an APK it could only partly read, even with a dev app.config", () => {
     // The whole-APK extraction writes a little and then fails, so the prod-ref
     // scan saw only part of it: that must stop the run, not pass as "no prod".
-    const result = run(["android"], { env: { FAKE_UNZIP_FAIL: "1" } });
-    assert.equal(result.status, 2, result.stdout + result.stderr);
-    assert.match(result.stderr, /could not read the installed APK \(unzip exit 3\)/);
-    assert.equal(result.logs.maestro, "", "maestro ran against an unchecked build");
-    assert.ok(!existsSync(path.join(result.out, "installed.apk.contents")));
-    assert.ok(!existsSync(path.join(result.out, "installed.apk")));
+    // Exit 1 too: Info-ZIP returns it after skipping an entry.
+    for (const code of ["3", "1"]) {
+      const result = run(["android"], { env: { FAKE_UNZIP_FAIL: code } });
+      assert.equal(result.status, 2, result.stdout + result.stderr);
+      assert.match(
+        result.stderr,
+        new RegExp(`could not read the installed APK \\(unzip exit ${code}\\)`),
+      );
+      assert.equal(result.logs.maestro, "", "maestro ran against an unchecked build");
+      assert.ok(!existsSync(path.join(result.out, "installed.apk.contents")));
+      assert.ok(!existsSync(path.join(result.out, "installed.apk")));
+    }
   });
 
   it("refuses an installed build whose app.config does not name the dev project", () => {
@@ -445,7 +470,10 @@ describe("run-qa-10668-e2e.sh", () => {
       env: { FAKE_APP: fakeApp() },
     });
     assert.equal(result.status, 0, result.stdout);
-    assert.match(result.summary, /\| offline-image \| skipped \(its check didn't run\) \|/);
+    assert.match(result.summary, /\| offline-image \| skipped \| offline: skip/);
+    // Not even the online prepare phase ran: it creates test data that only
+    // the reconnect phase deletes.
+    assert.doesNotMatch(result.logs.maestro, /09-attach-image-offline/);
   });
 
   it("takes the Mac offline through net.sh, with sudo kept alive and a 300 s watchdog", () => {
@@ -471,7 +499,7 @@ describe("run-qa-10668-e2e.sh", () => {
     assert.deepEqual(watchdog.slice(6), [
       "sh",
       "300",
-      path.join(result.out, "net", "net-restored"),
+      path.join(result.out, "net", "leg-1", "net-restored"),
       "Wi-Fi",
     ]);
     // Maestro's driver (xcodebuild test-without-building) didn't hold it up.
@@ -484,25 +512,162 @@ describe("run-qa-10668-e2e.sh", () => {
   });
 
   it("brings the Mac back online when an offline leg's flow fails", () => {
+    // Only the offline phase fails: the leg must restore the network itself
+    // (not leave it to the watchdog) before its reconnect phase runs.
     const result = run(["ios", "--allow-host-offline", "--only", "09-attach-image-offline"], {
       runner: FAKE_RUNNER,
       env: {
         FAKE_APP: fakeApp(),
         FAKE_HIERARCHY: path.join(FIXTURES, "android-note-image-rendered.json"),
-        FAIL_FLOWS: "09-attach-image-offline.yaml",
+        FAIL_PHASE: "offline",
+        LOG_PHASES: "1",
       },
     });
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.summary, /\| offline-image \| FAILED \|.*offline: fail/);
-    // Off, then on again by the leg itself, not left to the watchdog.
-    assert.equal(
-      result.logs.net,
-      "-setnetworkserviceenabled Wi-Fi off\n-setnetworkserviceenabled Wi-Fi on\n",
-    );
+    const events = result.logs.net
+      .split("\n")
+      .filter((line) => line && !line.startsWith("maestro 01-login"));
+    assert.deepEqual(events, [
+      "maestro 09-attach-image-offline.yaml prepare",
+      "-setnetworkserviceenabled Wi-Fi off",
+      "maestro 09-attach-image-offline.yaml offline",
+      "-setnetworkserviceenabled Wi-Fi on",
+      "maestro 09-attach-image-offline.yaml reconnect",
+    ]);
     assert.match(
       readFileSync(path.join(result.out, "results.tsv"), "utf8"),
-      /^offline-image\treconnect\t/m,
+      /^offline-image\treconnect\tpass\t/m,
     );
+  });
+
+  it("gives each offline leg its own watchdog flag", () => {
+    // With one shared flag, the second leg's net_off would delete the flag the
+    // first leg's watchdog checks, and that watchdog would turn the network
+    // back on in the middle of the second leg.
+    const result = run(
+      ["ios", "--allow-host-offline", "--only", "(09-attach-image|05-offline-mode)"],
+      {
+        runner: FAKE_RUNNER,
+        env: {
+          FAKE_APP: fakeApp(),
+          FAKE_HIERARCHY: path.join(FIXTURES, "android-note-image-rendered.json"),
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const flags = result.logs.sudoArgv
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((argv) => argv[1] === "-b")
+      .map((argv) => argv[8]);
+    assert.deepEqual(flags, [
+      path.join(result.out, "net", "leg-1", "net-restored"),
+      path.join(result.out, "net", "leg-2", "net-restored"),
+    ]);
+    // Leg 1's flag survives leg 2 going offline, so its watchdog stands down.
+    assert.ok(existsSync(flags[0]));
+    assert.ok(existsSync(flags[1]));
+  });
+
+  it("undoes a partial disable before the next leg, and stops when it can't", () => {
+    // Wi-Fi goes off, then Ethernet fails to: the leg turns Wi-Fi back on and
+    // the next leg takes the Mac offline as usual.
+    const undone = run(
+      ["ios", "--allow-host-offline", "--only", "(09-attach-image|05-offline-mode)"],
+      {
+        runner: FAKE_RUNNER,
+        env: {
+          FAKE_APP: fakeApp(),
+          FAKE_HIERARCHY: path.join(FIXTURES, "android-note-image-rendered.json"),
+          FAKE_ETHERNET: "1",
+          FAKE_NET_FAIL: "Ethernet off",
+        },
+      },
+    );
+    assert.equal(undone.status, 1, undone.stdout + undone.stderr);
+    assert.match(undone.summary, /\| offline-image \| FAILED \|.*could not take the Mac offline/);
+    assert.doesNotMatch(undone.summary, /partial disable/);
+    const calls = undone.logs.net.split("\n").filter(Boolean);
+    assert.deepEqual(calls.slice(0, 4), [
+      "-setnetworkserviceenabled Wi-Fi off",
+      "-setnetworkserviceenabled Ethernet off",
+      "-setnetworkserviceenabled Wi-Fi on",
+      "-setnetworkserviceenabled Ethernet on",
+    ]);
+    // The next leg (offline-mode) went offline again, from a clean state.
+    assert.equal(calls[4], "-setnetworkserviceenabled Wi-Fi off");
+
+    // Wi-Fi won't come back on either: its list stays for the EXIT trap and
+    // the watchdog, and the next leg doesn't replace it by going offline.
+    const stuck = run(
+      ["ios", "--allow-host-offline", "--only", "(09-attach-image|05-offline-mode)"],
+      {
+        runner: FAKE_RUNNER,
+        env: {
+          FAKE_APP: fakeApp(),
+          FAKE_HIERARCHY: path.join(FIXTURES, "android-note-image-rendered.json"),
+          FAKE_ETHERNET: "1",
+          FAKE_NET_FAIL: "Ethernet off|Wi-Fi on",
+        },
+      },
+    );
+    assert.equal(stuck.status, 1);
+    assert.match(stuck.summary, /a partial disable could not be undone/);
+    assert.match(stuck.summary, /\| offline-mode \| FAILED \|.*could not take the Mac offline/);
+    const offs = stuck.logs.net.split("\n").filter((line) => line.endsWith(" off"));
+    assert.deepEqual(offs, [
+      "-setnetworkserviceenabled Wi-Fi off",
+      "-setnetworkserviceenabled Ethernet off",
+    ]);
+  });
+
+  it("doesn't let a stale commands JSON in a reused --out count as a failed command", () => {
+    const out = mkdtempSync(path.join(root, "out-reused-"));
+    const opts = { runner: FAKE_RUNNER, out };
+    const first = run(["android", "--before", "--only", "09-password-visibility"], {
+      ...opts,
+      env: { FAIL_FLOWS: "09-password-visibility.yaml" },
+    });
+    assert.match(first.summary, /\| password-visibility \| reproduced \|/);
+    // The stand-in writes a FAILED status into the debug output, as Maestro does.
+    writeFileSync(
+      path.join(out, "maestro", "password-visibility", "commands-old.json"),
+      '{"status": "FAILED"}\n',
+    );
+    const second = run(["android", "--before", "--only", "09-password-visibility"], {
+      ...opts,
+      env: { BROKEN_FLOWS: "09-password-visibility.yaml" },
+    });
+    assert.equal(second.status, 1, second.stdout);
+    assert.match(second.summary, /\| password-visibility \| NOT MEASURED \|/);
+  });
+
+  it("refuses an --only that isn't a valid regular expression", () => {
+    const result = run(["android", "--only", "["]);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /not a valid extended regular expression/);
+    assert.equal(result.logs.maestro, "");
+  });
+
+  it("net_busy skips only Maestro's own iOS driver", () => {
+    const busy = (procs) =>
+      spawnSync("bash", ["-c", 'RUN_DIR=/nonexistent; source "$1"; net_busy_procs', "sh", NET_SH], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${path.join(root, "bin")}:${process.env.PATH}`,
+          FAKE_PGREP: procs,
+        },
+      }).stdout.trim();
+    assert.equal(busy(MAESTRO_DRIVER), "");
+    // Another test-without-building run, or a fastlane lane that mentions it, still counts.
+    const other = "4343 /usr/bin/xcodebuild test-without-building -xctestrun /tmp/App.xctestrun";
+    assert.equal(busy(other), other);
+    const lane = "4444 ruby fastlane scan --xcargs test-without-building";
+    assert.equal(busy(lane), lane);
+    assert.equal(busy(`${MAESTRO_DRIVER}\n${lane}`), lane);
   });
 
   it("refuses an env file pointing at production, and bad arguments", () => {

@@ -103,7 +103,7 @@ A debug build of a branch runs against the **dev** Supabase project, through the
 
 - **An emulator loads its JavaScript from `10.0.2.2:8081`, not `localhost`.** On a stock emulator React Native asks for the host machine's port 8081 at the emulator's alias for it, `10.0.2.2` (`AndroidInfoHelpers.kt`), and `adb reverse` only redirects the emulator's own `localhost`. So in a worktree, where the main checkout's Metro may already hold 8081:
   - Simplest: stop the other Metro and start this worktree's on 8081 (`cd apps/mobile && npx expo start`).
-  - To keep both, start Metro on another port with `pnpm start --port 8082`, then, in a second terminal, point the app at `localhost` and redirect it: `adb root && adb shell setprop metro.host localhost && adb reverse tcp:8081 tcp:8082`. The Google APIs emulator images allow `adb root`; the property lasts until the emulator reboots. Metro stays in the foreground, so chaining it with `&&` never runs the rest.
+  - To keep both, start Metro on another port with `pnpm start --port 8082`, then, in a second terminal, point the app at `localhost` and redirect it: `adb root && adb shell setprop metro.host localhost && adb reverse tcp:8081 tcp:8082`, then restart the app (`adb shell am force-stop eu.drafto.mobile`, then launch it again). React Native reads `metro.host` once per app process, so an app that was already running keeps loading from `10.0.2.2:8081`, the main checkout's Metro. The Google APIs emulator images allow `adb root`; the property lasts until the emulator reboots. Metro stays in the foreground, so chaining it with `&&` never runs the rest.
   - A physical phone over USB already loads from `localhost`, so `adb reverse tcp:8081 tcp:8082` alone works there.
 - **Airplane mode cuts a debug build off from Metro** (`10.0.2.2` goes with the network), and an offline cold start then shows a red box. Run offline flows on a release APK built against dev: see [Offline flows on Android](#offline-flows-on-android).
 - **Before shipping an iOS release, launch a Release build on the iOS 27 simulator** (runtime `com.apple.CoreSimulator.SimRuntime.iOS-27-0`). Build it with `xcodebuild … -configuration Release -sdk iphonesimulator` after `expo prebuild` with `.env.production` sourced, then check that the app reaches the Log In screen. Then quit it with `xcrun simctl terminate <sim> eu.drafto.mobile` and check that `xcrun simctl openurl <sim> "drafto://reset-password"` lands on the reset screen. Quitting first makes this a true cold start, through `scene(_:willConnectTo:options:)`. With the app still running, the link goes through `scene(_:openURLContexts:)` instead. iOS 27 stops apps built with its SDK that skip the UIScene lifecycle, and older simulators don't show it ([ADR-0046](../adr/0046-ios-uiscene-lifecycle.md)).
@@ -123,26 +123,29 @@ set +a
 export _JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'
 APK=android/app/build/outputs/apk/release/app-release.apk
 rm -f "$APK"                                     # a failed build must leave no older APK to install
-(cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a) ||
-  echo "STOP: the release build failed; the guard below finds no APK and installs nothing"
+BUILD_OK=0
+(cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a) && BUILD_OK=1 ||
+  echo "STOP: the release build failed; nothing below installs"
 
 # Guard: the APK must name the dev project and never the production one, and
 # it installs only when both hold. The Supabase URL is not in the Hermes
 # bundle: expo-constants ships it in assets/app.config, so check that file for
 # dev and the whole APK for prod. Extract to files first, as the QA runner
 # does: in `unzip -p | grep -q` grep stops at the first match, and under
-# pipefail unzip's SIGPIPE turns that match into "no match". unzip exits 1 on
-# a mere warning; anything above that is a failed read, which stops here too.
+# pipefail unzip's SIGPIPE turns that match into "no match". Any unzip exit
+# but 0 stops here too: Info-ZIP exits 1 after skipping an entry, which the
+# prod scan would then never see. Nothing installs after a failed build.
 CONTENTS="$(mktemp)" && CONFIG="$(mktemp)"
-if { unzip -p "$APK" > "$CONTENTS"; [ $? -le 1 ]; } \
-  && { unzip -p "$APK" assets/app.config > "$CONFIG"; [ $? -le 1 ]; } \
+if [ "$BUILD_OK" = 1 ] \
+  && unzip -p "$APK" > "$CONTENTS" \
+  && unzip -p "$APK" assets/app.config > "$CONFIG" \
   && LC_ALL=C grep -a -q -F huhzactreblzcogqkbsd "$CONFIG" \
   && ! LC_ALL=C grep -a -q -F tbmjbxxseonkciqovnpl "$CONTENTS"; then
   echo "dev APK: OK"
   adb -s emulator-5554 uninstall eu.drafto.mobile  # a release-signed APK can't replace a debug one
   adb -s emulator-5554 install "$APK"
 else
-  echo "STOP: this APK is not dev-only, or couldn't be read; not installing it"
+  echo "STOP: the build failed, or this APK is not dev-only or couldn't be read; not installing it"
 fi
 rm -f "$CONTENTS" "$CONFIG"
 ```
@@ -152,7 +155,7 @@ rm -f "$CONTENTS" "$CONFIG"
 - The uninstall wipes the app's local data, so sign in again (flow `01-login.yaml`).
 - `run-qa-10668-e2e.sh` runs the same guard on whatever is installed: it pulls the APK and refuses one that names production anywhere or whose `assets/app.config` lacks the dev ref.
 
-**iOS has no airplane mode.** Maestro's `setAirplaneMode` / `toggleAirplaneMode` are Android-only, and the simulator shares the Mac's network. The iOS offline flows (`ios-only/05`, `06` and the report-10668 ones) therefore run in phases (`-e QA_PHASE=prepare|offline|reconnect`, tagged `requires-host-offline`), and the runner below takes the whole Mac offline between them with `apps/desktop/e2e/in-test/lib/net.sh`. That needs `sudo` (the runner keeps its timestamp alive for the run), cuts off everything else on the Mac (a Claude session included) until the leg ends, and is restored by a root watchdog after 300 s at most. net.sh defaults to 120 s, but the runner sets `NET_WATCHDOG_S=300` because one leg's offline phase plus its capture (a fresh Maestro iOS driver, two cold starts with 30 s waits, a 15 s banner wait, then `maestro hierarchy`) can pass 120 s, and a network that comes back early makes the app reconnect before the check reads the screen. Like the in-test harness, it waits for builds, releases and support runs first (`net_busy`, which ignores Maestro's own `xcodebuild test-without-building` driver). Run it only in a foreground session you started, and skip those flows in a folder run with `--exclude-tags requires-host-offline`.
+**iOS has no airplane mode.** Maestro's `setAirplaneMode` / `toggleAirplaneMode` are Android-only, and the simulator shares the Mac's network. The iOS offline flows (`ios-only/05`, `06` and the report-10668 ones) therefore run in phases (`-e QA_PHASE=prepare|offline|reconnect`, tagged `requires-host-offline`), and the runner below takes the whole Mac offline between them with `apps/desktop/e2e/in-test/lib/net.sh`. That needs `sudo` (the runner keeps its timestamp alive for the run), cuts off everything else on the Mac (a Claude session included) until the leg ends, and is restored by a root watchdog after 300 s at most. net.sh defaults to 120 s, but the runner sets `NET_WATCHDOG_S=300` because one leg's offline phase plus its capture (a fresh Maestro iOS driver, two cold starts with 30 s waits, a 15 s banner wait, then `maestro hierarchy`) can pass 120 s, and a network that comes back early makes the app reconnect before the check reads the screen. Each leg has its own list of disabled services and its own watchdog flag, so an earlier leg's watchdog can't bring the network back during a later leg, and a leg whose restore failed stops the later legs from going offline. Without `--allow-host-offline` a leg is skipped before its online `prepare` phase, which would otherwise create test data that only `reconnect` deletes. Like the in-test harness, it waits for builds, releases and support runs first (`net_busy`, which ignores only Maestro's own iOS driver: `xcodebuild test-without-building` on its `maestro-driver-ios-config.xctestrun`). Run it only in a foreground session you started, and skip those flows in a folder run with `--exclude-tags requires-host-offline`.
 
 ### Report 10668 runner and host layout checks
 

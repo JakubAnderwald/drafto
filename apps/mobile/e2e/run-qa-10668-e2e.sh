@@ -133,6 +133,16 @@ if [ "$ALLOW_HOST_OFFLINE" = 1 ] && [ "$PLATFORM" != ios ]; then
   echo "--allow-host-offline is for iOS; Android flows use airplane mode." >&2
   exit 2
 fi
+# An --only that grep can't compile would match no flow, and the run would
+# report OK without running a single report step.
+if [ -n "$ONLY" ]; then
+  only_status=0
+  printf '' | grep -Eq -- "$ONLY" 2> /dev/null || only_status=$?
+  if [ "$only_status" -gt 1 ]; then
+    echo "ERROR: --only '$ONLY' is not a valid extended regular expression" >&2
+    exit 2
+  fi
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -151,6 +161,12 @@ if [ ! -x "$MAESTRO" ]; then
 fi
 command -v node > /dev/null || {
   echo "ERROR: node is required for the host checks" >&2
+  exit 2
+}
+# redact_out scrubs the test password with perl; without it, Maestro's logs
+# would keep the password, so refuse to start.
+command -v perl > /dev/null || {
+  echo "ERROR: perl is required to scrub the test password from the saved logs" >&2
   exit 2
 }
 
@@ -304,7 +320,14 @@ if [ "$ALLOW_HOST_OFFLINE" = 1 ]; then
   SUDO_KEEPALIVE_PID=$!
 fi
 
+NET_LEG=0
 host_offline() {
+  # A leg whose restore failed still owns its list of disabled services, which
+  # the EXIT trap and its watchdog need: never replace it with a new leg's.
+  if [ -s "$NET_DISABLED_FILE" ]; then
+    log "   an earlier leg's network services are not restored yet; not taking the Mac offline again"
+    return 1
+  fi
   sudo -n -v 2> /dev/null || {
     log "   sudo timestamp expired; run sudo -v and retry"
     return 1
@@ -314,6 +337,14 @@ host_offline() {
     log "   a build or support run is still active; not taking the Mac offline"
     return 1
   }
+  # Each leg gets its own list and restored flag. With one shared flag, the
+  # next leg's net_off deletes it, and an earlier leg's watchdog, waking during
+  # that leg's offline phase, would find no flag and turn the network back on
+  # mid-measurement.
+  NET_LEG=$((NET_LEG + 1))
+  mkdir -p "$RUN_DIR/leg-$NET_LEG"
+  NET_DISABLED_FILE="$RUN_DIR/leg-$NET_LEG/net-disabled-services"
+  NET_RESTORED_FLAG="$RUN_DIR/leg-$NET_LEG/net-restored"
   net_off
 }
 
@@ -331,6 +362,10 @@ run_flow() {
   shift 2
   local status=0
   log "-- $step: $flow $*"
+  # A reused --out keeps an earlier run's commands JSON here, and a stale
+  # "FAILED" in it would make this attempt's driver failure look like a failed
+  # command (flow_command_failed). Step names are unique within a run.
+  rm -rf "$OUT/maestro/$step"
   # --debug-output keeps Maestro's commands JSON and log (typed text included)
   # under $OUT, where redact_out scrubs them, instead of ~/.maestro/tests.
   (cd "$OUT" && "$MAESTRO" --device "$DEVICE" test --test-output-dir "$OUT/maestro/$step" \
@@ -476,10 +511,12 @@ if [ "$PLATFORM" = android ]; then
   # Each extraction goes to a file before grep reads it: in `unzip -p | grep -q`
   # grep exits at the first match, unzip dies of SIGPIPE (141), and pipefail
   # turns the match into "no match", which would let a production APK through.
+  # Only exit 0 is a complete read: Info-ZIP exits 1 after skipping an entry it
+  # can't extract, which the prod-ref scan would then never see.
   apk_text="$OUT/installed.apk.contents"
   unzip_status=0
   unzip -p "$OUT/installed.apk" > "$apk_text" 2> /dev/null || unzip_status=$?
-  if [ "$unzip_status" -gt 1 ]; then
+  if [ "$unzip_status" != 0 ]; then
     rm -f "$OUT/installed.apk" "$apk_text"
     echo "ERROR: could not read the installed APK (unzip exit $unzip_status)." >&2
     exit 2
@@ -617,17 +654,25 @@ else
   offline_leg() {
     local step="$1" flow="$2" expect="$3" kind="${4:-}"
     want "$step" "$flow" || return 0
+    # Before prepare: it creates test data that only the reconnect phase
+    # deletes, so a leg that can't go offline must not start.
+    if [ "$ALLOW_HOST_OFFLINE" = 0 ]; then
+      record "$step" offline skip "$expect" "needs --allow-host-offline (the simulator has no airplane mode)"
+      return 0
+    fi
     if run_flow "$step-prepare" "$flow" -e QA_PHASE=prepare; then
       record "$step" prepare pass any "online phase"
     else
       record "$step" prepare fail any "online phase failed (see $step-prepare.maestro.log)"
     fi
-    if [ "$ALLOW_HOST_OFFLINE" = 0 ]; then
-      record "$step" offline skip "$expect" "needs --allow-host-offline (the simulator has no airplane mode)"
-      return 0
-    fi
     if ! host_offline; then
       record "$step" offline error "$expect" "could not take the Mac offline"
+      # net_off may have disabled some services before it failed: turn them
+      # back on. If that fails too, the list stays for the EXIT trap and the
+      # watchdog, and host_offline refuses every later leg.
+      if ! net_on; then
+        record "$step" network error "$expect" "a partial disable could not be undone; the watchdog restores it within ${NET_WATCHDOG_S}s"
+      fi
       return 0
     fi
     if run_flow "$step-offline" "$flow" -e QA_PHASE=offline; then

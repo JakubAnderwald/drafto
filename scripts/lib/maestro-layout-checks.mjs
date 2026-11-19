@@ -730,6 +730,16 @@ export function navBarMatches(
     }
   }
   const region = navBarSampleRegion(navBar, png, screenWidth ?? navBar.right);
+  // sampleLuminance clamps a sample to the image, which is right for a
+  // rounding error at its edge but would read some other row for a frame that
+  // lies past the screenshot (a screenshot of another screen or size).
+  if (region.left < 0 || region.top < 0 || region.right > png.width || region.bottom > png.height) {
+    return unmeasured(
+      check,
+      `the nav bar's sample region is outside the ${png.width}x${png.height} screenshot; the screenshot and dumpsys don't match`,
+      { navBar, region },
+    );
+  }
   const luminance = sampleLuminance(png, region);
   const lightFlag = appearance.flags.includes("LIGHT_NAVIGATION_BARS");
   const pixelsOk =
@@ -879,9 +889,13 @@ export function runCli(argv, read = (file) => readFileSync(file)) {
         if (flags.text) selector.text = anchored(flags.text);
         if (!flags.id && !flags.text) throw new Error("--id or --text is required");
         const found = findNodes(flattenHierarchy(hierarchy()), selector);
-        result = verdict("bounds", found.length > 0, `${found.length} match(es)`, {
-          matches: found.map(({ attributes, bounds }) => ({ attributes, bounds })),
-        });
+        // No match is "nothing to measure" (exit 2), as for every check.
+        result =
+          found.length === 0
+            ? unmeasured("bounds", "no element matches the selector", { matches: [] })
+            : verdict("bounds", true, `${found.length} match(es)`, {
+                matches: found.map(({ attributes, bounds }) => ({ attributes, bounds })),
+              });
         break;
       }
       default:

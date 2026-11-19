@@ -780,6 +780,22 @@ describe("navBarMatches (M-04)", () => {
     assert.match(result.reason, /at the side; run the check in portrait/);
   });
 
+  it("measures nothing when the frame lies past the screenshot", () => {
+    // A 108x192 screenshot (1080x1920 scaled) against a 1080x2400 screen's
+    // dump: the bar at y=2274 is below the image. Clamping every sample to the
+    // dark last row would pass without measuring the bar.
+    const short = decodePng(
+      encodePng({
+        width: 108,
+        height: 192,
+        color: (_x, y) => (y >= 191 ? [...DARK_SCRIM, 255] : [200, 200, 200, 255]),
+      }),
+    );
+    const result = navBarMatches("dark", short, text("dumpsys-window-3button-dark.txt"));
+    assert.equal(result.measured, false);
+    assert.match(result.reason, /outside the 108x192 screenshot/);
+  });
+
   it("scales the frame to a screenshot of another size", () => {
     const full = decodePng(
       encodePng({
@@ -969,7 +985,7 @@ describe("runCli", () => {
       [["bounds", "--hierarchy", "android-notebook-fab-no-inset.json", "--id", "add"], 0],
       [
         ["bounds", "--hierarchy", "android-notebook-fab-no-inset.json", "--text", "Nothing here"],
-        1,
+        2,
       ],
     ];
     for (const [argv, code] of cases) {
