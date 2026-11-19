@@ -1,0 +1,76 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+---
+# Flow 11: the navigation bar follows the in-app theme (PrimeTestLab report 10668, M-04)
+# Pass -e QA_THEME=dark|light|system -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+#
+# The bug: on 3-button navigation, Drafto set to Dark under an OS in Light kept a
+# light-grey navigation bar under the dark tab bar (and the reverse). Maestro cannot
+# read system-bar colours, so this flow only signs in, picks the theme and leaves the
+# app on the Notebooks tab. The pass/fail checks run on the host, after the flow, in
+# the QA 10668 runner (`run-qa-10668-e2e.sh`): the focused window's `apr=` flags in
+# `dumpsys window` (LIGHT_NAVIGATION_BARS absent for dark, present for light) and a
+# pixel sample of the navigation bar from `screencap`. The runner sets the OS theme
+# (`cmd uimode night`) and 3-button navigation before each case:
+#   A. OS Light, QA_THEME=dark   -> dark bar
+#   B. OS Dark,  QA_THEME=light  -> light bar
+#   C. QA_THEME=system           -> bar follows the OS, live, without a relaunch
+# Run on API 34 (the QA device's Android 14): the Android 15 emulator ignores the
+# navigation-bar style.
+#
+# Leaves the chosen theme selected, on purpose: the host checks read the screen as
+# this flow leaves it. The next clearState resets it to System.
+# Creates no data, so it needs no RUN_ID and no cleanup.
+
+# --- Clean start and sign in ---
+- clearKeychain
+- stopApp
+- clearState
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
+- tapOn: "you@example.com"
+- inputText: ${E2E_TEST_EMAIL}
+- tapOn: "Sign in to your Drafto account"
+- tapOn: "Your password"
+- inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
+- tapOn: "Sign in to your Drafto account"
+- tapOn:
+    id: "login-button"
+
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
+- waitForAnimationToEnd
+
+# --- Pick the theme in Settings ---
+# QA_THEME has no `env:` default in the header on purpose: Maestro 2.11 lets a
+# flow's own `env:` value win over `-e`, so a default there pinned every case
+# to dark. Default to dark here instead.
+# The option is matched by its accessibility label ("Dark theme" etc.), which
+# 1.4.7 already had, so a --before run picks the theme too; its testID
+# (theme-option-<value>) is newer.
+- evalScript: "${output.qaTheme = typeof QA_THEME !== 'undefined' && QA_THEME ? QA_THEME : 'dark'}"
+- evalScript: "${output.qaThemeLabel = output.qaTheme.charAt(0).toUpperCase() + output.qaTheme.slice(1) + ' theme'}"
+- tapOn: "Settings"
+- extendedWaitUntil:
+    visible: ${output.qaThemeLabel}
+    timeout: 10000
+- tapOn: ${output.qaThemeLabel}
+- assertVisible:
+    text: ${output.qaThemeLabel}
+    selected: true
+
+# --- Back to the Notebooks tab, where QA saw the bar ---
+# Wait on the add button: it is only on the Notebooks list, while the "Notebooks" text
+# is also the tab label, which is on screen in Settings too.
+- tapOn: "Notebooks"
+- extendedWaitUntil:
+    visible:
+      id: "add"
+    timeout: 10000
+- waitForAnimationToEnd
+- takeScreenshot: nav-bar-${output.qaTheme}

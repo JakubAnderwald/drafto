@@ -381,4 +381,27 @@ describe("SettingsScreen", () => {
     expect(await findByText(describeAccountDeletionFailure({ status: "network" }))).toBeTruthy();
     expect(mockSignOut).not.toHaveBeenCalled();
   });
+
+  describe("theme options (QA report 10668, M-04)", () => {
+    it("gives each theme option a stable testID for E2E", () => {
+      const { getByTestId } = render(<SettingsScreen />);
+
+      expect(getByTestId("theme-option-system").props.accessibilityLabel).toBe("System theme");
+      expect(getByTestId("theme-option-light").props.accessibilityLabel).toBe("Light theme");
+      expect(getByTestId("theme-option-dark").props.accessibilityLabel).toBe("Dark theme");
+    });
+
+    it("marks the pressed theme option as selected", () => {
+      const { getByTestId } = render(<SettingsScreen />);
+
+      fireEvent.press(getByTestId("theme-option-dark"));
+
+      expect(getByTestId("theme-option-dark").props.accessibilityState).toEqual({
+        selected: true,
+      });
+      expect(getByTestId("theme-option-system").props.accessibilityState).toEqual({
+        selected: false,
+      });
+    });
+  });
 });
