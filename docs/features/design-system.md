@@ -27,6 +27,7 @@ Drafto's shared visual language — a token layer (colors, shadows, radii, trans
 | Pre-hydration theme script       | `apps/web/src/app/layout.tsx`                 |
 | Mobile token mirror              | `apps/mobile/src/theme/tokens.ts`             |
 | Desktop token mirror (identical) | `apps/desktop/src/theme/tokens.ts`            |
+| Mobile UI primitives             | `apps/mobile/src/components/ui/`              |
 
 ## Related ADRs
 
@@ -37,6 +38,8 @@ Drafto's shared visual language — a token layer (colors, shadows, radii, trans
 ## Cross-platform notes
 
 The web CSS variables in `globals.css` are the source of truth. `apps/mobile/src/theme/tokens.ts` mirrors those values as a plain TypeScript object (React Native has no CSS custom properties, so the map is hand-maintained). `apps/desktop/src/theme/tokens.ts` is byte-for-byte identical to the mobile file — the desktop app imports the same shape and does not maintain its own tokens. When palette values change on web, the mobile and desktop files must be updated in the same PR.
+
+Mobile has its own small primitive set in `apps/mobile/src/components/ui/` (badge, button, card, empty-state, fab, input, skeleton). The `Fab` (floating "+" button) lifts itself above the bottom system inset on screens with no bottom tab bar, such as the notebook screen: the app is edge-to-edge, so otherwise the Android navigation bar or iOS home indicator covers the button (PrimeTestLab report 10668, M-01). It tells the two cases apart by `BottomTabBarHeightContext` from `@react-navigation/bottom-tabs`, which only the tab navigator provides; on a tab screen the tab bar already takes that inset. Pad a list under a FAB with `useFabLayout(fabVisible).listPaddingBottom`, from the same hook the `Fab` uses, so its last row scrolls clear of the button; pass `false` while the screen hides the FAB (e.g. with its create bar open) to drop back to the resting padding.
 
 Semantic surface tokens (`--bg`, `--fg`, …) react to the `.dark` class on web; on mobile and desktop the consuming theme provider picks the correct variant from the mirror. Shadow/radius/transition tokens are web-only — mobile and desktop use platform-idiomatic values.
 
