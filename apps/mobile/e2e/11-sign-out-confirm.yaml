@@ -1,12 +1,10 @@
 appId: eu.drafto.mobile
 tags:
   - qa-10668
-env:
-  # Default: Cancel only. Pass -e SIGN_OUT_CONFIRM=1 to also confirm (see below).
-  # Maestro defines -e values first and this block after them, so a literal here
-  # would overwrite the flag: keep a passed value and default to "0".
-  SIGN_OUT_CONFIRM: "${typeof SIGN_OUT_CONFIRM === 'undefined' ? '0' : SIGN_OUT_CONFIRM}"
 ---
+# Default: Cancel only. Pass -e SIGN_OUT_CONFIRM=1 to also confirm (see below).
+# No `env:` default in the header: Maestro 2.11 lets a flow's own `env:` value
+# win over `-e`, so a "0" there kept the confirm leg from ever running.
 # Flow 11: Sign-out confirmation (PrimeTestLab report 10668, S-02)
 # Tests: Settings "Sign Out" always asks first. With everything synced the
 # native alert reads "Sign out?" / "Everything is synced. Your notes will be
@@ -28,7 +26,7 @@ env:
 #   android:id/button2 (Cancel, negative) and android:id/button1 (Sign out,
 #   positive); Material dialogs may render the labels in capitals, so the ids
 #   are used. On iOS the alert's "Sign out" shares its label with the Settings
-#   button behind it, so the confirm tap is anchored below the message.
+#   button behind it, so the confirm tap is anchored right of the alert's Cancel.
 #
 # No RUN_ID needed — this flow creates no user data.
 
@@ -115,7 +113,7 @@ env:
 # --- Test (SIGN_OUT_CONFIRM=1 only): Sign out signs out ---
 - runFlow:
     when:
-      true: ${SIGN_OUT_CONFIRM == '1'}
+      true: ${typeof SIGN_OUT_CONFIRM !== 'undefined' && SIGN_OUT_CONFIRM == '1'}
     commands:
       - tapOn:
           id: "sign-out-button"
@@ -132,9 +130,13 @@ env:
           when:
             platform: iOS
           commands:
+            # `below:` alone also matches the Settings button behind the
+            # alert (it sits under the message too), and a tap at its centre
+            # lands between the alert's buttons. Only the alert's own
+            # "Sign out" is right of its Cancel.
             - tapOn:
                 text: "Sign out"
-                below: "Everything is synced\\..*"
+                rightOf: "Cancel"
       - extendedWaitUntil:
           visible: "Log In"
           timeout: 30000
