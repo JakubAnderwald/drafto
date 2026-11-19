@@ -409,6 +409,38 @@ describe("retainInCache", () => {
     warn.mockRestore();
   });
 
+  it("walks again when recording fails while the first walk of the cache is still loading", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    put("u/n/old.jpg", 5);
+    mockFiles.set(`${CACHE}/.index.json`, { size: 2, mtime: 1, text: "{}" });
+    // Hold the cold load after it has walked the cache, at its read of the saved index.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let heldReads = 0;
+    jest.mocked(RNFS.readFile).mockImplementationOnce(async () => {
+      heldReads += 1;
+      await held;
+      return "{}";
+    });
+    const coldLoad = getAttachmentCacheState();
+    try {
+      await tick();
+      expect(heldReads).toBe(1);
+      // An old-folder image moves into the cache meanwhile, and recording it fails.
+      mockFiles.set("/docs/attachments/id_a.jpg", { size: 10, mtime: 1 });
+      jest.mocked(RNFS.stat).mockRejectedValueOnce(new Error("EIO"));
+      await retainInCache("file:///docs/attachments/id_a.jpg", "u/n/a.jpg");
+      expect(mockFiles.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+    } finally {
+      release();
+      await coldLoad;
+    }
+    const state = await getAttachmentCacheState();
+    expect(state.totalBytes).toBe(15);
+    expect(state.isCached("u/n/a.jpg")).toBe(true);
+    warn.mockRestore();
+  });
+
   it("never throws, so a cache failure can't fail an upload already recorded", async () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     put("u/n/a.jpg", 5);

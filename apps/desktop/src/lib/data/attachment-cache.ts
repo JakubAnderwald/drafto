@@ -56,6 +56,11 @@ let generation = 0;
 // AttachmentCacheIndex). Filled by one walk of the directory on first use.
 const index = new AttachmentCacheIndex();
 let indexLoading: Promise<AttachmentCacheIndex> | null = null;
+// Bumped whenever the index is emptied for a fresh walk (reindexOnNextUse), so
+// a walk that was already under way when that happened, and so may have
+// missed the file it was emptied for, walks again instead of loading its
+// stale list.
+let indexEpoch = 0;
 let indexSaveTimer: ReturnType<typeof setTimeout> | null = null;
 // One download per attachment at a time.
 const downloadsInFlight = new Map<string, Promise<string | null>>();
@@ -218,6 +223,7 @@ function indexPath(): string {
 
 async function readIndex(): Promise<AttachmentCacheIndex> {
   const startedIn = generation;
+  const epoch = indexEpoch;
   const found: AttachmentCacheFile[] = [];
   let saved = new Map<string, number>();
   try {
@@ -231,6 +237,9 @@ async function readIndex(): Promise<AttachmentCacheIndex> {
   } catch (error) {
     console.warn("Failed to read the attachment cache:", error);
   }
+  // Emptied for a fresh walk meanwhile: this list may predate the file that
+  // was for, so walk again.
+  if (generation === startedIn && indexEpoch !== epoch) return readIndex();
   // A wipe meanwhile leaves the index empty, as the new cache is.
   index.load(generation === startedIn ? found : [], generation === startedIn ? saved : new Map());
   return index;
@@ -288,7 +297,9 @@ async function noteWritten(filePath: string, size: number, startedIn: number): P
  */
 async function reindexOnNextUse(startedIn: number): Promise<void> {
   await flushAttachmentCacheIndex();
-  if (generation === startedIn) index.clear();
+  if (generation !== startedIn) return;
+  indexEpoch += 1;
+  index.clear();
 }
 
 function noteRemoved(relativePath: string): void {
