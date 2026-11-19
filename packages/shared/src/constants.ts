@@ -50,3 +50,11 @@ export const SIGN_OUT_SYNCED_MESSAGE =
 export const SIGN_OUT_UNKNOWN_MESSAGE = "Any changes that haven't synced yet will be lost.";
 export const SIGN_OUT_CONFIRM_LABEL = "Sign out";
 export const SIGN_OUT_ANYWAY_LABEL = "Sign out anyway";
+
+// Accessible names of the show/hide toggle on every password field (login, sign-up, reset
+// password) on every platform. Web e2e locators match the field's own "Password" label with
+// `exact: true`, because "Show password" contains it.
+export const PASSWORD_VISIBILITY_LABELS = {
+  show: "Show password",
+  hide: "Hide password",
+} as const;

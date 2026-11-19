@@ -41,12 +41,20 @@ const E2E_NAME_PREFIXES = [
   "Search NB",
   "Attach NB",
   "OffNB",
+  "OffMode NB",
   "Note",
   "NoteF",
   "Findable",
   "Attach",
   "OffNote",
   "OffNest",
+  // The PrimeTestLab report 10668 flows (tagged qa-10668), named here up front so the
+  // flows can land without each touching this file.
+  "FAB",
+  "OffImg NB",
+  "OffImg",
+  "SwipeNB",
+  "Swipe",
   // The macOS runner (apps/desktop/e2e/run-e2e.sh)
   "E2E Notebook",
 ] as const;

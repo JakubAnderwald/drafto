@@ -101,8 +101,79 @@ A debug build of a branch runs against the **dev** Supabase project, through the
     -e RUN_ID="$(date +%s)" apps/mobile/e2e/<flow>.yaml
   ```
 
-- In a worktree on Android, Metro on port 8081 may clash with the main checkout's Metro. Start Metro on another port with `pnpm start --port 8082`, then, in a second terminal, redirect the app with `adb reverse tcp:8081 tcp:8082`. Metro stays in the foreground, so chaining the two with `&&` never runs `adb reverse`.
+- **An emulator loads its JavaScript from `10.0.2.2:8081`, not `localhost`.** On a stock emulator React Native asks for the host machine's port 8081 at the emulator's alias for it, `10.0.2.2` (`AndroidInfoHelpers.kt`), and `adb reverse` only redirects the emulator's own `localhost`. So in a worktree, where the main checkout's Metro may already hold 8081:
+  - Simplest: stop the other Metro and start this worktree's on 8081 (`cd apps/mobile && npx expo start`).
+  - To keep both, start Metro on another port with `pnpm start --port 8082`, then, in a second terminal, point the app at `localhost` and redirect it: `adb root && adb shell setprop metro.host localhost && adb reverse tcp:8081 tcp:8082`, then restart the app (`adb shell am force-stop eu.drafto.mobile`, then launch it again). React Native reads `metro.host` once per app process, so an app that was already running keeps loading from `10.0.2.2:8081`, the main checkout's Metro. The Google APIs emulator images allow `adb root`; the property lasts until the emulator reboots. Metro stays in the foreground, so chaining it with `&&` never runs the rest.
+  - A physical phone over USB already loads from `localhost`, so `adb reverse tcp:8081 tcp:8082` alone works there.
+- **Airplane mode cuts a debug build off from Metro** (`10.0.2.2` goes with the network), and an offline cold start then shows a red box. Run offline flows on a release APK built against dev: see [Offline flows on Android](#offline-flows-on-android).
 - **Before shipping an iOS release, launch a Release build on the iOS 27 simulator** (runtime `com.apple.CoreSimulator.SimRuntime.iOS-27-0`). Build it with `xcodebuild … -configuration Release -sdk iphonesimulator` after `expo prebuild` with `.env.production` sourced, then check that the app reaches the Log In screen. Then quit it with `xcrun simctl terminate <sim> eu.drafto.mobile` and check that `xcrun simctl openurl <sim> "drafto://reset-password"` lands on the reset screen. Quitting first makes this a true cold start, through `scene(_:willConnectTo:options:)`. With the app still running, the link goes through `scene(_:openURLContexts:)` instead. iOS 27 stops apps built with its SDK that skip the UIScene lifecycle, and older simulators don't show it ([ADR-0046](../adr/0046-ios-uiscene-lifecycle.md)).
+
+### Offline flows on Android
+
+The offline flows (`android-only/05`, `06`, and the report-10668 flows below) switch airplane mode on, which a debug build doesn't survive. Build a release APK that talks to the **dev** project instead. Never use `pnpm android:release-local` for this: it sources `.env.production`, the production project.
+
+```bash
+cd apps/mobile
+npx expo prebuild --platform android --clean     # only when android/ is missing or native config changed
+echo "sdk.dir=$HOME/Library/Android/sdk" > android/local.properties
+set -a
+source .env                                      # dev Supabase; exported values win over .env.production
+source ~/drafto-secrets/android-env.sh           # release keystore, read by Gradle at build time; never print it
+set +a
+export _JAVA_OPTIONS='--enable-native-access=ALL-UNNAMED'
+APK=android/app/build/outputs/apk/release/app-release.apk
+rm -f "$APK"                                     # a failed build must leave no older APK to install
+BUILD_OK=0
+(cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a) && BUILD_OK=1 ||
+  echo "STOP: the release build failed; nothing below installs"
+
+# Guard: the APK must name the dev project and never the production one, and
+# it installs only when both hold. The Supabase URL is not in the Hermes
+# bundle: expo-constants ships it in assets/app.config, so check that file for
+# dev and the whole APK for prod. Extract to files first, as the QA runner
+# does: in `unzip -p | grep -q` grep stops at the first match, and under
+# pipefail unzip's SIGPIPE turns that match into "no match". Any unzip exit
+# but 0 stops here too: Info-ZIP exits 1 after skipping an entry, which the
+# prod scan would then never see. Nothing installs after a failed build.
+CONTENTS="$(mktemp)" && CONFIG="$(mktemp)"
+if [ "$BUILD_OK" = 1 ] \
+  && unzip -p "$APK" > "$CONTENTS" \
+  && unzip -p "$APK" assets/app.config > "$CONFIG" \
+  && LC_ALL=C grep -a -q -F huhzactreblzcogqkbsd "$CONFIG" \
+  && ! LC_ALL=C grep -a -q -F tbmjbxxseonkciqovnpl "$CONTENTS"; then
+  echo "dev APK: OK"
+  adb -s emulator-5554 uninstall eu.drafto.mobile  # a release-signed APK can't replace a debug one
+  adb -s emulator-5554 install "$APK"
+else
+  echo "STOP: the build failed, or this APK is not dev-only or couldn't be read; not installing it"
+fi
+rm -f "$CONTENTS" "$CONFIG"
+```
+
+- Gradle needs JDK 17–24, as for a debug build ([Mobile debug builds](#mobile-debug-builds)); Homebrew's `openjdk@17` works too.
+- `expo prebuild` needs no signing secrets. The `with-android-signing.js` plugin writes a release signing config that reads the keystore variables from the environment when Gradle runs, so `android-env.sh` only has to be sourced before `assembleRelease`.
+- The uninstall wipes the app's local data, so sign in again (flow `01-login.yaml`).
+- `run-qa-10668-e2e.sh` runs the same guard on whatever is installed: it pulls the APK and refuses one that names production anywhere or whose `assets/app.config` lacks the dev ref.
+
+**iOS has no airplane mode.** Maestro's `setAirplaneMode` / `toggleAirplaneMode` are Android-only, and the simulator shares the Mac's network. The iOS offline flows (`ios-only/05`, `06` and the report-10668 ones) therefore run in phases (`-e QA_PHASE=prepare|offline|reconnect`, tagged `requires-host-offline`), and the runner below takes the whole Mac offline between them with `apps/desktop/e2e/in-test/lib/net.sh`. That needs `sudo` (the runner keeps its timestamp alive for the run), cuts off everything else on the Mac (a Claude session included) until the leg ends, and is restored by a root watchdog after 300 s at most. net.sh defaults to 120 s, but the runner sets `NET_WATCHDOG_S=300` because one leg's offline phase plus its capture (a fresh Maestro iOS driver, two cold starts with 30 s waits, a 15 s banner wait, then `maestro hierarchy`) can pass 120 s, and a network that comes back early makes the app reconnect before the check reads the screen. Each leg has its own list of disabled services and its own watchdog flag, so an earlier leg's watchdog can't bring the network back during a later leg, and a leg whose restore failed stops the later legs from going offline. Without `--allow-host-offline` a leg is skipped before its online `prepare` phase, which would otherwise create test data that only `reconnect` deletes. Like the in-test harness, it waits for builds, releases and support runs first (`net_busy`, which ignores only Maestro's own iOS driver: `xcodebuild test-without-building` on its `maestro-driver-ios-config.xctestrun`). Run it only in a foreground session you started, and skip those flows in a folder run with `--exclude-tags requires-host-offline`.
+
+### Report 10668 runner and host layout checks
+
+`apps/mobile/e2e/run-qa-10668-e2e.sh [android|ios] [--before] [--allow-host-offline]` runs the PrimeTestLab report 10668 flows (tagged `qa-10668`) and, after each layout flow, a host-side check from `scripts/lib/maestro-layout-checks.mjs`. Maestro can't judge these bugs itself: its `below:` / `above:` selectors compare only the top edges of two elements, and `tapOn` succeeds on a half-covered button, so a covered FAB or Back arrow passes a Maestro assertion before the fix. The checks read what the device reports instead:
+
+| Check                                      | Reads                                            | Passes when                                                                                                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fab-above-nav-bar` (Android)              | `maestro hierarchy` + `adb shell dumpsys window` | every `add` FAB's bottom is at or above the `navigationBars` frame's top                                                                                                                        |
+| `fab-above-home-indicator` (iOS)           | `maestro hierarchy`                              | every `add` FAB's bottom is at or above the screen height − 34 pt                                                                                                                               |
+| `banner-clear-of-back`                     | `maestro hierarchy`                              | the offline banner (`offline-banner`, or the text "You are offline") doesn't overlap the back button and starts at or below the header's bottom                                                 |
+| `image-rendered`                           | `maestro hierarchy`                              | in an E2E probe build, no `editor-image-missing` status view for the image; otherwise every image labelled with a file name is at least 100 px tall (a broken one is an icon plus its alt text) |
+| `nav-bar-dark` / `nav-bar-light` (Android) | a screencap PNG + `dumpsys window`               | the nav bar's luminance is under 0.25 / over 0.6, and the focused Drafto window's `apr=` flags lack / have `LIGHT_NAVIGATION_BARS`                                                              |
+
+- The runner switches the emulator to 3-button navigation (`cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.threebutton`) and a light system theme (`cmd uimode night no`), the report's device, and restores both on exit (`--keep-device-state` leaves them).
+- The runner takes `dumpsys window` both before and after the screenshot. The nav-bar checks measure only when both dumps show the same nav-bar frame and Drafto window flags, so the pixels and the flags come from one settled state. A hidden nav bar (`visible=false`) isn't measured either.
+- `--before` runs against a build without the fixes and lists a report check as "reproduced" only when it measured the element and found it wrong (the check exits 1). It exits non-zero if one passes, because that check can't tell a fixed build from a broken one, and if one is "NOT MEASURED": a check error, the element or a precondition missing (no FAB on screen, Drafto not focused: the checks exit 2 for these, never 1), a missing flow under `--require-all`, or a report flow that Maestro exited on before any of its commands failed (its driver didn't start, or the YAML didn't parse: the runner looks for a `FAILED` command in Maestro's log). A check that didn't run (an iOS offline leg without `--allow-host-offline`) is listed as skipped.
+- Screenshots, hierarchy dumps, logs and `summary.md` go to `--out` (default under `$TMPDIR`). The screenshots show note content, so don't commit them. The runner hands Maestro the test password as `MAESTRO_E2E_TEST_PASSWORD` in the environment, not as a `-e` argument that `ps` would show (`01-login.yaml` reads either), points Maestro's `--debug-output` (its commands JSON and log, typed text included) under `--out` instead of `~/.maestro/tests`, and scrubs the password from every file under `--out`, in its raw and JSON-escaped forms.
+- The checks are plain functions with a small CLI (`node scripts/lib/maestro-layout-checks.mjs <check> --hierarchy … --dumpsys … --screenshot …`), unit-tested with recorded fixtures in `scripts/__tests__/maestro-layout-checks.test.mjs`. Use its `bounds --hierarchy <file> --id <regex>` command to look at an element's bounds while writing a flow.
 
 ### Desktop E2E
 

@@ -8,6 +8,7 @@ import {
   SIGN_OUT_CONFIRM_TITLE,
   SIGN_OUT_SYNCED_MESSAGE,
   SIGN_OUT_UNKNOWN_MESSAGE,
+  PASSWORD_VISIBILITY_LABELS,
   SIGNUP_CONFIRMATION_SENT,
   SIGNUP_EMAIL_REDIRECT_URL,
 } from "../src/index";
@@ -47,5 +48,13 @@ describe("auth copy shared by every platform", () => {
     // Only the unsynced and unknown cases warn about losing changes.
     expect(SIGN_OUT_SYNCED_MESSAGE).not.toMatch(/lost/);
     expect(SIGN_OUT_UNKNOWN_MESSAGE).toMatch(/lost\.$/);
+  });
+
+  it("names the password toggle so no label equals a field's own label", () => {
+    expect(PASSWORD_VISIBILITY_LABELS).toEqual({ show: "Show password", hide: "Hide password" });
+    for (const fieldLabel of ["Password", "New Password", "Confirm Password"]) {
+      expect(PASSWORD_VISIBILITY_LABELS.show).not.toBe(fieldLabel);
+      expect(PASSWORD_VISIBILITY_LABELS.hide).not.toBe(fieldLabel);
+    }
   });
 });

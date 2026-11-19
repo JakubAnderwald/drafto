@@ -204,3 +204,42 @@ wait_for_ui() {
   sleep "${E2E_UI_WAIT:-1.5}"
 }
 
+# Print "<focused>,<length>" for the text field of window 1 described exactly $1 (not a
+# substring match, so "Password" never finds "Show password"), or nothing if there is none.
+# <focused> is true or false (AXFocused). <length> is the number of characters in the field,
+# or "?" when it can't be read. A secure field hides its value but still reports its length.
+text_field_state() {
+  local desc=$1
+  osascript -e "
+  tell application \"System Events\"
+    tell process \"Drafto\"
+      set fld to missing value
+      repeat with el in (UI elements of window 1)
+        try
+          if description of el is \"$desc\" then
+            set fld to contents of el
+            exit repeat
+          end if
+        end try
+      end repeat
+      if fld is missing value then return \"\"
+      set isFocused to \"false\"
+      try
+        if (value of attribute \"AXFocused\" of fld) is true then set isFocused to \"true\"
+      end try
+      set len to \"?\"
+      try
+        set v to value of fld
+        if v is missing value then error \"no value\"
+        set len to (count of (v as text)) as text
+      on error
+        try
+          set len to (value of attribute \"AXNumberOfCharacters\" of fld) as text
+        end try
+      end try
+      return isFocused & \",\" & len
+    end tell
+  end tell
+  " 2>/dev/null || true
+}
+

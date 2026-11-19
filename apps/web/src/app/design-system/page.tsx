@@ -18,6 +18,7 @@ import {
 import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PasswordInput } from "@/components/ui/password-input";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -488,6 +489,41 @@ export default function DesignSystemPage() {
           <div>
             <Label htmlFor="demo-err">Error state</Label>
             <Input id="demo-err" error placeholder="Something went wrong..." />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="PasswordInput">
+        <div className="max-w-sm space-y-4">
+          <div>
+            <Label htmlFor="demo-password">Default (hidden until toggled)</Label>
+            <PasswordInput
+              id="demo-password"
+              autoComplete="off"
+              placeholder="Min. 6 characters"
+              defaultValue="hunter2-demo"
+              wrapperClassName="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="demo-password-err">Error state</Label>
+            <PasswordInput
+              id="demo-password-err"
+              autoComplete="off"
+              error
+              placeholder="Passwords do not match"
+              wrapperClassName="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="demo-password-disabled">Disabled</Label>
+            <PasswordInput
+              id="demo-password-disabled"
+              autoComplete="off"
+              disabled
+              defaultValue="disabled-demo"
+              wrapperClassName="mt-1"
+            />
           </div>
         </div>
       </Section>
