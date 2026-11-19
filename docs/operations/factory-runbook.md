@@ -1338,7 +1338,10 @@ To rehearse a resume by hand, on a scratch card:
    launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist
    ```
 
-2. Put a scratch card in **In Progress** with an approved plan. `--implement` takes every In Progress card, not only this one, and would run each under the drill's short cap. So put the `factory-pause` label on every other In Progress card for the drill; `--implement` skips a paused card.
+2. Put a scratch card in **In Progress** with an approved plan. `--implement` takes every In Progress card, not only this one, and would run each under the drill's short cap. So put the `factory-pause` label on every other In Progress card for the drill; `--implement` skips a paused card. Note which of them already had the label, so step 8 leaves those paused.
+
+   The scratch card also needs a worktree slot. `node scripts/lib/state-cli.mjs factory:slot-status` shows who holds the two. Cards in In Review and Testing keep theirs, a paused card keeps its own, and a detached run keeps its card's even with the job unloaded. If both are held by other cards, the run only logs `Issue #<n>: both worktree slots busy; deferring to a later tick`. Don't release a slot another card is using: reload the job and run the drill another time, when a slot is free.
+
 3. Run the implement stage once with a short cap and let it stop. Hitting the cap and stopping itself with `action=incomplete` at the soft deadline are both recorded as resumable, so either counts. `FACTORY_AUTOPULL=0` is read only by the loop wrapper (`scripts/factory-agent-loop.sh`); it is kept so pasting the command into the wrapper doesn't reset the tree. Don't export `FACTORY_IMPLEMENT_DETACHED`, so both runs stay in the foreground.
 
    ```bash
@@ -1351,7 +1354,7 @@ To rehearse a resume by hand, on a scratch card:
 5. Run the same command again. Change nothing in between: the resume conditions above all have to hold.
 6. In the same log, check for `Issue #<n>: resume session <id>` from the second run, with the same `<id>`. A `fresh session <id> (no resume: <reason>)` line means the drill failed, and the reason says why.
 7. Check that the second run appended to the same transcript: `ls -l ~/.claude/projects/*/<id>.jsonl` still shows one file, and it is larger than the size you noted in step 4.
-8. Close the scratch card or move it out of In Progress, and remove `factory-pause` from the cards you paused in step 2. Only then reload the job, so its first tick can't take the scratch card:
+8. Close the scratch card, or move it to a column the factory doesn't work: not In Progress, In Review or Testing. Remove `factory-pause` from the cards you added it to in step 2, and leave it on the ones that already had it. Only then reload the job, so its first tick can't take the scratch card:
 
    ```bash
    launchctl load ~/Library/LaunchAgents/eu.drafto.factory.plist
