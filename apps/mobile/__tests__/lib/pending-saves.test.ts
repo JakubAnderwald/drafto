@@ -6,6 +6,7 @@ import {
   flushPendingSaves,
   forgetFailedSaves,
   registerPendingSave,
+  trackSaveInFlight,
 } from "@/lib/pending-saves";
 
 describe("pending saves", () => {
@@ -250,5 +251,30 @@ describe("pending saves", () => {
 
     failWrite();
     await expect(flushing).resolves.toBe(false);
+  });
+
+  it("keeps waiting for a write that starts while it waits", async () => {
+    let finishFirst: () => void = () => {};
+    let finishSecond: () => void = () => {};
+    const first = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    const second = new Promise<void>((resolve) => {
+      finishSecond = resolve;
+    });
+    trackSaveInFlight(first);
+
+    let flushed = false;
+    const flushing = flushPendingSaves().finally(() => {
+      flushed = true;
+    });
+    await Promise.resolve();
+    trackSaveInFlight(second);
+    finishFirst();
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(flushed).toBe(false);
+
+    finishSecond();
+    await expect(flushing).resolves.toBe(true);
   });
 });

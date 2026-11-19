@@ -69,7 +69,10 @@ export function forgetFailedSaves(): void {
  */
 export async function flushPendingSaves(): Promise<boolean> {
   const results = await Promise.allSettled(Array.from(flushes, (flush) => flush()));
-  // Also writes that are not their auto-save's latest, or whose editor has unmounted since.
-  await Promise.allSettled(Array.from(savesInFlight));
+  // Also writes that are not their auto-save's latest, or whose editor has unmounted since,
+  // and any write that started while this one waited: keep draining until none is left.
+  while (savesInFlight.size > 0) {
+    await Promise.allSettled(Array.from(savesInFlight));
+  }
   return results.every((result) => result.status === "fulfilled") && failedSaves.size === 0;
 }
