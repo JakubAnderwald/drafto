@@ -157,6 +157,22 @@ describe("downloadToCache", () => {
     expect(filesUnder(CACHE)).toEqual([`${CACHE}/u/m/b.jpg`]);
   });
 
+  it("resolves null, not a failure, for a download that failed after a wipe overtook it", async () => {
+    let fail: (error: Error) => void = () => undefined;
+    fakeFs.download.mockReturnValue(new Promise((_resolve, reject) => (fail = reject)));
+    const pending = downloadToCache("u/n/a.jpg", "https://signed/a");
+    deleteAttachmentCache();
+    fail(new Error("network"));
+    await expect(pending).resolves.toBeNull();
+    expect(fakeFs.files.size).toBe(0);
+  });
+
+  it("still rejects a download that failed in the current session", async () => {
+    fakeFs.download.mockRejectedValue(new Error("network"));
+    await expect(downloadToCache("u/n/a.jpg", "https://signed/a")).rejects.toThrow("network");
+    expect(fakeFs.files.size).toBe(0);
+  });
+
   it("downloads nothing for work that began before a sign-out", async () => {
     const startedIn = getAttachmentCacheGeneration();
     deleteAttachmentCache();
@@ -185,6 +201,20 @@ describe("retainInCache", () => {
     fakeFs.failNextMove.value = true;
     retainInCache("file:///docs/attachments/id_a.jpg", "u/n/a.jpg");
     expect(fakeFs.files.size).toBe(0);
+  });
+
+  it("keeps the moved file in the cache when recording it fails", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    fakeFs.files.set("file:///docs/attachments/id_a.jpg", { size: 10, mtime: 1 });
+    getAttachmentCacheState(); // the index is loaded, so the next size read is the record
+    const size = jest.spyOn(FakeFile.prototype, "size", "get").mockImplementation(() => {
+      throw new Error("EIO");
+    });
+    expect(() => retainInCache("file:///docs/attachments/id_a.jpg", "u/n/a.jpg")).not.toThrow();
+    size.mockRestore();
+    expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+    expect(fakeFs.files.has("file:///docs/attachments/id_a.jpg")).toBe(false);
+    warn.mockRestore();
   });
 
   it("does nothing for a file that no longer exists", () => {
@@ -227,6 +257,24 @@ describe("evictAttachmentCache", () => {
     expect(fakeFs.files.has(`${CACHE}/u/n/old.jpg`)).toBe(false);
     expect(fakeFs.files.has(`${CACHE}/u/n/viewed.jpg`)).toBe(true);
     expect(fakeFs.files.has(`${CACHE}/u/n/new.jpg`)).toBe(true);
+  });
+
+  it("ranks by last use as it is after reading the rows, so a file opened meanwhile is kept", async () => {
+    put("u/n/a.jpg", 50, 1_000);
+    put("u/n/b.jpg", 50, 2_000);
+    let releaseRows: (rows: unknown[]) => void = () => undefined;
+    mockUnsyncedRows.mockReturnValueOnce(new Promise((resolve) => (releaseRows = resolve)));
+    const eviction = evictAttachmentCache(60);
+    await Promise.resolve();
+    expect(mockUnsyncedRows).toHaveBeenCalledTimes(1);
+
+    // a.jpg, the oldest when eviction started, is opened while the rows load.
+    getCachedAttachmentUri("u/n/a.jpg");
+    releaseRows([]);
+    await eviction;
+
+    expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+    expect(fakeFs.files.has(`${CACHE}/u/n/b.jpg`)).toBe(false);
   });
 
   it("never evicts a file whose attachment is pending, failed or refused for the quota", async () => {

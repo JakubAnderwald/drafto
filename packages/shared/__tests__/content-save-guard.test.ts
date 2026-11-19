@@ -477,10 +477,20 @@ describe("device-local attachment srcs (ADR-0086)", () => {
 
   it("still saves a real edit made next to a local image, with attachment:// in it", () => {
     const stored = serializeEditorContent(docWith(toAttachmentUrl(FILE_PATH)));
+    const baselines = new Map<string, ContentBaseline>([
+      [
+        "note-1",
+        { stored, serializations: [serializeLoadedDoc(contentToTiptap(JSON.parse(stored)))] },
+      ],
+    ]);
     const edited = docWith(LOCAL_SRC);
     edited.content[0] = { type: "paragraph", content: [{ type: "text", text: "Edited" }] };
     const payload = { noteId: "note-1", content: serializeEditorContent(edited) };
-    expect(isNoOpContentSave(new Map(), payload, stored)).toBe(false);
+    expect(isNoOpContentSave(baselines, payload, stored)).toBe(false);
+    // The edit is saved, and the image survives with its canonical src.
+    const canonical = docWith(toAttachmentUrl(FILE_PATH));
+    canonical.content[0] = { type: "paragraph", content: [{ type: "text", text: "Edited" }] };
+    expect(payload.content).toBe(serializeEditorContent(canonical));
     expect(payload.content).not.toContain("file://");
   });
 });

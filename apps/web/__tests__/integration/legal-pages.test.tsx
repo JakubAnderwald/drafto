@@ -96,7 +96,7 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     expect(screen.getByText(/Effective date: March 8, 2026/)).toHaveTextContent(
-      "Last updated: November 18, 2026",
+      "Last updated: November 19, 2026",
     );
   });
 
@@ -109,7 +109,10 @@ describe("Privacy policy page", () => {
     expect(offline).toMatch(/stays on the device after it uploads/);
     expect(offline).toMatch(/Other files you attach stay on the device only until\s+they upload/);
     expect(offline).toMatch(/300\u00a0MB on iPhone, iPad\s+and Android, 1\u00a0GB on macOS/);
-    expect(offline).toMatch(/removed once its note is deleted/);
+    expect(offline).toMatch(
+      /Once a note\s+is deleted permanently, on that device or another, the copies of its images are removed\s+the next time the app starts and syncs/,
+    );
+    expect(offline).toMatch(/Images in\s+notes in the trash are kept/);
     expect(offline).toMatch(/The local copy, attachments included, is erased when you sign out/);
   });
 

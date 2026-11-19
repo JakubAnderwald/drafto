@@ -105,6 +105,7 @@ import RNFS from "react-native-fs";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
   STORAGE_QUOTA_EXCEEDED_CODE,
+  localAttachmentFileName,
   storageFullMessage,
 } from "@drafto/shared";
 
@@ -791,5 +792,69 @@ describe("cleanupOrphanedFiles", () => {
 
     expect(RNFS.unlink).toHaveBeenCalledWith("/mock/documents/attachments/orphaned.jpg");
     expect(RNFS.unlink).not.toHaveBeenCalledWith("/mock/documents/attachments/active.jpg");
+  });
+
+  describe("a file that isn't an image, queued while it runs", () => {
+    const QUEUED = `/mock/documents/attachments/${localAttachmentFileName("mock-id-123", "doc.pdf")}`;
+    const doc = {
+      uri: "file:///doc.pdf",
+      path: "/doc.pdf",
+      fileName: "doc.pdf",
+      mimeType: "application/pdf",
+      fileSize: 1024,
+    };
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    function rowsFrom(fetch: jest.Mock) {
+      mockDatabaseGet.mockReturnValue({
+        create: (builder: (rec: Record<string, unknown>) => void) => {
+          const rec: Record<string, unknown> = { _raw: {} };
+          builder(rec);
+          return rec;
+        },
+        query: () => ({ fetch }),
+      });
+    }
+
+    beforeEach(() => {
+      (RNFS.readDir as jest.Mock).mockResolvedValue([{ path: QUEUED, isFile: () => true }]);
+    });
+
+    it("keeps the copy until its row is written, then sweeps it like any file", async () => {
+      rowsFrom(jest.fn().mockResolvedValue([]));
+      let finishWrite: () => void = () => undefined;
+      mockDatabaseWrite.mockImplementationOnce(
+        (fn: () => Promise<unknown>) =>
+          new Promise((resolve) => {
+            finishWrite = () => resolve(fn());
+          }),
+      );
+      const queued = queueAttachment("user-1", "note-1", doc);
+      while (mockDatabaseWrite.mock.calls.length === 0) await tick();
+
+      await cleanupOrphanedFiles();
+      expect(RNFS.unlink).not.toHaveBeenCalledWith(QUEUED);
+
+      finishWrite();
+      await queued;
+      // Released: a row that no longer points at it (here, none) lets it go.
+      await cleanupOrphanedFiles();
+      expect(RNFS.unlink).toHaveBeenCalledWith(QUEUED);
+    });
+
+    it("keeps a copy made after the sweep read the rows", async () => {
+      let releaseRows: (rows: unknown[]) => void = () => undefined;
+      rowsFrom(jest.fn().mockReturnValue(new Promise((resolve) => (releaseRows = resolve))));
+      const sweep = cleanupOrphanedFiles();
+      await tick();
+
+      // Copied and its row written while the sweep's row query (taken before
+      // that row existed) is still out.
+      await queueAttachment("user-1", "note-1", doc);
+      releaseRows([]);
+      await sweep;
+
+      expect(RNFS.unlink).not.toHaveBeenCalledWith(QUEUED);
+    });
   });
 });

@@ -179,6 +179,34 @@ describe("paths", () => {
     expect(mockMkdir).toHaveBeenNthCalledWith(1, CACHE, { NSURLIsExcludedFromBackupKey: true });
     expect(mockMkdir).toHaveBeenNthCalledWith(2, `${CACHE}/u/n`, undefined);
   });
+
+  it("sets the backup exclusion again when setting it failed after the cache was created", async () => {
+    // RNFS.mkdir creates the directory, then sets the attribute: a failure
+    // there rejects with the directory already in place.
+    mockMkdir.mockImplementationOnce((path: string) => {
+      mockDirs.add(path);
+      throw new Error("EPERM");
+    });
+    await expect(prepareCacheFile("u/n/a.jpg")).rejects.toThrow("EPERM");
+    expect(mockDirs.has(CACHE)).toBe(true);
+    expect(mockDirs.has(`${CACHE}/u/n`)).toBe(false);
+
+    mockMkdir.mockClear();
+    await prepareCacheFile("u/n/a.jpg");
+    expect(mockMkdir).toHaveBeenNthCalledWith(1, CACHE, { NSURLIsExcludedFromBackupKey: true });
+
+    // Once it is set, a later write doesn't set it again.
+    mockMkdir.mockClear();
+    await prepareCacheFile("u/m/b.jpg");
+    expect(mockMkdir).toHaveBeenCalledTimes(1);
+    expect(mockMkdir).toHaveBeenCalledWith(`${CACHE}/u/m`, undefined);
+  });
+
+  it("sets the backup exclusion on a cache an earlier launch created", async () => {
+    mockDirs.add(CACHE);
+    await prepareCacheFile("u/n/a.jpg");
+    expect(mockMkdir).toHaveBeenNthCalledWith(1, CACHE, { NSURLIsExcludedFromBackupKey: true });
+  });
 });
 
 describe("getCachedAttachmentUri", () => {
@@ -188,6 +216,17 @@ describe("getCachedAttachmentUri", () => {
     await expect(getCachedAttachmentUri("u/n/a.jpg")).resolves.toBeNull();
     put("u/n/a.jpg", 5);
     await expect(getCachedAttachmentUri("u/n/a.jpg")).resolves.toBe(`file://${CACHE}/u/n/a.jpg`);
+  });
+
+  it("does not index a file deleted while the first walk of the cache runs", async () => {
+    put("u/n/a.jpg", 5);
+    // The file's size is read, then the delete lands before the walk reaches it.
+    mockHooks.onExists = (path) => {
+      if (path === CACHE) mockFiles.delete(`${CACHE}/u/n/a.jpg`);
+    };
+    await expect(getCachedAttachmentUri("u/n/a.jpg")).resolves.toBeNull();
+    mockHooks.onExists = null;
+    expect(await listAttachmentCache()).toEqual([]);
   });
 });
 
@@ -374,6 +413,23 @@ describe("evictAttachmentCache", () => {
     expect(mockFiles.has(`${CACHE}/u/n/old.jpg`)).toBe(false);
     expect(mockFiles.has(`${CACHE}/u/n/viewed.jpg`)).toBe(true);
     expect(mockFiles.has(`${CACHE}/u/n/new.jpg`)).toBe(true);
+  });
+
+  it("ranks by last use as it is after reading the rows, so a file opened meanwhile is kept", async () => {
+    put("u/n/a.jpg", 50, 1_000);
+    put("u/n/b.jpg", 50, 2_000);
+    let releaseRows: (rows: unknown[]) => void = () => undefined;
+    mockUnsyncedRows.mockReturnValueOnce(new Promise((resolve) => (releaseRows = resolve)));
+    const eviction = evictAttachmentCache(60);
+    while (mockUnsyncedRows.mock.calls.length === 0) await tick();
+
+    // a.jpg, the oldest when eviction started, is opened while the rows load.
+    await getCachedAttachmentUri("u/n/a.jpg");
+    releaseRows([]);
+    await eviction;
+
+    expect(mockFiles.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+    expect(mockFiles.has(`${CACHE}/u/n/b.jpg`)).toBe(false);
   });
 
   it("never evicts a file whose attachment is pending, failed or refused for the quota", async () => {

@@ -113,7 +113,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;18,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;19,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -280,8 +280,10 @@ export default function PrivacyPolicyPage() {
             from our servers in the background. Other files you attach stay on the device only until
             they upload. When the space the images take reaches a limit (300&nbsp;MB on iPhone, iPad
             and Android, 1&nbsp;GB on macOS), the copies you have not opened for the longest time
-            are removed first; a file that has not finished uploading is never removed. The copy of
-            an image is also removed once its note is deleted.
+            are removed first; a file that has not finished uploading is never removed. Once a note
+            is deleted permanently, on that device or another, the copies of its images are removed
+            the next time the app starts and syncs, or sooner when the limit is reached. Images in
+            notes in the trash are kept, so a restored note still shows them.
           </p>
           <p>
             The local copy, attachments included, is erased when you sign out or delete your account

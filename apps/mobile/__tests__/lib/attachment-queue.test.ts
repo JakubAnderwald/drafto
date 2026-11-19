@@ -827,6 +827,74 @@ describe("cleanupOrphanedFiles", () => {
     expect(orphan.delete).toHaveBeenCalledTimes(1);
   });
 
+  describe("a file that isn't an image, queued while it runs", () => {
+    const QUEUED_URI = "file:///mock/mock-id-123_report.pdf";
+    const report = {
+      uri: "file:///picker/report.pdf",
+      fileName: "report.pdf",
+      mimeType: "application/pdf",
+      fileSize: 2048,
+    };
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    function folderListing() {
+      const queued = { uri: QUEUED_URI, delete: jest.fn() };
+      const { Directory } = jest.requireMock("expo-file-system") as { Directory: jest.Mock };
+      Directory.mockImplementationOnce(() => ({ exists: true, list: () => [queued] }));
+      return queued;
+    }
+
+    function rowsFrom(fetch: jest.Mock) {
+      mockDatabaseGet.mockReturnValue({
+        create: jest.fn(async (build: (record: Record<string, unknown>) => void) => {
+          const record: Record<string, unknown> = { _raw: {} };
+          build(record);
+          return record;
+        }),
+        query: () => ({ fetch }),
+      });
+    }
+
+    it("keeps the copy until its row is written, then sweeps it like any file", async () => {
+      rowsFrom(jest.fn().mockResolvedValue([]));
+      let finishWrite: () => void = () => undefined;
+      mockDatabaseWrite.mockImplementationOnce(
+        (fn: () => Promise<unknown>) =>
+          new Promise((resolve) => {
+            finishWrite = () => resolve(fn());
+          }),
+      );
+      const queuedCall = queueAttachment("user-1", "note-1", report);
+
+      const during = folderListing();
+      await cleanupOrphanedFiles();
+      expect(during.delete).not.toHaveBeenCalled();
+
+      finishWrite();
+      await queuedCall;
+      // Released: a row that no longer points at it (here, none) lets it go.
+      const after = folderListing();
+      await cleanupOrphanedFiles();
+      expect(after.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a copy made after the sweep read the rows", async () => {
+      let releaseRows: (rows: unknown[]) => void = () => undefined;
+      rowsFrom(jest.fn().mockReturnValue(new Promise((resolve) => (releaseRows = resolve))));
+      const listed = folderListing();
+      const sweep = cleanupOrphanedFiles();
+      await tick();
+
+      // Copied and its row written while the sweep's row query (taken before
+      // that row existed) is still out.
+      await queueAttachment("user-1", "note-1", report);
+      releaseRows([]);
+      await sweep;
+
+      expect(listed.delete).not.toHaveBeenCalled();
+    });
+  });
+
   it("also cleans the attachment cache, even with no attachments folder", async () => {
     mockDirExists.mockReturnValue(false);
     await cleanupOrphanedFiles();

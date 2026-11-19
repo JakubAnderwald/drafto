@@ -247,7 +247,13 @@ async function download(filePath: string, url: string, startedIn: number): Promi
   const partial = new File(partialDir, partialName);
   activePartials.add(partialName);
   try {
-    await File.downloadFileAsync(url, partial, { idempotent: true });
+    try {
+      await File.downloadFileAsync(url, partial, { idempotent: true });
+    } catch (error) {
+      // A download the wipe overtook is obsolete, failed or not.
+      if (generation !== startedIn) return null;
+      throw error;
+    }
     // Everything below is synchronous, so the cache can't be wiped part-way.
     if (generation !== startedIn) return null;
     if (!partial.exists || partial.size === 0) throw new Error("Downloaded file is empty");
@@ -314,9 +320,17 @@ export function retainInCache(localUri: string, filePath: string): void {
     const destination = prepareCacheFile(filePath);
     safeDelete(destination);
     source.move(destination);
-    noteWritten(filePath, cacheFileFor(filePath));
   } catch {
+    // The move failed: the old file isn't needed any more, as before.
     safeDelete(source);
+    return;
+  }
+  // The file is in the cache now (`source` names it there): keep it even if
+  // recording it fails, as the next walk of the cache indexes it.
+  try {
+    noteWritten(filePath, cacheFileFor(filePath));
+  } catch (error) {
+    console.warn("Failed to record the cached attachment:", error);
   }
 }
 
@@ -369,9 +383,12 @@ async function evict(maxBytes: number): Promise<void> {
   // Take the files and the held set before reading the rows: a file saved
   // after this isn't in `entries`, and one whose row is written meanwhile is
   // either still held now or its row is in the query.
-  const entries = current.entries();
+  const eligible = new Set(current.entries().map((entry) => entry.relativePath));
   const protectedPaths = new Set(held.keys());
   for (const relativePath of await unsyncedCachePaths()) protectedPaths.add(relativePath);
+  // Rank those files by their last use as it is now, so one opened while the
+  // rows were read isn't evicted as if it were still the oldest.
+  const entries = current.entries().filter((entry) => eligible.has(entry.relativePath));
   deleteAll(planAttachmentCacheEviction(entries, maxBytes, protectedPaths), startedIn);
 }
 

@@ -49,14 +49,39 @@ function getAttachmentsDir(): Directory {
   return new Directory(Paths.document, ATTACHMENTS_DIR_NAME);
 }
 
+// The attachments-folder copies whose row isn't written yet, by URI, and the
+// sets of the orphan sweeps running now. A sweep keeps every copy in flight
+// when it starts and every copy made while it runs, so it never deletes a
+// file whose row it couldn't see yet.
+const copiesInFlight = new Set<string>();
+const runningSweeps = new Set<Set<string>>();
+
+/** Keep `uri` from the orphan sweep until the returned release is called. */
+function protectCopy(uri: string): () => void {
+  copiesInFlight.add(uri);
+  for (const sweep of runningSweeps) sweep.add(uri);
+  return () => {
+    copiesInFlight.delete(uri);
+  };
+}
+
+interface SavedFile {
+  localUri: string;
+  /** Call once the row exists (or the save failed). */
+  release: () => void;
+}
+
 /**
  * Copy a picked file to where it waits for upload. An image goes into the
  * attachment cache, at its storage path: it is uploaded from there and kept
  * afterwards as the cached copy, so it shows offline from the moment it is
- * attached. Any other file goes to the attachments folder, as before.
+ * attached. Any other file goes to the attachments folder, as before, kept
+ * from the orphan sweep until released.
  */
-function saveFileLocally(file: PickedFile, filePath: string): string {
-  if (isCacheableAttachment(file.mimeType)) return copyIntoCache(file.uri, filePath);
+function saveFileLocally(file: PickedFile, filePath: string): SavedFile {
+  if (isCacheableAttachment(file.mimeType)) {
+    return { localUri: copyIntoCache(file.uri, filePath), release: () => undefined };
+  }
 
   const dir = getAttachmentsDir();
   if (!dir.exists) {
@@ -64,13 +89,19 @@ function saveFileLocally(file: PickedFile, filePath: string): string {
   }
   const source = new File(file.uri);
   const destination = new File(dir, localAttachmentFileName(generateId(), file.fileName));
-  source.copy(destination);
+  const release = protectCopy(destination.uri);
+  try {
+    source.copy(destination);
 
-  if (!destination.exists || destination.size === 0) {
-    throw new Error("File copy failed — destination is missing or empty");
+    if (!destination.exists || destination.size === 0) {
+      throw new Error("File copy failed — destination is missing or empty");
+    }
+  } catch (error) {
+    release();
+    throw error;
   }
 
-  return destination.uri;
+  return { localUri: destination.uri, release };
 }
 
 export async function queueAttachment(
@@ -89,8 +120,11 @@ export async function queueAttachment(
   // Until its row exists, nothing else knows the copy is needed: keep it
   // from eviction and the orphan cleanup meanwhile.
   const release = holdCacheFile(filePath);
+  let releaseCopy: () => void = () => undefined;
   try {
-    const localUri = saveFileLocally(file, filePath);
+    const saved = saveFileLocally(file, filePath);
+    releaseCopy = saved.release;
+    const localUri = saved.localUri;
     const remoteId = generateId();
 
     return await database.write(async () => {
@@ -109,6 +143,7 @@ export async function queueAttachment(
       });
     });
   } finally {
+    releaseCopy();
     release();
   }
 }
@@ -485,6 +520,10 @@ export async function deleteAllLocalAttachments(): Promise<void> {
  * complete. Never throws.
  */
 export async function cleanupOrphanedFiles(): Promise<void> {
+  // Taken before the rows are read: a copy whose row is written after the
+  // query is in here, and one made later is added while the sweep runs.
+  const inFlight = new Set(copiesInFlight);
+  runningSweeps.add(inFlight);
   try {
     const dir = getAttachmentsDir();
     if (dir.exists) {
@@ -497,7 +536,7 @@ export async function cleanupOrphanedFiles(): Promise<void> {
       const activeUris = new Set(withLocalUri.map((a) => a.localUri));
 
       for (const item of dir.list()) {
-        if (!activeUris.has(item.uri)) {
+        if (!activeUris.has(item.uri) && !inFlight.has(item.uri)) {
           try {
             item.delete();
           } catch {
@@ -508,6 +547,8 @@ export async function cleanupOrphanedFiles(): Promise<void> {
     }
   } catch {
     // Non-critical cleanup
+  } finally {
+    runningSweeps.delete(inFlight);
   }
   await removeOrphanedCacheFiles();
 }

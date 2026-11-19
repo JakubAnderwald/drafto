@@ -5,7 +5,10 @@ import type { PrefetchCandidate, PrefetchLimits } from "./attachment-cache-polic
 // and file calls passed in by each app, so mobile and desktop share one
 // implementation of the throttle, the cancellation and the sign-out reset.
 
-/** A pass that ran this recently, and downloaded nothing, is not repeated. */
+/**
+ * A pass that ran this recently, and found nothing to download, is not
+ * repeated. A pass that stopped on a failure doesn't count.
+ */
 export const PREFETCH_MIN_INTERVAL_MS = 60_000;
 
 export interface PrefetchOptions {
@@ -40,8 +43,9 @@ export interface AttachmentPrefetchDeps {
 
 export interface AttachmentPrefetcher {
   /**
-   * Run a pass, or join the one running. A pass that found nothing to do isn't
-   * repeated for `PREFETCH_MIN_INTERVAL_MS`. Never throws.
+   * Run a pass, or join the one running unless its caller's session ended. A
+   * pass that found nothing to do isn't repeated for
+   * `PREFETCH_MIN_INTERVAL_MS`. Never throws.
    */
   prefetch: (options?: PrefetchOptions) => Promise<PrefetchResult>;
   /**
@@ -52,16 +56,24 @@ export interface AttachmentPrefetcher {
   reset: () => void;
 }
 
+/** A pass's outcome; `failed` when it stopped on an error, with work left. */
+interface PassOutcome extends PrefetchResult {
+  failed: boolean;
+}
+
 export function createAttachmentPrefetcher(deps: AttachmentPrefetchDeps): AttachmentPrefetcher {
   const now = deps.now ?? (() => Date.now());
   let running: Promise<PrefetchResult> | null = null;
+  // The running pass's own cancellation: once it is true, that pass is
+  // stopping, so a new call starts a pass of its own instead of joining it.
+  let runningCancelled: () => boolean = () => false;
   let lastIdlePassAt = 0;
   // Bumped by reset(), so a pass from before it knows it was dropped.
   let epoch = 0;
 
-  async function runPass(isCancelled: () => boolean): Promise<PrefetchResult> {
+  async function runPass(isCancelled: () => boolean): Promise<PassOutcome> {
     const candidates = await deps.listCandidates();
-    if (candidates.length === 0 || isCancelled()) return { downloaded: 0 };
+    if (candidates.length === 0 || isCancelled()) return { downloaded: 0, failed: false };
 
     const cache = await deps.cacheState();
     const chosen = selectPrefetchCandidates(candidates, cache.isCached, {
@@ -70,6 +82,7 @@ export function createAttachmentPrefetcher(deps: AttachmentPrefetchDeps): Attach
     });
 
     let downloaded = 0;
+    let failed = false;
     for (const candidate of chosen) {
       if (isCancelled()) break;
       try {
@@ -79,15 +92,22 @@ export function createAttachmentPrefetcher(deps: AttachmentPrefetchDeps): Attach
       } catch (error) {
         // Most likely the network went away: the next pass picks up from here.
         console.warn("Attachment prefetch stopped:", error);
+        failed = true;
         break;
       }
     }
     if (downloaded > 0 && !isCancelled()) await deps.evict();
-    return { downloaded };
+    return { downloaded, failed };
   }
 
   function prefetch(options: PrefetchOptions = {}): Promise<PrefetchResult> {
-    if (running) return running;
+    if (running) {
+      if (!runningCancelled()) return running;
+      // The running pass belongs to a session that ended (approval revoked and
+      // restored, say): drop it, as reset() does, so this session gets a pass.
+      epoch += 1;
+      running = null;
+    }
     if (now() - lastIdlePassAt < PREFETCH_MIN_INTERVAL_MS) {
       return Promise.resolve({ downloaded: 0 });
     }
@@ -95,18 +115,24 @@ export function createAttachmentPrefetcher(deps: AttachmentPrefetchDeps): Attach
     const callerCancelled = options.isCancelled ?? (() => false);
     const isCancelled = () => epoch !== startedIn || callerCancelled();
     const pass: Promise<PrefetchResult> = runPass(isCancelled)
-      .catch((error: unknown) => {
+      .catch((error: unknown): PassOutcome => {
         console.warn("Attachment prefetch failed:", error);
-        return { downloaded: 0 };
+        return { downloaded: 0, failed: true };
       })
-      .then((result) => {
-        if (epoch === startedIn) lastIdlePassAt = result.downloaded === 0 ? now() : 0;
-        return result;
+      .then(({ downloaded, failed }) => {
+        // Only a pass that found nothing to do starts the throttle. After a
+        // failure, or a pass its session's end cut short, the next call (a
+        // reconnect's sync, the next session's) picks up the rest.
+        if (epoch === startedIn) {
+          lastIdlePassAt = downloaded === 0 && !failed && !isCancelled() ? now() : 0;
+        }
+        return { downloaded };
       })
       .finally(() => {
         if (running === pass) running = null;
       });
     running = pass;
+    runningCancelled = isCancelled;
     return pass;
   }
 

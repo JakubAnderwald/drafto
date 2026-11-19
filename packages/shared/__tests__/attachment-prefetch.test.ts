@@ -64,6 +64,33 @@ describe("createAttachmentPrefetcher", () => {
     expect(deps.evict).not.toHaveBeenCalled();
   });
 
+  it("does not start the throttle after a pass that stopped on a failure", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { deps, prefetcher } = setup({
+      getSignedUrl: vi
+        .fn<AttachmentPrefetchDeps["getSignedUrl"]>()
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockImplementation(async (filePath: string) => `https://signed/${filePath}`),
+    });
+    await expect(prefetcher.prefetch()).resolves.toEqual({ downloaded: 0 });
+    // Right after (a reconnect's sync), the next pass picks up the rest.
+    await expect(prefetcher.prefetch()).resolves.toEqual({ downloaded: 2 });
+    expect(deps.listCandidates).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start the throttle after a pass that failed outright", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { deps, prefetcher } = setup({
+      listCandidates: vi
+        .fn<AttachmentPrefetchDeps["listCandidates"]>()
+        .mockRejectedValueOnce(new Error("db"))
+        .mockResolvedValue([candidate("a", 10)]),
+    });
+    await prefetcher.prefetch();
+    await expect(prefetcher.prefetch()).resolves.toEqual({ downloaded: 1 });
+    expect(deps.listCandidates).toHaveBeenCalledTimes(2);
+  });
+
   it("stops once the session ends", async () => {
     const { deps, prefetcher } = setup();
     let calls = 0;
@@ -86,6 +113,40 @@ describe("createAttachmentPrefetcher", () => {
     const first = prefetcher.prefetch();
     expect(prefetcher.prefetch()).toBe(first);
     await first;
+  });
+
+  it("starts a pass of its own instead of joining one whose session ended", async () => {
+    let finishSignedUrl: (url: string) => void = () => undefined;
+    const { deps, prefetcher } = setup({
+      getSignedUrl: vi
+        .fn<AttachmentPrefetchDeps["getSignedUrl"]>()
+        .mockImplementationOnce(() => new Promise((resolve) => (finishSignedUrl = resolve)))
+        .mockImplementation(async (filePath: string) => `https://signed/${filePath}`),
+    });
+    let oldSessionEnded = false;
+    const old = prefetcher.prefetch({ isCancelled: () => oldSessionEnded });
+    await vi.waitFor(() => expect(deps.getSignedUrl).toHaveBeenCalledTimes(1));
+
+    // Approval revoked and restored: the new session's sync asks for a pass.
+    oldSessionEnded = true;
+    const fresh = prefetcher.prefetch({ isCancelled: () => false });
+    expect(fresh).not.toBe(old);
+
+    finishSignedUrl("https://signed/a");
+    await expect(old).resolves.toEqual({ downloaded: 0 });
+    await expect(fresh).resolves.toEqual({ downloaded: 2 });
+
+    // Neither the dropped pass nor the cancelled one started the throttle.
+    vi.mocked(deps.listCandidates).mockResolvedValue([]);
+    await prefetcher.prefetch();
+    expect(deps.listCandidates).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not start the throttle after a pass its session's end cut short", async () => {
+    const { deps, prefetcher } = setup();
+    await prefetcher.prefetch({ isCancelled: () => true });
+    expect(deps.download).not.toHaveBeenCalled();
+    await expect(prefetcher.prefetch()).resolves.toEqual({ downloaded: 2 });
   });
 
   it("never throws", async () => {

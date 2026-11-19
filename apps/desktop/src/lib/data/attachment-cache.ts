@@ -63,6 +63,11 @@ const activePartials = new Set<string>();
 // Files written for an attachment whose row isn't in the database yet, by
 // relative path: neither eviction nor the orphan cleanup may delete them.
 const held = new Map<string, number>();
+// The generation whose cache directory is known to be left out of backups.
+// RNFS.mkdir creates the directory before it sets the attribute, so a failure
+// there can leave it created without it: until this matches, every write
+// sets it again first.
+let backupExclusionSetIn = -1;
 let evictionInFlight: Promise<void> | null = null;
 // Set by a call that joined the running eviction: it runs once more.
 let evictAgain = false;
@@ -102,9 +107,15 @@ function assertGeneration(startedIn: number): void {
 async function ensureDir(dir: string, startedIn: number): Promise<void> {
   const root = getAttachmentCacheDir();
   assertGeneration(startedIn);
-  if (!(await RNFS.exists(root))) {
-    assertGeneration(startedIn);
+  const rootExists = await RNFS.exists(root);
+  assertGeneration(startedIn);
+  if (!rootExists || backupExclusionSetIn !== startedIn) {
+    // Creates the directory if needed, then (re)sets the exclusion; an
+    // existing directory is fine. Rejects, so nothing is written, until the
+    // exclusion is set.
     await RNFS.mkdir(root, { NSURLIsExcludedFromBackupKey: true });
+    assertGeneration(startedIn);
+    backupExclusionSetIn = startedIn;
   }
   if (dir === root) return;
   assertGeneration(startedIn);
@@ -297,7 +308,14 @@ export async function getCachedAttachmentUri(filePath: string): Promise<string |
     }
     const current = await loadedIndex();
     if (generation !== startedIn) return null;
-    if (!current.touch(relativePath, Date.now())) current.record(relativePath, size, Date.now());
+    if (!current.touch(relativePath, Date.now())) {
+      // Not indexed: check the file is still there before indexing it, since
+      // a delete can land while the first walk of the cache runs (the walk
+      // then leaves it out, rightly).
+      const sizeNow = await fileSize(path);
+      if (generation !== startedIn || sizeNow === 0) return null;
+      current.record(relativePath, sizeNow, Date.now());
+    }
     saveIndexSoon();
     return toFileUri(path);
   } catch {
@@ -503,9 +521,12 @@ async function evict(maxBytes: number): Promise<void> {
   // Take the files and the held set before reading the rows: a file saved
   // after this isn't in `entries`, and one whose row is written meanwhile is
   // either still held now or its row is in the query.
-  const entries = current.entries();
+  const eligible = new Set(current.entries().map((entry) => entry.relativePath));
   const protectedPaths = new Set(held.keys());
   for (const relativePath of await unsyncedCachePaths()) protectedPaths.add(relativePath);
+  // Rank those files by their last use as it is now, so one opened while the
+  // rows were read isn't evicted as if it were still the oldest.
+  const entries = current.entries().filter((entry) => eligible.has(entry.relativePath));
   await deleteAll(planAttachmentCacheEviction(entries, maxBytes, protectedPaths), startedIn);
 }
 
