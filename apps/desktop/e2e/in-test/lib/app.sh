@@ -146,7 +146,10 @@ confirm_sign_out() {
   fi
   SIGN_OUT_COPY=$(sign_out_confirm_copy)
   el=$(sign_out_confirm_button)
-  if [ "$SIGN_OUT_COPY" = unread ] && jq -e '.title == "Sign out anyway" or .desc == "Sign out anyway"' <<< "$el" > /dev/null 2>&1; then
+  # "Sign out anyway" (SIGN_OUT_ANYWAY_LABEL) is the confirm label only of the unsynced copy
+  # (describeSignOut), so it decides over the copy read above: the OCR fallback reads the whole
+  # window and could take a note's "Everything is synced" for the dialog's copy.
+  if jq -e '.title == "Sign out anyway" or .desc == "Sign out anyway"' <<< "$el" > /dev/null 2>&1; then
     SIGN_OUT_COPY=unsynced
   fi
   if [ "$mode" != any ] && [ "$SIGN_OUT_COPY" != synced ]; then
