@@ -191,6 +191,8 @@ export {
   parseAttachmentCacheIndex,
 } from "./storage/attachment-cache-index";
 export type { AttachmentCacheFile } from "./storage/attachment-cache-index";
+export { EDITOR_PAGE_DIR_NAME, editorPageFileName, editorPageLocation } from "./editor/editor-page";
+export type { EditorPageLocation } from "./editor/editor-page";
 export {
   PREFETCH_MIN_INTERVAL_MS,
   createAttachmentPrefetcher,

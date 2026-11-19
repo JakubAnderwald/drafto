@@ -5,6 +5,7 @@ import {
   ATTACHMENT_CACHE_DIR_NAME,
   ATTACHMENT_CACHE_INDEX_FILE_NAME,
   AttachmentCacheIndex,
+  EDITOR_PAGE_DIR_NAME,
   attachmentCacheRelativePath,
   isCacheableAttachment,
   parseAttachmentCacheIndex,
@@ -17,8 +18,9 @@ import { generateId } from "@/lib/generate-id";
 
 // The device's copy of each image attachment, so images show offline
 // (ADR-0086). Files live under <Documents>/attachment-cache/<storage path>,
-// the directory the editor WebView is given read access to. In the sandboxed
-// app that is the container's Documents directory. Mirrors
+// the directory the editor WebView is given read access to (in the sandboxed
+// app, under the container's Documents directory). The editor page itself is
+// kept there too, in .editor/ (see editor-page.ts). Mirrors
 // apps/mobile/src/lib/data/attachment-cache.ts (expo-file-system there).
 
 /** Cap on the cache. Files whose upload hasn't finished don't count against eviction. */
@@ -180,8 +182,18 @@ async function unlinkInGeneration(path: string, startedIn: number): Promise<bool
 
 // --- The index ---
 
+/**
+ * Names at the top of the cache that are not cached attachments: downloads in
+ * progress, the index, and the editor page (see editor-page.ts), which must
+ * never be indexed, evicted or swept as an orphan. Every one starts with a
+ * dot, which no cached attachment's name does.
+ */
 function isReservedName(name: string): boolean {
-  return name === PARTIAL_DIR_NAME || name === ATTACHMENT_CACHE_INDEX_FILE_NAME;
+  return (
+    name === PARTIAL_DIR_NAME ||
+    name === ATTACHMENT_CACHE_INDEX_FILE_NAME ||
+    name === EDITOR_PAGE_DIR_NAME
+  );
 }
 
 async function walk(dir: string, prefix: string, out: AttachmentCacheFile[]): Promise<void> {

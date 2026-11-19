@@ -1,4 +1,5 @@
 import { ATTACHMENT_URL_PREFIX, LOCAL_ATTACHMENT_FRAGMENT } from "../constants";
+import { cyrb64Hex } from "../hash/cyrb64";
 import { toStorageSafeFileName } from "../storage/storage-key";
 
 export function toAttachmentUrl(filePath: string): string {
@@ -85,25 +86,10 @@ const MAX_CACHE_EXTENSION_LENGTH = 20;
 const CHANGED_SEGMENT_MARK = "~";
 
 /**
- * A 64-bit hash of `text` as 16 hex characters (cyrb53's two 32-bit lanes).
- * Not cryptographic: it only tells apart storage key segments that make the
- * same safe name.
+ * Tells apart storage key segments that make the same safe name (see
+ * `cyrb64Hex`).
  */
-function segmentHash(text: string): string {
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  const hex = (n: number) => (n >>> 0).toString(16).padStart(8, "0");
-  return `${hex(h2)}${hex(h1)}`;
-}
+const segmentHash = cyrb64Hex;
 
 /**
  * The cache name for one storage key segment. A segment that is already

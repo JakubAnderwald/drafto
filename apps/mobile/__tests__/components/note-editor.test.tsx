@@ -18,7 +18,23 @@ jest.mock("@10play/tentap-editor", () => {
   };
 });
 
+const mockPage: { current: { ready: boolean; webViewProps: Record<string, unknown> } } = {
+  current: { ready: true, webViewProps: {} },
+};
+jest.mock("@/hooks/use-editor-page", () => ({
+  useEditorPage: () => mockPage.current,
+}));
+
 const editor = {} as EditorBridge;
+
+beforeEach(() => {
+  mockRichTextProps.mockClear();
+  mockPage.current = { ready: true, webViewProps: {} };
+});
+
+function lastRichTextProps(): Record<string, unknown> {
+  return mockRichTextProps.mock.calls[mockRichTextProps.mock.calls.length - 1][0];
+}
 
 describe("NoteEditor", () => {
   it("renders the accessory between the body and the toolbar, so the toolbar meets the keyboard", () => {
@@ -56,5 +72,47 @@ describe("NoteEditor", () => {
     // TenTap's bridges keep receiving their messages alongside ours.
     expect(props.onMessage).toBe(onMessage);
     expect(props.exclusivelyUseCustomOnMessage).toBe(false);
+  });
+
+  it("loads the page from the page file, with read access to the cache (ADR-0086)", () => {
+    const onLoad = jest.fn();
+    const onError = jest.fn();
+    mockPage.current = {
+      ready: true,
+      webViewProps: {
+        source: { uri: "file:///docs/attachment-cache/.editor/editor-1.html" },
+        allowingReadAccessToURL: "file:///docs/attachment-cache/",
+        onLoad,
+        onError,
+      },
+    };
+    render(<NoteEditor editor={editor} />);
+
+    const props = lastRichTextProps();
+    expect(props.source).toEqual({ uri: "file:///docs/attachment-cache/.editor/editor-1.html" });
+    expect(props.allowingReadAccessToURL).toBe("file:///docs/attachment-cache/");
+    expect(props.onLoad).toBe(onLoad);
+    expect(props.onError).toBe(onError);
+    // Script still may not read files.
+    expect(props.allowFileAccessFromFileURLs).toBe(false);
+    expect(props.allowUniversalAccessFromFileURLs).toBe(false);
+  });
+
+  it("passes no source for the inline page, so TenTap keeps its own (Android)", () => {
+    render(<NoteEditor editor={editor} />);
+    expect("source" in lastRichTextProps()).toBe(false);
+    expect("allowingReadAccessToURL" in lastRichTextProps()).toBe(false);
+  });
+
+  it("holds the WebView back until the page file is checked, keeping the toolbar", () => {
+    mockPage.current = { ready: false, webViewProps: {} };
+    const { getByTestId, getByText, queryByText } = render(
+      <NoteEditor editor={editor} accessory={<Text>attachments</Text>} />,
+    );
+    expect(mockRichTextProps).not.toHaveBeenCalled();
+    expect(queryByText("body")).toBeNull();
+    expect(getByTestId("note-editor-page-loading")).toBeTruthy();
+    expect(getByText("attachments")).toBeTruthy();
+    expect(getByText("toolbar")).toBeTruthy();
   });
 });

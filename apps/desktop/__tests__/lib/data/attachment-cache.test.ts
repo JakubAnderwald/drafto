@@ -651,6 +651,30 @@ describe("deleteFromCache", () => {
   });
 });
 
+describe("the editor page in the cache (ADR-0086)", () => {
+  const PAGE = `${CACHE}/.editor/editor-0123456789abcdef-1.html`;
+
+  it("is never indexed, counted, evicted or swept as an orphan", async () => {
+    mockFiles.set(PAGE, { size: 50, mtime: 1 });
+    put("u/n/a.jpg", 10);
+
+    expect((await listAttachmentCache()).map((entry) => entry.relativePath)).toEqual(["u/n/a.jpg"]);
+    expect((await getAttachmentCacheState()).totalBytes).toBe(10);
+
+    await evictAttachmentCache(5);
+    await removeOrphanedCacheFiles();
+
+    expect(mockFiles.has(`${CACHE}/u/n/a.jpg`)).toBe(false);
+    expect(mockFiles.has(PAGE)).toBe(true);
+  });
+
+  it("goes with the rest of the cache on sign-out", async () => {
+    mockFiles.set(PAGE, { size: 50, mtime: 1 });
+    await deleteAttachmentCache();
+    expect(mockFiles.has(PAGE)).toBe(false);
+  });
+});
+
 describe("listAttachmentCache / deleteAttachmentCache", () => {
   it("lists cached files, leaving out downloads in progress", async () => {
     put("u/n/a.jpg", 1);

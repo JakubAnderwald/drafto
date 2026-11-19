@@ -49,6 +49,10 @@ by `attachmentCacheRelativePath`):
 - After the first sync of a session, `cleanupOrphanedFiles` deletes cached
   files whose attachment or note is gone (trashed notes keep theirs).
 - `deleteAllLocalAttachments` (sign-out and the identity guard) wipes it.
+- On iOS and macOS the cache also holds the editor's page, in `.editor/`
+  (`src/lib/editor-page.ts`), so WebKit can read the cached images. The walk
+  skips that folder like `.partial/` and `.index.json`, so the page is never
+  indexed, evicted or swept; the next editor writes it again after a wipe.
 
 The editor shows a cached image through a `file://…#drafto-attachment=<path>`
 src; see [editor.md](./editor.md). Opening a non-image attachment still needs

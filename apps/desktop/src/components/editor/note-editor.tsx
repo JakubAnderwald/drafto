@@ -7,6 +7,7 @@ import type { WebViewMessageEvent } from "react-native-webview";
 import { useTheme } from "@/providers/theme-provider";
 import { colors } from "@/theme/tokens";
 import { EDITOR_WEBVIEW_FILE_ACCESS_PROPS } from "@/lib/editor-webview";
+import { useEditorPage } from "@/hooks/use-editor-page";
 
 interface NoteEditorProps {
   editor: EditorBridge;
@@ -37,8 +38,11 @@ export function NoteEditor({ editor, onMessage }: NoteEditorProps) {
     const timer = setTimeout(() => setMounted(true), 100);
     return () => clearTimeout(timer);
   }, []);
+  // The page loads from a file in the attachment cache, with read access to
+  // the cached images (ADR-0086); the WebView waits until that file is checked.
+  const page = useEditorPage();
 
-  if (!mounted) {
+  if (!mounted || !page.ready) {
     return (
       <View style={[styles.editor, styles.loading]}>
         <ActivityIndicator size="small" color={colors.primary[600]} />
@@ -54,10 +58,11 @@ export function NoteEditor({ editor, onMessage }: NoteEditorProps) {
         exclusivelyUseCustomOnMessage={false}
         style={[styles.editor, { backgroundColor: semantic.bg }]}
         scrollEnabled={true}
-        // Cached attachment images are file:// URLs under the editor's base
-        // URL (ADR-0086).
+        // Cached attachment images are file:// URLs in the attachment cache
+        // (ADR-0086).
         {...EDITOR_WEBVIEW_FILE_ACCESS_PROPS}
         originWhitelist={[...EDITOR_WEBVIEW_FILE_ACCESS_PROPS.originWhitelist]}
+        {...page.webViewProps}
         // No `injectedJavaScript` here: it would replace TenTap's own script,
         // which installs every bridge's CSS. The editor's stylesheet ships
         // through the core bridge instead (see editor-bridge-extensions.ts).
