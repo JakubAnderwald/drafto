@@ -33,7 +33,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 WEB_DIR="$REPO_ROOT/apps/web"
 MOBILE_DIR="$REPO_ROOT/apps/mobile"
-MAESTRO="$HOME/.maestro/bin/maestro"
+# Homebrew installs maestro on PATH; the curl installer puts it in ~/.maestro/bin.
+MAESTRO="${MAESTRO:-$(command -v maestro || echo "$HOME/.maestro/bin/maestro")}"
+if [ ! -x "$MAESTRO" ]; then
+  echo "ERROR: maestro not found on PATH or in ~/.maestro/bin (brew install maestro, or set MAESTRO)" >&2
+  exit 1
+fi
 
 RUN_ID=$(date +%s)
 echo "=== Nested Lists E2E Test ($PLATFORM) ==="

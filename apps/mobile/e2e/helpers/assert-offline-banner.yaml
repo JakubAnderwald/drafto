@@ -1,0 +1,17 @@
+appId: eu.drafto.mobile
+---
+# Subflow: the offline banner is on screen.
+# Matches the banner by its testID ("offline-banner") or, on a build from
+# before that testID, by its text, "You are offline". The text is the whole
+# label: Maestro matches a text selector against the full string, so the old
+# `assertVisible: "Offline"` never matched it.
+# Used through runFlow by the offline flows; not a flow of its own.
+
+- runFlow:
+    when:
+      notVisible:
+        id: "offline-banner"
+    commands:
+      - extendedWaitUntil:
+          visible: "You are offline"
+          timeout: 15000
