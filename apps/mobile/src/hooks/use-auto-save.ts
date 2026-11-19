@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEBOUNCE_MS } from "@drafto/shared";
 
-import { registerPendingSave } from "@/lib/pending-saves";
+import {
+  recordSaveFailed,
+  recordSaveWritten,
+  registerPendingSave,
+  trackSaveInFlight,
+} from "@/lib/pending-saves";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
@@ -22,17 +27,30 @@ export function useAutoSave<T>({ onSave, delayMs = DEBOUNCE_MS }: UseAutoSaveOpt
   const pendingValueRef = useRef<{ value: T } | null>(null);
   // The save that is writing right now, so a flush can wait for it too.
   const inFlightRef = useRef<Promise<void> | null>(null);
+  // This hook's identity in the pending-saves registry, which sign-out reads.
+  const ownerRef = useRef<object>({});
+  // How many saves have started. Saves can overlap, and each writes the whole value, so only
+  // the latest one's outcome says whether the latest edit is stored.
+  const saveSeqRef = useRef(0);
 
   useEffect(() => {
     onSaveRef.current = onSave;
   }, [onSave]);
 
   const save = useCallback(async (value: T): Promise<void> => {
+    const seq = ++saveSeqRef.current;
+    const isLatest = () => saveSeqRef.current === seq;
     setStatus("saving");
     try {
       const written = await onSaveRef.current(value);
-      setStatus(written === false ? "idle" : "saved");
+      // Every write counts, but an older one must not clear a newer save's failure.
+      if (written !== false) recordSaveWritten(ownerRef.current, isLatest());
+      if (isLatest()) setStatus(written === false ? "idle" : "saved");
     } catch {
+      // A newer save carries this edit too and reports its own outcome.
+      if (!isLatest()) return;
+      // The edit is not in the database: sign-out must not count it as safe.
+      recordSaveFailed(ownerRef.current);
       setStatus("error");
     }
   }, []);
@@ -41,6 +59,7 @@ export function useAutoSave<T>({ onSave, delayMs = DEBOUNCE_MS }: UseAutoSaveOpt
     (value: T): Promise<void> => {
       const run = save(value);
       inFlightRef.current = run;
+      trackSaveInFlight(run);
       // save() never rejects, so this only clears the marker once the write is done.
       void run.then(() => {
         if (inFlightRef.current === run) inFlightRef.current = null;

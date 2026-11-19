@@ -2,6 +2,8 @@ import React from "react";
 import { Alert, type AlertButton } from "react-native";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
+  SIGN_OUT_SYNCED_MESSAGE,
+  SIGN_OUT_UNKNOWN_MESSAGE,
   describeAccountDeletionFailure,
   formatStorageUsage,
 } from "@drafto/shared";
@@ -134,29 +136,64 @@ describe("SettingsScreen", () => {
     });
   });
 
-  it("signs out straight away when nothing is waiting to sync", async () => {
-    const alert = jest.spyOn(Alert, "alert");
-    const { getByLabelText } = render(<SettingsScreen />);
+  /** The buttons of the confirmation the screen raised. */
+  function alertButtons(alert: jest.SpyInstance): AlertButton[] {
+    return (alert.mock.calls[0][2] ?? []) as AlertButton[];
+  }
 
-    fireEvent.press(getByLabelText("Sign out"));
+  describe("sign-out confirmation (PrimeTestLab report 10668, S-02)", () => {
+    it("asks before signing out when nothing is waiting to sync", async () => {
+      const alert = jest.spyOn(Alert, "alert");
+      const { getByLabelText } = render(<SettingsScreen />);
 
-    await waitFor(() => {
-      expect(mockSignOut).toHaveBeenCalledTimes(1);
+      fireEvent.press(getByLabelText("Sign out"));
+
+      await waitFor(() => {
+        expect(alert).toHaveBeenCalledTimes(1);
+      });
+      expect(alert.mock.calls[0][0]).toBe("Sign out?");
+      expect(alert.mock.calls[0][1]).toBe(SIGN_OUT_SYNCED_MESSAGE);
+      const buttons = alertButtons(alert);
+      expect(buttons.map((button) => button.text)).toEqual(["Cancel", "Sign out"]);
+      expect(buttons[1].style).toBe("destructive");
+      // One tap no longer signs out.
+      expect(mockSignOut).not.toHaveBeenCalled();
+
+      await act(async () => {
+        buttons[1].onPress?.();
+      });
+
+      // Nothing to push, so the provider's own last flush is skipped too.
+      expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
+      expect(mockSync).not.toHaveBeenCalled();
+      expect(mockDeleteAccount).not.toHaveBeenCalled();
     });
-    // Nothing to push, so the provider's own last flush is skipped too.
-    expect(mockSignOut).toHaveBeenCalledWith({ skipFinalSync: true });
-    expect(mockSync).not.toHaveBeenCalled();
-    expect(alert).not.toHaveBeenCalled();
-    expect(mockDeleteAccount).not.toHaveBeenCalled();
+
+    it("keeps the account on Cancel and lets the user try again", async () => {
+      const alert = jest.spyOn(Alert, "alert");
+      const { getByLabelText, getByTestId } = render(<SettingsScreen />);
+
+      fireEvent.press(getByLabelText("Sign out"));
+
+      await waitFor(() => {
+        expect(alert).toHaveBeenCalledTimes(1);
+      });
+      // Nothing reads as signing out while the user is still being asked.
+      expect(getByLabelText("Sign out")).toBeEnabled();
+      expect(getByTestId("delete-account-row")).toBeEnabled();
+
+      await act(async () => {
+        alertButtons(alert)[0].onPress?.();
+      });
+
+      expect(mockSignOut).not.toHaveBeenCalled();
+      expect(getByLabelText("Sign out")).toBeEnabled();
+      expect(getByTestId("delete-account-row")).toBeEnabled();
+    });
   });
 
   describe("sign-out with unsynced changes", () => {
-    /** The buttons of the confirmation the screen raised. */
-    function alertButtons(alert: jest.SpyInstance): AlertButton[] {
-      return (alert.mock.calls[0][2] ?? []) as AlertButton[];
-    }
-
-    it("syncs first and signs out without asking once everything is synced", async () => {
+    it("syncs first, then confirms with the synced copy once everything is synced", async () => {
       mockCountUnsyncedChanges.mockResolvedValueOnce(3).mockResolvedValueOnce(0);
       const alert = jest.spyOn(Alert, "alert");
       const { getByLabelText } = render(<SettingsScreen />);
@@ -164,10 +201,15 @@ describe("SettingsScreen", () => {
       fireEvent.press(getByLabelText("Sign out"));
 
       await waitFor(() => {
-        expect(mockSignOut).toHaveBeenCalledTimes(1);
+        expect(alert).toHaveBeenCalledTimes(1);
       });
       expect(mockSync).toHaveBeenCalledTimes(1);
-      expect(alert).not.toHaveBeenCalled();
+      expect(alert.mock.calls[0][1]).toBe(SIGN_OUT_SYNCED_MESSAGE);
+
+      await act(async () => {
+        alertButtons(alert)[1].onPress?.();
+      });
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
     });
 
     it("warns how many changes would be lost and keeps the account on Cancel", async () => {
@@ -224,6 +266,9 @@ describe("SettingsScreen", () => {
         }),
       );
       mockCountUnsyncedChanges.mockResolvedValueOnce(2).mockResolvedValueOnce(0);
+      jest
+        .spyOn(Alert, "alert")
+        .mockImplementation((_title, _message, buttons) => buttons?.[1]?.onPress?.());
       const { getByLabelText, getByTestId, queryByText } = render(<SettingsScreen />);
 
       fireEvent.press(getByLabelText("Sign out"));
@@ -248,7 +293,7 @@ describe("SettingsScreen", () => {
       expect(mockSync).toHaveBeenCalledTimes(1);
     });
 
-    it("still signs out, unwarned as before, when the pending count cannot be read", async () => {
+    it("warns generically, then still signs out, when the pending count cannot be read", async () => {
       jest.spyOn(console, "error").mockImplementation(() => {});
       mockCountUnsyncedChanges.mockRejectedValue(new Error("SQLite busy"));
       const alert = jest.spyOn(Alert, "alert");
@@ -257,11 +302,16 @@ describe("SettingsScreen", () => {
       fireEvent.press(getByLabelText("Sign out"));
 
       await waitFor(() => {
-        expect(mockSignOut).toHaveBeenCalledTimes(1);
+        expect(alert).toHaveBeenCalledTimes(1);
+      });
+      expect(alert.mock.calls[0][1]).toBe(SIGN_OUT_UNKNOWN_MESSAGE);
+      expect(alertButtons(alert).map((button) => button.text)).toEqual(["Cancel", "Sign out"]);
+
+      await act(async () => {
+        alertButtons(alert)[1].onPress?.();
       });
       // With the provider's own last flush, as before.
       expect(mockSignOut).toHaveBeenCalledWith();
-      expect(alert).not.toHaveBeenCalled();
     });
   });
 

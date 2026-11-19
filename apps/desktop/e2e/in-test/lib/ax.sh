@@ -12,7 +12,8 @@
 # - Synthetic mouse clicks are unreliable here: after text is typed into an RN
 #   text field the next two clicks on controls are dropped; RN views default
 #   to mouseDownCanMoveWindow, so clicks can drag the window; and AXPress is
-#   unsupported (-25206).
+#   unsupported (-25206) on RN views. Native AppKit controls (the NSAlert
+#   sheets Alert.alert shows) do accept it: ax_native_press.
 # - RN macOS Pressables are focusable and fire onPress on Space/Enter. So
 #   controls are pressed WITHOUT the mouse: AX-focus the element, then Space
 #   (press_el). A cliclick at the element's centre is only the fallback.
@@ -126,6 +127,15 @@ press_el() {
 
 # ax_press <desc|id> <value> [role]
 ax_press() { press_el "$(ax_find "$@")"; }
+
+# ax_native_press <element json> — AXPress, for native AppKit controls only,
+# such as an NSAlert's buttons. RN views reject it (-25206): use press_el.
+ax_native_press() {
+  local el=$1
+  [ -n "$el" ] || return 1
+  ensure_front
+  "$AXQ" "$(drafto_pid)" press "$(jq -r '.path' <<< "$el")" 2> /dev/null
+}
 
 # press_until <timeout_s> <check> <desc|id> <value> [role] — press the element
 # until <check> (a command) succeeds, up to 6 presses.
