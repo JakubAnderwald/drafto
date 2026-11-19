@@ -44,8 +44,23 @@ describe("ImageRenderStatus (ADR-0086)", () => {
     const missing = getByLabelText("Image not loaded: gone.png");
     expect(shown.props.testID).toBe("editor-image-rendered");
     expect(missing.props.testID).toBe("editor-image-missing");
-    expect(shown.props.style).toEqual(expect.arrayContaining([{ height: 240 }]));
-    expect(missing.props.style).toEqual(expect.arrayContaining([{ height: 1 }]));
+    expect(shown.props.style).toEqual(expect.arrayContaining([{ top: 0, height: 240 }]));
+    expect(missing.props.style).toEqual(expect.arrayContaining([{ top: 1, height: 1 }]));
+  });
+
+  it("keeps two images with the same name apart, so Maestro sees both", () => {
+    const { getAllByLabelText } = render(
+      <ImageRenderStatus
+        images={[
+          { name: "same.jpg", rendered: true, height: 240, local: true },
+          { name: "same.jpg", rendered: true, height: 240, local: true },
+        ]}
+      />,
+    );
+    const tops = getAllByLabelText("Image shown: same.jpg").map(
+      (node) => (node.props.style as { top?: number }[])[1].top,
+    );
+    expect(tops).toEqual([0, 1]);
   });
 
   it("renders nothing in a build without the E2E probes, so screen readers never read it", () => {

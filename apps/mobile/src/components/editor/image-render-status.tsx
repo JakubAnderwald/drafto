@@ -28,7 +28,12 @@ export function ImageRenderStatus({ images }: ImageRenderStatusProps) {
           testID={image.rendered ? "editor-image-rendered" : "editor-image-missing"}
           accessible
           accessibilityLabel={imageRenderStatusLabel(image)}
-          style={[styles.marker, { height: image.rendered ? Math.max(1, image.height) : 1 }]}
+          // One point lower per image: two images with the same name would
+          // otherwise give identical nodes, which Maestro merges into one.
+          style={[
+            styles.marker,
+            { top: index, height: image.rendered ? Math.max(1, image.height) : 1 },
+          ]}
         />
       ))}
     </View>
@@ -45,7 +50,6 @@ const styles = StyleSheet.create({
   },
   marker: {
     position: "absolute",
-    top: 0,
     left: 0,
     width: 2,
     maxHeight: "100%",

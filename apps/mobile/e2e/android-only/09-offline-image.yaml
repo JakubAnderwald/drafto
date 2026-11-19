@@ -184,6 +184,11 @@ onFlowComplete:
       - extendedWaitUntil:
           visible: "You are offline"
           timeout: 15000
+# Notebooks other runs left on the shared user can push this one off screen.
+- scrollUntilVisible:
+    element: ".*Attach NB ${RUN_ID}"
+    direction: DOWN
+    timeout: 20000
 - tapOn: ".*Attach NB ${RUN_ID}"
 - extendedWaitUntil:
     visible: ".*Attach ${RUN_ID}.*"
@@ -213,9 +218,8 @@ onFlowComplete:
 
 # --- Attach a photo again while offline: it shows at once ---
 # Add the photo to the library again first, so the picker's newest item is a
-# new file with its own name. Re-picking the first file gives two status views
-# with the same label and bounds, and Maestro collapses identical nodes into
-# one, so `index: 1` below would never match even with both images shown.
+# new file. Each status view also sits one point lower than the one before, so
+# two images with the same name still give two nodes for `index: 1` below.
 - addMedia:
     - "../fixtures/attachment-photo.jpg"
 - tapOn: "Attach image"

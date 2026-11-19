@@ -37,6 +37,14 @@ describe("image render status probes in an E2E build (ADR-0086)", () => {
     expect(getByLabelText("Image shown: photo.jpg").props.testID).toBe("editor-image-rendered");
   });
 
+  it("keeps two images with the same name apart, so Maestro sees both", () => {
+    const { getAllByLabelText } = render(<ImageRenderStatus images={[IMAGE, IMAGE]} />);
+    const tops = getAllByLabelText("Image shown: photo.jpg").map(
+      (node) => (node.props.style as { top?: number }[])[1].top,
+    );
+    expect(tops).toEqual([0, 1]);
+  });
+
   it("injects the reporter and keeps its report", () => {
     const { injectJavaScript, hook } = setup(true);
     expect(injectJavaScript).toHaveBeenCalledWith(IMAGE_RENDER_STATUS_SCRIPT);
