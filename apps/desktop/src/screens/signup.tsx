@@ -9,6 +9,7 @@ import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 
 interface SignupScreenProps {
   onNavigateToLogin?: () => void;
@@ -111,15 +112,15 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
         </View>
 
         <View style={styles.field}>
-          <Input
+          <PasswordInput
+            testID="signup-password-input"
             label="Password"
             placeholder="Min. 6 characters"
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
-            autoComplete="password"
+            autoComplete="new-password"
             textContentType="newPassword"
             editable={!loading}
             onSubmitEditing={handleSignup}

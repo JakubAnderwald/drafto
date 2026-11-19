@@ -12,7 +12,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/providers/auth-provider";
@@ -192,12 +192,11 @@ export default function ResetPasswordScreen() {
         )}
 
         <View style={styles.form}>
-          <Input
+          <PasswordInput
             label="New Password"
             placeholder={`Min. ${MIN_PASSWORD_LENGTH} characters`}
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
@@ -207,12 +206,11 @@ export default function ResetPasswordScreen() {
             containerStyle={styles.field}
           />
 
-          <Input
+          <PasswordInput
             label="Confirm Password"
             placeholder="Re-enter your new password"
             value={confirmPassword}
             onChangeText={setConfirmPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
