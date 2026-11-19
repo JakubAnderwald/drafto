@@ -1,0 +1,103 @@
+{
+  "attributes": {
+    "bounds": "[0,0][1080,2400]"
+  },
+  "children": [
+    {
+      "attributes": {
+        "class": "android.widget.FrameLayout",
+        "bounds": "[0,0][1080,2400]"
+      },
+      "children": [
+        {
+          "attributes": {
+            "class": "com.swmansion.rnscreens.CustomToolbar",
+            "bounds": "[0,0][1080,265]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "class": "android.widget.ImageButton",
+                "accessibilityText": "Navigate up",
+                "bounds": "[0,118][147,265]"
+              },
+              "children": [],
+              "clickable": true,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            },
+            {
+              "attributes": {
+                "class": "android.widget.TextView",
+                "text": "Note 1760000000",
+                "bounds": "[189,160][700,222]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        },
+        {
+          "attributes": {
+            "class": "android.webkit.WebView",
+            "bounds": "[0,265][1080,2274]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "class": "android.view.View",
+                "text": "Attach 1760000000",
+                "bounds": "[42,300][1038,380]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            },
+            {
+              "attributes": {
+                "class": "android.widget.Image",
+                "accessibilityText": "attachment-photo.jpg",
+                "bounds": "[42,400][1038,1147]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        }
+      ],
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "checked": false,
+      "selected": false
+    }
+  ],
+  "clickable": false,
+  "enabled": true,
+  "focused": false,
+  "checked": false,
+  "selected": false
+}

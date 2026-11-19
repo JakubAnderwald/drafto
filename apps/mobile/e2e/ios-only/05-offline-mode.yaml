@@ -1,86 +1,185 @@
 appId: eu.drafto.mobile
+tags:
+  - offline
+  - requires-host-offline
 ---
-# Flow 05 (iOS): Offline mode — airplane mode toggle, verify local data persists
-# Depends on: 03-create-edit-note (NoteR <RUN_ID> / NoteF <RUN_ID> exists in NB <RUN_ID>)
-# Pass -e RUN_ID=<timestamp> when running
-# Run with: maestro test apps/mobile/e2e/ios-only/05-offline-mode.yaml --platform ios
+# Flow 05 (iOS): offline mode — local data persists offline, across a cold
+# start, and syncs on reconnect.
+#
+# The iOS simulator has no airplane mode (Maestro's setAirplaneMode and
+# toggleAirplaneMode are Android-only), and it shares the Mac's network. So
+# this flow runs in three phases, and the runner takes the whole Mac offline
+# between them with apps/desktop/e2e/in-test/lib/net.sh (sudo):
+#
+#   bash apps/mobile/e2e/run-qa-10668-e2e.sh ios --allow-host-offline
+#
+#   QA_PHASE=prepare    online: a notebook with one note, synced
+#   QA_PHASE=offline    the Mac is offline: banner, offline note, cold start
+#   QA_PHASE=reconnect  online again: the offline note syncs
+#
+# Self-contained: creates its own notebook ("OffMode NB", a name no other flow
+# uses, so 06's "OffNB" never matches it) and deletes it in the reconnect
+# phase. Assumes the user is logged in.
+# Pass -e RUN_ID=<timestamp>, the same for all three phases. To skip it in a
+# folder run: maestro test apps/mobile/e2e/ios-only/ --exclude-tags requires-host-offline
 
-- launchApp
+- assertTrue:
+    condition: ${typeof QA_PHASE !== 'undefined' && ['prepare', 'offline', 'reconnect'].includes(QA_PHASE)}
+    label: "Needs -e QA_PHASE=prepare|offline|reconnect: run it through run-qa-10668-e2e.sh ios --allow-host-offline"
 
-# Navigate to the test notebook
-- extendedWaitUntil:
-    visible: "Notebooks"
-    timeout: 10000
-- tapOn: ".*NB ${RUN_ID}"
+# --- Phase: prepare (online) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'prepare'}
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - tapOn:
+          id: "add"
+      - assertVisible: "Notebook name"
+      - inputText: "OffMode NB ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: ".*OffMode NB ${RUN_ID}"
+          timeout: 10000
+      - tapOn: ".*OffMode NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible: "No notes yet"
+          timeout: 10000
+          optional: true
+      - tapOn:
+          id: "swipe-hint-dismiss"
+          optional: true
+      - tapOn:
+          id: "add"
+      - assertVisible: "Note title (optional)"
+      - inputText: "NoteF ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: ".*NoteF ${RUN_ID}.*"
+          timeout: 10000
+      # Synced before the Mac goes offline. iOS labels the tab "Settings, tab, 3 of 3".
+      - tapOn: "Notebooks"
+      - tapOn: "Settings, tab.*"
+      - extendedWaitUntil:
+          visible: "Sync status: All synced"
+          timeout: 30000
+      - tapOn: "Notebooks, tab.*"
 
-# Verify existing note is visible before going offline
-- assertVisible: ".*NoteR ${RUN_ID}.*"
+# --- Phase: offline (the runner has taken the Mac offline) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'offline'}
+    commands:
+      # A cold start with no network
+      - stopApp
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - runFlow: ../helpers/assert-offline-banner.yaml
+      - tapOn: ".*OffMode NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible: ".*NoteF ${RUN_ID}.*"
+          timeout: 10000
+      # Create a note offline
+      - tapOn:
+          id: "add"
+      - assertVisible: "Note title (optional)"
+      - inputText: "OffNote ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: ".*OffNote ${RUN_ID}.*"
+          timeout: 10000
+      # Open the existing note offline, then back (the header back button)
+      - tapOn: ".*NoteF ${RUN_ID}.*"
+      - extendedWaitUntil:
+          visible: ".*NoteF ${RUN_ID}.*"
+          timeout: 10000
+      - tapOn: "Notes"
+      # Both notes survive another cold start while offline
+      - stopApp
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - runFlow: ../helpers/assert-offline-banner.yaml
+      - tapOn: ".*OffMode NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible: ".*NoteF ${RUN_ID}.*"
+          timeout: 10000
+      - assertVisible: ".*OffNote ${RUN_ID}.*"
 
-# --- Test 1: Enable airplane mode and verify offline indicator ---
-- toggleAirplaneMode
-
-- assertVisible: "Offline"
-
-# --- Test 2: Create a note while offline ---
-- tapOn:
-    id: "add"
-- tapOn: "Note title (optional)"
-- inputText: "OffNote ${RUN_ID}"
-- tapOn:
-    id: "checkmark"
-
-# Verify the offline note appears in the local list
-- assertVisible: ".*OffNote ${RUN_ID}.*"
-
-# --- Test 3: Edit an existing note while offline ---
-- tapOn: ".*NoteR ${RUN_ID}.*"
-- assertVisible: ".*NoteR ${RUN_ID}.*"
-
-# Verify auto-save indicator works offline (saved locally)
-- extendedWaitUntil:
-    visible: "Saved"
-    timeout: 10000
-    optional: true
-
-# Go back to notes list (iOS: tap header back button)
-- tapOn: "Notes"
-
-# --- Test 4: Verify data persists across app restart while offline ---
-# (airplane mode still on — app should show local data from SQLite)
-- launchApp
-
-- extendedWaitUntil:
-    visible: "Notebooks"
-    timeout: 10000
-- tapOn: ".*NB ${RUN_ID}"
-
-# Both the pre-existing note and the offline-created note must survive restart
-- assertVisible: ".*NoteR ${RUN_ID}.*"
-- assertVisible: ".*OffNote ${RUN_ID}.*"
-
-# Offline indicator should still be visible
-- assertVisible: "Offline"
-
-# --- Test 5: Go back online and verify sync ---
-- toggleAirplaneMode
-
-# Wait for sync to kick in
-- extendedWaitUntil:
-    visible: "Syncing"
-    timeout: 10000
-    optional: true
-
-# Verify both notes persist after sync completes
-- extendedWaitUntil:
-    visible: ".*OffNote ${RUN_ID}.*"
-    timeout: 10000
-- assertVisible: ".*NoteR ${RUN_ID}.*"
-
-# --- Cleanup: delete the offline-created note ---
-- swipe:
-    from:
-      text: ".*OffNote ${RUN_ID}.*"
-    direction: LEFT
-- assertVisible: "Move to Trash"
-- tapOn: "Trash"
-- assertNotVisible: ".*OffNote ${RUN_ID}.*"
+# --- Phase: reconnect (online again) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'reconnect'}
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - extendedWaitUntil:
+          notVisible: "You are offline"
+          timeout: 30000
+      - tapOn: ".*OffMode NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible: ".*OffNote ${RUN_ID}.*"
+          timeout: 10000
+      - assertVisible: ".*NoteF ${RUN_ID}.*"
+      # Cleanup: trash both notes, delete the notebook, then check everything synced
+      - tapOn:
+          id: "swipe-hint-dismiss"
+          optional: true
+      - swipe:
+          from:
+            text: ".*OffNote ${RUN_ID}.*"
+          direction: LEFT
+      # The swipe opens the row; its trash action asks to confirm.
+      - tapOn:
+          id: "action-trash"
+      - assertVisible: "Move to Trash"
+      - tapOn: "Trash"
+      - extendedWaitUntil:
+          notVisible: ".*OffNote ${RUN_ID}.*"
+          timeout: 10000
+      - swipe:
+          from:
+            text: ".*NoteF ${RUN_ID}.*"
+          direction: LEFT
+      # The swipe opens the row; its trash action asks to confirm.
+      - tapOn:
+          id: "action-trash"
+      - assertVisible: "Move to Trash"
+      - tapOn: "Trash"
+      - extendedWaitUntil:
+          notVisible: ".*NoteF ${RUN_ID}.*"
+          timeout: 10000
+      # Back to the notebooks list (header back button)
+      - tapOn: "Notebooks"
+      - swipe:
+          from:
+            text: ".*OffMode NB ${RUN_ID}"
+          direction: LEFT
+      # The swipe opens the row; its trash action asks to confirm the delete.
+      - tapOn:
+          id: "action-trash"
+      - assertVisible: "Delete Notebook"
+      - tapOn: "Delete"
+      - extendedWaitUntil:
+          notVisible: ".*OffMode NB ${RUN_ID}"
+          timeout: 10000
+      - tapOn: "Settings, tab.*"
+      - extendedWaitUntil:
+          visible: "Sync status: All synced"
+          timeout: 30000
+      - tapOn: "Notebooks, tab.*"

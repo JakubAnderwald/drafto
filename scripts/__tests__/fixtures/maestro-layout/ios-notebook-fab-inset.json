@@ -1,0 +1,89 @@
+{
+  "attributes": {
+    "accessibilityText": "Drafto",
+    "bounds": "[0,0][402,874]"
+  },
+  "children": [
+    {
+      "attributes": {
+        "bounds": "[0,0][402,874]"
+      },
+      "children": [
+        {
+          "attributes": {
+            "resource-id": "Notes",
+            "bounds": "[0,62][402,116]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "resource-id": "BackButton",
+                "accessibilityText": "Notes",
+                "bounds": "[8,68][98,112]"
+              },
+              "children": [],
+              "clickable": true,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            },
+            {
+              "attributes": {
+                "accessibilityText": "Note 1760000000",
+                "bounds": "[120,74][282,106]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        },
+        {
+          "attributes": {
+            "resource-id": "notes-list-screen",
+            "bounds": "[0,116][402,874]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "resource-id": "add",
+                "accessibilityText": "New note",
+                "bounds": "[326,764][382,820]"
+              },
+              "children": [],
+              "clickable": true,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        }
+      ],
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "checked": false,
+      "selected": false
+    }
+  ],
+  "clickable": false,
+  "enabled": true,
+  "focused": false,
+  "checked": false,
+  "selected": false
+}

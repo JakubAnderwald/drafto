@@ -1,8 +1,13 @@
 import React from "react";
-import { FlatList } from "react-native";
+import { FlatList, StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import NotesListScreen from "../../app/notebooks/[id]";
+import { FAB_MARGIN, FAB_SIZE, LIST_RESTING_PADDING } from "@/components/ui/fab";
+import { spacing } from "@/theme/tokens";
+
+const mockedInsets = jest.mocked(useSafeAreaInsets);
 
 const mockPush = jest.fn();
 const mockStackScreen = jest.fn();
@@ -92,6 +97,7 @@ describe("NotesListScreen", () => {
     mockIsSyncing = false;
     mockNotebookName = "Work";
     mockSync.mockResolvedValue(undefined);
+    mockedInsets.mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
   });
 
   function lastHeaderTitle(): unknown {
@@ -232,6 +238,47 @@ describe("NotesListScreen", () => {
 
     await waitFor(() => {
       expect(mockDatabaseWrite).toHaveBeenCalled();
+    });
+  });
+
+  describe("system navigation bar (PrimeTestLab 10668 M-01)", () => {
+    // A 3-button Android nav bar: this stack screen has no tab bar under it,
+    // and the app is edge-to-edge, so the bar overlaps the screen's bottom.
+    beforeEach(() => {
+      mockedInsets.mockReturnValue({ top: 24, bottom: 48, left: 0, right: 0 });
+      mockNotes.push({ id: "note-1", title: "First Note", updatedAt: new Date() });
+    });
+
+    it("keeps the add button above the system navigation bar", () => {
+      const { getByTestId } = render(<NotesListScreen />);
+
+      expect(StyleSheet.flatten(getByTestId("add").props.style).bottom).toBe(spacing.xl + 48);
+    });
+
+    it("labels the add button for screen readers", () => {
+      const { getByRole } = render(<NotesListScreen />);
+
+      expect(getByRole("button", { name: "New note" })).toBeTruthy();
+    });
+
+    it("pads the list so the last note clears the add button and the nav bar", () => {
+      const { UNSAFE_getByType } = render(<NotesListScreen />);
+
+      const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
+      // FAB margin + system inset under the button, the button, then a FAB
+      // margin of breathing room above it.
+      expect(content.paddingBottom).toBe(FAB_SIZE + FAB_MARGIN * 2 + 48);
+      expect(content.paddingTop ?? content.paddingVertical).toBe(spacing.sm);
+    });
+
+    it("keeps only the nav-bar clearance while the create bar hides the button", () => {
+      const { getByTestId, queryByTestId, UNSAFE_getByType } = render(<NotesListScreen />);
+
+      fireEvent.press(getByTestId("add"));
+
+      expect(queryByTestId("add")).toBeNull();
+      const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
+      expect(content.paddingBottom).toBe(LIST_RESTING_PADDING + 48);
     });
   });
 });

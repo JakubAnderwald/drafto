@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/client";
 import { enterApp } from "@/lib/auth/enter-app";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 
 export default function ResetPasswordPage() {
@@ -46,28 +46,30 @@ export default function ResetPasswordPage() {
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <Label htmlFor="password">New Password</Label>
-          <Input
+          <PasswordInput
             id="password"
-            type="password"
+            name="password"
+            autoComplete="new-password"
             required
             minLength={6}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Min. 6 characters"
-            className="mt-1"
+            wrapperClassName="mt-1"
           />
         </div>
 
         <div>
           <Label htmlFor="confirmPassword">Confirm Password</Label>
-          <Input
+          <PasswordInput
             id="confirmPassword"
-            type="password"
+            name="confirmPassword"
+            autoComplete="new-password"
             required
             minLength={6}
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            className="mt-1"
+            wrapperClassName="mt-1"
           />
         </div>
 
