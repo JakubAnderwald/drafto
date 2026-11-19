@@ -265,9 +265,10 @@ describe("Privacy policy page", () => {
     expect(retention).toMatch(
       /Earlier versions of a note's content are deleted automatically after 30 days/,
     );
-    // Mobile sync never pulls server-side deletions, so the local copy outlives the server one.
+    // Mobile and desktop sync never apply server-side deletions (desktop's detection is inert),
+    // so the local copy outlives the server one.
     expect(retention).toMatch(
-      /On iPhone, iPad and Android, a note already synced to the device is not removed/,
+      /In the iPhone, iPad, Android and macOS apps, a note already synced to the device is\s+not removed/,
     );
     expect(retention).toMatch(/GitHub issues filed from your support emails/);
     expect(retention).toMatch(/notification emails our administrator received/);

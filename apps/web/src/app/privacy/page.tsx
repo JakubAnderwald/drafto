@@ -554,9 +554,9 @@ export default function PrivacyPolicyPage() {
               in its trash
             </li>
             <li>
-              On iPhone, iPad and Android, a note already synced to the device is not removed when
-              it is deleted on our servers or on another device: it stays in that app until you
-              delete it there or sign out
+              In the iPhone, iPad, Android and macOS apps, a note already synced to the device is
+              not removed when it is deleted on our servers or on another device: it stays in that
+              app until you delete it there or sign out
             </li>
             <li>
               Earlier versions of a note&apos;s content are deleted automatically after 30 days
