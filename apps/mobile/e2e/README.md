@@ -60,6 +60,25 @@ maestro test apps/mobile/e2e/android-only/ --platform android -e RUN_ID=$(date +
 maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
 ```
 
+A folder run also picks up the report 10668 flows below. Their pass/fail is a host check the folder run doesn't do, and the iOS offline ones need the Mac offline between phases, so add `--exclude-tags qa-10668,requires-host-offline` and run them through their runner.
+
+### PrimeTestLab report 10668 flows
+
+The flows tagged `qa-10668` (09–11 above and the platform `08`–`11` ones) cover the fixes for PrimeTestLab report 10668. The layout ones only set the scene: Maestro's `tapOn` and `below:` pass on a half-covered button, so the pass/fail is a host check on `maestro hierarchy`, `dumpsys window` and a screenshot. Run them through their runner, which also guards that the installed build is dev-backed:
+
+```bash
+# Android: a dev-backed release APK built with EXPO_PUBLIC_E2E_PROBES=1 (airplane-mode legs)
+bash apps/mobile/e2e/run-qa-10668-e2e.sh android
+
+# iOS: the offline legs take the whole Mac offline (sudo) and run only with --allow-host-offline
+bash apps/mobile/e2e/run-qa-10668-e2e.sh ios [--allow-host-offline]
+
+# --before: against a build without the fixes, every report check must reproduce
+bash apps/mobile/e2e/run-qa-10668-e2e.sh android --before
+```
+
+See [testing.md](../../../docs/architecture/testing.md#report-10668-runner-and-host-layout-checks) for the checks, and its "Offline flows on Android" and "E2E probe builds" sections for the build.
+
 ### Web-seeded flows
 
 Flows 05 and 08 open a note that a Playwright test seeds through the web API. Run them through their runner scripts, which seed the note, run the flow, then check the saved note through the API:
@@ -76,37 +95,46 @@ bash apps/mobile/e2e/run-nested-lists-e2e.sh
 
 ### Cross-platform (both iOS and Android)
 
-| Flow                          | Description                                              |
-| ----------------------------- | -------------------------------------------------------- |
-| `01-login.yaml`               | Login with email/password, verify Notebooks screen       |
-| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                         |
-| `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press         |
-| `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash               |
-| `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile           |
-| `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link        |
-| `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel         |
-| `08-nested-lists.yaml`        | Open a web note with nested to-dos, edit the deepest one |
-| `10-swipe-hint.yaml`          | One-time swipe hints on each list, Trash tap menu        |
-| `search.yaml`                 | Open search, type query, dismiss                         |
+| Flow                          | Description                                                    |
+| ----------------------------- | -------------------------------------------------------------- |
+| `01-login.yaml`               | Login with email/password, verify Notebooks screen             |
+| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                               |
+| `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press               |
+| `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash                     |
+| `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile                 |
+| `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link              |
+| `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel               |
+| `08-nested-lists.yaml`        | Open a web note with nested to-dos, edit the deepest one       |
+| `09-password-visibility.yaml` | Show/hide password toggle on Log In and Sign up (S-01)         |
+| `10-swipe-hint.yaml`          | One-time swipe hints on each list, Trash tap menu (S-03)       |
+| `11-sign-out-confirm.yaml`    | Sign Out asks first; Cancel (and Android back) stays in (S-02) |
+| `search.yaml`                 | Open search, type query, dismiss                               |
 
 ### Android-only
 
-| Flow                                         | Description                                               |
-| -------------------------------------------- | --------------------------------------------------------- |
-| `android-all.yaml`                           | Combined flow: login + notebooks + notes + nav            |
-| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect   |
-| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification       |
-| `android-only/07-auth-callback-link.yaml`    | Apple callback link is claimed, warm and cold, not routed |
+| Flow                                         | Description                                                                        |
+| -------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `android-all.yaml`                           | Combined flow: password toggle + login + notebooks + notes + nav + sign-out cancel |
+| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect                            |
+| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification                                |
+| `android-only/07-auth-callback-link.yaml`    | Apple callback link is claimed, warm and cold, not routed                          |
+| `android-only/08-fab-above-nav-bar.yaml`     | Notebook "+" above the 3-button nav bar (M-01, host check)                         |
+| `android-only/09-offline-image.yaml`         | Attached images show offline, cold start included (M-02, host check)               |
+| `android-only/10-offline-banner-header.yaml` | Offline banner below the header; Back works offline (M-03, host check)             |
+| `android-only/11-dark-nav-bar.yaml`          | Nav bar follows the in-app theme, cases A/B/C (M-04, host check)                   |
 
 ### iOS-only
 
-| Flow                                     | Description                                              |
-| ---------------------------------------- | -------------------------------------------------------- |
-| `ios-all.yaml`                           | Combined flow: login + notebooks + notes + nav           |
-| `ios-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect  |
-| `ios-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification      |
-| `ios-only/search.yaml`                   | Search, a result's sheet, and both close buttons         |
-| `ios-only/07-attach-image.yaml`          | iPhone: attach a photo, toast below header, "All synced" |
+| Flow                                        | Description                                                                        |
+| ------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `ios-all.yaml`                              | Combined flow: password toggle + login + notebooks + notes + nav + sign-out cancel |
+| `ios-only/05-offline-mode.yaml`             | Offline note creation, cold start, sync on reconnect; phased, Mac offline          |
+| `ios-only/06-offline-notebook-sync.yaml`    | Offline notebook + note creation, sync verification; phased, Mac offline           |
+| `ios-only/search.yaml`                      | Search, a result's sheet, and both close buttons                                   |
+| `ios-only/07-attach-image.yaml`             | iPhone: attach a photo, toast below header, "All synced"                           |
+| `ios-only/08-fab-above-home-indicator.yaml` | Notebook "+" above the home indicator (M-01, host check)                           |
+| `ios-only/09-attach-image-offline.yaml`     | Images show offline and attach offline; phased, Mac offline (M-02, host check)     |
+| `ios-only/10-offline-banner-header.yaml`    | Offline banner below the header; phased, Mac offline (M-03, host check)            |
 
 ## Platform differences
 
@@ -127,6 +155,10 @@ The main navigation difference between platforms:
   [environments.md](../../../docs/architecture/environments.md#supabase-projects))
 - `android-only/07-auth-callback-link.yaml` also clears state and runs signed out, so run it on its own
   too (`maestro test apps/mobile/e2e/android-only/07-auth-callback-link.yaml --platform android`)
+- `11-sign-out-confirm.yaml` only cancels by default, and `ios-all.yaml` and `android-all.yaml` run it
+  (Cancel only) at their end. Its `-e SIGN_OUT_CONFIRM=1` leg signs the shared E2E user out of every
+  session, so run it last and alone. `09-password-visibility.yaml` runs signed out, so both combined
+  flows run it first
 - Flow 07 only ever **cancels** the account-deletion dialog — it must never tap an enabled
   confirm, because the flows share one real E2E account. It is also inlined at the end of
   `ios-all.yaml` and `android-all.yaml`

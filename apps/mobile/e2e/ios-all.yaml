@@ -4,6 +4,10 @@ appId: eu.drafto.mobile
 # Pass -e RUN_ID=<timestamp> -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
 # Run with: maestro test apps/mobile/e2e/ios-all.yaml --platform ios
 
+# ===== FLOW 09: Show/hide password (PrimeTestLab 10668, S-01) =====
+# Self-contained: clean start, never signs in, types only dummy values.
+- runFlow: 09-password-visibility.yaml
+
 # ===== FLOW 01: Login =====
 - clearKeychain
 - stopApp
@@ -19,16 +23,27 @@ appId: eu.drafto.mobile
 # Uses the existing test account on purpose: Supabase answers an address that already has an
 # account exactly like a new one (no session) and sends no email, so this creates no user and
 # no mail. The app must show the check-your-email state, not bounce back to Log In.
-- tapOn:
-    id: "signup-link"
+# The Sign up <Link> sits inside a <Text>, so iOS exposes it only as an element
+# labelled "Sign up", not by its testID.
+- tapOn: "Sign up"
 - extendedWaitUntil:
     visible: "Create your Drafto account"
     timeout: 10000
+# Let the push finish first: iOS keeps the previous screen in the hierarchy
+# until it does, and a tap during the slide lands on its frames.
+- waitForAnimationToEnd
 - tapOn: "you@example.com"
 - inputText: ${E2E_TEST_EMAIL}
+# iOS opens its out-of-process "Use a strong password?" sheet when the secure
+# new-password field gets focus, and Maestro's typing then lands only partly (the
+# field keeps the last character). Revealed, the field is not secure and gets no
+# sheet, so iOS shows this dummy value first (it is not the account password).
+- tapOn:
+    id: "signup-password-input-toggle"
 - tapOn: "Min. 6 characters"
 - inputText: "not-the-real-password"
-- hideKeyboard
+# hideKeyboard fails on iOS; a tap on the screen's static subtitle closes it.
+- tapOn: "Create your Drafto account"
 - tapOn:
     id: "signup-submit"
 - extendedWaitUntil:
@@ -48,6 +63,16 @@ appId: eu.drafto.mobile
 - tapOn: "Sign in to your Drafto account"
 - tapOn:
     id: "login-button"
+
+# iOS offers to save the password right after login, in a sheet drawn out of
+# process that hides the app from Maestro. Let it arrive, then restart the app:
+# the session persists and the sheet goes away with the old process.
+- extendedWaitUntil:
+    visible: "never-present-just-wait"
+    timeout: 8000
+    optional: true
+- stopApp
+- launchApp
 
 - extendedWaitUntil:
     visible: "Notebooks"
@@ -227,7 +252,8 @@ appId: eu.drafto.mobile
 - tapOn:
     id: "delete-account-input"
 - inputText: "DELET"
-- hideKeyboard
+# hideKeyboard fails on iOS; a tap on the dialog's static prompt closes it.
+- tapOn: "Type DELETE to confirm"
 - assertVisible:
     id: "delete-account-confirm"
     enabled: false
@@ -245,3 +271,11 @@ appId: eu.drafto.mobile
 - extendedWaitUntil:
     visible: ".*NB ${RUN_ID}.*"
     timeout: 10000
+
+# ===== FLOW 11: Sign-out confirmation, Cancel only (PrimeTestLab 10668, S-02) =====
+# NEVER confirms: sign-out ends every session of the shared E2E user. The confirm
+# leg (-e SIGN_OUT_CONFIRM=1) runs on its own, last.
+- runFlow:
+    file: 11-sign-out-confirm.yaml
+    env:
+      SIGN_OUT_CONFIRM: "0"

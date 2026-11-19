@@ -40,17 +40,14 @@ tags:
 - inputText: ${E2E_TEST_EMAIL}
 - tapOn: "Sign in to your Drafto account"
 - tapOn: "Your password"
-- inputText: ${E2E_TEST_PASSWORD}
+- inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
 - tapOn: "Sign in to your Drafto account"
 - tapOn:
     id: "login-button"
-- extendedWaitUntil:
-    visible:
-      id: "search-button"
-    timeout: 60000
 
-# iOS offers to save the password a few seconds after login, in a sheet drawn
-# out of process that Maestro can't see. Let it arrive, then restart the app:
+# iOS offers to save the password right after login, in a sheet drawn out of
+# process that hides the app from Maestro (on a release build it can arrive
+# before the Notebooks tab is checked). Let it arrive, then restart the app:
 # the session persists and the sheet goes away with the old process.
 - runFlow:
     when:
@@ -62,10 +59,10 @@ tags:
           optional: true
       - stopApp
       - launchApp
-      - extendedWaitUntil:
-          visible:
-            id: "search-button"
-          timeout: 30000
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 60000
 
 # --- Notebooks list: the hint shows on a first visit ---
 - tapOn:
@@ -95,6 +92,9 @@ tags:
     visible:
       id: "notes-list-screen"
     timeout: 10000
+# Let the push finish first: iOS keeps the previous screen in the hierarchy
+# until it does, and a tap during the slide lands on its frames.
+- waitForAnimationToEnd
 - tapOn:
     id: "add"
 - assertVisible: "Note title (optional)"
@@ -141,7 +141,9 @@ tags:
       - tapOn: "Notebooks"
 
 # --- Trash: its own hint, and a tap menu ---
-- tapOn: "Trash, tab.*"
+# The tab is "Trash, tab, 2 of 3" on iOS and a bare "Trash" text on Android
+# (its button reads "<icon>, Trash"), so the tab selectors accept both.
+- tapOn: "Trash(, tab.*)?"
 - extendedWaitUntil:
     visible: ".*NoteF ${RUN_ID}.*"
     timeout: 10000
@@ -178,7 +180,7 @@ tags:
 - assertNotVisible:
     id: "swipe-hint"
 
-- tapOn: "Trash, tab.*"
+- tapOn: "Trash(, tab.*)?"
 - extendedWaitUntil:
     visible: ".*NoteF ${RUN_ID}.*"
     timeout: 10000
@@ -196,7 +198,7 @@ tags:
     notVisible: ".*NoteF ${RUN_ID}.*"
     timeout: 10000
 
-- tapOn: "Notebooks, tab.*"
+- tapOn: "Notebooks(, tab.*)?"
 - tapOn: ".*NB ${RUN_ID}"
 - extendedWaitUntil:
     visible: ".*NoteF ${RUN_ID}.*"
@@ -227,7 +229,7 @@ tags:
     commands:
       - tapOn: "Notebooks"
 
-- tapOn: "Trash, tab.*"
+- tapOn: "Trash(, tab.*)?"
 - tapOn: ".*NoteF ${RUN_ID}.*"
 - tapOn: "Delete permanently"
 - extendedWaitUntil:
@@ -238,7 +240,7 @@ tags:
     notVisible: ".*NoteF ${RUN_ID}.*"
     timeout: 10000
 
-- tapOn: "Notebooks, tab.*"
+- tapOn: "Notebooks(, tab.*)?"
 - swipe:
     from:
       text: ".*NB ${RUN_ID}"

@@ -3,6 +3,10 @@ appId: eu.drafto.mobile
 # Combined Android E2E flow - all tests in a single run
 # Pass -e RUN_ID=<timestamp> -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
 
+# ===== FLOW 09: Show/hide password (PrimeTestLab 10668, S-01) =====
+# Self-contained: clean start, never signs in, types only dummy values.
+- runFlow: 09-password-visibility.yaml
+
 # ===== FLOW 01: Login =====
 - clearKeychain
 - stopApp
@@ -18,8 +22,9 @@ appId: eu.drafto.mobile
 # Uses the existing test account on purpose: Supabase answers an address that already has an
 # account exactly like a new one (no session) and sends no email, so this creates no user and
 # no mail. The app must show the check-your-email state, not bounce back to Log In.
-- tapOn:
-    id: "signup-link"
+# The Sign up <Link> sits inside a <Text>, so on Android it renders as a span
+# with no resource-id and its testID can't be matched; its own text node can.
+- tapOn: "Sign up"
 - extendedWaitUntil:
     visible: "Create your Drafto account"
     timeout: 10000
@@ -246,3 +251,11 @@ appId: eu.drafto.mobile
 - extendedWaitUntil:
     visible: ".*NB ${RUN_ID}.*"
     timeout: 10000
+
+# ===== FLOW 11: Sign-out confirmation, Cancel only (PrimeTestLab 10668, S-02) =====
+# NEVER confirms: sign-out ends every session of the shared E2E user. The confirm
+# leg (-e SIGN_OUT_CONFIRM=1) runs on its own, last.
+- runFlow:
+    file: 11-sign-out-confirm.yaml
+    env:
+      SIGN_OUT_CONFIRM: "0"
