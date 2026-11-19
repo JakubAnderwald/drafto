@@ -110,7 +110,13 @@ describe("Privacy policy page", () => {
     expect(offline).toMatch(/Other files you attach stay on the device only until\s+they upload/);
     expect(offline).toMatch(/300\u00a0MB on iPhone, iPad\s+and Android, 1\u00a0GB on macOS/);
     expect(offline).toMatch(
-      /Once a note\s+is deleted permanently, on that device or another, the copies of its images are removed\s+the next time the app starts and syncs/,
+      /Once you\s+delete a note permanently in that app, the copies of its images are removed the next\s+time the app starts and syncs/,
+    );
+    // The apps don't pull permanent deletions made elsewhere, so the policy
+    // mustn't promise those images go at the next sync.
+    expect(offline).not.toMatch(/on that device or another/);
+    expect(offline).toMatch(
+      /A note deleted\s+permanently anywhere else \(on the web, in another app, or by the 30-day trash cleanup\)\s+is not removed from the app, so the copies of its images stay too/,
     );
     expect(offline).toMatch(/Images in\s+notes in the trash are kept/);
     expect(offline).toMatch(/The local copy, attachments included, is erased when you sign out/);

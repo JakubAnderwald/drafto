@@ -270,6 +270,15 @@ async function noteWritten(filePath: string, size: number, startedIn: number): P
   saveIndexSoon();
 }
 
+/**
+ * The index missed a file in the cache: save the last-use times it has, then
+ * empty it, so its next use walks the cache again.
+ */
+async function reindexOnNextUse(startedIn: number): Promise<void> {
+  await flushAttachmentCacheIndex();
+  if (generation === startedIn) index.clear();
+}
+
 function noteRemoved(relativePath: string): void {
   index.remove(relativePath);
   saveIndexSoon();
@@ -451,15 +460,25 @@ export async function retainInCache(localUri: string, filePath: string): Promise
     console.warn("Failed to record the cached attachment:", error);
     return;
   }
+  let moved = false;
   try {
     if (!(await RNFS.exists(source))) return;
     const destination = await prepareCacheFile(filePath, startedIn);
     await unlinkInGeneration(destination, startedIn);
     assertGeneration(startedIn);
     await RNFS.moveFile(source, destination);
+    moved = true;
     await noteWritten(filePath, await fileSize(destination), startedIn);
   } catch (error) {
     if (error instanceof AttachmentCacheWipedError || generation !== startedIn) return;
+    if (moved) {
+      // The file is in the cache now: keep it even if recording it failed,
+      // and walk the cache again on the next use of the index, so eviction
+      // counts the file.
+      console.warn("Failed to record the cached attachment:", error);
+      await reindexOnNextUse(startedIn);
+      return;
+    }
     await safeUnlink(source);
   }
 }
@@ -582,10 +601,10 @@ async function liveCachePaths(): Promise<Set<string>> {
 
 /**
  * Delete cached files nobody needs any more: those whose attachment row is
- * gone, whose note was deleted (permanently, here or synced from elsewhere),
- * or that aren't images. Notes in the trash keep theirs. Also clears the
- * leftovers of downloads an app exit cut short. Run after a sync, so the rows
- * are complete. Never throws.
+ * gone, whose note was deleted permanently on this device (sync does not pull
+ * permanent deletions made elsewhere), or that aren't images. Notes in the
+ * trash keep theirs. Also clears the leftovers of downloads an app exit cut
+ * short. Run after a sync, so the rows are complete. Never throws.
  */
 export async function removeOrphanedCacheFiles(): Promise<void> {
   try {

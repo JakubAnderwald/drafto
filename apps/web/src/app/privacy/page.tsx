@@ -280,10 +280,13 @@ export default function PrivacyPolicyPage() {
             from our servers in the background. Other files you attach stay on the device only until
             they upload. When the space the images take reaches a limit (300&nbsp;MB on iPhone, iPad
             and Android, 1&nbsp;GB on macOS), the copies you have not opened for the longest time
-            are removed first; a file that has not finished uploading is never removed. Once a note
-            is deleted permanently, on that device or another, the copies of its images are removed
-            the next time the app starts and syncs, or sooner when the limit is reached. Images in
-            notes in the trash are kept, so a restored note still shows them.
+            are removed first; a file that has not finished uploading is never removed. Once you
+            delete a note permanently in that app, the copies of its images are removed the next
+            time the app starts and syncs, or sooner when the limit is reached. A note deleted
+            permanently anywhere else (on the web, in another app, or by the 30-day trash cleanup)
+            is not removed from the app, so the copies of its images stay too, until you delete the
+            note there, the limit removes them, or you sign out. Images in notes in the trash are
+            kept, so a restored note still shows them.
           </p>
           <p>
             The local copy, attachments included, is erased when you sign out or delete your account

@@ -217,6 +217,28 @@ describe("retainInCache", () => {
     warn.mockRestore();
   });
 
+  it("counts the moved file on the next use of the index when recording it fails", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    put("u/n/old.jpg", 5);
+    getCachedAttachmentUri("u/n/old.jpg"); // loads the index and marks old.jpg used
+    jest.spyOn(Date, "now").mockReturnValue(9_000);
+    getCachedAttachmentUri("u/n/old.jpg");
+    jest.mocked(Date.now).mockRestore();
+    fakeFs.files.set("file:///docs/attachments/id_a.jpg", { size: 10, mtime: 1 });
+    const size = jest.spyOn(FakeFile.prototype, "size", "get").mockImplementation(() => {
+      throw new Error("EIO");
+    });
+    retainInCache("file:///docs/attachments/id_a.jpg", "u/n/a.jpg");
+    size.mockRestore();
+    const state = getAttachmentCacheState();
+    expect(state.totalBytes).toBe(15);
+    expect(state.isCached("u/n/a.jpg")).toBe(true);
+    // The walk keeps the last use the index had, not the file's old time.
+    const old = listAttachmentCache().find((entry) => entry.relativePath === "u/n/old.jpg");
+    expect(old?.lastUsedAt).toBe(9_000);
+    warn.mockRestore();
+  });
+
   it("does nothing for a file that no longer exists", () => {
     retainInCache("file:///docs/attachments/gone.jpg", "u/n/a.jpg");
     expect(fakeFs.files.size).toBe(0);

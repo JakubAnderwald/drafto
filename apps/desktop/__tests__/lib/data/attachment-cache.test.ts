@@ -389,6 +389,26 @@ describe("retainInCache", () => {
     expect(mockFiles.size).toBe(0);
   });
 
+  it("keeps the moved file and counts it on the next use of the index when recording it fails", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    put("u/n/old.jpg", 5);
+    await getCachedAttachmentUri("u/n/old.jpg"); // loads the index and marks old.jpg used
+    jest.spyOn(Date, "now").mockReturnValue(9_000);
+    await getCachedAttachmentUri("u/n/old.jpg");
+    jest.mocked(Date.now).mockRestore();
+    mockFiles.set("/docs/attachments/id_a.jpg", { size: 10, mtime: 1 });
+    jest.mocked(RNFS.stat).mockRejectedValueOnce(new Error("EIO"));
+    await retainInCache("file:///docs/attachments/id_a.jpg", "u/n/a.jpg");
+    expect(mockFiles.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+    const state = await getAttachmentCacheState();
+    expect(state.totalBytes).toBe(15);
+    expect(state.isCached("u/n/a.jpg")).toBe(true);
+    // The walk keeps the last use the index had, not the file's old time.
+    const old = (await listAttachmentCache()).find((entry) => entry.relativePath === "u/n/old.jpg");
+    expect(old?.lastUsedAt).toBe(9_000);
+    warn.mockRestore();
+  });
+
   it("never throws, so a cache failure can't fail an upload already recorded", async () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     put("u/n/a.jpg", 5);
