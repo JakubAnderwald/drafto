@@ -19,6 +19,12 @@ appId: eu.drafto.mobile
     visible: ".*NB ${RUN_ID}.*"
     timeout: 15000
 
+# A fresh install shows the list's one-time swipe hint (PrimeTestLab 10668
+# S-03) above the rows; close it so the rest of the flow sees the plain list.
+- tapOn:
+    id: "swipe-hint-dismiss"
+    optional: true
+
 # --- Test: navigate to Trash tab ---
 # iOS: "Trash, tab, 2 of 3" — use "tab" to avoid matching swipe action "trash"
 - tapOn: "Trash, tab.*"
