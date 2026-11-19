@@ -512,6 +512,43 @@ describe("SwipeableRow", () => {
       expect(onOpen).not.toHaveBeenCalled();
     });
 
+    it("drops a peek position that arrives after its drag ended", async () => {
+      const panResponder = capturePanResponder();
+      const { sequence } = fakeSequence();
+      // The native driver's reading arrives late, after the drag that asked for it.
+      let report: ((value: number) => void) | undefined;
+      jest
+        .spyOn(Animated.Value.prototype, "stopAnimation")
+        .mockImplementation((callback?: (value: number) => void) => {
+          report = callback;
+        });
+      const setValue = jest.spyOn(Animated.Value.prototype, "setValue");
+      const onOpen = jest.fn();
+      const { left, right } = trashActions();
+      render(
+        <SwipeableRow leftActions={left} rightActions={right} peek onOpen={onOpen}>
+          <Text>Row</Text>
+        </SwipeableRow>,
+      );
+      await waitFor(() => expect(sequence).toHaveBeenCalledTimes(1));
+
+      // A quick tap-drag takes over the peek and lets go before the reading lands.
+      panResponder().grant();
+      panResponder().release(0);
+
+      // The next drag starts from rest; the late reading must not move it.
+      panResponder().grant();
+      act(() => report?.(-40));
+      panResponder().move(-15);
+
+      expect(setValue).toHaveBeenLastCalledWith(-15);
+
+      panResponder().release(-15);
+
+      // Fifteen points is a short drag from rest: the row closes, not opens.
+      expect(onOpen).not.toHaveBeenCalled();
+    });
+
     it("stops and settles the row when the peek is called off mid-slide", async () => {
       // A real spring settles on animation frames, which a loaded CI runner can
       // stretch past waitFor's timeout; finish it at once instead.

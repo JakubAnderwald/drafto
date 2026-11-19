@@ -129,6 +129,8 @@ export function SwipeableRow({
   const translateX = useRef(new Animated.Value(0)).current;
   const isOpen = useRef(false);
   const dragging = useRef(false);
+  /** Counts drags, so a late reading from the native driver applies only to its own drag. */
+  const gesture = useRef(0);
   const currentOffset = useRef(0);
   const mounted = useRef(true);
   const peeked = useRef(false);
@@ -206,16 +208,20 @@ export function SwipeableRow({
       },
       onPanResponderGrant: () => {
         dragging.current = true;
+        const thisGesture = ++gesture.current;
         setRevealed(true);
         const peeking = peekAnimation.current;
         if (peeking) {
           // The finger takes over a peek mid-slide: carry on from where the
           // row is, not from rest, so it doesn't jump. The native driver
-          // reports that position asynchronously; moves before then use 0.
+          // reports that position asynchronously; moves before then use 0,
+          // and a reading that lands after this drag ended is dropped.
           peekAnimation.current = null;
           peeking.stop();
           translateX.stopAnimation((value) => {
-            if (dragging.current && !isOpen.current) currentOffset.current = value;
+            if (gesture.current === thisGesture && dragging.current && !isOpen.current) {
+              currentOffset.current = value;
+            }
           });
           latest.current.onPeekEnd?.();
         }
