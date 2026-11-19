@@ -27,7 +27,10 @@ onFlowComplete:
 # Needs a release APK built against dev (docs/architecture/testing.md, "Offline
 # flows on Android"): a debug build loads its JavaScript from Metro, which
 # airplane mode cuts off. Build it with EXPO_PUBLIC_E2E_PROBES=1, which alone
-# has the image status views ("E2E probe builds" in the same doc). Assumes the
+# has the image status views ("E2E probe builds" in the same doc).
+# -e QA_NO_PROBES=1 (the runner's --before) is for a build without them, such
+# as 1.4.7: it skips the probe waits so the flow still ends offline on the
+# note, where the host check falls back to the WebView's <img> alt text. Assumes the
 # user is logged in (after 01-login).
 # It ends offline, so it leaves its notebook ("Attach NB <RUN_ID>", as 07 names
 # its own: give it a RUN_ID no 07 run has used) behind for
@@ -63,6 +66,20 @@ onFlowComplete:
     optional: true
 - tapOn:
     id: "add"
+# On a build with the M-01 bug (1.4.7) the notebook FAB's centre sits on the
+# 3-button nav bar's top edge, so that tap reaches the nav bar. Tap the
+# FAB's uncovered top part then (Pixel 7, 1080x2400), so a --before run still
+# gets to its check. A fixed build opens the create bar on the first tap.
+- extendedWaitUntil:
+    visible: "Note title (optional)"
+    timeout: 5000
+    optional: true
+- runFlow:
+    when:
+      notVisible: "Note title (optional)"
+    commands:
+      - tapOn:
+          point: "88%,93%"
 - assertVisible: "Note title (optional)"
 - inputText: "Attach ${RUN_ID}"
 - tapOn:
@@ -91,10 +108,24 @@ onFlowComplete:
 - extendedWaitUntil:
     visible: "Attachment uploaded"
     timeout: 30000
-- extendedWaitUntil:
-    visible:
-      id: "editor-image-rendered"
-    timeout: 20000
+- runFlow:
+    when:
+      true: ${typeof QA_NO_PROBES === 'undefined' || QA_NO_PROBES != '1'}
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "editor-image-rendered"
+          timeout: 20000
+- runFlow:
+    when:
+      true: ${typeof QA_NO_PROBES !== 'undefined' && QA_NO_PROBES == '1'}
+    commands:
+      # A build without the E2E probes (--before): give the image time to
+      # load, then go on, so the flow still ends on the screen it checks.
+      - extendedWaitUntil:
+          visible: "never-present-just-wait"
+          timeout: 8000
+          optional: true
 - takeScreenshot: qa-10668-offline-image-1-online
 
 # --- The report's step: go back, go offline, reopen the note ---
@@ -114,12 +145,26 @@ onFlowComplete:
           visible: "You are offline"
           timeout: 15000
 - tapOn: ".*Attach ${RUN_ID}.*"
-- extendedWaitUntil:
-    visible:
-      id: "editor-image-rendered"
-    timeout: 20000
-- assertNotVisible:
-    id: "editor-image-missing"
+- runFlow:
+    when:
+      true: ${typeof QA_NO_PROBES === 'undefined' || QA_NO_PROBES != '1'}
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "editor-image-rendered"
+          timeout: 20000
+      - assertNotVisible:
+          id: "editor-image-missing"
+- runFlow:
+    when:
+      true: ${typeof QA_NO_PROBES !== 'undefined' && QA_NO_PROBES == '1'}
+    commands:
+      # A build without the E2E probes (--before): give the image time to
+      # load, then go on, so the flow still ends on the screen it checks.
+      - extendedWaitUntil:
+          visible: "never-present-just-wait"
+          timeout: 8000
+          optional: true
 - takeScreenshot: qa-10668-offline-image-2-reopened-offline
 
 # --- An offline cold start: no signed URL, no WebView memory cache ---
@@ -144,15 +189,35 @@ onFlowComplete:
     visible: ".*Attach ${RUN_ID}.*"
     timeout: 10000
 - tapOn: ".*Attach ${RUN_ID}.*"
-- extendedWaitUntil:
-    visible:
-      id: "editor-image-rendered"
-    timeout: 20000
-- assertNotVisible:
-    id: "editor-image-missing"
+- runFlow:
+    when:
+      true: ${typeof QA_NO_PROBES === 'undefined' || QA_NO_PROBES != '1'}
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "editor-image-rendered"
+          timeout: 20000
+      - assertNotVisible:
+          id: "editor-image-missing"
+- runFlow:
+    when:
+      true: ${typeof QA_NO_PROBES !== 'undefined' && QA_NO_PROBES == '1'}
+    commands:
+      # A build without the E2E probes (--before): give the image time to
+      # load, then go on, so the flow still ends on the screen it checks.
+      - extendedWaitUntil:
+          visible: "never-present-just-wait"
+          timeout: 8000
+          optional: true
 - takeScreenshot: qa-10668-offline-image-3-cold-start-offline
 
-# --- Attach the photo again while offline: it shows at once ---
+# --- Attach a photo again while offline: it shows at once ---
+# Add the photo to the library again first, so the picker's newest item is a
+# new file with its own name. Re-picking the first file gives two status views
+# with the same label and bounds, and Maestro collapses identical nodes into
+# one, so `index: 1` below would never match even with both images shown.
+- addMedia:
+    - "../fixtures/attachment-photo.jpg"
 - tapOn: "Attach image"
 - extendedWaitUntil:
     visible: "(Photo|Image|Media) taken on.*"
@@ -163,12 +228,26 @@ onFlowComplete:
 - extendedWaitUntil:
     visible: "Attachment saved.*"
     timeout: 30000
-- extendedWaitUntil:
-    visible:
-      id: "editor-image-rendered"
-      index: 1
-    timeout: 20000
-- assertNotVisible:
-    id: "editor-image-missing"
+- runFlow:
+    when:
+      true: ${typeof QA_NO_PROBES === 'undefined' || QA_NO_PROBES != '1'}
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "editor-image-rendered"
+            index: 1
+          timeout: 20000
+      - assertNotVisible:
+          id: "editor-image-missing"
+- runFlow:
+    when:
+      true: ${typeof QA_NO_PROBES !== 'undefined' && QA_NO_PROBES == '1'}
+    commands:
+      # A build without the E2E probes (--before): give the image time to
+      # load, then go on, so the flow still ends on the screen it checks.
+      - extendedWaitUntil:
+          visible: "never-present-just-wait"
+          timeout: 8000
+          optional: true
 - takeScreenshot: qa-10668-offline-image-4-attached-offline
 # Ends here, offline, on the note: the runner's host check reads this screen.
