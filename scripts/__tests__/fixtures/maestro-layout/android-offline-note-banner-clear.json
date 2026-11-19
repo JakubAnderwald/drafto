@@ -1,0 +1,90 @@
+{
+  "attributes": {
+    "bounds": "[0,0][1080,2400]"
+  },
+  "children": [
+    {
+      "attributes": {
+        "class": "android.widget.FrameLayout",
+        "bounds": "[0,0][1080,2400]"
+      },
+      "children": [
+        {
+          "attributes": {
+            "class": "com.swmansion.rnscreens.CustomToolbar",
+            "bounds": "[0,0][1080,265]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "class": "android.widget.ImageButton",
+                "accessibilityText": "Navigate up",
+                "bounds": "[0,118][147,265]"
+              },
+              "children": [],
+              "clickable": true,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            },
+            {
+              "attributes": {
+                "class": "android.widget.TextView",
+                "text": "Note 1760000000",
+                "bounds": "[189,160][700,222]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        },
+        {
+          "attributes": {
+            "resource-id": "offline-banner",
+            "accessibilityText": "You are offline",
+            "bounds": "[0,265][1080,370]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "text": "You are offline",
+                "bounds": "[380,290][760,342]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        }
+      ],
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "checked": false,
+      "selected": false
+    }
+  ],
+  "clickable": false,
+  "enabled": true,
+  "focused": false,
+  "checked": false,
+  "selected": false
+}

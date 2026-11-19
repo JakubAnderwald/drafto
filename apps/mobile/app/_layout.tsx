@@ -3,13 +3,13 @@ import { ActivityIndicator, LogBox, Platform, View, StyleSheet } from "react-nat
 import { Stack, useSegments, useRouter } from "expo-router";
 
 LogBox.ignoreAllLogs();
-import { StatusBar } from "expo-status-bar";
 
 import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { DatabaseProvider } from "@/providers/database-provider";
 import { configureGoogleSignIn } from "@/lib/oauth";
 import { ThemeProvider, useTheme } from "@/providers/theme-provider";
 import { OfflineBanner } from "@/components/offline-banner";
+import { SystemBars } from "@/components/system-bars";
 import { HeaderCloseButton } from "@/components/navigation/header-close-button";
 import { ToastProvider } from "@/components/toast";
 import { isAboveModal } from "@/lib/sheet-presentation";
@@ -142,7 +142,7 @@ function noteScreenOptions(props: StackScreenProps) {
 }
 
 function ThemedStack() {
-  const { semantic, isDark } = useTheme();
+  const { semantic } = useTheme();
 
   return (
     <>
@@ -187,7 +187,6 @@ function ThemedStack() {
           <Stack.Screen name="search" options={searchScreenOptions} />
         </Stack>
       </View>
-      <StatusBar style={isDark ? "light" : "dark"} />
     </>
   );
 }
@@ -195,6 +194,8 @@ function ThemedStack() {
 export default function RootLayout() {
   return (
     <ThemeProvider>
+      {/* Above RouteGuard, so the bars follow the theme on the launch loading screen too. */}
+      <SystemBars />
       <AuthProvider>
         <ToastProvider>
           <DatabaseProvider>

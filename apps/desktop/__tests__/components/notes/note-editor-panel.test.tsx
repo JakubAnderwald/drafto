@@ -2,10 +2,12 @@ import React from "react";
 import { useEditorBridge } from "@10play/tentap-editor";
 import {
   DEBOUNCE_MS,
+  IMAGE_RENDER_STATUS_SCRIPT,
   contentToTiptap,
   sameStoredContent,
   serializeEditorContent,
   toAttachmentUrl,
+  toLocalAttachmentSrc,
   type TipTapDoc,
   type TipTapNode,
 } from "@drafto/shared";
@@ -60,11 +62,25 @@ jest.mock("@/db", () => ({
 
 jest.mock("@/hooks/use-note", () => ({ useNote: jest.fn() }));
 
+const mockGetSignedUrl = jest.fn(async (filePath: string) => `https://signed.example/${filePath}`);
+const mockResolveAttachmentSrc = jest.fn(
+  async (filePath: string, _kind?: string): Promise<string> => `https://signed.example/${filePath}`,
+);
+const mockLocalAttachmentSrcFor = jest.fn(
+  async (attachment: { filePath: string }) => `attachment://${attachment.filePath}`,
+);
 jest.mock("@/lib/data", () => ({
-  getSignedUrl: jest.fn(async (filePath: string) => `https://signed.example/${filePath}`),
+  getSignedUrl: (filePath: string) => mockGetSignedUrl(filePath),
+  resolveAttachmentSrc: (filePath: string, kind: string) =>
+    mockResolveAttachmentSrc(filePath, kind),
+  localAttachmentSrcFor: (attachment: { filePath: string }) =>
+    mockLocalAttachmentSrcFor(attachment),
 }));
 
 jest.mock("@/components/editor/note-editor", () => ({ NoteEditor: () => null }));
+
+// The image render status probes exist only in E2E builds; this suite checks them.
+jest.mock("@/lib/e2e-probes", () => ({ areE2EProbesEnabled: () => true }));
 
 jest.mock("@/components/editor/attachment-picker", () => ({
   AttachmentPicker: (props: { onAttachmentReady?: (attachment: Attachment) => void }) => {
@@ -866,5 +882,128 @@ describe("NoteEditorPanel — find in note", () => {
     fireEvent(input, "submitEditing", { nativeEvent: { text: "Hello" } });
 
     expect(scripts(injected)).toEqual([findSearchJS("Hello"), findStepJS("next")]);
+  });
+});
+
+describe("NoteEditorPanel — offline attachment images (ADR-0086)", () => {
+  const FILE_PATH = "user-1/a/photo.jpg";
+  const LOCAL_SRC = toLocalAttachmentSrc(
+    "file:///Users/j/Library/Containers/eu.drafto.desktop/Data/Documents/attachment-cache/user-1/a/photo.jpg",
+    FILE_PATH,
+  );
+  let web: ReturnType<typeof createFakeWebEditor>;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.clearAllMocks();
+    mockRecords.clear();
+    mockWriteQueue.tail = Promise.resolve();
+    mockAttachmentPicker.onAttachmentReady = undefined;
+    web = createFakeWebEditor();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const imageNoteContent = () =>
+    serializeEditorContent({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "Trip" }] },
+        { type: "image", attrs: { src: toAttachmentUrl(FILE_PATH), alt: "photo.jpg" } },
+      ],
+    });
+
+  it("gives the editor a file:// base URL so cached images can load", () => {
+    createRecord("a", "Trip", null);
+    renderPanel("a");
+    const options = mockedUseEditorBridge.mock.calls[0][0] as { webviewBaseURL?: string };
+    expect(options.webviewBaseURL).toBe("file:///mock/documents/");
+  });
+
+  it("opens a note with a cached image from the cache, and opening it writes nothing", async () => {
+    mockResolveAttachmentSrc.mockResolvedValue(LOCAL_SRC);
+    const note = createRecord("a", "Trip", imageNoteContent());
+    renderPanel("a");
+    await flushAsync();
+
+    expect(mockResolveAttachmentSrc).toHaveBeenCalledWith(FILE_PATH, "image");
+    expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    expect(web.currentDoc().content[1].attrs?.src).toBe(LOCAL_SRC);
+    web.emitChange();
+    await flushAsync(DEBOUNCE_MS * 2);
+    expect(writes(note)).toBe(0);
+  });
+
+  it("keeps a cached image's local src when a link in the same note never resolves", async () => {
+    const LINK_PATH = "user-1/a/report.pdf";
+    mockResolveAttachmentSrc.mockImplementation((_filePath: string, kind?: string) =>
+      kind === "link" ? new Promise<string>(() => undefined) : Promise.resolve(LOCAL_SRC),
+    );
+    createRecord(
+      "a",
+      "Trip",
+      serializeEditorContent({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "report",
+                marks: [{ type: "link", attrs: { href: toAttachmentUrl(LINK_PATH) } }],
+              },
+            ],
+          },
+          { type: "image", attrs: { src: toAttachmentUrl(FILE_PATH), alt: "photo.jpg" } },
+        ],
+      }),
+    );
+    renderPanel("a");
+    await flushAsync();
+    expect(web.bridge.setContent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "doc" }),
+    );
+
+    // Each reference has its own 8 s bound: the hung link alone stays unresolved.
+    await flushAsync(8000);
+    const shown = web.currentDoc();
+    expect(shown.content[1].attrs?.src).toBe(LOCAL_SRC);
+    expect(JSON.stringify(shown.content[0])).toContain(toAttachmentUrl(LINK_PATH));
+  });
+
+  it("inserts an image attached offline with its local src, and stores attachment://", async () => {
+    mockLocalAttachmentSrcFor.mockResolvedValue(LOCAL_SRC);
+    mockGetSignedUrl.mockRejectedValue(new Error("offline"));
+    const note = createRecord("a", "Trip", webAuthoredContent("Hello"));
+    renderPanel("a");
+    await flushAsync();
+
+    await act(async () => {
+      mockAttachmentPicker.onAttachmentReady?.({
+        filePath: FILE_PATH,
+        fileName: "photo.jpg",
+        mimeType: "image/jpeg",
+        localUri:
+          "file:///Users/j/Library/Containers/eu.drafto.desktop/Data/Documents/attachment-cache/user-1/a/photo.jpg",
+      } as Attachment);
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await flushAsync(DEBOUNCE_MS * 2);
+
+    const shown = web.currentDoc();
+    expect(shown.content[shown.content.length - 1]).toEqual({
+      type: "image",
+      attrs: { src: LOCAL_SRC, alt: "photo.jpg" },
+    });
+    expect(writes(note)).toBe(1);
+    expect(note.content).toContain(toAttachmentUrl(FILE_PATH));
+    expect(note.content).not.toContain("file://");
+    expect(note.content).not.toContain("#drafto-attachment=");
+    expect(web.bridge.webviewRef.current.injectJavaScript).toHaveBeenCalledWith(
+      IMAGE_RENDER_STATUS_SCRIPT,
+    );
   });
 });

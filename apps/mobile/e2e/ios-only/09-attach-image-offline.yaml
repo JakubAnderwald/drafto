@@ -1,0 +1,217 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+  - offline
+  - requires-host-offline
+---
+# PrimeTestLab 10668, M-02 (iOS): an attached image still shows offline, after
+# an offline cold start, and when it is attached while offline (ADR-0086).
+#
+# The iOS simulator has no airplane mode and shares the Mac's network, so this
+# flow runs in three phases and the runner takes the whole Mac offline between
+# them (apps/desktop/e2e/in-test/lib/net.sh, sudo):
+#
+#   bash apps/mobile/e2e/run-qa-10668-e2e.sh ios --allow-host-offline
+#
+#   QA_PHASE=prepare    online: a notebook and a note with the photo attached
+#   QA_PHASE=offline    the Mac is offline: a cold start shows the photo, and a
+#                       photo attached offline shows at once. Ends on the note,
+#                       where the runner's `image-rendered` host check reads the
+#                       editor's image status views ("Image shown: <file name>",
+#                       as tall as the image on screen).
+#   QA_PHASE=reconnect  online again: the offline attachment uploads and syncs,
+#                       then the notebook is deleted.
+#
+# Self-contained ("Attach NB" / "Attach", the names 07-attach-image.yaml
+# uses: give it a RUN_ID no 07 run has used). Assumes the
+# user is logged in. Pass -e RUN_ID=<timestamp>, the same for all three phases.
+# Needs a build made with EXPO_PUBLIC_E2E_PROBES=1, which alone has the image
+# status views (docs/architecture/testing.md, "E2E probe builds").
+# iPhone simulator only (see 07-attach-image.yaml), with photo access granted:
+#   xcrun simctl privacy booted grant photos eu.drafto.mobile
+# To skip it in a folder run: --exclude-tags requires-host-offline
+
+- assertTrue:
+    condition: ${typeof QA_PHASE !== 'undefined' && ['prepare', 'offline', 'reconnect'].includes(QA_PHASE)}
+    label: "Needs -e QA_PHASE=prepare|offline|reconnect: run it through run-qa-10668-e2e.sh ios --allow-host-offline"
+
+# --- Phase: prepare (online) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'prepare'}
+    commands:
+      # Newest photo in the library, so it is first in the picker
+      - addMedia:
+          - "../fixtures/attachment-photo.jpg"
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - tapOn:
+          id: "add"
+      - assertVisible: "Notebook name"
+      - inputText: "Attach NB ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: ".*Attach NB ${RUN_ID}"
+          timeout: 10000
+      - tapOn: ".*Attach NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible: "No notes yet"
+          timeout: 10000
+          optional: true
+      - tapOn:
+          id: "swipe-hint-dismiss"
+          optional: true
+      - tapOn:
+          id: "add"
+      - assertVisible: "Note title (optional)"
+      - inputText: "Attach ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: ".*Attach ${RUN_ID}.*"
+          timeout: 10000
+      - tapOn: ".*Attach ${RUN_ID}.*"
+      - extendedWaitUntil:
+          visible: "Attach image"
+          timeout: 20000
+      # The picker labels each cell "Photo, <date>, <time>" ("Zdjęcie, ..." on a
+      # Polish simulator), newest first.
+      - tapOn: "Attach image"
+      - tapOn:
+          text: "Allow Full Access"
+          optional: true
+      - tapOn:
+          text: "(Photo|Zdjęcie), .*"
+          index: 0
+      - extendedWaitUntil:
+          visible: "Attachment uploaded"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible:
+            id: "editor-image-rendered"
+          timeout: 20000
+      - takeScreenshot: qa-10668-offline-image-1-online
+      # Synced before the Mac goes offline. iOS labels the tab "Settings, tab, 3 of 3".
+      - tapOn: "Notes"
+      - tapOn: "Notebooks"
+      - tapOn: "Settings, tab.*"
+      - extendedWaitUntil:
+          visible: "Sync status: All synced"
+          timeout: 30000
+      - tapOn: "Notebooks, tab.*"
+
+# --- Phase: offline (the runner has taken the Mac offline) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'offline'}
+    commands:
+      # A cold start with no network: no signed URL, no WebView memory cache
+      - stopApp
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      # The offline banner: by its testID, or by its whole text on a build
+      # without one (as helpers/assert-offline-banner.yaml checks).
+      - runFlow:
+          when:
+            notVisible:
+              id: "offline-banner"
+          commands:
+            - extendedWaitUntil:
+                visible: "You are offline"
+                timeout: 15000
+      - tapOn: ".*Attach NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible: ".*Attach ${RUN_ID}.*"
+          timeout: 10000
+      - tapOn: ".*Attach ${RUN_ID}.*"
+      - extendedWaitUntil:
+          visible:
+            id: "editor-image-rendered"
+          timeout: 20000
+      - assertNotVisible:
+          id: "editor-image-missing"
+      - takeScreenshot: qa-10668-offline-image-2-cold-start-offline
+      # Attach the photo again while offline: it shows at once
+      - tapOn: "Attach image"
+      - tapOn:
+          text: "(Photo|Zdjęcie), .*"
+          index: 0
+      - extendedWaitUntil:
+          visible: "Attachment saved.*"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible:
+            id: "editor-image-rendered"
+            index: 1
+          timeout: 20000
+      - assertNotVisible:
+          id: "editor-image-missing"
+      - takeScreenshot: qa-10668-offline-image-3-attached-offline
+      # Ends here, offline, on the note: the runner's host check reads this screen.
+
+# --- Phase: reconnect (online again) ---
+- runFlow:
+    when:
+      true: ${QA_PHASE == 'reconnect'}
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible:
+            id: "search-button"
+          timeout: 30000
+      - extendedWaitUntil:
+          notVisible: "You are offline"
+          timeout: 30000
+      - tapOn: ".*Attach NB ${RUN_ID}"
+      - extendedWaitUntil:
+          visible: ".*Attach ${RUN_ID}.*"
+          timeout: 10000
+      # Both images still show once back online
+      - tapOn: ".*Attach ${RUN_ID}.*"
+      - extendedWaitUntil:
+          visible:
+            id: "editor-image-rendered"
+            index: 1
+          timeout: 20000
+      - tapOn: "Notes"
+      # The offline attachment uploads and syncs
+      - tapOn: "Notebooks"
+      - tapOn: "Settings, tab.*"
+      - extendedWaitUntil:
+          visible: "Sync status: All synced"
+          timeout: 60000
+      - tapOn: "Notebooks, tab.*"
+      # Cleanup: trash the note, delete the notebook, then check everything synced
+      - tapOn: ".*Attach NB ${RUN_ID}"
+      - tapOn:
+          id: "swipe-hint-dismiss"
+          optional: true
+      - swipe:
+          from:
+            text: ".*Attach ${RUN_ID}.*"
+          direction: LEFT
+      - assertVisible: "Move to Trash"
+      - tapOn: "Trash"
+      - extendedWaitUntil:
+          notVisible: ".*Attach ${RUN_ID}.*"
+          timeout: 10000
+      - tapOn: "Notebooks"
+      - swipe:
+          from:
+            text: ".*Attach NB ${RUN_ID}"
+          direction: LEFT
+      - extendedWaitUntil:
+          notVisible: ".*Attach NB ${RUN_ID}"
+          timeout: 10000
+      - tapOn: "Settings, tab.*"
+      - extendedWaitUntil:
+          visible: "Sync status: All synced"
+          timeout: 30000
+      - tapOn: "Notebooks, tab.*"

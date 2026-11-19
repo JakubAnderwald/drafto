@@ -134,4 +134,19 @@ describe("LoginScreen", () => {
       expect(isAccountDeletedNoticeShown()).toBe(false);
     });
   });
+
+  it("lets the user show and hide the password", () => {
+    const { getByTestId } = render(<LoginScreen />);
+
+    const field = () => getByTestId("password-input");
+    expect(field().props.secureTextEntry).toBe(true);
+    expect(field().props.autoComplete).toBe("password");
+
+    fireEvent.press(getByTestId("password-input-toggle"));
+    expect(field().props.secureTextEntry).toBe(false);
+    expect(getByTestId("password-input-toggle").props.accessibilityLabel).toBe("Hide password");
+
+    fireEvent.press(getByTestId("password-input-toggle"));
+    expect(field().props.secureTextEntry).toBe(true);
+  });
 });

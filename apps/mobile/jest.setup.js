@@ -18,6 +18,12 @@ jest.mock("expo-haptics", () => ({
   },
 }));
 
+// Mock expo-navigation-bar (native module, not linked under jest). SystemBars, mounted
+// in the root layout, styles the Android navigation bar through it.
+jest.mock("expo-navigation-bar", () => ({
+  setButtonStyleAsync: jest.fn(() => Promise.resolve()),
+}));
+
 // Mock expo-router
 jest.mock("expo-router", () => ({
   useRouter: jest.fn(() => ({

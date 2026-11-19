@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { ActivityIndicator, Text, View, Pressable, StyleSheet } from "react-native";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/providers/auth-provider";
@@ -157,13 +157,12 @@ export function ResetPasswordScreen({ onNavigateToLogin }: ResetPasswordScreenPr
 
       <View style={styles.form}>
         <View style={styles.field}>
-          <Input
+          <PasswordInput
             testID="new-password-input"
             label="New Password"
             placeholder={`Min. ${MIN_PASSWORD_LENGTH} characters`}
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
@@ -173,13 +172,12 @@ export function ResetPasswordScreen({ onNavigateToLogin }: ResetPasswordScreenPr
         </View>
 
         <View style={styles.field}>
-          <Input
+          <PasswordInput
             testID="confirm-password-input"
             label="Confirm Password"
             placeholder="Re-enter your new password"
             value={confirmPassword}
             onChangeText={setConfirmPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"

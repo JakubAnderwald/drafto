@@ -302,6 +302,45 @@ describe("Notes API", () => {
       expect(savedContent[0].props.url).toBe("attachment://user-1/note-1/img.jpg");
     });
 
+    it("maps a native app's device-local image src back to attachment:// (ADR-0086)", async () => {
+      authenticateAs("user-1");
+      const content = [
+        {
+          type: "image",
+          props: {
+            url: "file:///data/user/0/eu.drafto.mobile/files/attachment-cache/user-1/note-1/img.jpg#drafto-attachment=user-1%2Fnote-1%2Fimg.jpg",
+          },
+          children: [],
+        },
+      ];
+      const mockUpdate = vi.fn().mockReturnValue({
+        eq: () => ({
+          eq: () => ({
+            select: () => ({
+              single: () => Promise.resolve({ data: { id: "note-1", content }, error: null }),
+            }),
+          }),
+        }),
+      });
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return { update: mockUpdate };
+      });
+
+      const { PATCH } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1", {
+        method: "PATCH",
+        body: JSON.stringify({ content }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const response = await PATCH(request, { params });
+      expect(response.status).toBe(200);
+
+      const savedContent = mockUpdate.mock.calls[0][0].content;
+      expect(savedContent[0].props.url).toBe("attachment://user-1/note-1/img.jpg");
+      expect(JSON.stringify(savedContent)).not.toContain("file://");
+    });
+
     it("returns 400 when no fields provided", async () => {
       authenticateAs("user-1");
       mockFrom.mockImplementation((table: string) => {

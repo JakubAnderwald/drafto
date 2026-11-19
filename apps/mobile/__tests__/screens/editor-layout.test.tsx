@@ -79,6 +79,12 @@ jest.mock("@/components/editor/attachment-picker", () => ({
   AttachmentPicker: () => null,
 }));
 
+// The resolver reaches the Supabase client, which needs env the tests don't set.
+jest.mock("@/lib/data/attachment-resolver", () => ({
+  resolveAttachmentSrc: jest.fn(),
+  localAttachmentSrcFor: jest.fn(),
+}));
+
 jest.mock("@/hooks/use-auto-save", () => ({
   useAutoSave: () => ({ trigger: jest.fn(), cancel: jest.fn(), flush: jest.fn(), status: "idle" }),
 }));

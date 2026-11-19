@@ -10,7 +10,7 @@ import {
   serializeLoadedDoc,
   type ContentBaseline,
 } from "../src/editor/content-save-guard";
-import { toAttachmentUrl } from "../src/editor/attachment-url";
+import { toAttachmentUrl, toLocalAttachmentSrc } from "../src/editor/attachment-url";
 import { contentToTiptap, tiptapToBlocknote } from "../src/editor/format-converter";
 import { migrateSignedUrlsToAttachmentUrls } from "../src/editor/resolve-urls";
 import type { BlockNoteBlock, TipTapDoc, TipTapNode } from "../src/editor/types";
@@ -421,5 +421,76 @@ describe("queueNoteWrite", () => {
     await queueNoteWrite(queues, "note-1", async () => {});
     await Promise.resolve();
     expect(queues.has("note-1")).toBe(false);
+  });
+});
+
+describe("device-local attachment srcs (ADR-0086)", () => {
+  const FILE_PATH = "user-1/note-1/photo.png";
+  const LOCAL_SRC = toLocalAttachmentSrc(
+    "file:///var/mobile/Containers/Data/Application/X/Documents/attachment-cache/user-1/note-1/photo.png",
+    FILE_PATH,
+  );
+  // Only image srcs are ever shown from the cache: links keep resolving to a
+  // signed URL (the resolver gets `kind: "link"`), so the link stays canonical.
+  const docWith = (src: string): TipTapDoc => ({
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "Before" }] },
+      { type: "image", attrs: { src, alt: "photo.png" } },
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: "report",
+            marks: [{ type: "link", attrs: { href: toAttachmentUrl("user-1/note-1/r.pdf") } }],
+          },
+        ],
+      },
+    ],
+  });
+
+  it("never saves a file:// src or the marker", () => {
+    const saved = serializeEditorContent(docWith(LOCAL_SRC));
+    expect(saved).not.toContain("file://");
+    expect(saved).not.toContain("#drafto-attachment=");
+    expect(saved).toContain(toAttachmentUrl(FILE_PATH));
+  });
+
+  it("serialises a doc shown with local srcs exactly like the stored attachment:// doc", () => {
+    expect(serializeEditorContent(docWith(LOCAL_SRC))).toBe(
+      serializeLoadedDoc(docWith(toAttachmentUrl(FILE_PATH))),
+    );
+  });
+
+  it("keeps the #654 no-op baseline: a note opened offline with cached images and not edited is not saved", () => {
+    const stored = serializeEditorContent(docWith(toAttachmentUrl(FILE_PATH)));
+    const baselines = new Map<string, ContentBaseline>([
+      [
+        "note-1",
+        { stored, serializations: [serializeLoadedDoc(contentToTiptap(JSON.parse(stored)))] },
+      ],
+    ]);
+    const echo = { noteId: "note-1", content: serializeEditorContent(docWith(LOCAL_SRC)) };
+    expect(isNoOpContentSave(baselines, echo, stored)).toBe(true);
+  });
+
+  it("still saves a real edit made next to a local image, with attachment:// in it", () => {
+    const stored = serializeEditorContent(docWith(toAttachmentUrl(FILE_PATH)));
+    const baselines = new Map<string, ContentBaseline>([
+      [
+        "note-1",
+        { stored, serializations: [serializeLoadedDoc(contentToTiptap(JSON.parse(stored)))] },
+      ],
+    ]);
+    const edited = docWith(LOCAL_SRC);
+    edited.content[0] = { type: "paragraph", content: [{ type: "text", text: "Edited" }] };
+    const payload = { noteId: "note-1", content: serializeEditorContent(edited) };
+    expect(isNoOpContentSave(baselines, payload, stored)).toBe(false);
+    // The edit is saved, and the image survives with its canonical src.
+    const canonical = docWith(toAttachmentUrl(FILE_PATH));
+    canonical.content[0] = { type: "paragraph", content: [{ type: "text", text: "Edited" }] };
+    expect(payload.content).toBe(serializeEditorContent(canonical));
+    expect(payload.content).not.toContain("file://");
   });
 });

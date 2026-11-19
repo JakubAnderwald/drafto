@@ -1,6 +1,6 @@
 # Mobile and Desktop Apps
 
-**Status:** shipped **Updated:** 2026-10-25
+**Status:** shipped **Updated:** 2026-11-18
 
 ## What it is
 
@@ -48,6 +48,7 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [0016 — Local Fastlane Builds](../adr/0016-local-fastlane-builds.md) (supersedes [0011](../adr/0011-app-store-deployment-strategy.md))
 - [0062 — Desktop PKCE Draws From a Native CSPRNG](../adr/0062-desktop-pkce-native-csprng.md) (in-project native modules)
+- [0087 — Android Navigation Bar Follows the In-App Theme](../adr/0087-android-navigation-bar-follows-in-app-theme.md)
 
 ## Cross-platform notes
 
@@ -79,6 +80,27 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
   desktop uses imperative stack navigation rooted in `apps/desktop/src/App.tsx`.
 - **Auth storage**: `expo-secure-store` (iOS/Android) vs. `react-native-keychain`
   (macOS). Both implement the same adapter interface for the Supabase client.
+
+**System bars (Android):** `apps/mobile/src/components/system-bars.tsx`
+(`SystemBars`, mounted once in `app/_layout.tsx`, directly under `ThemeProvider` and
+above `RouteGuard`, so it covers the launch loading screen too) keeps the status bar and the
+Android navigation bar in step with the in-app theme, not the OS theme. React
+Native's edge-to-edge setup picks the navigation bar's light/dark flag from the
+OS at launch, and on 3-button navigation Android paints its contrast scrim from
+that flag, so Drafto in Dark under an OS in Light used to get a light-grey bar
+(PrimeTestLab 10668, M-04). `SystemBars` calls `expo-navigation-bar`'s
+`setButtonStyleAsync("light" | "dark")` (light buttons on a dark theme) whenever the
+resolved theme changes and again when the app comes back to the foreground, and
+catches a rejected native call. It uses `setButtonStyleAsync` rather than `setStyle`
+because `setStyle` drops the native promise. Note that the two name opposite things:
+`setStyle` names the bar colour, `setButtonStyleAsync` (like `expo-status-bar`) the
+content colour. It styles the navigation bar only on API 29+ (`canStyleNavigationBar`):
+below that React Native paints the bar a fixed OS-themed colour, so flipping just the
+buttons would make them unreadable. Never pass `"auto"` or `"inverted"`, and
+don't use `Appearance.setColorScheme()`: both tie the bar back to the OS. Known
+gap, tracked as a follow-up: an RN `Modal` (`DeleteAccountDialog`) re-runs
+edge-to-edge from the OS theme in its own window, which `SystemBars` does not style. iOS, web and macOS have no navigation bar. See
+[ADR-0087](../adr/0087-android-navigation-bar-follows-in-app-theme.md).
 
 **Backend routing (from `CLAUDE.md` "Mobile Build Environment Mapping"):**
 

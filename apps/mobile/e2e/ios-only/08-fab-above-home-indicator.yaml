@@ -28,6 +28,12 @@ tags:
 
 - launchApp
 
+# iOS offers to save the password right after login, in a sheet drawn out of
+# process that hides the app from Maestro, so the flow can't wait for the
+# signed-in screen before restarting. It lets the sheet arrive, then restarts
+# the app: the session persists and the sheet goes away with the old process.
+# A sign-in slower than that wait leaves the relaunched app on Log In, so the
+# login runs once more; the second pass gives the slow request another 8 s.
 - runFlow:
     when:
       visible: "Log In"
@@ -40,9 +46,24 @@ tags:
       - tapOn: "Sign in to your Drafto account"
       - tapOn:
           id: "login-button"
-      # iOS offers to save the password right after login, in a sheet drawn out
-      # of process that hides the app from Maestro. Let it arrive, then restart
-      # the app: the session persists and the sheet goes away with the old process.
+      - extendedWaitUntil:
+          visible: "never-present-just-wait"
+          timeout: 8000
+          optional: true
+      - stopApp
+      - launchApp
+- runFlow:
+    when:
+      visible: "Log In"
+    commands:
+      - tapOn: "you@example.com"
+      - inputText: ${E2E_TEST_EMAIL}
+      - tapOn: "Sign in to your Drafto account"
+      - tapOn: "Your password"
+      - inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
+      - tapOn: "Sign in to your Drafto account"
+      - tapOn:
+          id: "login-button"
       - extendedWaitUntil:
           visible: "never-present-just-wait"
           timeout: 8000

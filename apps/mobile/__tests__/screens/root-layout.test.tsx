@@ -1,5 +1,6 @@
 import React from "react";
 import { Platform } from "react-native";
+import * as NavigationBar from "expo-navigation-bar";
 
 import { render } from "../helpers/test-utils";
 
@@ -25,12 +26,13 @@ jest.mock("expo-router", () => ({
   }),
 }));
 
+const mockAuth = { isLoading: false };
 jest.mock("@/providers/auth-provider", () => ({
   AuthProvider: ({ children }: { children: React.ReactNode }) => children,
   useAuth: () => ({
     user: { id: "user-1" },
     isApproved: true,
-    isLoading: false,
+    isLoading: mockAuth.isLoading,
     isCheckingApproval: false,
     isRecovering: false,
   }),
@@ -133,5 +135,56 @@ describe("RootLayout screen options", () => {
 
     expect(optionsFor("search", [TABS, SEARCH])?.headerLeft).toBeUndefined();
     expect(optionsFor("notes/[id]", [TABS, SEARCH, NOTE])?.headerLeft).toBeUndefined();
+  });
+});
+
+describe("RootLayout system bars", () => {
+  // The jest.setup.js mock: SystemBars styles the Android navigation bar through it.
+  const setButtonStyle = NavigationBar.setButtonStyleAsync as jest.Mock;
+
+  beforeEach(() => {
+    mockScreens.length = 0;
+    setButtonStyle.mockClear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mockAuth.isLoading = false;
+  });
+
+  /** Android on an API level SystemBars styles (29+); Platform.Version is undefined under jest. */
+  function mockAndroid() {
+    jest.replaceProperty(Platform, "OS", "android");
+    jest.spyOn(Platform, "Version", "get").mockReturnValue(34);
+  }
+
+  it("mounts SystemBars, which styles the Android navigation bar from the app theme", () => {
+    mockAndroid();
+
+    render(<RootLayout />);
+
+    expect(setButtonStyle).toHaveBeenCalled();
+    for (const [style] of setButtonStyle.mock.calls) {
+      expect(["light", "dark"]).toContain(style);
+    }
+  });
+
+  it("styles the navigation bar on the launch loading screen, before auth finishes", () => {
+    mockAndroid();
+    mockAuth.isLoading = true;
+
+    const { getByTestId } = render(<RootLayout />);
+
+    expect(getByTestId("route-guard-loading")).toBeTruthy();
+    expect(mockScreens).toHaveLength(0);
+    expect(setButtonStyle).toHaveBeenCalled();
+  });
+
+  it("leaves the navigation bar alone on iOS", () => {
+    jest.replaceProperty(Platform, "OS", "ios");
+
+    render(<RootLayout />);
+
+    expect(setButtonStyle).not.toHaveBeenCalled();
   });
 });

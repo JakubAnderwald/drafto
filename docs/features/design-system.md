@@ -1,6 +1,6 @@
 # Design System
 
-**Status:** shipped **Updated:** 2026-11-16
+**Status:** shipped **Updated:** 2026-11-18
 
 ## What it is
 
@@ -10,7 +10,7 @@ Drafto's shared visual language — a token layer (colors, shadows, radii, trans
 
 - **Platform coverage:** web (authoritative token source), mobile (mirrored tokens), desktop (reuses mobile tokens verbatim).
 - **Token layer:** semantic surface tokens (`--bg`, `--fg`, `--border`, etc.), scale tokens for five palettes (primary indigo, secondary amber, tertiary teal, neutral warm stone, plus status colors), shadow/radius/transition scales, and surface-architecture tokens for layered surfaces and glass effects.
-- **Primitives:** eleven components under `apps/web/src/components/ui/` — badge, button, card, confirm-dialog, dropdown-menu, icon-button, input, label, progress-bar, skeleton, theme-toggle.
+- **Primitives:** twelve components under `apps/web/src/components/ui/` — badge, button, card, confirm-dialog, dropdown-menu, icon-button, input, label, password-input, progress-bar, skeleton, theme-toggle.
 - **Dark mode:** `.dark` class on `<html>` overrides every semantic token. Preference cycles light → dark → system via `ThemeToggle`, persisted in `localStorage` under `"theme"`, with a pre-hydration inline script in `app/layout.tsx` to prevent a flash of wrong theme.
 - **Showcase:** a `/design-system` route renders every token and primitive variant for visual QA.
 
