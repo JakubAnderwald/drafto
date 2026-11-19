@@ -622,6 +622,47 @@ describe("SwipeableRow", () => {
       await waitFor(() => expect(sequence).toHaveBeenCalledTimes(1));
     });
 
+    it("keeps its buttons when an earlier closing spring finishes mid-peek", async () => {
+      const panResponder = capturePanResponder();
+      // The closing spring of a short drag finishes only when the test says so.
+      let settle: ((result: { finished: boolean }) => void) | undefined;
+      jest.spyOn(Animated, "spring").mockImplementation(
+        () =>
+          ({
+            start: (callback?: (result: { finished: boolean }) => void) => {
+              settle = callback;
+            },
+            stop: jest.fn(),
+            reset: jest.fn(),
+          }) as unknown as Animated.CompositeAnimation,
+      );
+      let answer!: (reduceMotion: boolean) => void;
+      mockedReduceMotion.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      );
+      const { sequence, finish } = fakeSequence();
+      const { left, right } = trashActions();
+      const { queryByTestId } = render(
+        <SwipeableRow leftActions={left} rightActions={right} peek>
+          <Text>Row</Text>
+        </SwipeableRow>,
+      );
+
+      // A short drag springs closed before the Reduce Motion lookup answers.
+      panResponder().swipe(-10);
+      await act(async () => answer(false));
+      expect(sequence).toHaveBeenCalledTimes(1);
+
+      // That spring finishes during the peek's opening delay.
+      act(() => settle?.({ finished: true }));
+      expect(queryByTestId("action-trash")).not.toBeNull();
+
+      finish();
+      expect(queryByTestId("action-trash")).toBeNull();
+    });
+
     it("stops when the row unmounts mid-peek", async () => {
       const { sequence, stop } = fakeSequence();
       const { left, right } = trashActions();

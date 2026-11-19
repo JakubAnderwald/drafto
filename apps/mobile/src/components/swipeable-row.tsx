@@ -157,8 +157,12 @@ export function SwipeableRow({
     };
   }, []);
 
+  // A running peek keeps its buttons: a closing spring that started before the
+  // peek can finish during the peek's opening delay.
   const hideActionsIfClosed = useCallback(() => {
-    if (mounted.current && !isOpen.current && !dragging.current) setRevealed(false);
+    if (mounted.current && !isOpen.current && !dragging.current && !peekAnimation.current) {
+      setRevealed(false);
+    }
   }, []);
 
   /**

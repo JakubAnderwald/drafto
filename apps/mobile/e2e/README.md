@@ -70,8 +70,11 @@ The flows tagged `qa-10668` (09–11 above and the platform `08`–`11` ones) co
 # Android: a dev-backed release APK built with EXPO_PUBLIC_E2E_PROBES=1 (airplane-mode legs)
 bash apps/mobile/e2e/run-qa-10668-e2e.sh android
 
-# iOS: the offline legs take the whole Mac offline (sudo) and run only with --allow-host-offline
-bash apps/mobile/e2e/run-qa-10668-e2e.sh ios [--allow-host-offline]
+# iOS: skips the offline legs, which take the whole Mac offline (sudo)
+bash apps/mobile/e2e/run-qa-10668-e2e.sh ios
+
+# iOS with the offline legs
+bash apps/mobile/e2e/run-qa-10668-e2e.sh ios --allow-host-offline
 
 # --before: against a build without the fixes, every report check must reproduce
 bash apps/mobile/e2e/run-qa-10668-e2e.sh android --before
