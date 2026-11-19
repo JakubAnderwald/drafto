@@ -10,6 +10,7 @@ import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 
 interface LoginScreenProps {
   onNavigateToSignup?: () => void;
@@ -88,13 +89,12 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
         </View>
 
         <View style={styles.field}>
-          <Input
+          <PasswordInput
             testID="password-input"
             label="Password"
             placeholder="Your password"
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="password"

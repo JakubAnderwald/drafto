@@ -14,6 +14,7 @@ import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 
 export default function LoginScreen() {
   const { semantic } = useTheme();
@@ -103,18 +104,18 @@ export default function LoginScreen() {
             containerStyle={styles.field}
           />
 
-          <Input
+          <PasswordInput
             label="Password"
             placeholder="Your password"
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="password"
             textContentType="password"
             editable={!loading}
             onSubmitEditing={handleLogin}
+            testID="password-input"
             containerStyle={styles.field}
           />
 

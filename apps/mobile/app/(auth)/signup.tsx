@@ -12,6 +12,7 @@ import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 
 export default function SignupScreen() {
   const { semantic } = useTheme();
@@ -108,18 +109,18 @@ export default function SignupScreen() {
             containerStyle={styles.field}
           />
 
-          <Input
+          <PasswordInput
             label="Password"
             placeholder="Min. 6 characters"
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
-            autoComplete="password"
+            autoComplete="new-password"
             textContentType="newPassword"
             editable={!loading}
             onSubmitEditing={handleSignup}
+            testID="signup-password-input"
             containerStyle={styles.field}
           />
 

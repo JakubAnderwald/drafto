@@ -8,9 +8,10 @@ import { hasLocalEdit, storageFullMessage } from "@drafto/shared";
 
 import { database } from "@/db";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
-import { processPendingUploads } from "@/lib/data/attachment-queue";
+import { cleanupOrphanedFiles, processPendingUploads } from "@/lib/data/attachment-queue";
 import type { UploadResult } from "@/lib/data/attachment-queue";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
+import { prefetchAttachmentImages } from "@/lib/data/attachment-prefetch";
 import { ensureLocalIdentity } from "@/lib/data/local-identity";
 import { measureAsync } from "@/lib/performance";
 import { useAuth } from "@/providers/auth-provider";
@@ -204,6 +205,10 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
               : `${result.remoteChangeCount} items were updated from another device`;
           showToast(msg, "warning");
         }
+        // Download images synced from other devices so they show offline
+        // (ADR-0086). Not awaited: it must not hold up the pass, and it stops
+        // once this session ends.
+        void prefetchAttachmentImages({ isCancelled: () => !isCurrentSession() });
         return { ok: true, pending, uploadResult };
       } catch (err) {
         if (!isCurrentSession()) return { ok: false, pending: false, uploadResult };
@@ -338,7 +343,14 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         identityReadyRef.current = true;
-        sync();
+        // Sync first, then clean up orphaned attachment files (cleanup needs
+        // complete DB state), as on desktop.
+        sync().then(() => {
+          if (cancelled) return;
+          cleanupOrphanedFiles().catch((cleanupErr: unknown) => {
+            console.warn("[DatabaseProvider] Orphaned file cleanup failed:", cleanupErr);
+          });
+        });
       });
     } else {
       identityReadyRef.current = false;

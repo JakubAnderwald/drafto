@@ -1,0 +1,108 @@
+import { localAttachmentSrcFor, resolveAttachmentSrc } from "@/lib/data/attachment-resolver";
+
+import { toLocalAttachmentSrc } from "@drafto/shared";
+
+const mockGetCachedAttachmentUri = jest.fn();
+const mockDownloadToCache = jest.fn();
+const mockEvict = jest.fn();
+const mockCache = { generation: 0 };
+jest.mock("@/lib/data/attachment-cache", () => ({
+  getAttachmentCacheGeneration: () => mockCache.generation,
+  getCachedAttachmentUri: (...args: unknown[]) => mockGetCachedAttachmentUri(...args),
+  downloadToCache: (...args: unknown[]) => mockDownloadToCache(...args),
+  evictAttachmentCache: () => mockEvict(),
+}));
+
+const mockGetCachedSignedUrl = jest.fn();
+jest.mock("@/lib/data/signed-url-cache", () => ({
+  getCachedSignedUrl: (...args: unknown[]) => mockGetCachedSignedUrl(...args),
+}));
+
+const FILE_PATH = "u/n/photo.jpg";
+const CACHED_URI = "file:///docs/attachment-cache/u/n/photo.jpg";
+
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockCache.generation = 0;
+  mockGetCachedAttachmentUri.mockReturnValue(null);
+  mockGetCachedSignedUrl.mockResolvedValue("https://signed/photo.jpg");
+  mockDownloadToCache.mockResolvedValue(CACHED_URI);
+  mockEvict.mockResolvedValue(undefined);
+});
+
+describe("resolveAttachmentSrc", () => {
+  it("shows a cached image from its local file, with no network call (works offline)", async () => {
+    mockGetCachedAttachmentUri.mockReturnValue(CACHED_URI);
+    await expect(resolveAttachmentSrc(FILE_PATH, "image")).resolves.toBe(
+      toLocalAttachmentSrc(CACHED_URI, FILE_PATH),
+    );
+    expect(mockGetCachedSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it("uses a signed URL for an uncached image and caches it in the background", async () => {
+    await expect(resolveAttachmentSrc(FILE_PATH)).resolves.toBe("https://signed/photo.jpg");
+    expect(mockDownloadToCache).toHaveBeenCalledWith(FILE_PATH, "https://signed/photo.jpg", 0);
+    await flush();
+    expect(mockEvict).toHaveBeenCalled();
+  });
+
+  it("caches for the session the resolve began in, even if a sign-out came during the URL wait", async () => {
+    mockGetCachedSignedUrl.mockImplementation(async () => {
+      mockCache.generation = 1; // signed out (cache wiped) while the URL was fetched
+      return "https://signed/photo.jpg";
+    });
+    await resolveAttachmentSrc(FILE_PATH);
+    // downloadToCache refuses a stale generation, so nothing lands in the next cache.
+    expect(mockDownloadToCache).toHaveBeenCalledWith(FILE_PATH, "https://signed/photo.jpg", 0);
+  });
+
+  it("keeps the signed URL when the background download fails", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    mockDownloadToCache.mockRejectedValue(new Error("network"));
+    await expect(resolveAttachmentSrc(FILE_PATH)).resolves.toBe("https://signed/photo.jpg");
+    await flush();
+    expect(mockEvict).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("rejects when there is no copy and no network, so attachment:// stays", async () => {
+    mockGetCachedSignedUrl.mockRejectedValue(new Error("offline"));
+    await expect(resolveAttachmentSrc(FILE_PATH, "image")).rejects.toThrow("offline");
+    expect(mockDownloadToCache).not.toHaveBeenCalled();
+  });
+
+  it("keeps a signed URL for a link and caches nothing", async () => {
+    mockGetCachedAttachmentUri.mockReturnValue(CACHED_URI);
+    await expect(resolveAttachmentSrc("u/n/r.pdf", "link")).resolves.toBe(
+      "https://signed/photo.jpg",
+    );
+    expect(mockGetCachedAttachmentUri).not.toHaveBeenCalled();
+    expect(mockDownloadToCache).not.toHaveBeenCalled();
+  });
+});
+
+describe("localAttachmentSrcFor", () => {
+  it("shows a just-picked image from its local file", () => {
+    expect(localAttachmentSrcFor({ filePath: FILE_PATH, localUri: CACHED_URI })).toBe(
+      toLocalAttachmentSrc(CACHED_URI, FILE_PATH),
+    );
+  });
+
+  it("falls back to the cache once the upload cleared localUri", () => {
+    mockGetCachedAttachmentUri.mockReturnValue(CACHED_URI);
+    expect(localAttachmentSrcFor({ filePath: FILE_PATH, localUri: null })).toBe(
+      toLocalAttachmentSrc(CACHED_URI, FILE_PATH),
+    );
+  });
+
+  it("falls back to attachment:// when there is no local copy", () => {
+    expect(localAttachmentSrcFor({ filePath: FILE_PATH, localUri: null })).toBe(
+      `attachment://${FILE_PATH}`,
+    );
+  });
+});

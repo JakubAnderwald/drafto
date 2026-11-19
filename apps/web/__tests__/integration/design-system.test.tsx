@@ -21,6 +21,7 @@ describe("DesignSystemPage", () => {
     expect(screen.getByText("Button")).toBeInTheDocument();
     expect(screen.getByText("IconButton")).toBeInTheDocument();
     expect(screen.getByText("Input & Label")).toBeInTheDocument();
+    expect(screen.getByText("PasswordInput")).toBeInTheDocument();
     expect(screen.getByText("Badge")).toBeInTheDocument();
     expect(screen.getByText("Card")).toBeInTheDocument();
     expect(screen.getByText("Skeleton")).toBeInTheDocument();

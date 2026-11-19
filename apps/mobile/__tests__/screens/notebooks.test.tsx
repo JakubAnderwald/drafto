@@ -1,9 +1,19 @@
 import React from "react";
-import { Alert, FlatList } from "react-native";
+import { Alert, FlatList, StyleSheet } from "react-native";
+import { BottomTabBarHeightContext } from "@react-navigation/bottom-tabs";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Q } from "@nozbe/watermelondb";
 
+import * as SecureStore from "expo-secure-store";
+
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
+import { swipeActionLabels, triggerSwipeAction } from "../helpers/swipe-actions";
 import NotebooksScreen from "../../app/(tabs)/index";
+import { FAB_MARGIN, FAB_SIZE, LIST_RESTING_PADDING } from "@/components/ui/fab";
+import { spacing } from "@/theme/tokens";
+
+const mockedInsets = jest.mocked(useSafeAreaInsets);
+const mockSecureStore = SecureStore as jest.Mocked<typeof SecureStore>;
 
 const mockPush = jest.fn();
 jest.mock("expo-router", () => ({
@@ -79,6 +89,110 @@ describe("NotebooksScreen", () => {
     mockLoading = false;
     mockIsSyncing = false;
     mockSync.mockResolvedValue(undefined);
+    mockedInsets.mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
+    mockSecureStore.getItemAsync.mockResolvedValue(null);
+  });
+
+  describe("swipe hint (PrimeTestLab 10668 S-03)", () => {
+    it("shows the notebooks hint until it is dismissed, and remembers that", async () => {
+      mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+      const { findByTestId, getByTestId, queryByTestId, getByText } = render(<NotebooksScreen />);
+
+      expect(await findByTestId("swipe-hint")).toBeTruthy();
+      expect(getByText(/Swipe left on a notebook to delete it/)).toBeTruthy();
+      expect(mockSecureStore.getItemAsync).toHaveBeenCalledWith("drafto_swipe_hint_seen_notebooks");
+
+      fireEvent.press(getByTestId("swipe-hint-dismiss"));
+
+      expect(queryByTestId("swipe-hint")).toBeNull();
+      expect(mockSecureStore.setItemAsync).toHaveBeenCalledWith(
+        "drafto_swipe_hint_seen_notebooks",
+        "1",
+      );
+    });
+
+    it("stays hidden once dismissed on this device", async () => {
+      mockSecureStore.getItemAsync.mockResolvedValue("1");
+      mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+      const { queryByTestId } = render(<NotebooksScreen />);
+
+      await act(async () => {});
+
+      expect(queryByTestId("swipe-hint")).toBeNull();
+    });
+
+    it("leaves the empty state alone", async () => {
+      const { queryByTestId, getByText } = render(<NotebooksScreen />);
+
+      await act(async () => {});
+
+      expect(getByText("No notebooks yet")).toBeTruthy();
+      expect(queryByTestId("swipe-hint")).toBeNull();
+    });
+
+    it("offers Delete notebook to screen readers", () => {
+      mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+      const { getByText } = render(<NotebooksScreen />);
+
+      expect(swipeActionLabels(getByText("Work Notes"))).toEqual(["Delete notebook"]);
+    });
+
+    it("keeps long-press as rename", () => {
+      mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+      const { getByText, getByDisplayValue } = render(<NotebooksScreen />);
+
+      fireEvent(getByText("Work Notes"), "longPress");
+
+      expect(getByDisplayValue("Work Notes")).toBeTruthy();
+    });
+  });
+
+  describe("bottom tab bar (PrimeTestLab 10668 M-01)", () => {
+    // The tab bar already takes the system inset, so adding it again here
+    // would float the button a nav-bar's height above the tab bar. The tab
+    // navigator provides BottomTabBarHeightContext, which is how the FAB
+    // knows it is on a tab screen.
+    function renderInTabs() {
+      return render(
+        <BottomTabBarHeightContext.Provider value={49}>
+          <NotebooksScreen />
+        </BottomTabBarHeightContext.Provider>,
+      );
+    }
+
+    beforeEach(() => {
+      mockedInsets.mockReturnValue({ top: 24, bottom: 48, left: 0, right: 0 });
+      mockNotebooks.push({ id: "nb-1", name: "Work Notes", updatedAt: new Date() });
+    });
+
+    it("does not add the system inset under the tab bar", () => {
+      const { getByTestId } = renderInTabs();
+
+      expect(StyleSheet.flatten(getByTestId("add").props.style).bottom).toBe(spacing.xl);
+    });
+
+    it("labels the add button for screen readers", () => {
+      const { getByRole } = renderInTabs();
+
+      expect(getByRole("button", { name: "New notebook" })).toBeTruthy();
+    });
+
+    it("pads the list so the last notebook clears the add button only", () => {
+      const { UNSAFE_getByType } = renderInTabs();
+
+      const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
+      expect(content.paddingBottom).toBe(FAB_SIZE + FAB_MARGIN * 2);
+    });
+
+    it("drops back to the resting padding while the create bar hides the button", () => {
+      const { getByTestId, queryByTestId, UNSAFE_getByType } = renderInTabs();
+
+      fireEvent.press(getByTestId("add"));
+
+      expect(queryByTestId("add")).toBeNull();
+      const content = StyleSheet.flatten(UNSAFE_getByType(FlatList).props.contentContainerStyle);
+      expect(content.paddingBottom).toBe(LIST_RESTING_PADDING);
+    });
   });
 
   it("does not show the refresh spinner for a background sync", () => {
@@ -191,8 +305,8 @@ describe("NotebooksScreen", () => {
       return {};
     });
 
-    const { getByTestId } = render(<NotebooksScreen />);
-    fireEvent.press(getByTestId("action-trash"));
+    const { getByText } = render(<NotebooksScreen />);
+    triggerSwipeAction(getByText("Work Notes"), "Delete notebook");
 
     await waitFor(() =>
       expect(alertSpy).toHaveBeenCalledWith(
@@ -245,8 +359,8 @@ describe("NotebooksScreen", () => {
       return {};
     });
 
-    const { getByTestId } = render(<NotebooksScreen />);
-    fireEvent.press(getByTestId("action-trash"));
+    const { getByText } = render(<NotebooksScreen />);
+    triggerSwipeAction(getByText("Empty NB"), "Delete notebook");
 
     await waitFor(() =>
       expect(alertSpy).toHaveBeenCalledWith(
@@ -294,8 +408,8 @@ describe("NotebooksScreen", () => {
       return {};
     });
 
-    const { getByTestId } = render(<NotebooksScreen />);
-    fireEvent.press(getByTestId("action-trash"));
+    const { getByText } = render(<NotebooksScreen />);
+    triggerSwipeAction(getByText("Empty NB"), "Delete notebook");
     await waitFor(() => expect(alertSpy).toHaveBeenCalled());
 
     const buttons = alertSpy.mock.calls.at(-1)?.[2] as Array<{

@@ -74,7 +74,7 @@ async function createQuotaUser(admin: SupabaseClient<Database>): Promise<QuotaUs
 async function signIn(page: Page, user: QuotaUser) {
   await page.goto("/login");
   await page.getByLabel("Email").fill(user.email);
-  await fillSecret(page.getByLabel("Password"), user.password);
+  await fillSecret(page.getByLabel("Password", { exact: true }), user.password);
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page).not.toHaveURL(/\/login/, { timeout: 15000 });
 }

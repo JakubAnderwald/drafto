@@ -7,6 +7,7 @@ import {
   FILE_TOO_LARGE_MESSAGE,
   StorageQuotaError,
   buildAttachmentStoragePath,
+  isCacheableAttachment,
   isStorageQuotaError,
   localAttachmentFileName,
   safeAttachmentFileName,
@@ -19,6 +20,16 @@ import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
 import type { PickedFile } from "./attachments";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
+import {
+  cacheFileFor,
+  copyIntoCache,
+  deleteAttachmentCache,
+  deleteFromCache,
+  holdCacheFile,
+  removeOrphanedCacheFiles,
+  retainInCache,
+} from "@/lib/data/attachment-cache";
+import { resetAttachmentPrefetch } from "@/lib/data/attachment-prefetch";
 
 /** What one processPendingUploads() run did. */
 export interface UploadResult {
@@ -28,28 +39,71 @@ export interface UploadResult {
   storageFull: number;
 }
 
+// Where a picked file that isn't an image waits for upload; it is deleted once
+// uploaded. Images go to the attachment cache instead (ADR-0086), but one
+// picked before the cache existed may still be pending here: it uploads from
+// here and then moves into the cache.
 const ATTACHMENTS_DIR_NAME = "attachments";
 
 function getAttachmentsDir(): string {
   return `${RNFS.DocumentDirectoryPath}/${ATTACHMENTS_DIR_NAME}`;
 }
 
-async function saveFileLocally(file: PickedFile): Promise<string> {
-  const dir = getAttachmentsDir();
-  const exists = await RNFS.exists(dir);
-  if (!exists) {
-    await RNFS.mkdir(dir);
+// The attachments-folder copies whose row isn't written yet, by file:// URI,
+// and the sets of the orphan sweeps running now. A sweep keeps every copy in
+// flight when it starts and every copy made while it runs, so it never
+// deletes a file whose row it couldn't see yet (or one still being copied).
+const copiesInFlight = new Set<string>();
+const runningSweeps = new Set<Set<string>>();
+
+/** Keep `uri` from the orphan sweep until the returned release is called. */
+function protectCopy(uri: string): () => void {
+  copiesInFlight.add(uri);
+  for (const sweep of runningSweeps) sweep.add(uri);
+  return () => {
+    copiesInFlight.delete(uri);
+  };
+}
+
+interface SavedFile {
+  localUri: string;
+  /** Call once the row exists (or the save failed). */
+  release: () => void;
+}
+
+/**
+ * Copy a picked file to where it waits for upload. An image goes into the
+ * attachment cache, at its storage path: it is uploaded from there and kept
+ * afterwards as the cached copy, so it shows offline from the moment it is
+ * attached. Any other file goes to the attachments folder, as before, kept
+ * from the orphan sweep until released.
+ *
+ * Both copy from the decoded POSIX path the native picker gives: `file.uri`
+ * is a percent-encoded file:// URL (e.g. macOS NFD-decomposed ö becomes
+ * %CC%88), which RNFS.copyFile cannot resolve as a filesystem path.
+ */
+async function saveFileLocally(file: PickedFile, filePath: string): Promise<SavedFile> {
+  if (isCacheableAttachment(file.mimeType)) {
+    return { localUri: await copyIntoCache(file.path, filePath), release: () => undefined };
   }
 
-  const localFileName = localAttachmentFileName(generateId(), file.fileName);
-  const destination = `${dir}/${localFileName}`;
+  const dir = getAttachmentsDir();
+  const destination = `${dir}/${localAttachmentFileName(generateId(), file.fileName)}`;
+  const localUri = `file://${destination}`;
+  // Protected before the copy starts: a sweep listing the folder mid-copy
+  // must not delete it.
+  const release = protectCopy(localUri);
+  try {
+    if (!(await RNFS.exists(dir))) {
+      await RNFS.mkdir(dir);
+    }
+    await RNFS.copyFile(file.path, destination);
+  } catch (error) {
+    release();
+    throw error;
+  }
 
-  // Use the decoded POSIX path from the native picker — `file.uri` is a
-  // percent-encoded file:// URL (e.g. macOS NFD-decomposed ö becomes %CC%88),
-  // which RNFS.copyFile cannot resolve as a filesystem path.
-  await RNFS.copyFile(file.path, destination);
-
-  return `file://${destination}`;
+  return { localUri, release };
 }
 
 export async function queueAttachment(
@@ -65,26 +119,35 @@ export async function queueAttachment(
   // one note never share an object; the display name stays without it.
   const fileName = safeAttachmentFileName(file.fileName);
   const { filePath } = buildAttachmentStoragePath(file.fileName, userId, noteId);
-  const localUri = await saveFileLocally(file);
-  const remoteId = generateId();
+  // Until its row exists, nothing else knows the copy is needed: keep it
+  // from eviction and the orphan cleanup meanwhile.
+  const release = holdCacheFile(filePath);
+  let releaseCopy: () => void = () => undefined;
+  try {
+    const saved = await saveFileLocally(file, filePath);
+    releaseCopy = saved.release;
+    const localUri = saved.localUri;
+    const remoteId = generateId();
 
-  const attachment = await database.write(async () => {
-    return database.get<Attachment>("attachments").create((record) => {
-      record._raw.id = remoteId;
-      record.remoteId = remoteId;
-      record.noteId = noteId;
-      record.userId = userId;
-      record.fileName = fileName;
-      record.filePath = filePath;
-      record.fileSize = file.fileSize;
-      record.mimeType = file.mimeType;
-      record.localUri = localUri;
-      record.uploadStatus = "pending";
-      record.uploadError = null;
+    return await database.write(async () => {
+      return database.get<Attachment>("attachments").create((record) => {
+        record._raw.id = remoteId;
+        record.remoteId = remoteId;
+        record.noteId = noteId;
+        record.userId = userId;
+        record.fileName = fileName;
+        record.filePath = filePath;
+        record.fileSize = file.fileSize;
+        record.mimeType = file.mimeType;
+        record.localUri = localUri;
+        record.uploadStatus = "pending";
+        record.uploadError = null;
+      });
     });
-  });
-
-  return attachment;
+  } finally {
+    releaseCopy();
+    release();
+  }
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -138,11 +201,17 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     });
   });
 
-  // Clean up local file after successful upload
-  try {
-    await RNFS.unlink(localPath);
-  } catch {
-    // Non-critical: local file cleanup can fail silently
+  // Keep an image as the attachment's cached copy (moved there if it was
+  // picked before the cache existed), so it still shows offline. Any other
+  // file is no longer needed.
+  if (isCacheableAttachment(attachment.mimeType)) {
+    await retainInCache(localUri, attachment.filePath);
+  } else {
+    try {
+      await RNFS.unlink(localPath);
+    } catch {
+      // Non-critical: the orphan cleanup removes it later
+    }
   }
 }
 
@@ -281,6 +350,10 @@ export async function discardRefusedAttachment(attachment: Attachment): Promise<
   if (!localUri) return;
   const localPath = localUri.startsWith("file://") ? localUri.slice(7) : localUri;
   try {
+    if (localPath === cacheFileFor(attachment.filePath)) {
+      await deleteFromCache(attachment.filePath);
+      return;
+    }
     if (await RNFS.exists(localPath)) await RNFS.unlink(localPath);
   } catch (err) {
     console.warn(`Failed to delete local copy of ${attachment.fileName}:`, err);
@@ -374,13 +447,15 @@ export async function processPendingUploads(): Promise<UploadResult> {
 }
 
 /**
- * Delete the entire local attachments directory (and every cached file in it).
- * Used on sign-out and on the cross-account identity guard so one account's
- * downloaded/queued attachment files can't leak to the next account on the
- * device. Best-effort: a deletion failure is logged and swallowed so it never
- * blocks sign-out.
+ * Delete every local attachment file: the attachment cache (ADR-0086) and the
+ * older attachments directory. Used on sign-out and on the cross-account
+ * identity guard so one account's downloaded/queued attachment files can't
+ * leak to the next account on the device. Best-effort: a deletion failure is
+ * logged and swallowed so it never blocks sign-out.
  */
 export async function deleteAllLocalAttachments(): Promise<void> {
+  await deleteAttachmentCache();
+  resetAttachmentPrefetch();
   try {
     const dir = getAttachmentsDir();
     const exists = await RNFS.exists(dir);
@@ -392,32 +467,45 @@ export async function deleteAllLocalAttachments(): Promise<void> {
   }
 }
 
+/**
+ * Delete local attachment files nothing needs any more: files in the
+ * attachments folder no row points at, and cached files whose attachment or
+ * note is gone (`removeOrphanedCacheFiles`). Run after a sync, so the rows are
+ * complete. Never throws.
+ */
 export async function cleanupOrphanedFiles(): Promise<void> {
+  // Taken before the rows are read: a copy whose row is written after the
+  // query is in here, and one made later is added while the sweep runs.
+  const inFlight = new Set(copiesInFlight);
+  runningSweeps.add(inFlight);
   try {
     const dir = getAttachmentsDir();
-    const exists = await RNFS.exists(dir);
-    if (!exists) return;
+    if (await RNFS.exists(dir)) {
+      // Every row that still points at a file keeps it (a failed or
+      // quota-refused upload's file is its only copy).
+      const withLocalUri = await database
+        .get<Attachment>("attachments")
+        .query(Q.where("local_uri", Q.notEq(null)))
+        .fetch();
 
-    // Query all attachments that have a local URI (not just pending)
-    const withLocalUri = await database
-      .get<Attachment>("attachments")
-      .query(Q.where("local_uri", Q.notEq(null)))
-      .fetch();
+      const activeUris = new Set(withLocalUri.map((a) => a.localUri));
+      const items = await RNFS.readDir(dir);
 
-    const activeUris = new Set(withLocalUri.map((a) => a.localUri));
-    const items = await RNFS.readDir(dir);
-
-    for (const item of items) {
-      const fileUri = `file://${item.path}`;
-      if (!activeUris.has(fileUri)) {
-        try {
-          await RNFS.unlink(item.path);
-        } catch {
-          // Non-critical
+      for (const item of items) {
+        const fileUri = `file://${item.path}`;
+        if (!activeUris.has(fileUri) && !inFlight.has(fileUri)) {
+          try {
+            await RNFS.unlink(item.path);
+          } catch {
+            // Non-critical
+          }
         }
       }
     }
   } catch {
     // Non-critical cleanup
+  } finally {
+    runningSweeps.delete(inFlight);
   }
+  await removeOrphanedCacheFiles();
 }

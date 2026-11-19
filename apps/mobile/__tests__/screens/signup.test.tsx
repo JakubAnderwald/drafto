@@ -162,6 +162,19 @@ describe("SignupScreen", () => {
     });
   });
 
+  it("tags the password as a new password and lets the user show it", () => {
+    const { getByTestId } = render(<SignupScreen />);
+
+    const field = () => getByTestId("signup-password-input");
+    // "password" would hint the current password; a sign-up field takes a new one.
+    expect(field().props.autoComplete).toBe("new-password");
+    expect(field().props.textContentType).toBe("newPassword");
+    expect(field().props.secureTextEntry).toBe(true);
+
+    fireEvent.press(getByTestId("signup-password-input-toggle"));
+    expect(field().props.secureTextEntry).toBe(false);
+  });
+
   it("offsets its keyboard avoidance by the header above it and, offline, the banner below that", () => {
     // The jest.setup.js mock; the header that keeps the Back button.
     jest.mocked(useHeaderHeight).mockReturnValue(91);

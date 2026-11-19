@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from "react";
 import { Text, View, FlatList, TextInput, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useTheme } from "@/providers/theme-provider";
 import { useSearch } from "@/hooks/use-search";
@@ -17,6 +18,13 @@ export default function SearchScreen() {
   const { semantic } = useTheme();
   const router = useRouter();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // A stack screen on Android and a sheet on iOS, both without a tab bar: pad
+  // the last result clear of the navigation bar or home indicator.
+  const { bottom: bottomInset } = useSafeAreaInsets();
+  const listContentStyle = useMemo(
+    () => [styles.list, { paddingBottom: spacing.sm + bottomInset }],
+    [styles.list, bottomInset],
+  );
 
   const renderResult = useCallback(
     ({ item }: { item: Note }) => (
@@ -66,7 +74,7 @@ export default function SearchScreen() {
           data={results}
           keyExtractor={(item) => item.id}
           renderItem={renderResult}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={listContentStyle}
           // The search field keeps the keyboard up; without this the first tap
           // on a result only dismissed it, and opening the note took a second.
           keyboardShouldPersistTaps="handled"

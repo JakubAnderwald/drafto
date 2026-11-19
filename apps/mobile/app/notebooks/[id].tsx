@@ -19,10 +19,13 @@ import { useNotes } from "@/hooks/use-notes";
 import { useNotebookName } from "@/hooks/use-notebook-name";
 import { useHaptics } from "@/hooks/use-haptics";
 import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
+import { useSwipeHint } from "@/hooks/use-swipe-hint";
 import { generateId } from "@/lib/generate-id";
 import { SwipeableRow } from "@/components/swipeable-row";
+import { SwipeHint, SWIPE_HINT_TEXT } from "@/components/swipe-hint";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Fab, useFabLayout } from "@/components/ui/fab";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Note } from "@/db";
@@ -38,6 +41,7 @@ export default function NotesListScreen() {
   const notebookName = useNotebookName(notebookId);
   const { semantic } = useTheme();
   const haptics = useHaptics();
+  const swipeHint = useSwipeHint("notes", notes[0]?.id);
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
   const [creating, setCreating] = useState(false);
@@ -45,6 +49,14 @@ export default function NotesListScreen() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // The FAB hides while the create bar is open; the list then drops back to
+  // its resting padding. useFabLayout adds the system-bar inset only off the
+  // tab navigator, whose tab bar already takes it.
+  const { listPaddingBottom } = useFabLayout(!creating);
+  const listContentStyle = useMemo(
+    () => [styles.list, { paddingBottom: listPaddingBottom }],
+    [styles.list, listPaddingBottom],
+  );
 
   const handleCreate = async () => {
     const trimmed = newTitle.trim();
@@ -167,6 +179,7 @@ export default function NotesListScreen() {
     const rightActions: SwipeAction[] = [
       {
         icon: "trash-outline",
+        label: "Move note to Trash",
         color: colors.white,
         backgroundColor: colors.error,
         onPress: () => handleTrash(item.id, item.title),
@@ -174,27 +187,35 @@ export default function NotesListScreen() {
     ];
 
     return (
-      <SwipeableRow rightActions={rightActions}>
-        <Pressable
-          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-          onPress={() => router.push(`/notes/${item.id}`)}
-          onLongPress={() => startEditing(item)}
-        >
-          <Ionicons
-            name="document-text-outline"
-            size={20}
-            color={colors.primary[600]}
-            style={styles.rowIcon}
-          />
-          <View style={styles.rowContent}>
-            <Text style={styles.rowText} numberOfLines={1}>
-              {item.title}
-            </Text>
-            <Text style={styles.rowDate} numberOfLines={1}>
-              {item.updatedAt.toLocaleDateString()}
-            </Text>
-          </View>
-        </Pressable>
+      <SwipeableRow
+        rightActions={rightActions}
+        peek={item.id === swipeHint.peekRowId}
+        onPeekEnd={swipeHint.endPeek}
+        onOpen={swipeHint.dismiss}
+      >
+        {(accessibility) => (
+          <Pressable
+            {...accessibility}
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push(`/notes/${item.id}`)}
+            onLongPress={() => startEditing(item)}
+          >
+            <Ionicons
+              name="document-text-outline"
+              size={20}
+              color={colors.primary[600]}
+              style={styles.rowIcon}
+            />
+            <View style={styles.rowContent}>
+              <Text style={styles.rowText} numberOfLines={1}>
+                {item.title}
+              </Text>
+              <Text style={styles.rowDate} numberOfLines={1}>
+                {item.updatedAt.toLocaleDateString()}
+              </Text>
+            </View>
+          </Pressable>
+        )}
       </SwipeableRow>
     );
   };
@@ -257,7 +278,12 @@ export default function NotesListScreen() {
           data={notes}
           keyExtractor={(item) => item.id}
           renderItem={renderNote}
-          contentContainerStyle={styles.list}
+          ListHeaderComponent={
+            swipeHint.visible && notes.length > 0 ? (
+              <SwipeHint text={SWIPE_HINT_TEXT.notes} onDismiss={swipeHint.dismiss} />
+            ) : null
+          }
+          contentContainerStyle={listContentStyle}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -270,16 +296,14 @@ export default function NotesListScreen() {
       )}
 
       {!creating && (
-        <Pressable
+        <Fab
           testID="add"
-          style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+          accessibilityLabel="New note"
           onPress={() => {
             haptics.light();
             setCreating(true);
           }}
-        >
-          <Ionicons name="add" size={28} color={semantic.onPrimary} />
-        </Pressable>
+        />
       )}
     </View>
   );
@@ -349,24 +373,5 @@ const createStyles = (semantic: SemanticColors) =>
     editInput: {
       flex: 1,
       marginRight: spacing.sm,
-    },
-    fab: {
-      position: "absolute",
-      right: spacing.xl,
-      bottom: spacing.xl,
-      width: 56,
-      height: 56,
-      borderRadius: radii.full,
-      backgroundColor: colors.primary[600],
-      alignItems: "center",
-      justifyContent: "center",
-      elevation: 4,
-      shadowColor: colors.black,
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.25,
-      shadowRadius: 4,
-    },
-    fabPressed: {
-      backgroundColor: colors.primary[700],
     },
   });

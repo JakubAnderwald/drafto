@@ -1,5 +1,14 @@
 import { useMemo, useCallback } from "react";
-import { Text, View, FlatList, Alert, RefreshControl, StyleSheet } from "react-native";
+import {
+  Text,
+  View,
+  FlatList,
+  Alert,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  type AlertButton,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Q } from "@nozbe/watermelondb";
 
@@ -7,7 +16,10 @@ import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useTrashedNotes } from "@/hooks/use-trashed-notes";
 import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
+import { useSwipeHint } from "@/hooks/use-swipe-hint";
+import { trashMenuButtons } from "@/lib/trash-menu-buttons";
 import { SwipeableRow } from "@/components/swipeable-row";
+import { SwipeHint, SWIPE_HINT_TEXT } from "@/components/swipe-hint";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { colors, fontSizes, spacing } from "@/theme/tokens";
@@ -20,32 +32,35 @@ export default function TrashScreen() {
   const { refreshing, onRefresh } = usePullToRefresh(sync);
   const { notes, loading } = useTrashedNotes();
   const { semantic } = useTheme();
+  const swipeHint = useSwipeHint("trash", notes[0]?.id);
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+
+  const restoreNote = useCallback(
+    async (id: string) => {
+      try {
+        const note = await database.get<Note>("notes").find(id);
+        await database.write(async () => {
+          await note.update((record) => {
+            record.isTrashed = false;
+            record.trashedAt = null;
+          });
+        });
+        sync();
+      } catch (err) {
+        Alert.alert("Error", err instanceof Error ? err.message : "Failed to restore note");
+      }
+    },
+    [database, sync],
+  );
 
   const handleRestore = useCallback(
     (id: string, title: string) => {
       Alert.alert("Restore Note", `Restore "${title}" from trash?`, [
         { text: "Cancel", style: "cancel" },
-        {
-          text: "Restore",
-          onPress: async () => {
-            try {
-              const note = await database.get<Note>("notes").find(id);
-              await database.write(async () => {
-                await note.update((record) => {
-                  record.isTrashed = false;
-                  record.trashedAt = null;
-                });
-              });
-              sync();
-            } catch (err) {
-              Alert.alert("Error", err instanceof Error ? err.message : "Failed to restore note");
-            }
-          },
-        },
+        { text: "Restore", onPress: () => restoreNote(id) },
       ]);
     },
-    [database, sync],
+    [restoreNote],
   );
 
   const handleDeletePermanent = useCallback(
@@ -83,12 +98,36 @@ export default function TrashScreen() {
     [database, sync],
   );
 
+  // The tap path to both actions, for anyone who doesn't swipe. Restore is
+  // undoable, so picking it here is the confirmation; deleting still asks.
+  const openNoteMenu = useCallback(
+    (id: string, title: string) => {
+      const restore: AlertButton = { text: "Restore", onPress: () => restoreNote(id) };
+      const deleteForever: AlertButton = {
+        text: "Delete permanently",
+        style: "destructive",
+        onPress: () => handleDeletePermanent(id, title),
+      };
+      const cancel: AlertButton = { text: "Cancel", style: "cancel" };
+      Alert.alert(
+        title || "Untitled",
+        undefined,
+        trashMenuButtons(restore, deleteForever, cancel),
+        {
+          cancelable: true,
+        },
+      );
+    },
+    [restoreNote, handleDeletePermanent],
+  );
+
   const renderNote = ({ item }: { item: Note }) => {
     const trashedDate = item.trashedAt ? item.trashedAt.toLocaleDateString() : "";
 
     const leftActions: SwipeAction[] = [
       {
         icon: "arrow-undo-outline",
+        label: "Restore note",
         color: colors.white,
         backgroundColor: colors.success,
         onPress: () => handleRestore(item.id, item.title),
@@ -98,6 +137,7 @@ export default function TrashScreen() {
     const rightActions: SwipeAction[] = [
       {
         icon: "trash-outline",
+        label: "Delete note permanently",
         color: colors.white,
         backgroundColor: colors.error,
         onPress: () => handleDeletePermanent(item.id, item.title),
@@ -105,25 +145,38 @@ export default function TrashScreen() {
     ];
 
     return (
-      <SwipeableRow leftActions={leftActions} rightActions={rightActions}>
-        <View style={styles.row}>
-          <Ionicons
-            name="document-text-outline"
-            size={20}
-            color={semantic.fgSubtle}
-            style={styles.rowIcon}
-          />
-          <View style={styles.rowContent}>
-            <Text style={styles.rowText} numberOfLines={1}>
-              {item.title}
-            </Text>
-            {trashedDate ? (
-              <Text style={styles.rowDate} numberOfLines={1}>
-                Trashed {trashedDate}
+      <SwipeableRow
+        leftActions={leftActions}
+        rightActions={rightActions}
+        peek={item.id === swipeHint.peekRowId}
+        onPeekEnd={swipeHint.endPeek}
+        onOpen={swipeHint.dismiss}
+      >
+        {(accessibility) => (
+          <Pressable
+            {...accessibility}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => openNoteMenu(item.id, item.title)}
+          >
+            <Ionicons
+              name="document-text-outline"
+              size={20}
+              color={semantic.fgSubtle}
+              style={styles.rowIcon}
+            />
+            <View style={styles.rowContent}>
+              <Text style={styles.rowText} numberOfLines={1}>
+                {item.title}
               </Text>
-            ) : null}
-          </View>
-        </View>
+              {trashedDate ? (
+                <Text style={styles.rowDate} numberOfLines={1}>
+                  Trashed {trashedDate}
+                </Text>
+              ) : null}
+            </View>
+          </Pressable>
+        )}
       </SwipeableRow>
     );
   };
@@ -145,6 +198,11 @@ export default function TrashScreen() {
           data={notes}
           keyExtractor={(item) => item.id}
           renderItem={renderNote}
+          ListHeaderComponent={
+            swipeHint.visible ? (
+              <SwipeHint text={SWIPE_HINT_TEXT.trash} onDismiss={swipeHint.dismiss} />
+            ) : null
+          }
           contentContainerStyle={styles.list}
           refreshControl={
             <RefreshControl
@@ -177,6 +235,9 @@ const createStyles = (semantic: SemanticColors) =>
       backgroundColor: semantic.bg,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: semantic.border,
+    },
+    rowPressed: {
+      backgroundColor: semantic.bgMuted,
     },
     rowIcon: {
       marginRight: spacing.md,
