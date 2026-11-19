@@ -147,4 +147,108 @@ describe("pending saves", () => {
     });
     expect(countSavesWritten()).toBe(before + 1);
   });
+  // Two overlapping saves by one auto-save: each resolves or rejects when the test says so.
+  function overlappingSaves() {
+    const settle: { resolve: (written: boolean) => void; reject: (error: Error) => void }[] = [];
+    const onSave = jest.fn(
+      () =>
+        new Promise<boolean>((resolve, reject) => {
+          settle.push({ resolve, reject });
+        }),
+    );
+    const { result } = renderHook(() => useAutoSave<string>({ onSave }));
+    return { onSave, result, settle };
+  }
+
+  async function startSave(trigger: (value: string) => void, value: string) {
+    act(() => {
+      trigger(value);
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1_000);
+    });
+  }
+
+  it("keeps a newer write's failure when an older write finishes after it", async () => {
+    const { onSave, result, settle } = overlappingSaves();
+    await startSave(result.current.trigger, "older");
+    await startSave(result.current.trigger, "newer");
+    expect(onSave).toHaveBeenCalledTimes(2);
+    const before = countSavesWritten();
+
+    await act(async () => {
+      settle[1].reject(new Error("disk full"));
+      settle[0].resolve(true);
+      await expect(flushPendingSaves()).resolves.toBe(false);
+    });
+    // The older write still landed, so sign-out still sees that a note changed.
+    expect(countSavesWritten()).toBe(before + 1);
+    expect(result.current.status).toBe("error");
+  });
+
+  it("ignores an older write's failure once a newer write stored the edit", async () => {
+    const { result, settle } = overlappingSaves();
+    await startSave(result.current.trigger, "older");
+    await startSave(result.current.trigger, "newer");
+
+    await act(async () => {
+      settle[1].resolve(true);
+      settle[0].reject(new Error("busy"));
+      await expect(flushPendingSaves()).resolves.toBe(true);
+    });
+    expect(result.current.status).toBe("saved");
+  });
+
+  it("waits for every write still running, not just the latest", async () => {
+    const { result, settle } = overlappingSaves();
+    await startSave(result.current.trigger, "older");
+    await startSave(result.current.trigger, "newer");
+    const before = countSavesWritten();
+
+    let flushed = false;
+    let flushing: Promise<boolean> = Promise.resolve(true);
+    await act(async () => {
+      settle[1].resolve(true);
+      flushing = flushPendingSaves().finally(() => {
+        flushed = true;
+      });
+      await Promise.resolve();
+    });
+    expect(flushed).toBe(false);
+
+    await act(async () => {
+      settle[0].resolve(true);
+      await expect(flushing).resolves.toBe(true);
+    });
+    expect(countSavesWritten()).toBe(before + 2);
+  });
+
+  it("waits for a write an editor started as it unmounted, and reports its failure", async () => {
+    let failWrite: () => void = () => {};
+    const onSave = jest.fn(
+      () =>
+        new Promise<boolean>((_resolve, reject) => {
+          failWrite = () => reject(new Error("disk full"));
+        }),
+    );
+    const { result, unmount } = renderHook(() => useAutoSave<string>({ onSave }));
+
+    act(() => {
+      result.current.trigger("last words");
+    });
+    // Unmounting flushes the debounced save and leaves the pending-saves registry.
+    unmount();
+    expect(onSave).toHaveBeenCalledWith("last words");
+
+    let flushed = false;
+    const flushing = flushPendingSaves().finally(() => {
+      flushed = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(flushed).toBe(false);
+
+    failWrite();
+    await expect(flushing).resolves.toBe(false);
+  });
 });

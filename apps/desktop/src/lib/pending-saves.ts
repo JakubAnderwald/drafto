@@ -8,7 +8,8 @@
  * `useAutoSave` also reports how each write ended. A write that failed left its edit outside
  * the database, where no count sees it, so sign-out must not promise that nothing is lost; and
  * every write that succeeded bumps a counter, so sign-out can tell that a note changed after it
- * counted even when the number of unsynced rows stayed the same.
+ * counted even when the number of unsynced rows stayed the same. Writes still running are
+ * tracked too, including one an editor started as it unmounted, so a flush waits for them.
  */
 
 type Flush = () => Promise<void>;
@@ -16,6 +17,8 @@ type Flush = () => Promise<void>;
 const flushes = new Set<Flush>();
 // Auto-saves whose last write failed. Kept after the editor unmounts: the edit is still lost.
 const failedSaves = new Set<object>();
+// Auto-save writes still running, whether or not their editor is still mounted.
+const savesInFlight = new Set<Promise<void>>();
 let savesWritten = 0;
 
 /** Registers a pending-save flush; returns the unregister function. */
@@ -26,9 +29,22 @@ export function registerPendingSave(flush: Flush): () => void {
   };
 }
 
-/** Records that `owner` (one auto-save) wrote to the local database. */
-export function recordSaveWritten(owner: object): void {
-  failedSaves.delete(owner);
+/** Tracks an auto-save write until it settles, so a flush waits for it. */
+export function trackSaveInFlight(write: Promise<void>): void {
+  savesInFlight.add(write);
+  const settle = () => {
+    savesInFlight.delete(write);
+  };
+  void write.then(settle, settle);
+}
+
+/**
+ * Records that `owner` (one auto-save) wrote to the local database. `latest` is false when a
+ * newer write by the same auto-save has started since: only that newer write's outcome says
+ * whether the auto-save's last edit is stored, so this one must not clear a failure it recorded.
+ */
+export function recordSaveWritten(owner: object, latest = true): void {
+  if (latest) failedSaves.delete(owner);
   savesWritten += 1;
 }
 
@@ -53,5 +69,7 @@ export function forgetFailedSaves(): void {
  */
 export async function flushPendingSaves(): Promise<boolean> {
   const results = await Promise.allSettled(Array.from(flushes, (flush) => flush()));
+  // Also writes that are not their auto-save's latest, or whose editor has unmounted since.
+  await Promise.allSettled(Array.from(savesInFlight));
   return results.every((result) => result.status === "fulfilled") && failedSaves.size === 0;
 }
