@@ -32,12 +32,12 @@ export {
   SIGNUP_EMAIL_REDIRECT_URL,
   SIGNUP_CONFIRMATION_SENT,
   EMAIL_CONFIRMED,
+  PASSWORD_VISIBILITY_LABELS,
   SIGN_OUT_CONFIRM_TITLE,
   SIGN_OUT_SYNCED_MESSAGE,
   SIGN_OUT_UNKNOWN_MESSAGE,
   SIGN_OUT_CONFIRM_LABEL,
   SIGN_OUT_ANYWAY_LABEL,
-  PASSWORD_VISIBILITY_LABELS,
 } from "./constants";
 export {
   ACCOUNT_DELETION_PATH,
@@ -161,6 +161,8 @@ export {
   fontSizes,
 } from "./design-tokens";
 export type { SemanticColors } from "./design-tokens";
+export { describeSignOut, describeUnsyncedLoss } from "./account/sign-out-copy";
+export type { SignOutCopy } from "./account/sign-out-copy";
 
 // Offline attachment cache (ADR-0086)
 export {
@@ -215,5 +217,10 @@ export type {
   PrefetchCandidate,
   PrefetchLimits,
 } from "./storage/attachment-cache-policy";
-export { describeSignOut, describeUnsyncedLoss } from "./account/sign-out-copy";
-export type { SignOutCopy } from "./account/sign-out-copy";
+
+export {
+  RECONNECTED_HOLD_MS,
+  initialOfflineBannerVariant,
+  nextOfflineBannerVariant,
+} from "./network/offline-banner";
+export type { OfflineBannerEvent, OfflineBannerVariant } from "./network/offline-banner";

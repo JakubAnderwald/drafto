@@ -8,9 +8,13 @@ import { AuthProvider, useAuth } from "@/providers/auth-provider";
 import { DatabaseProvider } from "@/providers/database-provider";
 import { configureGoogleSignIn } from "@/lib/oauth";
 import { ThemeProvider, useTheme } from "@/providers/theme-provider";
-import { OfflineBanner } from "@/components/offline-banner";
+import { OfflineBannerProvider } from "@/providers/offline-banner-provider";
 import { SystemBars } from "@/components/system-bars";
 import { HeaderCloseButton } from "@/components/navigation/header-close-button";
+import {
+  OfflineScreenLayout,
+  offlineScreenLayout,
+} from "@/components/navigation/offline-screen-layout";
 import { ToastProvider } from "@/components/toast";
 import { isAboveModal } from "@/lib/sheet-presentation";
 import { colors } from "@/theme/tokens";
@@ -31,6 +35,9 @@ configureGoogleSignIn();
 const PUBLIC_AUTH_SCREENS = new Set(["login", "signup", "forgot-password", "reset-password"]);
 
 const RESET_PASSWORD_SCREEN = "reset-password";
+
+/** The launch loading view's key with the OfflineBannerProvider (it has no route). */
+const LOADING_SCREEN_KEY = "route-guard-loading";
 
 export function RouteGuard({ children }: { children: React.ReactNode }) {
   const { user, isApproved, isLoading, isCheckingApproval, isRecovering } = useAuth();
@@ -87,14 +94,17 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
 
   // Only the first auth read blanks the app. isLoading stays true through the launch-time
   // approval check, so nothing routes on a stale approval at start-up.
+  // No header here either, so an offline banner takes the top of the screen.
   if (isLoading) {
     return (
-      <View
-        style={[styles.loadingContainer, { backgroundColor: semantic.bg }]}
-        testID="route-guard-loading"
-      >
-        <ActivityIndicator size="large" color={colors.primary[600]} />
-      </View>
+      <OfflineScreenLayout screenKey={LOADING_SCREEN_KEY} headerless>
+        <View
+          style={[styles.loadingContainer, { backgroundColor: semantic.bg }]}
+          testID="route-guard-loading"
+        >
+          <ActivityIndicator size="large" color={colors.primary[600]} />
+        </View>
+      </OfflineScreenLayout>
     );
   }
 
@@ -147,8 +157,11 @@ function ThemedStack() {
   return (
     <>
       <View style={[styles.rootContainer, { backgroundColor: semantic.bg }]}>
-        <OfflineBanner />
+        {/* Each screen draws the offline banner below its own header, so it never
+            covers the Back button; headerless screens get it at the very top.
+            (tabs) is skipped here: its Tabs navigator does the same per tab. */}
         <Stack
+          screenLayout={offlineScreenLayout}
           screenOptions={{
             headerStyle: { backgroundColor: semantic.bg },
             headerTintColor: semantic.fg,
@@ -194,17 +207,19 @@ function ThemedStack() {
 export default function RootLayout() {
   return (
     <ThemeProvider>
-      {/* Above RouteGuard, so the bars follow the theme on the launch loading screen too. */}
-      <SystemBars />
-      <AuthProvider>
-        <ToastProvider>
-          <DatabaseProvider>
-            <RouteGuard>
-              <ThemedStack />
-            </RouteGuard>
-          </DatabaseProvider>
-        </ToastProvider>
-      </AuthProvider>
+      <OfflineBannerProvider>
+        {/* Above RouteGuard, so the bars follow the theme on the launch loading screen too. */}
+        <SystemBars />
+        <AuthProvider>
+          <ToastProvider>
+            <DatabaseProvider>
+              <RouteGuard>
+                <ThemedStack />
+              </RouteGuard>
+            </DatabaseProvider>
+          </ToastProvider>
+        </AuthProvider>
+      </OfflineBannerProvider>
     </ThemeProvider>
   );
 }

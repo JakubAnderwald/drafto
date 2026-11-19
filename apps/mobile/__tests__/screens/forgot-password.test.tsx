@@ -1,7 +1,10 @@
 import React from "react";
+import { KeyboardAvoidingView } from "react-native";
+import { useHeaderHeight } from "@react-navigation/elements";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import ForgotPasswordScreen from "../../app/(auth)/forgot-password";
+import { OfflineBannerHeightContext } from "@/hooks/use-offline-banner-height";
 
 const mockResetPasswordForEmail = jest.fn();
 jest.mock("@/lib/supabase", () => ({
@@ -118,5 +121,25 @@ describe("ForgotPasswordScreen", () => {
       expect(getByText("Check Your Email")).toBeTruthy();
     });
     expect(getByText("Back to login").props.dismissTo).toBe(true);
+  });
+
+  it("offsets its keyboard avoidance by the header above it and, offline, the banner below that", () => {
+    // The jest.setup.js mock; the header that keeps the Back button.
+    jest.mocked(useHeaderHeight).mockReturnValue(91);
+    try {
+      const online = render(<ForgotPasswordScreen />);
+      expect(online.UNSAFE_getByType(KeyboardAvoidingView).props.keyboardVerticalOffset).toBe(91);
+      online.unmount();
+
+      const { UNSAFE_getByType } = render(
+        <OfflineBannerHeightContext.Provider value={28}>
+          <ForgotPasswordScreen />
+        </OfflineBannerHeightContext.Provider>,
+      );
+
+      expect(UNSAFE_getByType(KeyboardAvoidingView).props.keyboardVerticalOffset).toBe(91 + 28);
+    } finally {
+      jest.mocked(useHeaderHeight).mockReturnValue(0);
+    }
   });
 });

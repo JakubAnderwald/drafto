@@ -18,6 +18,7 @@ import { useTheme } from "@/providers/theme-provider";
 import { useNote } from "@/hooks/use-note";
 import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
 import { useKeyboardVerticalOffset } from "@/hooks/use-keyboard-vertical-offset";
+import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { ImageRenderStatus } from "@/components/editor/image-render-status";
 import { useImageRenderStatus } from "@/hooks/use-image-render-status";
@@ -186,7 +187,9 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const headerHeight = useHeaderHeight();
-  const keyboardOffset = useKeyboardVerticalOffset(headerHeight);
+  // While offline the banner sits between the header and this view (Android's offset).
+  const offlineBannerHeight = useOfflineBannerHeight();
+  const keyboardOffset = useKeyboardVerticalOffset(headerHeight + offlineBannerHeight);
   const insets = useSafeAreaInsets();
   const isKeyboardUp = useKeyboardVisible();
   const [title, setTitle] = useState(initialNote.title);

@@ -29,7 +29,10 @@ jest.mock("@/providers/database-provider", () => ({
   DatabaseProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-jest.mock("@/components/offline-banner", () => ({ OfflineBanner: () => null }));
+jest.mock("@/hooks/use-network-status", () => ({
+  useNetworkStatus: jest.fn(() => ({ isConnected: true, isInternetReachable: true })),
+}));
+jest.mock("expo-status-bar", () => ({ StatusBar: () => null }));
 jest.mock("@/components/toast", () => ({
   ToastProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -40,6 +43,8 @@ jest.mock("@/lib/performance", () => ({
 }));
 
 import { RouteGuard } from "../../app/_layout";
+import { useNetworkStatus } from "@/hooks/use-network-status";
+import { OfflineBannerProvider } from "@/providers/offline-banner-provider";
 
 const APPROVED_USER = { id: "user-123" };
 
@@ -65,6 +70,7 @@ function renderGuard() {
 describe("RouteGuard", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.mocked(useNetworkStatus).mockReturnValue({ isConnected: true, isInternetReachable: true });
     mockUseAuth.mockReturnValue(authState());
     mockUseSegments.mockReturnValue(["(auth)", "login"]);
   });
@@ -167,6 +173,25 @@ describe("RouteGuard", () => {
 
     const { getByTestId } = renderGuard();
 
+    expect(getByTestId("route-guard-loading")).toBeTruthy();
+  });
+
+  it("shows the offline banner at the top of the loading screen, which has no header", () => {
+    jest
+      .mocked(useNetworkStatus)
+      .mockReturnValue({ isConnected: false, isInternetReachable: false });
+    mockUseAuth.mockReturnValue(authState({ isLoading: true }));
+
+    const { getByTestId, getByText } = render(
+      <OfflineBannerProvider>
+        <RouteGuard>
+          <Text>APP</Text>
+        </RouteGuard>
+      </OfflineBannerProvider>,
+    );
+
+    expect(getByTestId("offline-banner")).toBeTruthy();
+    expect(getByText("You are offline")).toBeTruthy();
     expect(getByTestId("route-guard-loading")).toBeTruthy();
   });
 

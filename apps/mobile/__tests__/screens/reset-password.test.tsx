@@ -1,8 +1,10 @@
 import React from "react";
+import { KeyboardAvoidingView } from "react-native";
 import { useRouter } from "expo-router";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import ResetPasswordScreen from "../../app/(auth)/reset-password";
+import { OfflineBannerHeightContext } from "@/hooks/use-offline-banner-height";
 
 const mockUpdateUser = jest.fn();
 jest.mock("@/lib/supabase", () => ({
@@ -62,6 +64,16 @@ describe("ResetPasswordScreen", () => {
     expect(getByTestId("new-password-input")).toBeTruthy();
     expect(getByTestId("confirm-password-input")).toBeTruthy();
     expect(getByText("Reset password")).toBeTruthy();
+  });
+
+  it("offsets its keyboard avoidance by the offline banner above it", () => {
+    const { UNSAFE_getByType } = render(
+      <OfflineBannerHeightContext.Provider value={52}>
+        <ResetPasswordScreen />
+      </OfflineBannerHeightContext.Provider>,
+    );
+
+    expect(UNSAFE_getByType(KeyboardAvoidingView).props.keyboardVerticalOffset).toBe(52);
   });
 
   it("rejects mismatched passwords before calling Supabase", () => {

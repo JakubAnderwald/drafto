@@ -1,9 +1,10 @@
 import React from "react";
-import { Alert, StyleSheet } from "react-native";
+import { Alert, KeyboardAvoidingView, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import LoginScreen from "../../app/(auth)/login";
+import { OfflineBannerHeightContext } from "@/hooks/use-offline-banner-height";
 import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
 import {
   clearAuthCallbackError,
@@ -162,6 +163,20 @@ describe("LoginScreen", () => {
       expect(queryByText(ACCOUNT_DELETED_MESSAGE)).toBeNull();
       expect(isAccountDeletedNoticeShown()).toBe(false);
     });
+  });
+
+  it("offsets its keyboard avoidance by the offline banner above it", () => {
+    const online = render(<LoginScreen />);
+    expect(online.UNSAFE_getByType(KeyboardAvoidingView).props.keyboardVerticalOffset).toBe(0);
+    online.unmount();
+
+    const { UNSAFE_getByType } = render(
+      <OfflineBannerHeightContext.Provider value={52}>
+        <LoginScreen />
+      </OfflineBannerHeightContext.Provider>,
+    );
+
+    expect(UNSAFE_getByType(KeyboardAvoidingView).props.keyboardVerticalOffset).toBe(52);
   });
 
   it("keeps its content below the status bar, having no header of its own", () => {
