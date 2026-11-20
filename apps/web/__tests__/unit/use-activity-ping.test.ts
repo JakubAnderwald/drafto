@@ -211,6 +211,32 @@ describe("useActivityPing", () => {
     expect(mockRpc.mock.calls).toEqual([rpcArgs(DAY_2), rpcArgs(DAY_1), rpcArgs(DAY_2)]);
   });
 
+  it("doesn't mark a day the server's date hasn't reached, and sends it again", async () => {
+    // The clock runs a few minutes ahead: it reads DAY_2 while the server is still at DAY_1,
+    // so record_activity adds nothing and the server's date leaves DAY_2 out of `sent`.
+    mockRpc.mockImplementation((fn: string) =>
+      Promise.resolve(
+        fn === "get_server_time"
+          ? { data: `${DAY_1}T23:58:00+00:00`, error: null }
+          : { data: 0, error: null },
+      ),
+    );
+    setNow(`${DAY_2}T00:01:00.000Z`);
+    const ahead = renderHook(() => mod.useActivityPing("user-1"));
+    await waitFor(() => expect(mockRpc).toHaveBeenCalledTimes(2));
+    await flush();
+    expect(storedDay("user-1")).toBeNull();
+    ahead.unmount();
+
+    // Once the server reaches DAY_2 it records the day, and only then is it marked.
+    mockRpc.mockImplementation(() => Promise.resolve({ data: 1, error: null }));
+    setNow(`${DAY_2}T00:05:00.000Z`);
+    renderHook(() => mod.useActivityPing("user-1"));
+    await waitFor(() => expect(storedDay("user-1")).toBe(DAY_2));
+
+    expect(mockRpc.mock.calls).toEqual([rpcArgs(DAY_2), ["get_server_time"], rpcArgs(DAY_2)]);
+  });
+
   it("doesn't mark a day the clock went back before its ping answered", async () => {
     let answerAhead: (value: { error: null }) => void = () => {};
     mockRpc.mockReturnValueOnce(

@@ -335,7 +335,16 @@ describe(
         ...a.auth,
         body: { p_days: [day(-3)], p_client: "web", p_user_id: b.id },
       });
-      assert.ok(!smuggled.ok, `an extra user argument: ${formatResponse(smuggled)}`);
+      // PostgREST resolves an RPC by its argument names, and no record_activity
+      // takes p_user_id: PGRST202 ("Could not find the function"), as a 404.
+      // Pinned, so a failure for another reason (an expired token, a 500)
+      // can't pass for the refusal.
+      assert.equal(smuggled.status, 404, `an extra user argument: ${formatResponse(smuggled)}`);
+      assert.equal(
+        smuggled.body?.code,
+        "PGRST202",
+        `an extra user argument: ${formatResponse(smuggled)}`,
+      );
 
       assert.deepEqual(await rowsOf(b.id), [
         { day: day(0), client: "desktop-macos", content_changes: 0 },

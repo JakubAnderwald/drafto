@@ -232,3 +232,69 @@ describe("recordActivity", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe("recordActivity: a day the server's date hasn't reached", () => {
+  /**
+   * A client whose record_activity adds <added> rows and whose get_server_time
+   * answers <serverTime>.
+   */
+  function serverClient(added: number, serverTime: () => PromiseLike<ActivityRpcResponse>) {
+    const calls: string[] = [];
+    const client: ActivityRpcClient = {
+      rpc: ((fn: string) => {
+        calls.push(fn);
+        return fn === "get_server_time"
+          ? serverTime()
+          : Promise.resolve({ data: added, error: null });
+      }) as ActivityRpcClient["rpc"],
+    };
+    return { client, calls };
+  }
+
+  it("leaves out a day after the server's date, sent while the device clock ran ahead", async () => {
+    // The device reads Nov 14, 00:01 UTC; the server is still at Nov 13, 23:58.
+    const { client, calls } = serverClient(1, () =>
+      Promise.resolve({ data: "2026-11-13T23:58:00.123456+00:00", error: null }),
+    );
+
+    const result = await recordActivity(client, ["2026-11-13", "2026-11-14"], "mobile-ios");
+
+    expect(calls).toEqual(["record_activity", "get_server_time"]);
+    expect(result).toEqual({ ok: true, sent: ["2026-11-13"] });
+  });
+
+  it("keeps every day when the server's date has reached them (already recorded)", async () => {
+    const { client, calls } = serverClient(0, () =>
+      Promise.resolve({ data: "2026-11-14T00:03:00+00:00", error: null }),
+    );
+
+    await expect(recordActivity(client, ["2026-11-14"], "web")).resolves.toEqual({
+      ok: true,
+      sent: ["2026-11-14"],
+    });
+    expect(calls).toEqual(["record_activity", "get_server_time"]);
+  });
+
+  it("doesn't ask the server's date when every day sent was added", async () => {
+    const { client, calls } = serverClient(2, () => Promise.reject(new Error("not called")));
+
+    await expect(
+      recordActivity(client, ["2026-11-13", "2026-11-14"], "desktop-macos"),
+    ).resolves.toEqual({ ok: true, sent: ["2026-11-13", "2026-11-14"] });
+    expect(calls).toEqual(["record_activity"]);
+  });
+
+  it.each<[string, () => PromiseLike<ActivityRpcResponse>]>([
+    ["an error", () => Promise.resolve({ error: { message: "permission denied" } })],
+    ["no data", () => Promise.resolve({ data: null, error: null })],
+    ["not a date", () => Promise.resolve({ data: "soon", error: null })],
+    ["a rejection", () => Promise.reject(new TypeError("Failed to fetch"))],
+  ])("counts every day as sent when the server's date comes back as %s", async (_label, answer) => {
+    const { client } = serverClient(0, answer);
+
+    await expect(recordActivity(client, ["2026-11-14"], "web")).resolves.toEqual({
+      ok: true,
+      sent: ["2026-11-14"],
+    });
+  });
+});

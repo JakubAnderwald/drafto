@@ -53,14 +53,21 @@ holds the logic, identical on both apps.
   empty until the next UTC day: at most one ping per day per device. A
   `lastSent` after today was sent while the device clock ran ahead, and the
   server dropped it as a future day, so marking a day forgets it.
-  Then the real day isn't held back when it comes.
+  Then the real day isn't held back when it comes. That only happens when the
+  server's date couldn't be read (see Sending).
 - **Sending.** After `synchronize()` resolves, `syncDatabase()` frees the
   in-flight latch, waits for the mark, then calls
   `flushActivityDays(db, supabase, clientTag)`, unless sign-out reset the
   sync while the mark was still waiting. That sends the whole queue
   through `record_activity` (`recordActivity` in `@drafto/shared`). On success
-  it reads the queue again, removes only the days it sent (a day marked in the
-  meantime stays), and moves `lastSent` to the newest day sent. The caller that
+  it reads the queue again, removes only the days the server took (a day marked
+  in the meantime stays), and moves `lastSent` to the newest of them. When
+  `record_activity` adds fewer rows than days sent, `recordActivity` asks
+  `get_server_time` for the server's date and leaves out any day after it: a
+  device clock running a few minutes ahead sends its new day just after its own
+  midnight, and the server drops that day as a future one. That day stays
+  queued for the next sync instead of becoming `lastSent`, which would have
+  kept it from being queued again when it really comes. The caller that
   started the sync waits for the ping at most `ACTIVITY_PING_MAX_WAIT_MS`
   (10 s). A ping that hasn't answered by then carries on in the background with
   its days still queued. Because the latch is already free, a sync started

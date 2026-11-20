@@ -94,9 +94,10 @@ async function sendPing(userId: string, day: string, marker: string): Promise<vo
     // recordActivity never throws; the try/catch covers creating the client.
     const outcome = await recordActivity(createClient(), [day], "web");
     if (outcome.ok) {
-      // The clock went back while the call was out, so <day> was sent ahead of time and the
-      // server ignored it: leave it unmarked, so it is sent again when it really comes.
-      if (day <= utcDay()) {
+      // <day> isn't in `sent` when the server's own date hadn't reached it yet (this device's
+      // clock runs ahead), and is after utcDay() when the clock went back while the call was
+      // out. Either way the server ignored it: leave it unmarked, so it is sent again later.
+      if (outcome.sent.includes(day) && day <= utcDay()) {
         recordedMarkers.add(marker);
         storeDay(userId, day);
       }

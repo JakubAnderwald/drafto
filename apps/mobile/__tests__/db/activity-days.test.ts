@@ -264,6 +264,33 @@ describe("flushActivityDays", () => {
     expect(stored()).toEqual({ days: [], lastSent: day(1) });
   });
 
+  it("keeps a day the server's date hadn't reached queued, and sends it when it has", async () => {
+    const { db, stored } = makeDb();
+    const { client, rpc } = makeClient();
+    // The clock runs a few minutes ahead: it reads Nov 14 while the server is
+    // still at Nov 13, so record_activity drops Nov 14 as a future day.
+    rpc.mockImplementation(async (fn: string) =>
+      fn === "get_server_time"
+        ? { data: "2026-11-13T23:58:00+00:00", error: null }
+        : { data: 0, error: null },
+    );
+    await markAppOpened(db, at(1));
+    await flushActivityDays(db, client, TAG);
+    expect(stored()).toEqual({ days: [day(1)], lastSent: null });
+
+    // Nov 14 really comes, with no Nov 13 mark in between: it is still queued.
+    rpc.mockImplementation(async () => ({ data: 1, error: null }));
+    await markAppOpened(db, at(1));
+    await flushActivityDays(db, client, TAG);
+
+    expect(rpc.mock.calls.map(([fn, args]) => [fn, args?.p_days])).toEqual([
+      ["record_activity", [day(1)]],
+      ["get_server_time", undefined],
+      ["record_activity", [day(1)]],
+    ]);
+    expect(stored()).toEqual({ days: [], lastSent: day(1) });
+  });
+
   it("keeps the newest lastSent when an older day is sent", async () => {
     // The device clock went back a few days after today was recorded.
     const { db, stored } = makeDb({ days: [day(-3)], lastSent: day(0) });
