@@ -113,7 +113,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;19,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;20,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
