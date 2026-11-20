@@ -75,3 +75,31 @@ describe("app.config.ts iOS permission purpose strings", () => {
     expect(config.ios?.infoPlist?.ITSAppUsesNonExemptEncryption).toBe(false);
   });
 });
+
+describe("app.config.ts E2E probes flag", () => {
+  const build = () =>
+    appConfig({
+      config: {},
+      projectRoot: "apps/mobile",
+      staticConfigPath: null,
+      packageJsonPath: null,
+    } satisfies ConfigContext);
+  const original = process.env.EXPO_PUBLIC_E2E_PROBES;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.EXPO_PUBLIC_E2E_PROBES;
+    else process.env.EXPO_PUBLIC_E2E_PROBES = original;
+  });
+
+  it("is off unless the build sets EXPO_PUBLIC_E2E_PROBES=1", () => {
+    delete process.env.EXPO_PUBLIC_E2E_PROBES;
+    expect(build().extra?.e2eProbes).toBe(false);
+    process.env.EXPO_PUBLIC_E2E_PROBES = "0";
+    expect(build().extra?.e2eProbes).toBe(false);
+  });
+
+  it("is on for an E2E build made with EXPO_PUBLIC_E2E_PROBES=1", () => {
+    process.env.EXPO_PUBLIC_E2E_PROBES = "1";
+    expect(build().extra?.e2eProbes).toBe(true);
+  });
+});

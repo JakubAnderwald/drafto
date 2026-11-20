@@ -1,34 +1,47 @@
 import { useCallback, useRef, useState } from "react";
 import { Alert } from "react-native";
-import { withTimeout } from "@drafto/shared";
+import { SIGN_OUT_CONFIRM_TITLE, describeSignOut, withTimeout } from "@drafto/shared";
 
 import { countUnsyncedChanges } from "@/lib/data/unsynced-changes";
-import { flushPendingSaves } from "@/lib/pending-saves";
+import { countSavesWritten, flushPendingSaves, forgetFailedSaves } from "@/lib/pending-saves";
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 
 /** How long sign-out waits for a last sync before it counts what would be lost. */
 export const PRE_SIGN_OUT_SYNC_TIMEOUT_MS = 10_000;
 
-export function describeUnsyncedLoss(count: number): string {
-  return count === 1
-    ? "1 change hasn't synced and will be lost."
-    : `${count} changes haven't synced and will be lost.`;
-}
-
-/** Resolves true only when the user picks "Sign out anyway". */
-function confirmSignOutAnyway(count: number): Promise<boolean> {
+/** Resolves true only when the user picks the destructive confirm button. */
+function confirmSignOut(pending: number | null): Promise<boolean> {
+  const { message, confirmLabel } = describeSignOut(pending);
   return new Promise((resolve) => {
     Alert.alert(
-      "Sign out?",
-      describeUnsyncedLoss(count),
+      SIGN_OUT_CONFIRM_TITLE,
+      message,
       [
         { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-        { text: "Sign out anyway", style: "destructive", onPress: () => resolve(true) },
+        { text: confirmLabel, style: "destructive", onPress: () => resolve(true) },
       ],
+      // Android: tapping outside the dialog or the back key counts as Cancel.
       { cancelable: true, onDismiss: () => resolve(false) },
     );
   });
+}
+
+/**
+ * Whether the sign-out may skip the provider's last flush. Only when nothing is pending beyond
+ * what the confirmation told the user: the dialog can stay open for any length of time, so the
+ * count is taken again once the user has confirmed. A change made meanwhile, or a count that can
+ * no longer be read, gets the provider's (bounded) flush instead of being wiped silently. So does
+ * an editor save written since the count (`savedSinceCount`): it can change a note that was
+ * already counted as unsynced, which leaves the count as it was. A count that failed before the
+ * dialog counts as 0 shown, so a recount of 0 still skips the flush.
+ */
+function canSkipFinalSync(
+  shown: number | null,
+  now: number | null,
+  savedSinceCount: boolean,
+): boolean {
+  return !savedSinceCount && now !== null && now <= (shown ?? 0);
 }
 
 export interface SafeSignOut {
@@ -37,10 +50,18 @@ export interface SafeSignOut {
 }
 
 /**
- * Sign-out that does not drop unsynced changes silently. Sign-out wipes the local database,
- * so it first writes any debounced editor save, and when changes are pending it lets one more
- * sync run, counts again, and asks before discarding whatever is still unsynced (offline, or
- * the sync failed).
+ * Sign-out that always asks first and does not drop unsynced changes silently. Sign-out wipes
+ * the local database, so it first writes any debounced editor save, and when changes are
+ * pending it lets one more sync run and counts again. Then it shows exactly one confirmation:
+ * how many changes are still unsynced (offline, or the sync failed), that everything is
+ * synced, or, when the count failed or an editor save could not be written, that unsynced
+ * changes would be lost. An editor save that fails after a definite count was shown stops the
+ * sign-out instead, so the next attempt can warn about it.
+ *
+ * `isSigningOut` is true while the last sync runs and once the user has confirmed, never while
+ * the confirmation is open. A confirmation never blocks a later sign-out either: if the native
+ * alert goes away without calling back (an Android activity recreation, a closed macOS window),
+ * the next press asks again, and an answer to the abandoned dialog is ignored.
  *
  * It relies on the database provider's `sync()` joining a sync that is already running and
  * never rejecting (ADR-0048), so awaiting it also covers a sync in flight.
@@ -49,13 +70,17 @@ export function useSafeSignOut(): SafeSignOut {
   const { signOut } = useAuth();
   const { database, sync } = useDatabase();
   const [isSigningOut, setIsSigningOut] = useState(false);
-  // A ref, so a double tap inside one frame cannot start two sign-outs.
-  const inFlightRef = useRef(false);
+  // Refs, so a double tap inside one frame cannot start two sign-outs. `busyRef` covers the
+  // preparation and the sign-out itself but not the confirmation; `attemptRef` lets a newer
+  // attempt supersede one whose confirmation never answered.
+  const busyRef = useRef(false);
+  const attemptRef = useRef(0);
 
   const safeSignOut = useCallback(async () => {
-    if (inFlightRef.current) return;
-    inFlightRef.current = true;
-    setIsSigningOut(true);
+    if (busyRef.current) return;
+    busyRef.current = true;
+    const attempt = ++attemptRef.current;
+    const isCurrent = () => attemptRef.current === attempt;
 
     // null when the count cannot be read.
     const countPending = async (): Promise<number | null> => {
@@ -70,30 +95,58 @@ export function useSafeSignOut(): SafeSignOut {
     try {
       // An edit still inside an editor's save debounce is not in the database yet, so it would
       // be neither counted nor synced. Write it first.
-      await flushPendingSaves();
+      const saved = await flushPendingSaves();
+      let writesAtCount = countSavesWritten();
       let pending = await countPending();
       if (pending !== null && pending > 0) {
+        setIsSigningOut(true);
         // Bounded: a hung request must not hang sign-out.
         await withTimeout<unknown>(sync(), PRE_SIGN_OUT_SYNC_TIMEOUT_MS, null);
+        writesAtCount = countSavesWritten();
         pending = await countPending();
+        setIsSigningOut(false);
       }
+      // An edit whose save failed is in no count: warn that changes would be lost rather than
+      // show a number (or "Everything is synced") that leaves it out.
+      const shown = saved ? pending : null;
 
-      if (pending === null) {
-        // A failed count must not trap the user in the account: sign out as before, unwarned,
-        // with the provider's own last flush.
-        await signOut();
+      busyRef.current = false;
+      const confirmed = await confirmSignOut(shown);
+      // A newer attempt superseded this one: its own confirmation is the one that counts.
+      if (!isCurrent() || !confirmed) return;
+      busyRef.current = true;
+      setIsSigningOut(true);
+
+      const savedNow = await flushPendingSaves();
+      if (!savedNow && shown !== null) {
+        // An editor save failed after the dialog showed a count it is not part of: signing out
+        // would wipe that edit without the user having been told.
+        Alert.alert(
+          "Couldn't save your last edit",
+          "You're still signed in. Signing out now would lose that edit.",
+        );
         return;
       }
-      if (pending > 0 && !(await confirmSignOutAnyway(pending))) return;
-      // Everything was synced just now, or the user chose to drop what could not be: the
-      // provider's flush would only repeat that attempt.
-      await signOut({ skipFinalSync: true });
+      const stillPending = await countPending();
+      if (canSkipFinalSync(shown, stillPending, countSavesWritten() !== writesAtCount)) {
+        // Nothing to push, or only the changes the user chose to drop after the last sync could
+        // not push them: the provider's flush would only repeat that attempt.
+        await signOut({ skipFinalSync: true });
+      } else {
+        // The count failed, or something changed while the dialog was open: confirming must not
+        // trap the user in the account, so sign out with the provider's own last flush.
+        await signOut();
+      }
+      // The database those failed saves were meant for is gone.
+      forgetFailedSaves();
     } catch (error) {
       console.error("Sign-out failed:", error);
       Alert.alert("Couldn't sign out", "Check your connection and try again.");
     } finally {
-      inFlightRef.current = false;
-      setIsSigningOut(false);
+      if (isCurrent()) {
+        busyRef.current = false;
+        setIsSigningOut(false);
+      }
     }
   }, [database, sync, signOut]);
 

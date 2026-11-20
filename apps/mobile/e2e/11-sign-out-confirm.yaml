@@ -1,0 +1,143 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+---
+# Default: Cancel only. Pass -e SIGN_OUT_CONFIRM=1 to also confirm (see below).
+# No `env:` default in the header: Maestro 2.11 lets a flow's own `env:` value
+# win over `-e`, so a "0" there kept the confirm leg from ever running.
+# Flow 11: Sign-out confirmation (PrimeTestLab report 10668, S-02)
+# Tests: Settings "Sign Out" always asks first. With everything synced the
+# native alert reads "Sign out?" / "Everything is synced. Your notes will be
+# here when you sign back in." with Cancel / Sign out. Cancel (and, on Android,
+# the back key) keeps the user signed in on Settings.
+# Before the fix one tap signed out and wiped the device at once, so the wait
+# for the dialog below times out on 1.4.7.
+# Depends on: 01-login (user is logged in)
+#
+# Optional env:
+#   -e SIGN_OUT_CONFIRM=1  also confirm and assert the Log In screen. That ends
+#     every session of the shared dev E2E user (sign-out is global), so run it
+#     last and alone, and run 01-login again afterwards.
+#
+# Selectors:
+# - Maestro text selectors are regexes: "Sign out?" would also match the
+#   Settings button's own "Sign out" label, so the title is "Sign out\\?".
+# - Native alert buttons carry no testIDs. Android maps RN's two buttons to
+#   android:id/button2 (Cancel, negative) and android:id/button1 (Sign out,
+#   positive); Material dialogs may render the labels in capitals, so the ids
+#   are used. On iOS the alert's "Sign out" shares its label with the Settings
+#   button behind it, so the confirm tap is anchored right of the alert's Cancel.
+#
+# No RUN_ID needed — this flow creates no user data.
+
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Notebooks"
+    timeout: 30000
+
+# --- Open Settings and wait until nothing is pending ---
+# iOS labels the tab "Settings, tab, 3 of 3"; Android uses the bare title.
+- tapOn: "Settings(, tab.*)?"
+# iOS exposes the sync row as one element labelled "Sync status: All synced"
+# (sync-status.tsx); Android shows the bare text.
+- extendedWaitUntil:
+    visible: "(Sync status: )?All synced"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: "sign-out-button"
+    direction: DOWN
+    timeout: 10000
+
+# --- Test: Sign Out asks first, with the synced copy ---
+- tapOn:
+    id: "sign-out-button"
+- extendedWaitUntil:
+    visible: "Everything is synced\\. Your notes will be here when you sign back in\\."
+    timeout: 15000
+- assertVisible: "Sign out\\?"
+- assertNotVisible: "Sign in to your Drafto account"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: "android:id/button2"
+      - assertVisible:
+          id: "android:id/button1"
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - assertVisible: "Cancel"
+
+# --- Test: Cancel keeps the user signed in on Settings ---
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - tapOn:
+          id: "android:id/button2"
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: "Cancel"
+- extendedWaitUntil:
+    notVisible: "Everything is synced\\..*"
+    timeout: 10000
+- assertVisible:
+    id: "sign-out-button"
+- assertNotVisible: "Sign in to your Drafto account"
+
+# --- Test (Android): the back key dismisses the dialog like Cancel ---
+# The report's device used 3-button navigation.
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - tapOn:
+          id: "sign-out-button"
+      - extendedWaitUntil:
+          visible: "Everything is synced\\..*"
+          timeout: 15000
+      - pressKey: back
+      - extendedWaitUntil:
+          notVisible: "Everything is synced\\..*"
+          timeout: 10000
+      - assertVisible:
+          id: "sign-out-button"
+      - assertNotVisible: "Sign in to your Drafto account"
+
+# --- Test (SIGN_OUT_CONFIRM=1 only): Sign out signs out ---
+- runFlow:
+    when:
+      true: ${typeof SIGN_OUT_CONFIRM !== 'undefined' && SIGN_OUT_CONFIRM == '1'}
+    commands:
+      - tapOn:
+          id: "sign-out-button"
+      - extendedWaitUntil:
+          visible: "Everything is synced\\..*"
+          timeout: 15000
+      - runFlow:
+          when:
+            platform: Android
+          commands:
+            - tapOn:
+                id: "android:id/button1"
+      - runFlow:
+          when:
+            platform: iOS
+          commands:
+            # `below:` alone also matches the Settings button behind the
+            # alert (it sits under the message too), and a tap at its centre
+            # lands between the alert's buttons. Only the alert's own
+            # "Sign out" is right of its Cancel.
+            - tapOn:
+                text: "Sign out"
+                rightOf: "Cancel"
+      - extendedWaitUntil:
+          visible: "Log In"
+          timeout: 30000
+      - assertVisible: "Sign in to your Drafto account"

@@ -14,6 +14,7 @@ import {
   cleanupOrphanedFiles,
   ensureLocalIdentity,
   fetchStorageUsage,
+  prefetchAttachmentImages,
 } from "@/lib/data";
 import type { UploadResult } from "@/lib/data";
 import { measureAsync } from "@/lib/performance";
@@ -244,6 +245,10 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
               : `${result.remoteChangeCount} items were updated from another device`;
           console.log(`[Sync] ${msg}`);
         }
+        // Download images synced from other devices so they show offline
+        // (ADR-0086). Not awaited: it must not hold up the pass, and it stops
+        // once this session ends.
+        void prefetchAttachmentImages({ isCancelled: () => !isCurrentSession() });
         return { ok: true, pending, uploaded };
       } catch (err) {
         if (!isCurrentSession()) return { ok: false, pending: false, uploaded: 0 };

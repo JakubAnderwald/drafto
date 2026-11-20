@@ -1,0 +1,49 @@
+WINDOW MANAGER INSETS (dumpsys window insets)
+  InsetsStateController
+    InsetsState
+      mDisplayFrame=Rect(0, 0 - 1080, 2400)
+      InsetsSource id=d3e80000 type=statusBars frame=[0,0][1080,118] visible=true flags=
+      InsetsSource id=d3e80005 type=mandatorySystemGestures frame=[0,0][1080,152] visible=true flags=
+      InsetsSource id=27 type=navigationBars frame=[0,2274][1080,2400] visible=true flags=
+      InsetsSource id=28 type=tappableElement frame=[0,2274][1080,2400] visible=true flags=
+    Control map:
+      ITYPE_NAVIGATION_BAR -> Window{8d3c1a2 u0 NavigationBar0}
+
+WINDOW MANAGER WINDOWS (dumpsys window windows)
+  Window #0 Window{8d3c1a2 u0 NavigationBar0}:
+    mDisplayId=0 rootTaskId=1 mSession=Session{4c2d1e0 1234:u0a10153} mClient=android.os.BinderProxy@6a1f2b3
+    mOwnerUid=10153 showForAllUsers=true package=com.android.systemui appop=NONE
+    mAttrs={(0,0)(fillx126) gr=BOTTOM CENTER_VERTICAL sim={adjust=pan} ty=NAVIGATION_BAR fmt=TRANSLUCENT
+      fl=NOT_FOCUSABLE NOT_TOUCH_MODAL TOUCHABLE_WHEN_WAKING WATCH_OUTSIDE_TOUCH SPLIT_TOUCH HARDWARE_ACCELERATED SLIPPERY
+      pfl=COLOR_SPACE_AGNOSTIC USE_BLAST
+      bhv=DEFAULT
+      fitTypes=0
+      fitSides=0
+      frameRateBoostOnTouch=true
+      dimDuration=-1 surfaceInsets=Rect(0, 0 - 0, 0)}
+  Window #5 Window{5f1e0b7 u0 eu.drafto.mobile/eu.drafto.mobile.MainActivity}:
+    mDisplayId=0 rootTaskId=27 mSession=Session{9e8d7c6 5678:u0a10190} mClient=android.os.BinderProxy@1b2c3d4
+    mOwnerUid=10190 showForAllUsers=false package=eu.drafto.mobile appop=NONE
+    mAttrs={(0,0)(fillxfill) sim={adjust=resize forwardNavigation} ty=BASE_APPLICATION wanim=0x10302fe
+      fl=LAYOUT_IN_SCREEN LAYOUT_INSET_DECOR SPLIT_TOUCH HARDWARE_ACCELERATED DRAWS_SYSTEM_BAR_BACKGROUNDS
+      pfl=NO_MOVE_ANIMATION FORCE_DRAW_STATUS_BAR_BACKGROUND FIT_INSETS_CONTROLLED USE_BLAST
+      bhv=DEFAULT
+      fitTypes=0
+      fitSides=0
+      apr=LIGHT_STATUS_BARS LIGHT_NAVIGATION_BARS
+      frameRateBoostOnTouch=true
+      dimDuration=-1 surfaceInsets=Rect(0, 0 - 0, 0)}
+    Requested w=1080 h=2400 mLayoutSeq=412
+    mBaseLayer=21000 mSubLayer=0    mToken=ActivityRecord{2a3b4c5 u0 eu.drafto.mobile/.MainActivity t27}
+  Window #6 Window{7c6b5a4 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}:
+    mDisplayId=0 rootTaskId=1 mSession=Session{2b3c4d5 2345:u0a10120} mClient=android.os.BinderProxy@3c4d5e6
+    mAttrs={(0,0)(fillxfill) sim={adjust=nothing} ty=BASE_APPLICATION wanim=0x10302fe
+      fl=LAYOUT_IN_SCREEN LAYOUT_INSET_DECOR SHOW_WALLPAPER SPLIT_TOUCH HARDWARE_ACCELERATED DRAWS_SYSTEM_BAR_BACKGROUNDS
+      apr=LIGHT_STATUS_BARS LIGHT_NAVIGATION_BARS
+      frameRateBoostOnTouch=true}
+
+  mGlobalConfiguration={1.0 ?mcc?mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger -keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400)}}
+  mHasPermanentDpad=false
+  mTopFocusedDisplayId=0
+  mCurrentFocus=Window{5f1e0b7 u0 eu.drafto.mobile/eu.drafto.mobile.MainActivity}
+  mFocusedApp=ActivityRecord{2a3b4c5 u0 eu.drafto.mobile/.MainActivity t27}

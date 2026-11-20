@@ -113,7 +113,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;16,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;19,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -271,15 +271,29 @@ export default function PrivacyPolicyPage() {
           <p>
             The iOS, Android and macOS apps store a local copy of your notes on your device using
             SQLite for offline access. This data stays on your device and syncs with our servers
-            when you are online. Files you attach while offline stay on the device only until they
-            upload.
+            when you are online.
           </p>
           <p>
-            The local copy is erased when you sign out or delete your account in that app. Copies on
-            your other devices stay until you sign out on them or uninstall the app. If a
-            device&apos;s session ends on its own, for example because you deleted your account on
-            another device, its copy stays until you uninstall the app or a different account signs
-            in on it.
+            So that the images in your notes show without a connection, these apps also keep a copy
+            of your image attachments on the device: every image you attach from that device (it
+            stays on the device after it uploads), and the images in your notes, which they download
+            from our servers in the background. Other files you attach stay on the device only until
+            they upload. When the space the images take reaches a limit (300&nbsp;MB on iPhone, iPad
+            and Android, 1&nbsp;GB on macOS), the copies you have not opened for the longest time
+            are removed first; a file that has not finished uploading is never removed. Once you
+            delete a note permanently in that app, the copies of its images are removed the next
+            time the app starts and syncs, or sooner when the limit is reached. A note deleted
+            permanently anywhere else (on the web, in another app, or by the 30-day trash cleanup)
+            is not removed from the app, so the copies of its images stay too, until you delete the
+            note there, the limit removes them, or you sign out. Images in notes in the trash are
+            kept, so a restored note still shows them.
+          </p>
+          <p>
+            The local copy, attachments included, is erased when you sign out or delete your account
+            in that app. Copies on your other devices stay until you sign out on them or uninstall
+            the app. If a device&apos;s session ends on its own, for example because you deleted
+            your account on another device, its copy stays until you uninstall the app or a
+            different account signs in on it.
           </p>
         </NumberedSection>
 
@@ -540,9 +554,9 @@ export default function PrivacyPolicyPage() {
               in its trash
             </li>
             <li>
-              On iPhone, iPad and Android, a note already synced to the device is not removed when
-              it is deleted on our servers or on another device: it stays in that app until you
-              delete it there or sign out
+              In the iPhone, iPad, Android and macOS apps, a note already synced to the device is
+              not removed when it is deleted on our servers or on another device: it stays in that
+              app until you delete it there or sign out
             </li>
             <li>
               Earlier versions of a note&apos;s content are deleted automatically after 30 days

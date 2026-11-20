@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { render } from "../helpers/test-utils";
 import EditorScreen from "../../app/notes/[id]";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
+import { OfflineBannerHeightContext } from "@/hooks/use-offline-banner-height";
 import { semanticDark, semanticLight } from "@/theme/tokens";
 
 // Layout of the editor screen: the header, the keyboard handling and the
@@ -77,6 +78,12 @@ jest.mock("@/components/editor/note-editor", () => ({
 
 jest.mock("@/components/editor/attachment-picker", () => ({
   AttachmentPicker: () => null,
+}));
+
+// The resolver reaches the Supabase client, which needs env the tests don't set.
+jest.mock("@/lib/data/attachment-resolver", () => ({
+  resolveAttachmentSrc: jest.fn(),
+  localAttachmentSrcFor: jest.fn(),
 }));
 
 jest.mock("@/hooks/use-auto-save", () => ({
@@ -175,6 +182,25 @@ describe("EditorScreen layout", () => {
 
     const kav = UNSAFE_getByType(KeyboardAvoidingView);
     expect(kav.props.keyboardVerticalOffset).toBe(MOCK_HEADER_HEIGHT);
+  });
+
+  it("adds the offline banner between the header and the editor to the Android offset", () => {
+    const originalOS = ReactNative.Platform.OS;
+    Object.defineProperty(ReactNative.Platform, "OS", { value: "android", configurable: true });
+    try {
+      loadNote();
+      const { UNSAFE_getByType } = render(
+        <OfflineBannerHeightContext.Provider value={28}>
+          <EditorScreen />
+        </OfflineBannerHeightContext.Provider>,
+      );
+
+      // Without it the toolbar and attachment row sat behind the keyboard by the banner's height.
+      const kav = UNSAFE_getByType(KeyboardAvoidingView);
+      expect(kav.props.keyboardVerticalOffset).toBe(MOCK_HEADER_HEIGHT + 28);
+    } finally {
+      Object.defineProperty(ReactNative.Platform, "OS", { value: originalOS, configurable: true });
+    }
   });
 
   it.each([

@@ -1,0 +1,75 @@
+{
+  "attributes": {
+    "accessibilityText": "Drafto",
+    "bounds": "[0,0][402,874]"
+  },
+  "children": [
+    {
+      "attributes": {
+        "bounds": "[0,0][402,874]"
+      },
+      "children": [
+        {
+          "attributes": {
+            "resource-id": "Notes",
+            "bounds": "[0,62][402,116]"
+          },
+          "children": [
+            {
+              "attributes": {
+                "resource-id": "BackButton",
+                "accessibilityText": "Notes",
+                "bounds": "[8,68][98,112]"
+              },
+              "children": [],
+              "clickable": true,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            },
+            {
+              "attributes": {
+                "accessibilityText": "Note 1760000000",
+                "bounds": "[120,74][282,106]"
+              },
+              "children": [],
+              "clickable": false,
+              "enabled": true,
+              "focused": false,
+              "checked": false,
+              "selected": false
+            }
+          ],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        },
+        {
+          "attributes": {
+            "accessibilityText": "You are offline",
+            "bounds": "[130,66][272,86]"
+          },
+          "children": [],
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "checked": false,
+          "selected": false
+        }
+      ],
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "checked": false,
+      "selected": false
+    }
+  ],
+  "clickable": false,
+  "enabled": true,
+  "focused": false,
+  "checked": false,
+  "selected": false
+}

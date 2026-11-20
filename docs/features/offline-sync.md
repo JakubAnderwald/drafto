@@ -1,6 +1,6 @@
 # Offline Sync
 
-**Status:** shipped **Updated:** 2026-10-12
+**Status:** shipped **Updated:** 2026-11-18
 
 ## What it is
 
@@ -24,6 +24,40 @@ is still unpushed. Mobile uploads queued attachments before pushing metadata;
 desktop uploads them after, and makes one more pass after an upload so the
 attachment's new status is pushed too.
 
+### Offline attachment cache
+
+Attachments show offline ([ADR-0086](../adr/0086-offline-attachment-cache.md)).
+Each app keeps a copy of image attachments under
+`<Documents>/attachment-cache/<storage path>` (each segment mapped one-to-one
+by `attachmentCacheRelativePath`):
+
+- A picked image is copied straight there; it is uploaded from there and kept
+  after the upload. Until its row is written it is held, so nothing deletes
+  it. The row's `local_uri` still goes to `null` once uploaded; the cache is
+  keyed by `file_path`, so the schema is unchanged. Any other file waits in
+  `attachments/` and is deleted once uploaded.
+- After each successful sync pass, `prefetchAttachmentImages` downloads up to
+  25 uncached images (100 MB) of notes not in the trash, newest first, on any
+  network; images over 20 MB wait until they are viewed. Opening a note also
+  caches an image it had to fetch.
+- An index (`AttachmentCacheIndex`) keeps each file's size, its last use and
+  the running total, filled by one walk and saved to `.index.json` in the
+  cache, so last use survives a restart.
+- Over its cap (300 MB mobile, 1 GB desktop) the cache evicts least recently
+  used files first, never a file whose row is `pending`, `failed` or
+  `quota_exceeded`, or one still held.
+- After the first sync of a session, `cleanupOrphanedFiles` deletes cached
+  files whose attachment or note is gone (trashed notes keep theirs).
+- `deleteAllLocalAttachments` (sign-out and the identity guard) wipes it.
+- On iOS and macOS the cache also holds the editor's page, in `.editor/`
+  (`src/lib/editor-page.ts`), so WebKit can read the cached images. The walk
+  skips that folder like `.partial/` and `.index.json`, so the page is never
+  indexed, evicted or swept; the next editor writes it again after a wipe.
+
+The editor shows a cached image through a `file://…#drafto-attachment=<path>`
+src; see [editor.md](./editor.md). Opening a non-image attachment still needs
+the network.
+
 ## Code paths
 
 | Concern                              | Path                                                                                                           |
@@ -35,6 +69,8 @@ attachment's new status is pushed too.
 | Mobile sync driver (pull / push)     | `apps/mobile/src/db/sync.ts`                                                                                   |
 | Mobile sync orchestration + triggers | `apps/mobile/src/providers/database-provider.tsx`                                                              |
 | Mobile attachment upload queue       | `apps/mobile/src/lib/data/attachment-queue.ts`                                                                 |
+| Attachment cache (mirrored)          | `apps/{mobile,desktop}/src/lib/data/attachment-{cache,resolver,prefetch}.ts`                                   |
+| Attachment cache policy (shared)     | `packages/shared/src/storage/attachment-cache-{policy,index}.ts`, `attachment-prefetch.ts`                     |
 | Desktop schema (must match mobile)   | `apps/desktop/src/db/schema.ts`                                                                                |
 | Desktop migrations                   | `apps/desktop/src/db/migrations.ts`                                                                            |
 | Desktop WatermelonDB instance        | `apps/desktop/src/db/index.ts`                                                                                 |
@@ -49,12 +85,67 @@ attachment's new status is pushed too.
 | Schema / migration tests             | `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts`                                                 |
 | Sync UI + perf tests                 | `apps/mobile/__tests__/components/sync-status.test.tsx`, `apps/mobile/__tests__/performance/sync-perf.test.ts` |
 
+## Offline banner
+
+While the device has no connection, mobile and desktop show a red "You are
+offline" strip, then a green "Back online — syncing..." for 2 s after the
+connection returns. The state machine is `nextOfflineBannerVariant()` with
+`RECONNECTED_HOLD_MS` in `packages/shared/src/network/offline-banner.ts`. The
+`useOfflineBannerState()` hook (`apps/{mobile,desktop}/src/hooks/use-offline-banner-state.ts`,
+identical on both) is a thin wrapper: it feeds the machine `useNetworkStatus()`
+(NetInfo `isConnected`) and runs the hold timer. Web has no offline banner.
+
+The banner is part of the layout flow, never an overlay. Until 1.4.7 it was
+`position: absolute` with `zIndex: 100` over the whole app, so it covered the
+header's Back arrow and took its taps (PrimeTestLab report 10668, M-03).
+
+- **Mobile (iOS, Android).** Each screen draws its own banner below its header.
+  `offlineScreenLayout` (`apps/mobile/src/components/navigation/offline-screen-layout.tsx`)
+  is the react-navigation `screenLayout` of the root `<Stack>` (`app/_layout.tsx`)
+  and of `<Tabs>` (`app/(tabs)/_layout.tsx`); it skips `(tabs)` on the root stack,
+  whose tabs wrap themselves. The header keeps its own status-bar padding, so there
+  is no blank strip. `OfflineBannerProvider` (`src/providers/offline-banner-provider.tsx`)
+  runs the state once for the app, and tracks the focused screen: each screen's layout
+  reports its route key, whether it is headerless and its banner's height while it is
+  focused, and gives the slot up on blur or unmount. The banner itself
+  (`src/components/offline-banner.tsx`) only draws (`testID="offline-banner"`,
+  `accessibilityRole="alert"`).
+- **Headerless screens** (login, reset-password, waiting-for-approval, and the
+  RouteGuard loading view) have nothing to cover, so the banner goes at the very top
+  there, fills the status-bar area, and the screen below it sees a top safe-area
+  inset of 0. The status bar then gets white icons. `SystemBars`
+  (`src/components/system-bars.tsx`) is the app's only `<StatusBar>` and picks that
+  from the provider (`useOfflineBannerCoversStatusBar()`): light while the focused
+  screen is headerless and a banner shows, the theme's style otherwise. The banner
+  mounts no `StatusBar` of its own, so a pushed screen with a header goes back to
+  the theme's style. A user who opens the app offline
+  on the login screen still learns why sign-in fails.
+- **Offsets.** `useOfflineBannerHeight()` (`src/hooks/use-offline-banner-height.ts`)
+  is the banner's height above the current screen. The note editor adds it to its
+  Android keyboard offset (`app/notes/[id].tsx`), login and reset-password use it as
+  theirs, and sign-up and forgot-password add it to their header height; otherwise
+  the form sits behind the keyboard by that much while offline. Toasts start below
+  the focused screen's banner (`useFocusedOfflineBanner()` and `toastTopOffset()` in
+  `src/components/toast.tsx`): below header plus banner, or on a headerless screen
+  just clear of the banner at the top. The tree has the same shape with or without the
+  banner, so a connection change resizes the note editor's WebView but never
+  remounts it.
+- **macOS.** `apps/desktop/src/components/offline-banner.tsx` is the first child of
+  `MainScreen`'s column (`src/screens/main.tsx`), so it pushes the three panes down
+  instead of covering the sidebar's top row and the note list's "New note" button.
+- **E2E.** `apps/mobile/e2e/android-only/10-offline-banner-header.yaml` and
+  `ios-only/10-offline-banner-header.yaml`, run by `run-qa-10668-e2e.sh`, tap the
+  header Back button while offline and end on an offline note; the host check
+  `banner-clear-of-back` then reads the hierarchy and fails if the banner overlaps the
+  Back button or sits above the header.
+
 ## Related ADRs
 
 - [0009 — Mobile App Technology Choices](../adr/0009-mobile-app-technology-choices.md)
 - [0010 — Offline Sync Strategy with WatermelonDB](../adr/0010-offline-sync-strategy.md)
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [0048 — Local Writes Trigger a Debounced Sync](../adr/0048-local-writes-trigger-debounced-sync.md)
+- [0086 — Offline Attachment Cache on Mobile and Desktop](../adr/0086-offline-attachment-cache.md)
 
 ## Cross-platform notes
 

@@ -30,3 +30,6 @@ export { fetchStorageUsage } from "./storage-usage";
 
 export { openAttachment } from "./open-attachment";
 export type { OpenAttachmentParams, OpenAttachmentResult } from "./open-attachment";
+
+export { resolveAttachmentSrc, localAttachmentSrcFor } from "./attachment-resolver";
+export { prefetchAttachmentImages } from "./attachment-prefetch";

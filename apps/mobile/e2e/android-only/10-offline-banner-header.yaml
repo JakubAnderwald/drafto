@@ -1,0 +1,213 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+  - offline
+onFlowComplete:
+  # Back online however the flow ends, unless the runner keeps the emulator
+  # offline for its host check (QA_KEEP_OFFLINE=1); it restores the network
+  # itself afterwards.
+  - runFlow:
+      when:
+        true: ${typeof QA_KEEP_OFFLINE === 'undefined' || QA_KEEP_OFFLINE != '1'}
+      commands:
+        - setAirplaneMode: disabled
+---
+# Android 10: the offline banner no longer covers the header's Back arrow
+# (PrimeTestLab report 10668, M-03).
+#
+# On 1.4.7 the banner was drawn over the whole app (position absolute, zIndex
+# 100) and padded by the status bar, so it covered the top of every header: the
+# note editor's and the notebook's "Navigate up" arrow and the Notebooks tab's
+# search button. It also took their taps, so Back did nothing while offline.
+# Now each screen draws the banner below its own header.
+#
+# Two checks:
+#   - Here: each tap on "Navigate up" (and on the search button) while offline
+#     must work. The tap lands on the element's centre, which the old banner
+#     covered on the Pixel 7, so these steps time out on 1.4.7.
+#   - After the flow: the host check `banner-clear-of-back`
+#     (scripts/lib/maestro-layout-checks.mjs), which run-qa-10668-e2e.sh runs
+#     on `maestro hierarchy`. It fails when the banner overlaps the Back button
+#     or sits above the header. So the flow ENDS offline on the note editor.
+#
+# Run it on a release APK built against dev (docs/architecture/testing.md,
+# "Offline flows on Android"): a debug build loads its JavaScript from Metro,
+# which airplane mode cuts off. Through the runner:
+#   bash apps/mobile/e2e/run-qa-10668-e2e.sh android --only 10-offline-banner
+#
+# Logs in when the app shows Log In, otherwise reuses the session.
+# Required env: -e RUN_ID=$(date +%s)
+# For the login: -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+# Optional: -e QA_KEEP_OFFLINE=1 leaves airplane mode on at the end.
+# Uses "NB <RUN_ID>" with "Note <RUN_ID>", the pair flow 08 leaves earlier in a
+# runner pass, and creates them when they are missing; the E2E stale purge
+# removes them. "[^A-Za-z]*" skips the row icon iOS-style labels may carry,
+# without matching "OffImg NB <RUN_ID>" or "Attach NB <RUN_ID>".
+
+- launchApp
+
+- runFlow:
+    when:
+      visible: "Log In"
+    commands:
+      - tapOn: "you@example.com"
+      - inputText: ${E2E_TEST_EMAIL}
+      - tapOn: "Sign in to your Drafto account"
+      - tapOn: "Your password"
+      - inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
+      - tapOn: "Sign in to your Drafto account"
+      - tapOn:
+          id: "login-button"
+
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 60000
+- waitForAnimationToEnd
+
+# --- Online: a notebook with one note ---
+- runFlow:
+    when:
+      notVisible: "[^A-Za-z]*NB ${RUN_ID}"
+    commands:
+      - tapOn:
+          id: "add"
+      - extendedWaitUntil:
+          visible: "Notebook name"
+          timeout: 10000
+      - inputText: "NB ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: "[^A-Za-z]*NB ${RUN_ID}"
+          timeout: 10000
+- tapOn: "[^A-Za-z]*NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible:
+      id: "notes-list-screen"
+    timeout: 10000
+- tapOn:
+    id: "swipe-hint-dismiss"
+    optional: true
+- runFlow:
+    when:
+      notVisible: ".*Note ${RUN_ID}.*"
+    commands:
+      - tapOn:
+          id: "add"
+      # On a build with the M-01 bug (1.4.7) the notebook FAB's centre sits on the
+      # 3-button nav bar's top edge, so that tap reaches the nav bar. Tap the
+      # FAB's uncovered top part then (Pixel 7, 1080x2400), so a --before run still
+      # gets to its check. A fixed build opens the create bar on the first tap.
+      - extendedWaitUntil:
+          visible: "Note title (optional)"
+          timeout: 5000
+          optional: true
+      - runFlow:
+          when:
+            notVisible: "Note title (optional)"
+          commands:
+            - tapOn:
+                point: "88%,93%"
+      - assertVisible: "Note title (optional)"
+      - inputText: "Note ${RUN_ID}"
+      - tapOn:
+          id: "checkmark"
+      - extendedWaitUntil:
+          visible: ".*Note ${RUN_ID}.*"
+          timeout: 10000
+      # The create bar's input unmounts on submit, which closes the keyboard.
+      - waitForAnimationToEnd
+- tapOn: "Navigate up"
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 10000
+
+# --- Offline: the banner shows ---
+- setAirplaneMode: enabled
+# By testID, or by its text on a build from before the testID (1.4.7).
+- runFlow: ../helpers/assert-offline-banner.yaml
+- takeScreenshot: qa-10668-m03-android-offline-notebooks-tab
+
+# The Notebooks tab's search button, which the old banner half covered
+- tapOn:
+    id: "search-button"
+- extendedWaitUntil:
+    visible: "Search notes and notebooks..."
+    timeout: 10000
+- takeScreenshot: qa-10668-m03-android-offline-search
+- tapOn: "Navigate up"
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 10000
+
+# The notebook screen's Back arrow
+- tapOn: "[^A-Za-z]*NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible:
+      id: "notes-list-screen"
+    timeout: 10000
+# By testID, or by its text on a build from before the testID (1.4.7).
+- runFlow: ../helpers/assert-offline-banner.yaml
+- tapOn: "Navigate up"
+- extendedWaitUntil:
+    notVisible:
+      id: "notes-list-screen"
+    timeout: 10000
+- assertVisible:
+    id: "search-button"
+
+# The note editor's Back arrow, the one the report names. The title field
+# raises the keyboard first: the screenshot shows the editor toolbar sitting on
+# the keyboard, not behind it by the banner's height.
+- tapOn: "[^A-Za-z]*NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible:
+      id: "notes-list-screen"
+    timeout: 10000
+- tapOn: ".*Note ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible:
+      id: "editor-window"
+    timeout: 15000
+- tapOn: "Note ${RUN_ID}"
+- waitForAnimationToEnd
+- takeScreenshot: qa-10668-m03-android-offline-editor-keyboard
+- tapOn: "Navigate up"
+- extendedWaitUntil:
+    notVisible:
+      id: "editor-window"
+    timeout: 10000
+- assertVisible:
+    id: "notes-list-screen"
+
+# --- End offline on the note editor: the host check reads this screen ---
+- tapOn: ".*Note ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible:
+      id: "editor-window"
+    timeout: 15000
+- waitForAnimationToEnd
+# By testID, or by its text on a build from before the testID (1.4.7).
+- runFlow: ../helpers/assert-offline-banner.yaml
+- assertVisible: "Navigate up"
+- takeScreenshot: qa-10668-m03-android-offline-note
+
+# Run on its own (no QA_KEEP_OFFLINE), the flow also checks that the banner
+# goes once the connection is back ("Back online — syncing..." shows for 2 s).
+# By testID, and by its text: a build from before the testID (1.4.7) has no
+# "offline-banner" to wait for, so the testID wait alone would pass at once.
+- runFlow:
+    when:
+      true: ${typeof QA_KEEP_OFFLINE === 'undefined' || QA_KEEP_OFFLINE != '1'}
+    commands:
+      - setAirplaneMode: disabled
+      - extendedWaitUntil:
+          notVisible:
+            id: "offline-banner"
+          timeout: 30000
+      - extendedWaitUntil:
+          notVisible: "You are offline"
+          timeout: 30000

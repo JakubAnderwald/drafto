@@ -31,6 +31,12 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
+# A fresh install shows the list's one-time swipe hint (PrimeTestLab 10668
+# S-03) above the rows; close it so the rest of the flow sees the plain list.
+- tapOn:
+    id: "swipe-hint-dismiss"
+    optional: true
+
 # --- Test: create a note without title ---
 - tapOn:
     id: "add"

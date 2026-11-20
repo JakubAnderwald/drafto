@@ -6,6 +6,7 @@ import { enterApp } from "@/lib/auth/enter-app";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { AccountDeletedNotice } from "@/components/auth/account-deleted-notice";
@@ -56,6 +57,7 @@ export default function LoginPage() {
           <Input
             id="email"
             type="email"
+            autoComplete="email"
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -66,13 +68,14 @@ export default function LoginPage() {
 
         <div>
           <Label htmlFor="password">Password</Label>
-          <Input
+          <PasswordInput
             id="password"
-            type="password"
+            name="password"
+            autoComplete="current-password"
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="mt-1"
+            wrapperClassName="mt-1"
           />
         </div>
 

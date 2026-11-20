@@ -175,7 +175,7 @@ test.describe("CSP in the browser, signed out", () => {
     await page.goto("/login");
 
     await page.getByLabel("Email").fill("nonexistent-e2e-user@example.com");
-    await page.getByLabel("Password").fill("some-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("some-password-123");
     await page.getByRole("button", { name: "Log in" }).click();
 
     await expect(page.getByRole("alert")).toBeVisible({ timeout: 10000 });

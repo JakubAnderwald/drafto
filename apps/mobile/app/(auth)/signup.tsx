@@ -1,8 +1,10 @@
 import { useState, useMemo } from "react";
 import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
 
+import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -10,10 +12,14 @@ import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 
 export default function SignupScreen() {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // The keyboard is in window coordinates, so the offset is everything above this
+  // view: the header (kept for its Back button) and, while offline, the banner below it.
+  const keyboardOffset = useHeaderHeight() + useOfflineBannerHeight();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +83,7 @@ export default function SignupScreen() {
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={keyboardOffset}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Sign Up</Text>
@@ -102,18 +109,18 @@ export default function SignupScreen() {
             containerStyle={styles.field}
           />
 
-          <Input
+          <PasswordInput
             label="Password"
             placeholder="Min. 6 characters"
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
-            autoComplete="password"
+            autoComplete="new-password"
             textContentType="newPassword"
             editable={!loading}
             onSubmitEditing={handleSignup}
+            testID="signup-password-input"
             containerStyle={styles.field}
           />
 
