@@ -341,7 +341,7 @@ const UNSAFE_URL_CHARS = /[\u0000-\u0020\u007f\\]/;
 // or a newline; anything that does not parse as a JSON string literal makes
 // the whole block untrusted.
 const TAB_LINE_RE = /^\s*•\s*tabId\s+(\d+):\s*("(?:[^"\\]|\\.)*")\s*\(("(?:[^"\\]|\\.)*")\)\s*$/;
-const EXECUTED_ON_RE = /^- Executed on tabId: \d+$/;
+const EXECUTED_ON_RE = /^- Executed on tabId: (\d+)$/;
 
 // Claude Code writes save_to_disk screenshots into a 0700 mkdtemp directory
 // under os.tmpdir() named claude-chrome-screenshots-XXXXXX, as
@@ -1053,6 +1053,23 @@ export function parseTabContextBlock(text) {
   return listing ? tabs : null;
 }
 
+/**
+ * The tab ids the response's Tab Context blocks say the tool ran on
+ * (`- Executed on tabId: N`), as strings. Only blocks parseTabContextBlock
+ * trusts count, so a page's text can't add one.
+ */
+export function executedOnTabIds(texts) {
+  const ids = new Set();
+  for (const t of texts) {
+    if (!parseTabContextBlock(t)) continue;
+    for (const line of t.replace(/\r\n/g, "\n").split("\n")) {
+      const m = EXECUTED_ON_RE.exec(line.trim());
+      if (m) ids.add(String(Number(m[1])));
+    }
+  }
+  return ids;
+}
+
 /** tabs_context_mcp's first text block: {"availableTabs":[{tabId,title,url}],…}. */
 export function parseAvailableTabsJson(text) {
   if (typeof text !== "string" || !text.trim().startsWith("{")) return null;
@@ -1189,10 +1206,14 @@ export function applyPost({
     // Where the tab was when the screenshot was taken, from this response's
     // own Tab Context: only a shot of an owned tab on the allowed origin may
     // be published (ADR-0088). A click's navigation can show up one call
-    // late, so a neutral, unknown or off-origin page records false.
+    // late, so a neutral, unknown or off-origin page records false. So does a
+    // response whose Tab Context says the tool ran on another tab than the
+    // one asked for: the pixels may not be the owned tab's.
+    const executed = executedOnTabIds(texts);
+    const sameTab = [...executed].every((id) => id === String(args.tabId));
     const tabUrl =
       isTabId(args.tabId) && owns(next, args.tabId) ? next.tabs[String(args.tabId)] : undefined;
-    const onOrigin = typeof tabUrl === "string" && isAllowedNavigation(tabUrl, origins);
+    const onOrigin = sameTab && typeof tabUrl === "string" && isAllowedNavigation(tabUrl, origins);
     for (const t of texts) {
       const m = SCREENSHOT_BLOCK_RE.exec(t.trim());
       if (!m) continue;

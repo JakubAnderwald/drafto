@@ -46,6 +46,7 @@ export const REASONS = Object.freeze({
   withheld: "the report was withheld, so its screenshots were too",
   "not-reported": "the lane didn't report a result",
   off: "publishing is switched off (FACTORY_EVIDENCE_UPLOAD=0)",
+  unattended: "a macOS run is published by a person, never from an unattended session",
   "selftest-missing":
     "the publishing self-test hasn't passed on this Mac mini yet (see the factory runbook)",
   "selftest-failed": "the publishing self-test failed (see the factory runbook)",

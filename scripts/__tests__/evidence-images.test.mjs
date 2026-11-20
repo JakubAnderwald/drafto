@@ -336,6 +336,7 @@ describe("evidence-images: browserManifest reads the real guard's decision log",
   const DEVICE = "9796912b-8977-4d74-9c08-d9bb283b9496";
   const PREVIEW = "https://drafto-dc66i71t0-jakubanderwalds-projects.vercel.app";
   const TAB = 1264169916;
+  const OTHER_TAB = 1264169920;
   const T = (short) => `${CHROME_PREFIX}${short}`;
   const text = (t) => ({ type: "text", text: t });
   const image = { type: "image", data: "aGVsbG8=", mimeType: "image/png" };
@@ -494,6 +495,19 @@ describe("evidence-images: browserManifest reads the real guard's decision log",
 
     // slot 10: a real copy after all that, still lined up.
     screenshot(shoot("screenshot-1792223827600-5.png", png("slot-10")));
+    // slot 11: asked for the owned preview tab, but the response's Tab
+    // Context says it ran on another tab, one off the preview: copied (the
+    // runner's numbering stays lined up), never published.
+    postHook("computer", { tabId: TAB, action: "screenshot", save_to_disk: true }, [
+      text("Successfully captured screenshot"),
+      text(
+        `\n\nTab Context:\n- Executed on tabId: ${OTHER_TAB}\n- Available tabs:\n` +
+          `  • tabId ${TAB}: "Log in — Drafto" (${JSON.stringify(`${PREVIEW}/login`)})\n` +
+          `  • tabId ${OTHER_TAB}: "Drafto" ("https://drafto.eu/")`,
+      ),
+      image,
+      text(`Screenshot saved to: ${shoot("screenshot-1792223827700-6.png", png("slot-11"))}`),
+    ]);
 
     // Files in the evidence dir the guard never logged: never candidates.
     writeFileSync(join(dirs.evidence, "runner-output.txt"), `screenshot 1 ${API_KEY}\n`);
@@ -514,6 +528,7 @@ describe("evidence-images: browserManifest reads the real guard's decision log",
     { slot: 8, name: null, missing: "unexpected file name" },
     { slot: 9, name: null, missing: "unexpected file name" },
     { slot: 10, name: "screenshot-1792223827600-5.png", missing: null },
+    { slot: 11, name: "screenshot-1792223827700-6.png", missing: OFF_ORIGIN_WHY },
   ];
 
   it("the guard logged the events this test relies on, in the shape it relies on", () => {
@@ -570,6 +585,11 @@ describe("evidence-images: browserManifest reads the real guard's decision log",
       { slot: 3, path: dirs.evidence, why: "the guard couldn't copy it" },
       { slot: 8, path: dirs.evidence, why: "unexpected file name" },
       { slot: 9, path: dirs.evidence, why: "unexpected file name" },
+      {
+        slot: 11,
+        path: join(dirs.evidence, "screenshot-1792223827700-6.png"),
+        why: OFF_ORIGIN_WHY,
+      },
     ]);
     assert.deepEqual(
       r.upload.map((u) => [u.slot, u.name, u.ext, tagOf(u.data)]),

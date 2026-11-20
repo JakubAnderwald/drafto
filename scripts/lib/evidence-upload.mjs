@@ -48,7 +48,8 @@
 //        --render-json <file> --account-file <f|""> --ocr <bin|"">
 //        [--bypass-file <f>] [--signin-key-file <f>]
 //        --log-dir <dir> --repo-root <dir> --out <upload.json>
-//     Refuses (ok false, nothing pushed) when FACTORY_EVIDENCE_UPLOAD=0, when
+//     Refuses (ok false, nothing pushed) when FACTORY_EVIDENCE_UPLOAD=0, for
+//     --source macos in an unattended session (DRAFTO_UNATTENDED=1), when
 //     --render-json says the report (or its browser lane, or the composed
 //     body) was withheld or can't be read, when the selftest hasn't passed, or
 //     when the OCR helper or a given secret file can't be used (each image's
@@ -221,15 +222,21 @@ export function selftestFile(logDir) {
   return path.join(logDir, SELFTEST_FILE);
 }
 
-/** Whether a render's JSON line says its report must not carry images. */
+/**
+ * Whether a render's JSON line says its report must not carry images. Only an
+ * explicit clean decision lets them through: the browser render's
+ * `withheld: false`, or the verification render's `withheld.browser: false`,
+ * with `secretHits` a list of strings holding no `body:` hit. Anything else
+ * (unreadable, a field missing or of another type) counts as withheld.
+ */
 export function renderWithheld(json) {
-  if (json === null || typeof json !== "object") return true;
-  if (json.withheld === true) return true;
-  if (json.withheld && typeof json.withheld === "object" && json.withheld.browser === true) {
-    return true;
-  }
-  const hits = Array.isArray(json.secretHits) ? json.secretHits : [];
-  return hits.some((h) => typeof h === "string" && h.startsWith("body:"));
+  if (json === null || typeof json !== "object" || Array.isArray(json)) return true;
+  const w = json.withheld;
+  const clean = w === false || (w !== null && typeof w === "object" && w.browser === false);
+  if (!clean) return true;
+  const hits = json.secretHits;
+  if (!Array.isArray(hits) || hits.some((h) => typeof h !== "string")) return true;
+  return hits.some((h) => h.startsWith("body:"));
 }
 
 // ── selftest ────────────────────────────────────────────────────────────────
@@ -567,7 +574,12 @@ export function uploadRun({
   const ref = evidenceRef(issue, sha, runId);
   let result;
   try {
-    const gate = uploadGate({ env, withheld, logDir });
+    // A macOS run is production and is published by a person (evidence-post.mjs
+    // refuses the same way): never from an unattended session, whatever calls.
+    const gate =
+      source === "macos" && env.DRAFTO_UNATTENDED === "1"
+        ? "unattended"
+        : uploadGate({ env, withheld, logDir });
     const prior = readJson(out);
     if (gate) {
       result = { ok: false, reason: gate };

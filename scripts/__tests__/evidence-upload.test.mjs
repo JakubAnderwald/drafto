@@ -428,7 +428,28 @@ describe("renderWithheld", () => {
   it("withholds a report the browser render withheld", () => {
     assert.equal(renderWithheld({ withheld: true, secretHits: ["jwt"] }), true);
     assert.equal(renderWithheld({ withheld: false, secretHits: [] }), false);
-    assert.equal(renderWithheld({}), false);
+  });
+
+  it("withholds a render JSON with no explicit clean decision (fails closed)", () => {
+    for (const json of [
+      {},
+      [],
+      { secretHits: [] },
+      { withheld: null, secretHits: [] },
+      { withheld: "false", secretHits: [] },
+      { withheld: 0, secretHits: [] },
+      { withheld: {}, secretHits: [] },
+      { withheld: { shell: false }, secretHits: [] },
+      { withheld: { browser: "false" }, secretHits: [] },
+      { withheld: false },
+      { withheld: { shell: false, browser: false } },
+    ]) {
+      assert.equal(renderWithheld(json), true, JSON.stringify(json));
+    }
+    assert.equal(
+      renderWithheld({ withheld: { shell: false, browser: false }, secretHits: [] }),
+      false,
+    );
   });
 
   it("withholds a verification report whose Web lane or composed body was withheld", () => {
@@ -446,9 +467,10 @@ describe("renderWithheld", () => {
     );
   });
 
-  it("ignores a secretHits that isn't a list of strings", () => {
-    assert.equal(renderWithheld({ withheld: false, secretHits: "body:jwt" }), false);
-    assert.equal(renderWithheld({ withheld: false, secretHits: [{ body: "jwt" }] }), false);
+  it("withholds a render whose secretHits isn't a list of strings", () => {
+    assert.equal(renderWithheld({ withheld: false, secretHits: "body:jwt" }), true);
+    assert.equal(renderWithheld({ withheld: false, secretHits: [{ body: "jwt" }] }), true);
+    assert.equal(renderWithheld({ withheld: false, secretHits: ["jwt", 7] }), true);
   });
 });
 
@@ -786,6 +808,7 @@ describe("upload refuses, and pushes nothing, until every gate is open", () => {
     ],
     ["withheld", "the render JSON file is missing", { render: null }, {}],
     ["withheld", "the render JSON file is unreadable", { render: "{not json\n" }, {}],
+    ["withheld", "the render JSON makes no decision ({})", { render: {} }, {}],
   ];
   for (const [reason, when, fixture, opts] of cases) {
     it(`says ${reason} when ${when}`, async () => {
@@ -1075,6 +1098,42 @@ describe("upload publishes one parentless commit on the run's own ref", () => {
     assert.ok(!readFileSync(fx.out, "utf8").includes("factory-test@"));
     const dir = `${ISSUE}/${SHA12}/${RUN_ID}`;
     assert.deepEqual(commitOf(fx.origin, summary.commit).paths, [`${dir}/02.png`]);
+  });
+
+  it("refuses a macOS run in an unattended session, and publishes it attended", async () => {
+    const macosRun = (fx) => {
+      const shotsDir = join(fx.root, "macos-run", "shots");
+      mkdirSync(shotsDir, { recursive: true });
+      writeFileSync(join(shotsDir, "01-signed-in.png"), PNG("m1"));
+      return {
+        source: "macos",
+        "evidence-dir": shotsDir,
+        "guard-log": undefined,
+        "run-id": "macos-20261110-051950",
+      };
+    };
+    // Every other gate passes: a clean render, a passing selftest, one valid shot.
+    const fx = uploadFixture({ shots: [] });
+    const flags = macosRun(fx);
+    const refused = await upload(fx, flags, { env: { DRAFTO_UNATTENDED: "1" } });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "unattended");
+    assert.deepEqual(readJsonFile(fx.out), { ok: false, reason: "unattended" });
+    assertNothingPushed(fx);
+    assert.equal(fx.ocr.seen.length, 0);
+
+    // The control: the same run, attended, is published.
+    const published = await upload(fx, flags, { env: { DRAFTO_UNATTENDED: "0" } });
+    assert.equal(published.ok, true);
+    assert.equal(published.images, 1);
+    assert.equal(evidenceRefs(fx.origin).length, 1);
+  });
+
+  it("doesn't hold a browser run for DRAFTO_UNATTENDED: the factory publishes those", async () => {
+    const fx = uploadFixture();
+    const summary = await upload(fx, {}, { env: { DRAFTO_UNATTENDED: "1" } });
+    assert.equal(summary.ok, true);
+    assert.equal(summary.images, 2);
   });
 
   it("publishes a macOS shot showing the signed-in account's email in the sidebar", async () => {
