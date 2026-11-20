@@ -9,8 +9,10 @@ export interface ActivityRpcResponse {
 
 /**
  * Anything with supabase-js's `rpc()`, such as a `SupabaseClient<Database>`.
- * The arguments are typed `never` because the shared `Database` declares no
- * `Functions` (the same reason `search_notes` is called with `as never`).
+ * The arguments are typed `never` so that this structural interface accepts
+ * supabase-js's generic, overloaded `rpc`, which concrete parameter types
+ * would not match; the call below casts its arguments to fit. The RPC itself
+ * is typed as `record_activity` in the shared `Database`'s `Functions`.
  */
 export interface ActivityRpcClient {
   rpc: (...args: never[]) => PromiseLike<ActivityRpcResponse>;

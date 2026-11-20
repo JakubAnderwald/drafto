@@ -282,6 +282,12 @@ export interface Database {
         Args: Record<PropertyKey, never>;
         Returns: boolean;
       };
+      // Authenticated only: records the caller's activity days (issue #821).
+      // `p_days` are UTC `YYYY-MM-DD` dates; returns the rows it added.
+      record_activity: {
+        Args: { p_days: string[]; p_client: string };
+        Returns: number;
+      };
     };
     Enums: Record<string, never>;
   };
