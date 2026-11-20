@@ -153,7 +153,7 @@ The scenario matters because the browser lane runs only its `### Web` section: t
 3. **Assessment** from the lanes.
 4. **Steps for you to do manually:** deduplicated, at most 25.
 5. **Coverage gaps**, including the CodeRabbit coverage note the card carried into Testing (`verifyCrNote`).
-6. Each lane's full report, collapsed. The Web lane's `<details>` also holds its screenshots, under the steps that took them ([ADR-0086](../adr/0086-factory-test-run-screenshots-on-github.md)); when the lane's text is truncated, they aren't. Then where the evidence is on the Mac mini, for each lane with nothing embedded, and why the Web screenshots weren't published when an upload was tried.
+6. Each lane's full report, collapsed. The Web lane's `<details>` also holds its screenshots, under the steps that took them ([ADR-0088](../adr/0088-factory-test-run-screenshots-on-github.md)); when the lane's text is truncated, they aren't. Then where the evidence is on the Mac mini, for each lane with nothing embedded, and why the Web screenshots weren't published when an upload was tried.
 7. The markers `<!-- drafto-factory-verify-report -->` and `<!-- drafto-factory-verify-sha:<sha> -->`.
 
 Every lane's text is scanned for secrets: the test account's password, the bypass secret and the dev service-role key, each as a literal, plus token patterns and the bypass header names. A hit withholds that lane only. An unreadable secret file withholds the lanes it guards. All text is defanged, so a lane can't fake a factory marker.
@@ -198,7 +198,7 @@ No lane runs a native app yet. iOS, Android and macOS steps go to the manual lis
 - **Disk.** An AVD is about 10 GB, so `FACTORY_MIN_FREE_DISK_GB` would have to go up.
 - **Killed when the head moves**, like the shell lane.
 - **macOS stays manual** until an ADR allows a dev-backed harness mode. ADR-0043 allows agents `--preflight` only.
-- **Screenshots through the same per-lane renderer.** The report keeps images per lane (`composeVerifyReport`'s `images`, keyed by lane), so a device lane would publish its own evidence directory with `evidence-upload.mjs` and pass its upload record under its key, as the Web lane does ([ADR-0086](../adr/0086-factory-test-run-screenshots-on-github.md)). It would need a provenance rule of its own, like the guard's decision log for the browser runner or the harness's `shots/NN-<label>.png`. A lane driven by a claude session with Bash has none.
+- **Screenshots through the same per-lane renderer.** The report keeps images per lane (`composeVerifyReport`'s `images`, keyed by lane), so a device lane would publish its own evidence directory with `evidence-upload.mjs` and pass its upload record under its key, as the Web lane does ([ADR-0088](../adr/0088-factory-test-run-screenshots-on-github.md)). It would need a provenance rule of its own, like the guard's decision log for the browser runner or the harness's `shots/NN-<label>.png`. A lane driven by a claude session with Bash has none.
 - **Prerequisites:** an ADR amendment (ADR-0053 and ADR-0043), and RAM measurements on the Mac mini with a beta build running.
 
 ## Related

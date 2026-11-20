@@ -12,7 +12,7 @@ import {
 import { useTheme } from "@/providers/theme-provider";
 import { fontSizes, radii, spacing, type SemanticColors } from "@/theme/tokens";
 
-interface InputProps extends Omit<TextInputProps, "style"> {
+export interface InputProps extends Omit<TextInputProps, "style"> {
   value: string;
   onChangeText: (text: string) => void;
   placeholder?: string;

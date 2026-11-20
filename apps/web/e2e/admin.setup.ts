@@ -27,7 +27,7 @@ setup("authenticate as admin", async ({ page }) => {
   await page.goto("/login");
 
   await page.getByLabel("Email").fill(credentials.email);
-  await fillSecret(page.getByLabel("Password"), credentials.password);
+  await fillSecret(page.getByLabel("Password", { exact: true }), credentials.password);
   await page.getByRole("button", { name: "Log in" }).click();
 
   // Wait until we're redirected away from the login page (same headroom as

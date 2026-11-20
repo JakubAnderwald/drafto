@@ -50,6 +50,14 @@ appId: eu.drafto.mobile
     timeout: 30000
 - waitForAnimationToEnd
 
+# The fresh install shows each list's one-time swipe hint (PrimeTestLab 10668
+# S-03); close it so the store images show the plain list. This only writes a
+# per-device flag, nothing on the account.
+- tapOn:
+    id: "swipe-hint-dismiss"
+    optional: true
+- waitForAnimationToEnd
+
 # --- 01: Notebooks ---
 - takeScreenshot: ${OUT}-01-notebooks
 
@@ -58,6 +66,9 @@ appId: eu.drafto.mobile
 - extendedWaitUntil:
     visible: ".*${NOTE}.*"
     timeout: 15000
+- tapOn:
+    id: "swipe-hint-dismiss"
+    optional: true
 - waitForAnimationToEnd
 - takeScreenshot: ${OUT}-02-notes
 

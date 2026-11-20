@@ -3,6 +3,7 @@ import { Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useTheme } from "@/providers/theme-provider";
+import { offlineScreenLayout } from "@/components/navigation/offline-screen-layout";
 import { colors, spacing } from "@/theme/tokens";
 
 export default function TabsLayout() {
@@ -11,6 +12,8 @@ export default function TabsLayout() {
 
   return (
     <Tabs
+      // The offline banner hangs below each tab's header, clear of the search button.
+      screenLayout={offlineScreenLayout}
       screenOptions={{
         tabBarActiveTintColor: colors.primary[600],
         tabBarInactiveTintColor: semantic.fgSubtle,

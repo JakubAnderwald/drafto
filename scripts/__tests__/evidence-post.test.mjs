@@ -1,6 +1,6 @@
 // Tests for scripts/lib/evidence-post.mjs — the operator command that posts a
 // macOS In-Test harness run (ADR-0043) on its issue, with the run's
-// screenshots (ADR-0086). Those screenshots are of PRODUCTION (a throwaway
+// screenshots (ADR-0088). Those screenshots are of PRODUCTION (a throwaway
 // account, and a run starts by signing the operator's own account out, so an
 // early shot can show the operator's own notes). So what this file locks in
 // is that publishing is never automatic: the command refuses in an unattended
@@ -386,7 +386,7 @@ function assertComment(body, commit, { runDir, sha = SHA } = {}) {
   assert.deepEqual(lines.slice(other + 1, other + 3), ["", img(commit, 1, sha)]);
 
   // The macOS footer: production, published by the operator; never "dev data".
-  const footer = lines.findIndex((l) => l.startsWith("<sub>") && l.includes("ADR-0086"));
+  const footer = lines.findIndex((l) => l.startsWith("<sub>") && l.includes("ADR-0088"));
   assert.notEqual(footer, -1, "no footer");
   assert.match(lines[footer], /production/);
   assert.doesNotMatch(lines[footer], /dev data/);

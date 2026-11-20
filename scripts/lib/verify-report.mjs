@@ -71,7 +71,7 @@
 //   6. Each lane's full report in <details>; the body stays within
 //      COMMENT_MAX_CHARS by truncating these first, pointing at the local file.
 //      The Web lane's screenshots, when --browser-images gives its upload
-//      record (evidence-upload.mjs, ADR-0086), go inside its <details> under
+//      record (evidence-upload.mjs, ADR-0088), go inside its <details> under
 //      the steps that took them (evidence-embed.mjs); they are never cut, the
 //      lane text is. Only a lane that reported and wasn't withheld shows any,
 //      and the shell lane never does. Images are kept per lane, so a future
@@ -1022,7 +1022,7 @@ function detailsBlock(lane, content, extra = "") {
   ].join("\n");
 }
 
-// A lane's screenshots (ADR-0086): {block, embedded, reason, given}. given is
+// A lane's screenshots (ADR-0088): {block, embedded, reason, given}. given is
 // whether an upload record was passed for the lane at all; with none, nothing
 // about screenshots changes in the report. Only the browser lane has any yet.
 function laneShots(lane, upload, secrets) {
@@ -1189,7 +1189,7 @@ export function composeVerifyReport({
         ? ` The rest of the Web lane's evidence stays on the Mac mini: \`${pathText(browser.dir)}\`.`
         : "";
       lines.push(
-        "<sub>Web screenshots are published in this report (ADR-0086): they show the dev test " +
+        "<sub>Web screenshots are published in this report (ADR-0088): they show the dev test " +
           `account on dev data.${rest}</sub>`,
         "",
       );

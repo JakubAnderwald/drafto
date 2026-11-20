@@ -1,71 +1,40 @@
-import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Animated } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 
-import { useNetworkStatus } from "@/hooks/use-network-status";
+import { useOfflineBannerState } from "@/hooks/use-offline-banner-state";
 import { colors, fontSizes, spacing } from "@/theme/tokens";
 
+/**
+ * The offline / back-online strip across the top of the window.
+ *
+ * It is part of the layout, not an overlay: MainScreen mounts it above the
+ * three panes, so while it shows it pushes them down instead of covering the
+ * sidebar's top row, the note list's "New note" button and the editor's top
+ * row (PrimeTestLab report 10668, M-03). It shows and hides without sliding,
+ * since a slide would leave a gap or make the panes jump twice.
+ */
 export function OfflineBanner() {
-  const { isConnected } = useNetworkStatus();
-  const slideAnim = useRef(new Animated.Value(-40)).current;
-  const wasOfflineRef = useRef(false);
-  const [showReconnected, setShowReconnected] = useState(false);
+  const variant = useOfflineBannerState();
+  if (!variant) return null;
 
-  useEffect(() => {
-    if (!isConnected) {
-      wasOfflineRef.current = true;
-      setShowReconnected(false);
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    } else if (wasOfflineRef.current) {
-      setShowReconnected(true);
-      wasOfflineRef.current = false;
-      const timer = setTimeout(() => {
-        Animated.timing(slideAnim, {
-          toValue: -40,
-          duration: 300,
-          useNativeDriver: true,
-        }).start(() => {
-          setShowReconnected(false);
-        });
-      }, 2000);
-      return () => clearTimeout(timer);
-    } else {
-      slideAnim.setValue(-40);
-    }
-  }, [isConnected, slideAnim]);
-
-  const isOffline = !isConnected;
-  const isReconnected = showReconnected && isConnected;
-
-  if (!isOffline && !isReconnected) return null;
+  const reconnected = variant === "reconnected";
 
   return (
-    <Animated.View
-      style={[
-        styles.container,
-        isReconnected ? styles.reconnected : styles.offline,
-        { transform: [{ translateY: slideAnim }] },
-      ]}
+    <View
+      testID="offline-banner"
+      accessibilityRole="alert"
+      style={[styles.container, reconnected ? styles.reconnected : styles.offline]}
     >
       <View style={styles.content}>
         <Text style={styles.text}>
-          {isReconnected ? "Back online — syncing..." : "You are offline"}
+          {reconnected ? "Back online — syncing..." : "You are offline"}
         </Text>
       </View>
-    </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 100,
     paddingVertical: spacing.sm,
   },
   offline: {

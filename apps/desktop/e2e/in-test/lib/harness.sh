@@ -226,7 +226,8 @@ cleanup() {
     log "Cleanup: removing the throwaway account $QA_EMAIL"
     # Leave the app on the login screen (it is signed in as the throwaway account).
     if on_main_screen; then
-      sign_out_via_menu
+      # The account is deleted next, so whatever is unsynced is gone anyway.
+      sign_out_via_menu any
     elif on_waiting_screen; then
       press_until 20 on_login_screen desc "Sign out"
     fi

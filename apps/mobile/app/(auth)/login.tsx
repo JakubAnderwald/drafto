@@ -8,17 +8,21 @@ import { clearAccountDeletedNotice, useAccountDeletedNotice } from "@/lib/accoun
 import { clearAuthCallbackError, useAuthCallbackError } from "@/lib/auth-callback-errors";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
+import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 
 export default function LoginScreen() {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   // No header above this screen, so it keeps its own content clear of the status bar.
   const { top: topInset } = useSafeAreaInsets();
+  // Offline, the banner sits above this screen; the keyboard is in window coordinates.
+  const offlineBannerHeight = useOfflineBannerHeight();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +68,7 @@ export default function LoginScreen() {
       style={[styles.flex, { paddingTop: topInset }]}
       testID="login-screen"
       behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={offlineBannerHeight}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Log In</Text>
@@ -99,18 +104,18 @@ export default function LoginScreen() {
             containerStyle={styles.field}
           />
 
-          <Input
+          <PasswordInput
             label="Password"
             placeholder="Your password"
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="password"
             textContentType="password"
             editable={!loading}
             onSubmitEditing={handleLogin}
+            testID="password-input"
             containerStyle={styles.field}
           />
 

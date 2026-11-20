@@ -18,6 +18,12 @@ jest.mock("expo-haptics", () => ({
   },
 }));
 
+// Mock expo-navigation-bar (native module, not linked under jest). SystemBars, mounted
+// in the root layout, styles the Android navigation bar through it.
+jest.mock("expo-navigation-bar", () => ({
+  setButtonStyleAsync: jest.fn(() => Promise.resolve()),
+}));
+
 // Mock expo-router
 jest.mock("expo-router", () => ({
   useRouter: jest.fn(() => ({
@@ -60,17 +66,21 @@ jest.mock("@react-native-community/netinfo", () => ({
   }),
 }));
 
-// Mock react-native-safe-area-context
-jest.mock("react-native-safe-area-context", () => ({
-  useSafeAreaInsets: jest.fn(() => ({
-    top: 0,
-    bottom: 0,
-    left: 0,
-    right: 0,
-  })),
-  useSafeAreaFrame: jest.fn(() => ({ x: 0, y: 0, width: 390, height: 844 })),
-  SafeAreaProvider: ({ children }) => children,
-}));
+// Mock react-native-safe-area-context. useSafeAreaInsets reads SafeAreaInsetsContext
+// like the real hook, so a provider in a test (or OfflineScreenLayout's override)
+// is seen by the screens below it; without one it returns zero insets. It stays a
+// jest.fn so a test can still pin it with mockReturnValue.
+jest.mock("react-native-safe-area-context", () => {
+  const React = require("react");
+  const SafeAreaInsetsContext = React.createContext(null);
+  const ZERO_INSETS = { top: 0, bottom: 0, left: 0, right: 0 };
+  return {
+    SafeAreaInsetsContext,
+    useSafeAreaInsets: jest.fn(() => React.useContext(SafeAreaInsetsContext) ?? ZERO_INSETS),
+    useSafeAreaFrame: jest.fn(() => ({ x: 0, y: 0, width: 390, height: 844 })),
+    SafeAreaProvider: ({ children }) => children,
+  };
+});
 
 // Mock @10play/tentap-editor
 jest.mock("@10play/tentap-editor", () => ({

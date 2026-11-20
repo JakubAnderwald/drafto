@@ -18,7 +18,12 @@ import { useTheme } from "@/providers/theme-provider";
 import { useNote } from "@/hooks/use-note";
 import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
 import { useKeyboardVerticalOffset } from "@/hooks/use-keyboard-vertical-offset";
+import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { ImageRenderStatus } from "@/components/editor/image-render-status";
+import { useImageRenderStatus } from "@/hooks/use-image-render-status";
+import { editorWebViewBaseUrl } from "@/lib/editor-webview";
+import { localAttachmentSrcFor, resolveAttachmentSrc } from "@/lib/data/attachment-resolver";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { EditorSkeleton } from "@/components/ui/skeleton";
 import { useAutoSave } from "@/hooks/use-auto-save";
@@ -35,6 +40,7 @@ import {
   rememberContentBaseline,
   serializeEditorContent,
   serializeLoadedDoc,
+  withResolveTimeout,
   withTimeout,
 } from "@drafto/shared";
 import type { ContentBaseline, TipTapDoc, TipTapNode } from "@drafto/shared";
@@ -58,6 +64,13 @@ function parseInitialContent(note: Note): TipTapDoc {
   }
   return EMPTY_DOC;
 }
+
+// Bound on resolving each attachment reference in a note, so a connected
+// network with no internet can't hold the editor on its skeleton. A reference
+// that times out keeps its attachment:// src and shows as unavailable, while
+// the others (cached images above all) keep what they resolved to; the stored
+// content is unchanged. Same bound as desktop's RESOLVE_TIMEOUT_MS.
+const RESOLVE_TIMEOUT_MS = 8000;
 
 // Bound on reading the editor back once it is ready to add that serialisation
 // to the no-op-save baseline. Content saves wait for the read, so a stuck
@@ -147,9 +160,8 @@ function useResolvedContent(note: Note): { content: TipTapDoc; resolving: boolea
   useEffect(() => {
     if (!needsResolving) return;
     let cancelled = false;
-    // Dynamic import to avoid loading Supabase client at module level (breaks tests)
-    import("@/lib/data/attachments")
-      .then(({ getSignedUrl }) => resolveTipTapImageUrls(parsed, getSignedUrl))
+    // Cached images resolve to their local file, with no network (ADR-0086).
+    resolveTipTapImageUrls(parsed, withResolveTimeout(resolveAttachmentSrc, RESOLVE_TIMEOUT_MS))
       .then((resolved) => {
         if (!cancelled) {
           setContent(resolved);
@@ -175,7 +187,9 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const headerHeight = useHeaderHeight();
-  const keyboardOffset = useKeyboardVerticalOffset(headerHeight);
+  // While offline the banner sits between the header and this view (Android's offset).
+  const offlineBannerHeight = useOfflineBannerHeight();
+  const keyboardOffset = useKeyboardVerticalOffset(headerHeight + offlineBannerHeight);
   const insets = useSafeAreaInsets();
   const isKeyboardUp = useKeyboardVisible();
   const [title, setTitle] = useState(initialNote.title);
@@ -267,6 +281,9 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     // keyboard height, leaving a blank band above the toolbar.
     avoidIosKeyboard: false,
     initialContent: resolvedContent,
+    // A file:// base URL lets the editor show cached attachment images
+    // (ADR-0086); see NoteEditor for the WebView's file access.
+    webviewBaseURL: editorWebViewBaseUrl(),
     theme: editorTheme,
     onChange: () => {
       if (!editorReadyRef.current) return;
@@ -275,6 +292,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
   });
 
   const { isReady } = useBridgeState(editor);
+  const imageStatus = useImageRenderStatus(editor, isReady);
   // useEditorBridge returns a new object every render; effects read the live
   // one through this ref instead of depending on it.
   const editorRef = useRef(editor);
@@ -343,16 +361,10 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
       try {
         let node: TipTapNode;
         if (isImageMimeType(attachment.mimeType)) {
-          // Default to attachment:// so a getSignedUrl failure (offline, expired
-          // session, storage outage) still inserts a recoverable node rather than
-          // bailing out and leaving the attachment row orphaned.
-          let src = toAttachmentUrl(attachment.filePath);
-          try {
-            const { getSignedUrl } = await import("@/lib/data/attachments");
-            src = await getSignedUrl(attachment.filePath);
-          } catch (err) {
-            console.warn("getSignedUrl failed; falling back to attachment://", err);
-          }
+          // Show the picked file itself (kept in the attachment cache), so the
+          // image appears at once, online or offline, with no signed URL. The
+          // write below stores attachment:// (ADR-0086).
+          const src = localAttachmentSrcFor(attachment);
           node = { type: "image", attrs: { src, alt: attachment.fileName } };
         } else {
           node = {
@@ -377,6 +389,7 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
           content: [...(currentJson.content ?? []), node],
         };
         editor.setContent(appended);
+        imageStatus.refresh();
         const blocks = contentToBlocknote(appended);
         const migrated = migrateSignedUrlsToAttachmentUrls(blocks);
         await database.write(async () => {
@@ -441,10 +454,12 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
         <View style={styles.editorContainer}>
           <NoteEditor
             editor={editor}
+            onMessage={imageStatus.handleMessage}
             accessory={
               <AttachmentPicker noteId={noteId} onAttachmentReady={handleAttachmentReady} />
             }
           />
+          <ImageRenderStatus images={imageStatus.images} />
         </View>
         {/* Keeps the attachment row clear of the home indicator / gesture bar. With
           the keyboard up the keyboard covers that area, so the toolbar sits

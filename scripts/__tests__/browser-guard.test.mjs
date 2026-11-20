@@ -1154,7 +1154,7 @@ describe("browser-guard: screenshots", () => {
     assert.deepEqual(events, [{ copy: good, onOrigin: true }]);
   });
 
-  test("a screenshot of a page that isn't the preview's records onOrigin false (ADR-0086)", () => {
+  test("a screenshot of a page that isn't the preview's records onOrigin false (ADR-0088)", () => {
     const shot = (tabs, state = selectedState()) =>
       post(
         "computer",

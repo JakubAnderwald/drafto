@@ -5,7 +5,7 @@
 //
 // Why this is its own module: verify-report.mjs imports browser-report.mjs for
 // the secret scan, and browser-report.mjs (through evidence-embed.mjs) needs
-// this parser to put each screenshot under the step that took it (ADR-0086).
+// this parser to put each screenshot under the step that took it (ADR-0088).
 // Kept here, with no imports, it can be used by both without an import cycle.
 // verify-report.mjs re-exports both functions for its existing callers.
 

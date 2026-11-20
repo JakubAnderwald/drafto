@@ -68,7 +68,7 @@ Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/`:
 
 ## Posting a run on the issue
 
-A finished run's report and screenshots can be posted on the card's issue, with each step's shots under it ([ADR-0086](../adr/0086-factory-test-run-screenshots-on-github.md)). It's an operator command. The factory never runs it, because the shots are of production.
+A finished run's report and screenshots can be posted on the card's issue, with each step's shots under it ([ADR-0088](../adr/0088-factory-test-run-screenshots-on-github.md)). It's an operator command. The factory never runs it, because the shots are of production.
 
 1. **Finish the run first.** If it stopped early, run the scenario with `--cleanup-only`. The command refuses while the run's `state.env` exists, because the throwaway account is still live.
 2. **List what it would publish.** From the factory checkout:
@@ -120,7 +120,7 @@ If publishing fails, nothing is posted. Run the command again to retry: it reuse
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lib/harness.sh`        | Entry point a scenario sources: modes, run directory, preflight, the production confirmation, throwaway credentials, the cleanup `EXIT` trap |
 | `lib/ax.sh`             | Find, press, fill and read controls; window capture and OCR                                                                                  |
-| `lib/app.sh`            | Drafto screens and flows: `on_main_screen`, `log_in`, `sign_out_via_menu`, `settle`, `poll_synced`, …                                        |
+| `lib/app.sh`            | Drafto screens and flows: `on_main_screen`, `log_in`, `sign_out_via_menu`, `confirm_sign_out`, `settle`, `poll_synced`, …                    |
 | `lib/db.sh`             | Read-only queries on the app's WatermelonDB                                                                                                  |
 | `lib/prod.sh`           | REST as the throwaway user; admin SQL through the Supabase Management API                                                                    |
 | `lib/net.sh`            | Take the Mac offline and back, with a detached root watchdog                                                                                 |
@@ -153,6 +153,7 @@ These are measured behaviours of the TestFlight build, not guesses:
   - clear the clipboard afterwards.
 - **Submit forms by pressing their button** with the same verified focus-and-Space press. Return is used only where there is no button, such as the new-notebook name field.
 - **Activation is an event.** Bringing Drafto to the front fires AppState `active`, which triggers a sync. `ensure_front` activates only when Drafto isn't already frontmost, and fixes a window that isn't key without the mouse (`axq makekey`).
+- **Native alerts accept AXPress.** `Alert.alert` is an NSAlert sheet on the main window, and its buttons are AppKit `NSButton`s in the order given. They label themselves through `AXTitle`, not the `AXDescription` that RN views use, and unlike RN views they accept `AXPress` (`ax_native_press`). Every sign-out asks "Sign out?" first. `confirm_sign_out` finds the "Sign out" or "Sign out anyway" button by title, with the description as a fallback, presses it with `AXPress` and falls back to `press_el`, then waits for the Log In screen. It records which copy the dialog showed in `SIGN_OUT_COPY`. It reads that copy only from inside the confirmation (the confirm button's nearest `AXSheet` or dialog-window ancestor), so background text cannot pass for it; the OCR fallback reads the whole window, so there the loss wordings win. By default (`synced` mode, for steps that settled first) it confirms only the synced copy: a dialog that warns of a loss (the unsynced or unknown copy, or a "Sign out anyway" button) or whose copy it could not read gets Cancel, and the step fails. Only a caller that accepts losing unsynced changes passes `any`, as the cleanup does before deleting the throwaway account. Cancel is the first button and so the default, so never answer the dialog with Return. `menu_open` treats only an element without that title as the menu's "Sign out" item, so the open dialog never reads as an open menu.
 - **The editor** is a web view: AX-focus the `AXTextArea` inside the `AXWebArea` "RichTextEditor", press ⌘↓, then paste. `type_marker` confirms the text reached the local database.
 
 ## Oracles: how a step knows it passed

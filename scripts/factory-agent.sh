@@ -577,7 +577,7 @@ FACTORY_BROWSER_MAX_ATTEMPTS=2
 # /login, so a browser run there can only end as signin-failed.
 FACTORY_SIGNIN_ROUTE_PATH="apps/web/src/app/auth/test-sign-in/route.ts"
 
-# ── Test-run screenshots on GitHub (scripts/lib/evidence-upload.mjs, ADR-0086) ─
+# ── Test-run screenshots on GitHub (scripts/lib/evidence-upload.mjs, ADR-0088) ─
 # On by default. The browser runner's posted report (the intest kind) and the
 # verification report's Web lane embed the run's screenshots: after the run,
 # and only once its report's secret scan has passed, the factory's own node
@@ -5736,7 +5736,7 @@ run_browser_task() {
   uuid=$(uuidgen | tr '[:upper:]' '[:lower:]')
   # The session id names the guard's decision log for this run
   # ($LOG_DIR/browser-guard/<uuid>.jsonl), which lists the screenshots the
-  # guard copied, in order. Publishing them later (ADR-0086) finds it here.
+  # guard copied, in order. Publishing them later (ADR-0088) finds it here.
   printf '%s\n' "$uuid" >"$run_dir/session-id" 2>>"$LOG_FILE" || true
   input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$BROWSER_PROMPT_FILE")" "$bundle")
@@ -5857,7 +5857,7 @@ browser_lane_finish() {
   verify_browser_finish "$@"
 }
 
-# ── Test-run screenshots (scripts/lib/evidence-upload.mjs, ADR-0086) ───────
+# ── Test-run screenshots (scripts/lib/evidence-upload.mjs, ADR-0088) ───────
 # After a run, never inside it: the runner still has no gh, and no Bash but
 # ADR-0073's dev-inspect. Only the factory's own node publishes, and only a
 # run whose report's secret scan passed. Evidence, never a gate: none of these
@@ -7878,7 +7878,7 @@ verify_compose_report() {
 
 # verify_publish_screenshots <issue> <head-sha> <lanes-json> <browser-dir>
 #   <bypass-file|""> <signin-key-file|""> <render-json-line> <body-file> <render-args…>
-# The Web lane's screenshots in the verification report (ADR-0086). The report
+# The Web lane's screenshots in the verification report (ADR-0088). The report
 # has just been composed without them; only when the browser lane reported and
 # that render withheld neither its text nor the body are the browser run's
 # screenshots published (evidence_upload), and the report composed again with

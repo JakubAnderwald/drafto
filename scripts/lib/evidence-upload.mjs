@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Publishes one factory test run's screenshots where a public GitHub comment
 // can show them, so the person at Testing / In Test sees each step without
-// logging in to the Mac mini (ADR-0086, which supersedes ADR-0051's "never
+// logging in to the Mac mini (ADR-0088, which supersedes ADR-0051's "never
 // attached to GitHub").
 //
 // GitHub has no API for comment attachments, so the images become git objects

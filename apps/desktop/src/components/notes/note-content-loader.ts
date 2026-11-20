@@ -1,12 +1,10 @@
 import { resolveTipTapImageUrls } from "@drafto/shared";
-import type { TipTapDoc } from "@drafto/shared";
+import type { TipTapDoc, UrlResolver } from "@drafto/shared";
 
 // Pure, side-effect-free helpers for the note editor's content-load path.
 // Splitting this branch logic out of `note-editor-panel.tsx` keeps it unit
 // testable without standing up the tentap WebView bridge — the branch behind
 // the macOS "note opens blank" bug (issue #551).
-
-type UrlResolver = (filePath: string) => Promise<string>;
 
 /**
  * Classification of a note's stored `content` string into the action the editor

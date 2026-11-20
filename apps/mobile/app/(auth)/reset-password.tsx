@@ -12,8 +12,9 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { useNetworkStatus } from "@/hooks/use-network-status";
+import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -32,6 +33,8 @@ export default function ResetPasswordScreen() {
   // No header above this screen, so it keeps its own content clear of the status bar.
   const { top: topInset } = useSafeAreaInsets();
   const messageInset = { paddingTop: topInset + spacing["2xl"] };
+  // Offline, the banner sits above this screen; the keyboard is in window coordinates.
+  const offlineBannerHeight = useOfflineBannerHeight();
   const router = useRouter();
   const { session, isRecovering, recoveryError, endRecovery, signOut } = useAuth();
   const { isConnected } = useNetworkStatus();
@@ -180,6 +183,7 @@ export default function ResetPasswordScreen() {
     <KeyboardAvoidingView
       style={[styles.flex, { paddingTop: topInset }]}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={offlineBannerHeight}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Reset Password</Text>
@@ -192,12 +196,11 @@ export default function ResetPasswordScreen() {
         )}
 
         <View style={styles.form}>
-          <Input
+          <PasswordInput
             label="New Password"
             placeholder={`Min. ${MIN_PASSWORD_LENGTH} characters`}
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
@@ -207,12 +210,11 @@ export default function ResetPasswordScreen() {
             containerStyle={styles.field}
           />
 
-          <Input
+          <PasswordInput
             label="Confirm Password"
             placeholder="Re-enter your new password"
             value={confirmPassword}
             onChangeText={setConfirmPassword}
-            secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
