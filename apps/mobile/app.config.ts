@@ -65,6 +65,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // Web origin for server-side account operations (DELETE /api/account). The
     // apex host serves /api/* directly; a www redirect would drop the bearer token.
     apiUrl: process.env.EXPO_PUBLIC_API_URL || "https://drafto.eu",
+    // Test-only accessible probes (the editor's image render status views),
+    // for E2E builds made with EXPO_PUBLIC_E2E_PROBES=1. Off in every other
+    // build, so screen readers never meet them (src/lib/e2e-probes.ts).
+    e2eProbes: process.env.EXPO_PUBLIC_E2E_PROBES === "1",
     eas: {
       projectId: "6cf2a8f0-c2a6-410c-89dc-3e49aa4119a5",
     },

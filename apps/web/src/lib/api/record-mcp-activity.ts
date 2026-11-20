@@ -9,7 +9,7 @@ const MCP_CLIENT_TAG: DraftoClientTag = "web-mcp";
 /**
  * Whether a JSON-RPC message, or any message in a batch, is a `tools/call` request.
  *
- * Only a tool call counts as an MCP activity day (ADR 0086). An assistant with the Drafto
+ * Only a tool call counts as an MCP activity day (ADR 0088). An assistant with the Drafto
  * connector enabled runs the handshake (`initialize`, `notifications/initialized`) and
  * `tools/list` whenever a session starts, before the user has asked it for anything in
  * Drafto, so counting those would mark a user active for opening their assistant.
@@ -36,7 +36,7 @@ export async function isMcpToolCallRequest(request: Request): Promise<boolean> {
 
 /**
  * Records that <userId> used Drafto through the MCP server on the UTC day of <now>, as a
- * `web-mcp` activity day (ADR 0086). Only the day is recorded: never the tool or the note.
+ * `web-mcp` activity day (ADR 0088). Only the day is recorded: never the tool or the note.
  *
  * The MCP route can't call `record_activity`: it authenticates by API key and queries as
  * `service_role`, so `auth.uid()` is null there. It writes the row itself instead, and a

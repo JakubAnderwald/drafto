@@ -20,16 +20,41 @@ appId: eu.drafto.mobile
 # Uses the existing test account on purpose: Supabase answers an address that already has an
 # account exactly like a new one (no session) and sends no email, so this creates no user and
 # no mail. The app must show the check-your-email state, not bounce back to Log In.
-- tapOn:
-    id: "signup-link"
+# The Sign up <Link> sits inside a <Text>, so its testID can't be matched on
+# either platform: Android renders it as a span with no resource-id, and iOS
+# exposes it only as an element labelled "Sign up". Its text matches on both.
+- tapOn: "Sign up"
 - extendedWaitUntil:
     visible: "Create your Drafto account"
     timeout: 10000
+# Let the push finish first: iOS keeps the previous screen in the hierarchy
+# until it does, and a tap during the slide lands on its frames.
+- waitForAnimationToEnd
 - tapOn: "you@example.com"
 - inputText: ${E2E_TEST_EMAIL}
+# iOS opens its out-of-process "Use a strong password?" sheet when the secure
+# new-password field gets focus, and Maestro's typing then lands only partly (the
+# field keeps the last character). Revealed, the field is not secure and gets no
+# sheet, so iOS shows this dummy value first (it is not the account password).
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn:
+          id: "signup-password-input-toggle"
 - tapOn: "Min. 6 characters"
 - inputText: "not-the-real-password"
-- hideKeyboard
+# hideKeyboard fails on iOS; a tap on the screen's static subtitle closes it.
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - hideKeyboard
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: "Create your Drafto account"
 - tapOn:
     id: "signup-submit"
 - extendedWaitUntil:
@@ -46,10 +71,27 @@ appId: eu.drafto.mobile
 - inputText: ${E2E_TEST_EMAIL}
 - tapOn: "Sign in to your Drafto account"
 - tapOn: "Your password"
-- inputText: ${E2E_TEST_PASSWORD}
+# -e E2E_TEST_PASSWORD=… or, from run-qa-10668-e2e.sh, MAESTRO_E2E_TEST_PASSWORD in
+# the environment (Maestro passes MAESTRO_* shell variables to flows), which keeps
+# the password out of the maestro command line that `ps` shows.
+- inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
 - tapOn: "Sign in to your Drafto account"
 - tapOn:
     id: "login-button"
+
+# iOS offers to save the password right after login, in a sheet drawn out of
+# process that hides the app from Maestro. Let it arrive, then restart the app:
+# the session persists and the sheet goes away with the old process.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - extendedWaitUntil:
+          visible: "never-present-just-wait"
+          timeout: 8000
+          optional: true
+      - stopApp
+      - launchApp
 
 # Verify we land on the Notebooks tab
 - extendedWaitUntil:

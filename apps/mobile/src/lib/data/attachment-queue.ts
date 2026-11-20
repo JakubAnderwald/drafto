@@ -7,6 +7,7 @@ import {
   FILE_TOO_LARGE_MESSAGE,
   StorageQuotaError,
   buildAttachmentStoragePath,
+  isCacheableAttachment,
   isStorageQuotaError,
   localAttachmentFileName,
   safeAttachmentFileName,
@@ -19,6 +20,17 @@ import { database, Attachment } from "@/db";
 import { supabase } from "@/lib/supabase";
 import { generateId } from "@/lib/generate-id";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
+import {
+  cacheFileFor,
+  copyIntoCache,
+  deleteAttachmentCache,
+  deleteFromCache,
+  holdCacheFile,
+  removeOrphanedCacheFiles,
+  retainInCache,
+} from "@/lib/data/attachment-cache";
+import { resetAttachmentPrefetch } from "@/lib/data/attachment-prefetch";
+import { clearSignedUrlCache } from "@/lib/data/signed-url-cache";
 
 interface PickedFile {
   uri: string;
@@ -27,27 +39,69 @@ interface PickedFile {
   fileSize: number;
 }
 
+// Where a picked file that isn't an image waits for upload; it is deleted once
+// uploaded. Images go to the attachment cache instead (ADR-0086), but one
+// picked before the cache existed may still be pending here: it uploads from
+// here and then moves into the cache.
 const ATTACHMENTS_DIR_NAME = "attachments";
 
 function getAttachmentsDir(): Directory {
   return new Directory(Paths.document, ATTACHMENTS_DIR_NAME);
 }
 
-function saveFileLocally(file: PickedFile): string {
+// The attachments-folder copies whose row isn't written yet, by URI, and the
+// sets of the orphan sweeps running now. A sweep keeps every copy in flight
+// when it starts and every copy made while it runs, so it never deletes a
+// file whose row it couldn't see yet.
+const copiesInFlight = new Set<string>();
+const runningSweeps = new Set<Set<string>>();
+
+/** Keep `uri` from the orphan sweep until the returned release is called. */
+function protectCopy(uri: string): () => void {
+  copiesInFlight.add(uri);
+  for (const sweep of runningSweeps) sweep.add(uri);
+  return () => {
+    copiesInFlight.delete(uri);
+  };
+}
+
+interface SavedFile {
+  localUri: string;
+  /** Call once the row exists (or the save failed). */
+  release: () => void;
+}
+
+/**
+ * Copy a picked file to where it waits for upload. An image goes into the
+ * attachment cache, at its storage path: it is uploaded from there and kept
+ * afterwards as the cached copy, so it shows offline from the moment it is
+ * attached. Any other file goes to the attachments folder, as before, kept
+ * from the orphan sweep until released.
+ */
+function saveFileLocally(file: PickedFile, filePath: string): SavedFile {
+  if (isCacheableAttachment(file.mimeType)) {
+    return { localUri: copyIntoCache(file.uri, filePath), release: () => undefined };
+  }
+
   const dir = getAttachmentsDir();
   if (!dir.exists) {
     dir.create();
   }
-  const localFileName = localAttachmentFileName(generateId(), file.fileName);
   const source = new File(file.uri);
-  const destination = new File(dir, localFileName);
-  source.copy(destination);
+  const destination = new File(dir, localAttachmentFileName(generateId(), file.fileName));
+  const release = protectCopy(destination.uri);
+  try {
+    source.copy(destination);
 
-  if (!destination.exists || destination.size === 0) {
-    throw new Error("File copy failed — destination is missing or empty");
+    if (!destination.exists || destination.size === 0) {
+      throw new Error("File copy failed — destination is missing or empty");
+    }
+  } catch (error) {
+    release();
+    throw error;
   }
 
-  return destination.uri;
+  return { localUri: destination.uri, release };
 }
 
 export async function queueAttachment(
@@ -63,26 +117,35 @@ export async function queueAttachment(
   // one note never share an object; the display name stays without it.
   const fileName = safeAttachmentFileName(file.fileName);
   const { filePath } = buildAttachmentStoragePath(file.fileName, userId, noteId);
-  const localUri = saveFileLocally(file);
-  const remoteId = generateId();
+  // Until its row exists, nothing else knows the copy is needed: keep it
+  // from eviction and the orphan cleanup meanwhile.
+  const release = holdCacheFile(filePath);
+  let releaseCopy: () => void = () => undefined;
+  try {
+    const saved = saveFileLocally(file, filePath);
+    releaseCopy = saved.release;
+    const localUri = saved.localUri;
+    const remoteId = generateId();
 
-  const attachment = await database.write(async () => {
-    return database.get<Attachment>("attachments").create((record) => {
-      record._raw.id = remoteId;
-      record.remoteId = remoteId;
-      record.noteId = noteId;
-      record.userId = userId;
-      record.fileName = fileName;
-      record.filePath = filePath;
-      record.fileSize = file.fileSize;
-      record.mimeType = file.mimeType;
-      record.localUri = localUri;
-      record.uploadStatus = "pending";
-      record.uploadError = null;
+    return await database.write(async () => {
+      return database.get<Attachment>("attachments").create((record) => {
+        record._raw.id = remoteId;
+        record.remoteId = remoteId;
+        record.noteId = noteId;
+        record.userId = userId;
+        record.fileName = fileName;
+        record.filePath = filePath;
+        record.fileSize = file.fileSize;
+        record.mimeType = file.mimeType;
+        record.localUri = localUri;
+        record.uploadStatus = "pending";
+        record.uploadError = null;
+      });
     });
-  });
-
-  return attachment;
+  } finally {
+    releaseCopy();
+    release();
+  }
 }
 
 /**
@@ -157,11 +220,17 @@ async function uploadSingleAttachment(attachment: Attachment): Promise<void> {
     });
   });
 
-  // Clean up local file after successful upload
-  try {
-    localFile.delete();
-  } catch {
-    // Non-critical: local file cleanup can fail silently
+  // Keep an image as the attachment's cached copy (moved there if it was
+  // picked before the cache existed), so it still shows offline. Any other
+  // file is no longer needed.
+  if (isCacheableAttachment(attachment.mimeType)) {
+    retainInCache(localUri, attachment.filePath);
+  } else {
+    try {
+      localFile.delete();
+    } catch {
+      // Non-critical: the orphan cleanup removes it later
+    }
   }
 }
 
@@ -338,6 +407,10 @@ export async function discardRefusedAttachment(attachment: Attachment): Promise<
   }
   if (!localUri) return;
   try {
+    if (localUri === cacheFileFor(attachment.filePath).uri) {
+      deleteFromCache(attachment.filePath);
+      return;
+    }
     const localFile = new File(localUri);
     if (localFile.exists) localFile.delete();
   } catch (err) {
@@ -362,8 +435,8 @@ const uploadsInFlight = new Map<string, Promise<boolean>>();
  */
 export function uploadAttachment(attachment: Attachment): Promise<boolean> {
   // A sync can fetch the queue while a direct upload is still running and reach
-  // this attachment after that upload has finished. The upload deleted the
-  // local copy, so trying again would fail and mark an uploaded file "failed".
+  // this attachment after that upload has finished. The upload cleared the
+  // row's localUri, so trying again would fail and mark an uploaded file "failed".
   // (WatermelonDB hands out one cached instance per record, so the status read
   // here is current.)
   if (attachment.uploadStatus === "uploaded") return Promise.resolve(true);
@@ -419,13 +492,17 @@ export function uploadAttachment(attachment: Attachment): Promise<boolean> {
 }
 
 /**
- * Delete the entire local attachments directory (and every cached file in it).
- * Used on sign-out and on the cross-account identity guard so one account's
+ * Delete every local attachment file: the attachment cache (ADR-0086) and the
+ * older attachments directory, and forget the signed URLs handed out. Used on
+ * sign-out and on the cross-account identity guard so one account's
  * downloaded/queued attachment files can't leak to the next account on the
  * device. Best-effort: a deletion failure is logged and swallowed so it never
  * blocks sign-out.
  */
 export async function deleteAllLocalAttachments(): Promise<void> {
+  deleteAttachmentCache();
+  clearSignedUrlCache();
+  resetAttachmentPrefetch();
   try {
     const dir = getAttachmentsDir();
     if (dir.exists) {
@@ -436,33 +513,42 @@ export async function deleteAllLocalAttachments(): Promise<void> {
   }
 }
 
-export function cleanupOrphanedFiles(): void {
+/**
+ * Delete local attachment files nothing needs any more: files in the
+ * attachments folder no row points at, and cached files whose attachment or
+ * note is gone (`removeOrphanedCacheFiles`). Run after a sync, so the rows are
+ * complete. Never throws.
+ */
+export async function cleanupOrphanedFiles(): Promise<void> {
+  // Taken before the rows are read: a copy whose row is written after the
+  // query is in here, and one made later is added while the sweep runs.
+  const inFlight = new Set(copiesInFlight);
+  runningSweeps.add(inFlight);
   try {
     const dir = getAttachmentsDir();
-    if (!dir.exists) return;
+    if (dir.exists) {
+      // Every row that still points at a file keeps it (a failed or
+      // quota-refused upload's file is its only copy), as on desktop.
+      const withLocalUri = await database
+        .get<Attachment>("attachments")
+        .query(Q.where("local_uri", Q.notEq(null)))
+        .fetch();
+      const activeUris = new Set(withLocalUri.map((a) => a.localUri));
 
-    // Cleanup runs asynchronously — fire and forget
-    database
-      .get<Attachment>("attachments")
-      .query(Q.where("upload_status", "pending"))
-      .fetch()
-      .then((pending) => {
-        const pendingUris = new Set(pending.map((a) => a.localUri));
-
-        for (const item of dir.list()) {
-          if (!pendingUris.has(item.uri)) {
-            try {
-              item.delete();
-            } catch {
-              // Non-critical
-            }
+      for (const item of dir.list()) {
+        if (!activeUris.has(item.uri) && !inFlight.has(item.uri)) {
+          try {
+            item.delete();
+          } catch {
+            // Non-critical
           }
         }
-      })
-      .catch(() => {
-        // Non-critical cleanup
-      });
+      }
+    }
   } catch {
     // Non-critical cleanup
+  } finally {
+    runningSweeps.delete(inFlight);
   }
+  await removeOrphanedCacheFiles();
 }

@@ -35,6 +35,12 @@ export {
   DRAFTO_CLIENT_TAGS,
   ACTIVITY_QUEUE_MAX_DAYS,
   RECORD_ACTIVITY_MAX_DAYS,
+  PASSWORD_VISIBILITY_LABELS,
+  SIGN_OUT_CONFIRM_TITLE,
+  SIGN_OUT_SYNCED_MESSAGE,
+  SIGN_OUT_UNKNOWN_MESSAGE,
+  SIGN_OUT_CONFIRM_LABEL,
+  SIGN_OUT_ANYWAY_LABEL,
 } from "./constants";
 export type { DraftoClientTag } from "./constants";
 export {
@@ -173,3 +179,66 @@ export {
   fontSizes,
 } from "./design-tokens";
 export type { SemanticColors } from "./design-tokens";
+export { describeSignOut, describeUnsyncedLoss } from "./account/sign-out-copy";
+export type { SignOutCopy } from "./account/sign-out-copy";
+
+// Offline attachment cache (ADR-0086)
+export {
+  ATTACHMENT_CACHE_DIR_NAME,
+  LOCAL_ATTACHMENT_FRAGMENT,
+  ATTACHMENT_PREFETCH_MAX_FILES,
+  ATTACHMENT_PREFETCH_MAX_BYTES,
+  ATTACHMENT_PREFETCH_MAX_FILE_BYTES,
+} from "./constants";
+export {
+  toLocalAttachmentSrc,
+  isLocalAttachmentSrc,
+  extractFilePathFromLocalSrc,
+  attachmentCacheRelativePath,
+} from "./editor/attachment-url";
+export { withResolveTimeout } from "./editor/resolve-urls";
+export type { AttachmentRefKind, UrlResolver } from "./editor/resolve-urls";
+export {
+  IMAGE_RENDER_STATUS_MESSAGE_TYPE,
+  IMAGE_RENDER_STATUS_MAX_IMAGES,
+  IMAGE_RENDER_STATUS_SCRIPT,
+  parseImageRenderStatus,
+  imageRenderStatusLabel,
+} from "./editor/image-render-status";
+export type { ImageRenderState } from "./editor/image-render-status";
+export {
+  isCacheableAttachment,
+  planAttachmentCacheEviction,
+  selectPrefetchCandidates,
+} from "./storage/attachment-cache-policy";
+export {
+  ATTACHMENT_CACHE_INDEX_FILE_NAME,
+  AttachmentCacheIndex,
+  parseAttachmentCacheIndex,
+} from "./storage/attachment-cache-index";
+export type { AttachmentCacheFile } from "./storage/attachment-cache-index";
+export { EDITOR_PAGE_DIR_NAME, editorPageFileName, editorPageLocation } from "./editor/editor-page";
+export type { EditorPageLocation } from "./editor/editor-page";
+export {
+  PREFETCH_MIN_INTERVAL_MS,
+  createAttachmentPrefetcher,
+} from "./storage/attachment-prefetch";
+export type {
+  AttachmentPrefetchDeps,
+  AttachmentPrefetcher,
+  PrefetchCacheState,
+  PrefetchOptions,
+  PrefetchResult,
+} from "./storage/attachment-prefetch";
+export type {
+  AttachmentCacheEntry,
+  PrefetchCandidate,
+  PrefetchLimits,
+} from "./storage/attachment-cache-policy";
+
+export {
+  RECONNECTED_HOLD_MS,
+  initialOfflineBannerVariant,
+  nextOfflineBannerVariant,
+} from "./network/offline-banner";
+export type { OfflineBannerEvent, OfflineBannerVariant } from "./network/offline-banner";

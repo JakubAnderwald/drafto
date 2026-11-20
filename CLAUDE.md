@@ -96,7 +96,7 @@ echo "sdk.dir=/Users/jakub/Library/Android/sdk" > apps/mobile/android/local.prop
 > var missing from `.env.local.example`. Keep the two in sync. The bootstrap script
 > only handles the gitignored _files_.
 
-**Metro port conflicts:** The main repo may have Metro running on port 8081. On Android, in a worktree, start Metro on a different port (`pnpm start --port 8082`) and use `adb reverse tcp:8081 tcp:8082` to redirect the app. `adb reverse` doesn't exist for the iOS simulator, which always loads from 8081, so stop the other Metro first. Under Xcode 27, `pnpm ios` fails; see [Mobile debug builds](./docs/architecture/testing.md#mobile-debug-builds).
+**Metro port conflicts:** The main repo may have Metro running on port 8081. An Android **emulator** loads from `10.0.2.2:8081` (the host's 8081), which `adb reverse` doesn't touch, so either stop the other Metro, or start this one with `pnpm start --port 8082` and run `adb root && adb shell setprop metro.host localhost && adb reverse tcp:8081 tcp:8082`, then restart the app (`adb shell am force-stop eu.drafto.mobile` and launch it again): React Native reads `metro.host` once per app process. A physical Android phone loads from `localhost`, so `adb reverse tcp:8081 tcp:8082` alone works there. `adb reverse` doesn't exist for the iOS simulator, which always loads from 8081, so stop the other Metro first. Airplane mode cuts a debug build off from Metro, so offline flows run on a dev-backed release APK ([Offline flows on Android](./docs/architecture/testing.md#offline-flows-on-android)). Under Xcode 27, `pnpm ios` fails; see [Mobile debug builds](./docs/architecture/testing.md#mobile-debug-builds).
 
 **Worktree git gotchas:**
 

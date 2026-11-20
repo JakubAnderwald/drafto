@@ -13,7 +13,7 @@
 //   - storage-quota: scripts/__tests__/storage-quota.live.test.mjs
 //     (needs the dev URL, anon key and service-role key)
 //   - usage-daily: scripts/__tests__/usage-daily.live.test.mjs (activity days,
-//     ADR 0086: record_activity's limits, the table's lockdown and who may read
+//     ADR 0088: record_activity's limits, the table's lockdown and who may read
 //     the active-user and retention metrics; needs the dev URL, anon key and
 //     service-role key, and the usage_daily migration applied to dev)
 //

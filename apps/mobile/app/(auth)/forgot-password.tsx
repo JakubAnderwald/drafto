@@ -1,10 +1,12 @@
 import { useState, useMemo } from "react";
 import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
+import { useHeaderHeight } from "@react-navigation/elements";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useNetworkStatus } from "@/hooks/use-network-status";
+import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { RECOVERY_REDIRECT_URL } from "@/lib/auth-recovery";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
@@ -16,6 +18,9 @@ const OFFLINE_MESSAGE = "You're offline. Reconnect to the internet and try again
 export default function ForgotPasswordScreen() {
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // The keyboard is in window coordinates, so the offset is everything above this
+  // view: the header (kept for its Back button) and, while offline, the banner below it.
+  const keyboardOffset = useHeaderHeight() + useOfflineBannerHeight();
   const { isConnected } = useNetworkStatus();
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +89,7 @@ export default function ForgotPasswordScreen() {
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={keyboardOffset}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Forgot Password</Text>

@@ -123,9 +123,10 @@ export function MainScreen() {
 
   return (
     <View style={styles.container}>
+      {/* In the layout flow: while it shows, the three panes start below it. */}
       <OfflineBanner />
 
-      <View style={styles.layout}>
+      <View style={styles.layout} testID="main-layout">
         {/* Sidebar: notebooks */}
         {sidebarVisible && (
           <View style={[styles.sidebar, { width: SIDEBAR_WIDTH }]}>

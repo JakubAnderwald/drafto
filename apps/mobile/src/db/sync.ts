@@ -318,7 +318,7 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
 }
 
 /**
- * The activity ping (ADR-0086, docs/features/offline-sync.md): sent only after
+ * The activity ping (ADR-0088, docs/features/offline-sync.md): sent only after
  * a sync got through, with every day queued since the last one. Both calls
  * never reject; the catch is a backstop so a ping can never change the sync's
  * result. A failed ping keeps its days for the next sync. Waits for it at most
@@ -394,7 +394,7 @@ export function resetSyncState(): void {
 
 /**
  * Whether the user has Drafto in front. Only a sync started then counts as
- * opening the app (ADR-0086). Reconnect and retry syncs also run while the app
+ * opening the app (ADR-0088). Reconnect and retry syncs also run while the app
  * sits in the background, and on macOS the app keeps running after its window
  * is closed, so counting those would mark days nobody opened Drafto.
  */
@@ -404,7 +404,7 @@ function isAppInFront(): boolean {
 
 export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
   // A sync started while the app is in front, offline ones included, counts as
-  // opening the app today (ADR-0086). A background sync marks nothing, but its
+  // opening the app today (ADR-0088). A background sync marks nothing, but its
   // ping below still sends the days already queued. Started before the latch
   // check and not awaited here, so coalescing and resetSyncState work as
   // before; the ping below awaits it.

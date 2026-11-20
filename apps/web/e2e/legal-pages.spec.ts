@@ -8,7 +8,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 async function expectNoLoginForm(page: Page) {
   await expect(page.getByRole("button", { name: "Log in" })).toHaveCount(0);
-  await expect(page.getByLabel("Password")).toHaveCount(0);
+  await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
 }
 
 test.describe("Legal and support pages (signed out)", () => {

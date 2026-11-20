@@ -65,6 +65,29 @@ jest.mock("@/lib/generate-id", () => ({
   generateId: () => "mock-id-123",
 }));
 
+// The attachment cache (ADR-0086) has its own tests; here it only records calls.
+const mockRetainInCache = jest.fn();
+const mockDeleteAttachmentCache = jest.fn();
+const mockCopyIntoCache = jest.fn();
+const mockRelease = jest.fn();
+const mockHoldCacheFile = jest.fn((_filePath: string) => mockRelease);
+const mockDeleteFromCache = jest.fn();
+const mockRemoveOrphanedCacheFiles = jest.fn();
+jest.mock("@/lib/data/attachment-cache", () => ({
+  retainInCache: (...args: unknown[]) => mockRetainInCache(...args),
+  deleteAttachmentCache: () => mockDeleteAttachmentCache(),
+  copyIntoCache: (...args: unknown[]) => mockCopyIntoCache(...args),
+  holdCacheFile: (filePath: string) => mockHoldCacheFile(filePath),
+  deleteFromCache: (filePath: string) => mockDeleteFromCache(filePath),
+  removeOrphanedCacheFiles: () => mockRemoveOrphanedCacheFiles(),
+  cacheFileFor: (filePath: string) => `/mock/documents/attachment-cache/${filePath}`,
+}));
+
+const mockResetPrefetch = jest.fn();
+jest.mock("@/lib/data/attachment-prefetch", () => ({
+  resetAttachmentPrefetch: () => mockResetPrefetch(),
+}));
+
 // atob is used by attachment-queue to decode base64 from RNFS.readFile.
 // In Node test env, provide a global shim if not already present.
 if (typeof globalThis.atob !== "function") {
@@ -82,6 +105,7 @@ import RNFS from "react-native-fs";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
   STORAGE_QUOTA_EXCEEDED_CODE,
+  localAttachmentFileName,
   storageFullMessage,
 } from "@drafto/shared";
 
@@ -94,6 +118,14 @@ beforeEach(() => {
   mockFetchStorageUsage.mockResolvedValue(null);
   mockMaybeSingle.mockResolvedValue({ data: null, error: null });
   mockRemove.mockResolvedValue({ data: [], error: null });
+  mockRetainInCache.mockResolvedValue(undefined);
+  mockDeleteAttachmentCache.mockResolvedValue(undefined);
+  mockCopyIntoCache.mockImplementation(
+    async (_sourcePath: string, filePath: string) =>
+      `file:///mock/documents/attachment-cache/${filePath}`,
+  );
+  mockDeleteFromCache.mockResolvedValue(undefined);
+  mockRemoveOrphanedCacheFiles.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -116,14 +148,54 @@ describe("queueAttachment (saveFileLocally path handling)", () => {
 
     await queueAttachment("user-1", "note-1", file);
 
+    // Not an image, so into the attachments folder, out of the cache (ADR-0086).
     expect(RNFS.copyFile).toHaveBeenCalledWith(
       "/Users/j/Downloads/partikelverb Aöb(1).pdf",
-      expect.stringContaining("/mock/documents/attachments/"),
+      expect.stringContaining("/mock/documents/attachments/mock-id-123_"),
     );
+    expect(mockCopyIntoCache).not.toHaveBeenCalled();
     expect(RNFS.copyFile).not.toHaveBeenCalledWith(
       expect.stringContaining("%20"),
       expect.anything(),
     );
+  });
+
+  it("copies a picked image into the cache from its decoded path, held until its row exists", async () => {
+    mockCreate.mockImplementation(() => {
+      expect(mockRelease).not.toHaveBeenCalled();
+    });
+    await queueAttachment("user-1", "note-1", {
+      uri: "file:///Users/j/Pictures/f%CC%88oto.jpg",
+      path: "/Users/j/Pictures/föto.jpg",
+      fileName: "föto.jpg",
+      mimeType: "image/jpeg",
+      fileSize: 2048,
+    });
+
+    const [sourcePath, filePath] = mockCopyIntoCache.mock.calls[0] as [string, string];
+    expect(sourcePath).toBe("/Users/j/Pictures/föto.jpg");
+    expect(mockHoldCacheFile).toHaveBeenCalledWith(filePath);
+    expect(mockHoldCacheFile.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCopyIntoCache.mock.invocationCallOrder[0],
+    );
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+    const record = mockCreate.mock.calls[0][0] as Record<string, unknown>;
+    expect(record.localUri).toBe(`file:///mock/documents/attachment-cache/${filePath}`);
+    expect(RNFS.copyFile).not.toHaveBeenCalled();
+  });
+
+  it("releases the hold when the copy fails", async () => {
+    mockCopyIntoCache.mockRejectedValueOnce(new Error("disk full"));
+    await expect(
+      queueAttachment("user-1", "note-1", {
+        uri: "file:///a.jpg",
+        path: "/a.jpg",
+        fileName: "a.jpg",
+        mimeType: "image/jpeg",
+        fileSize: 10,
+      }),
+    ).rejects.toThrow("disk full");
+    expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 
   it("throws when file exceeds MAX_FILE_SIZE", async () => {
@@ -218,6 +290,29 @@ describe("processPendingUploads", () => {
       expect.objectContaining({ id: attachment.remoteId, file_path: attachment.filePath }),
       { onConflict: "id", ignoreDuplicates: true },
     );
+  });
+
+  it("keeps an uploaded image as its cached copy, and deletes any other file (ADR-0086)", async () => {
+    const image = makeAttachment();
+    const pdf = makeAttachment({
+      id: "att-2",
+      remoteId: "remote-2",
+      fileName: "report.pdf",
+      filePath: "user-1/note-1/report.pdf",
+      mimeType: "application/pdf",
+      localUri: "file:///mock/documents/attachments/mock-id-123_report.pdf",
+    });
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([image, pdf]) });
+    mockDatabaseGet.mockReturnValue({ query: (...args: unknown[]) => mockQuery(...args) });
+    (RNFS.readFile as jest.Mock).mockResolvedValue("aGVsbG8=");
+    mockUpload.mockResolvedValue({ error: null });
+    mockUpsert.mockResolvedValue({ error: null });
+
+    await expect(processPendingUploads()).resolves.toEqual({ uploaded: 2, storageFull: 0 });
+
+    expect(mockRetainInCache).toHaveBeenCalledTimes(1);
+    expect(mockRetainInCache).toHaveBeenCalledWith("file:///local/photo.jpg", image.filePath);
+    expect(RNFS.unlink).toHaveBeenCalledWith("/mock/documents/attachments/mock-id-123_report.pdf");
   });
 
   it("persists error message and transitions status to 'failed' when upload throws", async () => {
@@ -437,7 +532,12 @@ describe("processPendingUploads", () => {
       expect(attachment.localUri).toBeNull();
       expect(mockRemove).not.toHaveBeenCalled();
       expect(mockUpload).not.toHaveBeenCalled();
-      expect(RNFS.unlink).toHaveBeenCalledWith("/local/photo.jpg");
+      // The local file stays on as the cached copy (ADR-0086).
+      expect(mockRetainInCache).toHaveBeenCalledWith(
+        "file:///local/photo.jpg",
+        attachment.filePath,
+      );
+      expect(RNFS.unlink).not.toHaveBeenCalled();
     });
 
     it("marks a storage RLS refusal quota_exceeded when a fresh reading confirms the quota", async () => {
@@ -564,6 +664,7 @@ describe("discardRefusedAttachment (issue #794)", () => {
     return {
       id: "att-1",
       fileName: "photo.jpg",
+      filePath: "user-1/note-1/photo.jpg",
       localUri: "file:///mock/documents/attachments/photo.jpg",
       isStorageFull: true,
       destroyPermanently: jest.fn().mockResolvedValue(undefined),
@@ -581,6 +682,15 @@ describe("discardRefusedAttachment (issue #794)", () => {
     expect(mockDatabaseWrite).toHaveBeenCalledTimes(1);
     expect(attachment.destroyPermanently).toHaveBeenCalledTimes(1);
     expect(RNFS.unlink).toHaveBeenCalledWith("/mock/documents/attachments/photo.jpg");
+  });
+
+  it("deletes a refused image's cached copy through the cache (ADR-0086)", async () => {
+    const attachment = makeRefused({
+      localUri: "file:///mock/documents/attachment-cache/user-1/note-1/photo.jpg",
+    });
+    await discardRefusedAttachment(attachment);
+    expect(mockDeleteFromCache).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
+    expect(RNFS.unlink).not.toHaveBeenCalled();
   });
 
   it("leaves an attachment that wasn't refused alone", async () => {
@@ -621,6 +731,13 @@ describe("discardRefusedAttachment (issue #794)", () => {
 });
 
 describe("deleteAllLocalAttachments", () => {
+  it("also wipes the attachment cache (ADR-0086)", async () => {
+    (RNFS.exists as jest.Mock).mockResolvedValue(false);
+    await deleteAllLocalAttachments();
+    expect(mockDeleteAttachmentCache).toHaveBeenCalledTimes(1);
+    expect(mockResetPrefetch).toHaveBeenCalledTimes(1);
+  });
+
   it("removes the entire attachments directory when it exists", async () => {
     (RNFS.exists as jest.Mock).mockResolvedValue(true);
 
@@ -646,12 +763,13 @@ describe("deleteAllLocalAttachments", () => {
 });
 
 describe("cleanupOrphanedFiles", () => {
-  it("does nothing when attachments directory does not exist", async () => {
+  it("skips the attachments folder when it does not exist, still cleaning the cache", async () => {
     (RNFS.exists as jest.Mock).mockResolvedValue(false);
 
     await cleanupOrphanedFiles();
 
     expect(RNFS.readDir).not.toHaveBeenCalled();
+    expect(mockRemoveOrphanedCacheFiles).toHaveBeenCalledTimes(1);
   });
 
   it("removes files not referenced by any attachment", async () => {
@@ -674,5 +792,69 @@ describe("cleanupOrphanedFiles", () => {
 
     expect(RNFS.unlink).toHaveBeenCalledWith("/mock/documents/attachments/orphaned.jpg");
     expect(RNFS.unlink).not.toHaveBeenCalledWith("/mock/documents/attachments/active.jpg");
+  });
+
+  describe("a file that isn't an image, queued while it runs", () => {
+    const QUEUED = `/mock/documents/attachments/${localAttachmentFileName("mock-id-123", "doc.pdf")}`;
+    const doc = {
+      uri: "file:///doc.pdf",
+      path: "/doc.pdf",
+      fileName: "doc.pdf",
+      mimeType: "application/pdf",
+      fileSize: 1024,
+    };
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    function rowsFrom(fetch: jest.Mock) {
+      mockDatabaseGet.mockReturnValue({
+        create: (builder: (rec: Record<string, unknown>) => void) => {
+          const rec: Record<string, unknown> = { _raw: {} };
+          builder(rec);
+          return rec;
+        },
+        query: () => ({ fetch }),
+      });
+    }
+
+    beforeEach(() => {
+      (RNFS.readDir as jest.Mock).mockResolvedValue([{ path: QUEUED, isFile: () => true }]);
+    });
+
+    it("keeps the copy until its row is written, then sweeps it like any file", async () => {
+      rowsFrom(jest.fn().mockResolvedValue([]));
+      let finishWrite: () => void = () => undefined;
+      mockDatabaseWrite.mockImplementationOnce(
+        (fn: () => Promise<unknown>) =>
+          new Promise((resolve) => {
+            finishWrite = () => resolve(fn());
+          }),
+      );
+      const queued = queueAttachment("user-1", "note-1", doc);
+      while (mockDatabaseWrite.mock.calls.length === 0) await tick();
+
+      await cleanupOrphanedFiles();
+      expect(RNFS.unlink).not.toHaveBeenCalledWith(QUEUED);
+
+      finishWrite();
+      await queued;
+      // Released: a row that no longer points at it (here, none) lets it go.
+      await cleanupOrphanedFiles();
+      expect(RNFS.unlink).toHaveBeenCalledWith(QUEUED);
+    });
+
+    it("keeps a copy made after the sweep read the rows", async () => {
+      let releaseRows: (rows: unknown[]) => void = () => undefined;
+      rowsFrom(jest.fn().mockReturnValue(new Promise((resolve) => (releaseRows = resolve))));
+      const sweep = cleanupOrphanedFiles();
+      await tick();
+
+      // Copied and its row written while the sweep's row query (taken before
+      // that row existed) is still out.
+      await queueAttachment("user-1", "note-1", doc);
+      releaseRows([]);
+      await sweep;
+
+      expect(RNFS.unlink).not.toHaveBeenCalledWith(QUEUED);
+    });
   });
 });

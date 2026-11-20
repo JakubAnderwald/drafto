@@ -89,11 +89,42 @@ jest.mock("@/lib/generate-id", () => ({
   generateId: () => "mock-id-123",
 }));
 
+// The attachment cache (ADR-0086) has its own tests; here it only records calls.
+const mockRetainInCache = jest.fn();
+const mockDeleteAttachmentCache = jest.fn();
+const CACHED_COPY_URI = "file:///docs/attachment-cache/user-1/note-1/x.jpg";
+const mockCopyIntoCache = jest.fn((_sourceUri: string, _filePath: string) => CACHED_COPY_URI);
+const mockRelease = jest.fn();
+const mockHoldCacheFile = jest.fn((_filePath: string) => mockRelease);
+const mockDeleteFromCache = jest.fn();
+const mockRemoveOrphanedCacheFiles = jest.fn().mockResolvedValue(undefined);
+jest.mock("@/lib/data/attachment-cache", () => ({
+  retainInCache: (...args: unknown[]) => mockRetainInCache(...args),
+  deleteAttachmentCache: () => mockDeleteAttachmentCache(),
+  copyIntoCache: (sourceUri: string, filePath: string) => mockCopyIntoCache(sourceUri, filePath),
+  holdCacheFile: (filePath: string) => mockHoldCacheFile(filePath),
+  deleteFromCache: (filePath: string) => mockDeleteFromCache(filePath),
+  removeOrphanedCacheFiles: () => mockRemoveOrphanedCacheFiles(),
+  cacheFileFor: (filePath: string) => ({ uri: `file:///docs/attachment-cache/${filePath}` }),
+}));
+
+const mockClearSignedUrlCache = jest.fn();
+jest.mock("@/lib/data/signed-url-cache", () => ({
+  clearSignedUrlCache: () => mockClearSignedUrlCache(),
+}));
+
+const mockResetPrefetch = jest.fn();
+jest.mock("@/lib/data/attachment-prefetch", () => ({
+  resetAttachmentPrefetch: () => mockResetPrefetch(),
+}));
+
 import {
   processPendingUploads,
+  queueAttachment,
   uploadAttachment,
   deleteAllLocalAttachments,
   discardRefusedAttachment,
+  cleanupOrphanedFiles,
 } from "@/lib/data/attachment-queue";
 
 beforeEach(() => {
@@ -177,6 +208,42 @@ describe("processPendingUploads", () => {
       { onConflict: "id", ignoreDuplicates: true },
     );
     expect(mockAttachment.update).toHaveBeenCalled();
+    // The uploaded file stays on the device as the cached copy (ADR-0086).
+    expect(mockRetainInCache).toHaveBeenCalledWith(
+      "file:///local/photo.jpg",
+      "user-1/note-1/photo.jpg",
+    );
+    expect(mockFileDelete).not.toHaveBeenCalled();
+  });
+
+  it("deletes a file that isn't an image once uploaded, as before (ADR-0086)", async () => {
+    const mockAttachment = {
+      id: "att-2",
+      remoteId: "remote-2",
+      noteId: "note-1",
+      userId: "user-1",
+      fileName: "report.pdf",
+      filePath: "user-1/note-1/report.pdf",
+      fileSize: 1024,
+      mimeType: "application/pdf",
+      localUri: "file:///docs/attachments/mock-id-123_report.pdf",
+      uploadStatus: "pending",
+      update: jest.fn(),
+    };
+    mockQuery.mockReturnValue({ fetch: jest.fn().mockResolvedValue([mockAttachment]) });
+    mockDatabaseGet.mockReturnValue({ query: (...args: unknown[]) => mockQuery(...args) });
+    mockFileBytes.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    mockUpload.mockResolvedValue({ error: null });
+    mockUpsert.mockResolvedValue({ error: null });
+    mockDatabaseWrite.mockImplementation((fn: () => Promise<unknown>) => fn());
+
+    await expect(processPendingUploads()).resolves.toEqual({
+      uploaded: 1,
+      failed: 0,
+      storageFull: 0,
+    });
+    expect(mockRetainInCache).not.toHaveBeenCalled();
+    expect(mockFileDelete).toHaveBeenCalledTimes(1);
   });
 
   it("returns correct counts when some uploads fail", async () => {
@@ -551,6 +618,7 @@ describe("discardRefusedAttachment (issue #794)", () => {
     return {
       id: "att-1",
       fileName: "photo.jpg",
+      filePath: "user-1/note-1/photo.jpg",
       localUri: "file:///local/photo.jpg",
       isStorageFull: true,
       destroyPermanently: jest.fn().mockResolvedValue(undefined),
@@ -575,6 +643,18 @@ describe("discardRefusedAttachment (issue #794)", () => {
     expect(mockDatabaseWrite).toHaveBeenCalledTimes(1);
     expect(attachment.destroyPermanently).toHaveBeenCalledTimes(1);
     expect(mockFileDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes a refused image's cached copy through the cache (ADR-0086)", async () => {
+    const attachment = makeRefused({
+      filePath: "user-1/note-1/photo.jpg",
+      localUri: "file:///docs/attachment-cache/user-1/note-1/photo.jpg",
+    });
+
+    await discardRefusedAttachment(attachment);
+
+    expect(mockDeleteFromCache).toHaveBeenCalledWith("user-1/note-1/photo.jpg");
+    expect(mockFileDelete).not.toHaveBeenCalled();
   });
 
   it("leaves an attachment that wasn't refused alone", async () => {
@@ -625,6 +705,16 @@ describe("deleteAllLocalAttachments", () => {
     expect(mockDirDelete).toHaveBeenCalled();
   });
 
+  it("also wipes the attachment cache and the signed URLs handed out (ADR-0086)", async () => {
+    mockDirExists.mockReturnValue(false);
+
+    await deleteAllLocalAttachments();
+
+    expect(mockDeleteAttachmentCache).toHaveBeenCalledTimes(1);
+    expect(mockClearSignedUrlCache).toHaveBeenCalledTimes(1);
+    expect(mockResetPrefetch).toHaveBeenCalledTimes(1);
+  });
+
   it("does nothing when the attachments directory does not exist", async () => {
     mockDirExists.mockReturnValue(false);
 
@@ -643,5 +733,171 @@ describe("deleteAllLocalAttachments", () => {
     await expect(deleteAllLocalAttachments()).resolves.toBeUndefined();
 
     warnSpy.mockRestore();
+  });
+});
+
+describe("queueAttachment (ADR-0086)", () => {
+  function captureCreate() {
+    const create = jest.fn(async (build: (record: Record<string, unknown>) => void) => {
+      // The row is written while the cache file is still held.
+      expect(mockRelease).not.toHaveBeenCalled();
+      const record: Record<string, unknown> = { _raw: {} };
+      build(record);
+      return record;
+    });
+    mockDatabaseGet.mockReturnValue({ create });
+    return create;
+  }
+
+  it("copies a picked image into the attachment cache at its storage path", async () => {
+    captureCreate();
+
+    const attachment = (await queueAttachment("user-1", "note-1", {
+      uri: "file:///picker/x.jpg",
+      fileName: "x.jpg",
+      mimeType: "image/jpeg",
+      fileSize: 2048,
+    })) as unknown as { filePath: string; localUri: string; uploadStatus: string };
+
+    expect(mockCopyIntoCache).toHaveBeenCalledWith("file:///picker/x.jpg", attachment.filePath);
+    expect(mockFileCopy).not.toHaveBeenCalled();
+    expect(attachment.localUri).toBe(CACHED_COPY_URI);
+    expect(attachment.uploadStatus).toBe("pending");
+  });
+
+  it("holds the cached copy from eviction until its row is written", async () => {
+    captureCreate();
+    const attachment = (await queueAttachment("user-1", "note-1", {
+      uri: "file:///picker/x.jpg",
+      fileName: "x.jpg",
+      mimeType: "image/jpeg",
+      fileSize: 2048,
+    })) as unknown as { filePath: string };
+
+    expect(mockHoldCacheFile).toHaveBeenCalledWith(attachment.filePath);
+    expect(mockHoldCacheFile.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCopyIntoCache.mock.invocationCallOrder[0],
+    );
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the hold when the copy fails", async () => {
+    mockCopyIntoCache.mockImplementationOnce(() => {
+      throw new Error("File copy failed — destination is missing or empty");
+    });
+    await expect(
+      queueAttachment("user-1", "note-1", {
+        uri: "file:///picker/x.jpg",
+        fileName: "x.jpg",
+        mimeType: "image/jpeg",
+        fileSize: 10,
+      }),
+    ).rejects.toThrow("File copy failed");
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a file that isn't an image out of the cache, in the attachments folder", async () => {
+    captureCreate();
+    const attachment = (await queueAttachment("user-1", "note-1", {
+      uri: "file:///picker/report.pdf",
+      fileName: "report.pdf",
+      mimeType: "application/pdf",
+      fileSize: 2048,
+    })) as unknown as { localUri: string };
+
+    expect(mockCopyIntoCache).not.toHaveBeenCalled();
+    expect(mockFileCopy).toHaveBeenCalledTimes(1);
+    expect(attachment.localUri).toBe("file:///mock/mock-id-123_report.pdf");
+  });
+});
+
+describe("cleanupOrphanedFiles", () => {
+  it("keeps every file a row still points at, a failed upload's included", async () => {
+    const kept = { uri: "file:///docs/attachments/failed.jpg", delete: jest.fn() };
+    const orphan = { uri: "file:///docs/attachments/orphan.jpg", delete: jest.fn() };
+    const { Directory } = jest.requireMock("expo-file-system") as { Directory: jest.Mock };
+    Directory.mockImplementationOnce(() => ({ exists: true, list: () => [kept, orphan] }));
+    const fetch = jest.fn().mockResolvedValue([{ localUri: kept.uri, uploadStatus: "failed" }]);
+    mockQuery.mockReturnValue({ fetch });
+    mockDatabaseGet.mockReturnValue({ query: (...args: unknown[]) => mockQuery(...args) });
+
+    await cleanupOrphanedFiles();
+
+    expect(kept.delete).not.toHaveBeenCalled();
+    expect(orphan.delete).toHaveBeenCalledTimes(1);
+  });
+
+  describe("a file that isn't an image, queued while it runs", () => {
+    const QUEUED_URI = "file:///mock/mock-id-123_report.pdf";
+    const report = {
+      uri: "file:///picker/report.pdf",
+      fileName: "report.pdf",
+      mimeType: "application/pdf",
+      fileSize: 2048,
+    };
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    function folderListing() {
+      const queued = { uri: QUEUED_URI, delete: jest.fn() };
+      const { Directory } = jest.requireMock("expo-file-system") as { Directory: jest.Mock };
+      Directory.mockImplementationOnce(() => ({ exists: true, list: () => [queued] }));
+      return queued;
+    }
+
+    function rowsFrom(fetch: jest.Mock) {
+      mockDatabaseGet.mockReturnValue({
+        create: jest.fn(async (build: (record: Record<string, unknown>) => void) => {
+          const record: Record<string, unknown> = { _raw: {} };
+          build(record);
+          return record;
+        }),
+        query: () => ({ fetch }),
+      });
+    }
+
+    it("keeps the copy until its row is written, then sweeps it like any file", async () => {
+      rowsFrom(jest.fn().mockResolvedValue([]));
+      let finishWrite: () => void = () => undefined;
+      mockDatabaseWrite.mockImplementationOnce(
+        (fn: () => Promise<unknown>) =>
+          new Promise((resolve) => {
+            finishWrite = () => resolve(fn());
+          }),
+      );
+      const queuedCall = queueAttachment("user-1", "note-1", report);
+
+      const during = folderListing();
+      await cleanupOrphanedFiles();
+      expect(during.delete).not.toHaveBeenCalled();
+
+      finishWrite();
+      await queuedCall;
+      // Released: a row that no longer points at it (here, none) lets it go.
+      const after = folderListing();
+      await cleanupOrphanedFiles();
+      expect(after.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a copy made after the sweep read the rows", async () => {
+      let releaseRows: (rows: unknown[]) => void = () => undefined;
+      rowsFrom(jest.fn().mockReturnValue(new Promise((resolve) => (releaseRows = resolve))));
+      const listed = folderListing();
+      const sweep = cleanupOrphanedFiles();
+      await tick();
+
+      // Copied and its row written while the sweep's row query (taken before
+      // that row existed) is still out.
+      await queueAttachment("user-1", "note-1", report);
+      releaseRows([]);
+      await sweep;
+
+      expect(listed.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  it("also cleans the attachment cache, even with no attachments folder", async () => {
+    mockDirExists.mockReturnValue(false);
+    await cleanupOrphanedFiles();
+    expect(mockRemoveOrphanedCacheFiles).toHaveBeenCalledTimes(1);
   });
 });

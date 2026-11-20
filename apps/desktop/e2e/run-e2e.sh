@@ -42,6 +42,70 @@ sleep 1
 if has_element "Email" && has_element "Password" && has_element "Log in"; then
   : "${E2E_TEST_EMAIL:?E2E_TEST_EMAIL must be set (see apps/web/.env.local)}"
   : "${E2E_TEST_PASSWORD:?E2E_TEST_PASSWORD must be set (see apps/web/.env.local)}"
+
+  # ──────────────────────────────────────────────
+  echo ""
+  echo "TEST 0: Login password field has a show/hide toggle (PrimeTestLab 10668, S-01)"
+  # ──────────────────────────────────────────────
+  # Runs only from the login screen, and before the real password is typed. The field is
+  # cleared first (an aborted earlier run can leave a typed password in it), so only an
+  # empty field is ever revealed in the window or a screenshot. It ends hidden again, so the
+  # sign-in below types into a secure field.
+  click_element_by_desc "Password"
+  cliclick kd:cmd t:a ku:cmd kp:delete
+  wait_for_ui
+  # The keystrokes clear the field only if the click focused it. Confirm it holds focus and
+  # is empty (retrying the click and clear once) before anything reveals it.
+  PASSWORD_CLEARED=false
+  for attempt in 1 2; do
+    if [ "$(text_field_state "Password")" = "true,0" ]; then
+      PASSWORD_CLEARED=true
+      break
+    fi
+    if [ "$attempt" = 1 ]; then
+      click_element_by_desc "Password" || true
+      cliclick kd:cmd t:a ku:cmd kp:delete
+      wait_for_ui
+    fi
+  done
+  # An aborted earlier run can also leave the field revealed: hide it before the test starts.
+  if has_element "Hide password"; then
+    click_element_by_desc "Hide password" || true
+    wait_for_ui
+  fi
+  if [ "$PASSWORD_CLEARED" = false ]; then
+    fail "Password toggle" "Password field not confirmed focused and empty ($(text_field_state "Password")) — not revealing it"
+  elif has_element "Show password"; then
+    pass "Password field offers 'Show password'"
+    if click_element_by_desc "Show password" && wait_for_ui && has_element "Hide password"; then
+      pass "Toggle switches to 'Hide password'"
+      click_element_by_desc "Hide password" || true
+      wait_for_ui
+      if has_element "Show password"; then
+        pass "Toggle switches back to 'Show password'"
+      else
+        fail "Password toggle" "'Show password' not back after clicking 'Hide password'"
+      fi
+    else
+      fail "Password toggle" "'Hide password' not found after clicking 'Show password'"
+    fi
+  else
+    fail "Password toggle" "No 'Show password' control on the login screen"
+  fi
+
+  # Never type the real password into a field that may be revealed. Sign in only when the
+  # field is confirmed hidden: "Show password" present and "Hide password" absent. Try hiding
+  # it once more, then abort rather than guess. This also aborts on a build with no toggle,
+  # where neither label exists; the suite targets builds that have one.
+  if has_element "Hide password"; then
+    click_element_by_desc "Hide password" || true
+    wait_for_ui
+  fi
+  if ! has_element "Show password" || has_element "Hide password"; then
+    echo "Error: cannot confirm the password field is hidden — aborting before typing credentials." >&2
+    exit 1
+  fi
+
   click_element_by_desc "Email"
   cliclick t:"$E2E_TEST_EMAIL"
   click_element_by_desc "Password"
@@ -62,6 +126,10 @@ if has_element "Email" && has_element "Password" && has_element "Log in"; then
     echo "Error: Login did not complete within 15s — aborting." >&2
     exit 1
   fi
+else
+  echo ""
+  echo "TEST 0: Login password field has a show/hide toggle"
+  echo "  ⏭  Skipped — the app is already signed in (sign out to run it)"
 fi
 
 # Notebook name is set up here so the cleanup teardown can find it later.

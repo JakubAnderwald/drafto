@@ -7,6 +7,7 @@ import Link from "next/link";
 import { SIGNUP_CONFIRMATION_SENT } from "@drafto/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
 
@@ -80,6 +81,7 @@ export default function SignupPage() {
           <Input
             id="email"
             type="email"
+            autoComplete="email"
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -90,15 +92,16 @@ export default function SignupPage() {
 
         <div>
           <Label htmlFor="password">Password</Label>
-          <Input
+          <PasswordInput
             id="password"
-            type="password"
+            name="password"
+            autoComplete="new-password"
             required
             minLength={6}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Min. 6 characters"
-            className="mt-1"
+            wrapperClassName="mt-1"
           />
         </div>
 

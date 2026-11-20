@@ -1,4 +1,4 @@
-# 0086 — Activity Days Instead of Event Analytics
+# 0088 — Activity Days Instead of Event Analytics
 
 - **Status**: Accepted
 - **Date**: 2026-11-13

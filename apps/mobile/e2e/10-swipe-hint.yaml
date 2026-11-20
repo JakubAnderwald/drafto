@@ -1,0 +1,253 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+---
+# Flow 10: Swipe-only row actions get a hint and a tap path (PrimeTestLab 10668, S-03)
+#
+# The notebooks list, a notebook's notes list and Trash hide their row actions
+# behind a swipe. Each list now shows a one-time, dismissible hint above its
+# rows (testID `swipe-hint`, close button `swipe-hint-dismiss`) and slides its
+# first row once to show what is under it. The dismissal is stored per list
+# and per device (expo-secure-store), so the hint stays gone after a relaunch.
+# A Trash row also opens Restore / Delete permanently / Cancel on a tap.
+#
+# Before the fix this flow fails at the first `swipe-hint` assertion (there is
+# no hint), and the Trash tap menu does not exist.
+#
+# Starts from a clean install (clearKeychain too: iOS keeps SecureStore in the
+# Keychain, which clearState leaves alone), then signs in, so it runs on its
+# own or after any other flow. Cross-platform:
+#   maestro test apps/mobile/e2e/10-swipe-hint.yaml -e RUN_ID=$(date +%s) \
+#     -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+# apps/mobile/e2e/run-qa-10668-e2e.sh runs it as the "swipe-hint" step.
+#
+# Creates "NB <RUN_ID>" with "NoteF <RUN_ID>" and deletes both at the end.
+#
+# Action buttons exist only while their row is swiped open, so after a swipe
+# `id: action-trash` names that row's button and no other.
+
+# --- Clean start, signed out ---
+- clearKeychain
+- stopApp
+- clearState
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
+
+- tapOn: "you@example.com"
+- inputText: ${E2E_TEST_EMAIL}
+- tapOn: "Sign in to your Drafto account"
+- tapOn: "Your password"
+- inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
+- tapOn: "Sign in to your Drafto account"
+- tapOn:
+    id: "login-button"
+
+# iOS offers to save the password right after login, in a sheet drawn out of
+# process that hides the app from Maestro (on a release build it can arrive
+# before the Notebooks tab is checked). Let it arrive, then restart the app:
+# the session persists and the sheet goes away with the old process.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - extendedWaitUntil:
+          visible: "never-present-just-wait"
+          timeout: 8000
+          optional: true
+      - stopApp
+      - launchApp
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 60000
+
+# --- Notebooks list: the hint shows on a first visit ---
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "NB ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*NB ${RUN_ID}"
+    timeout: 10000
+
+- extendedWaitUntil:
+    visible:
+      id: "swipe-hint"
+    timeout: 10000
+- assertVisible: "Swipe left on a notebook to delete it.*"
+- takeScreenshot: qa-10668-s03-notebooks-hint
+- tapOn:
+    id: "swipe-hint-dismiss"
+- assertNotVisible:
+    id: "swipe-hint"
+
+# --- Notes list: its own hint ---
+- tapOn: ".*NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible:
+      id: "notes-list-screen"
+    timeout: 10000
+# Let the push finish first: iOS keeps the previous screen in the hierarchy
+# until it does, and a tap during the slide lands on its frames.
+- waitForAnimationToEnd
+- tapOn:
+    id: "add"
+- assertVisible: "Note title (optional)"
+- inputText: "NoteF ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+
+- extendedWaitUntil:
+    visible:
+      id: "swipe-hint"
+    timeout: 10000
+- assertVisible: "Swipe left on a note to move it to Trash.*"
+- takeScreenshot: qa-10668-s03-notes-hint
+- tapOn:
+    id: "swipe-hint-dismiss"
+- assertNotVisible:
+    id: "swipe-hint"
+
+# Move the note to Trash with the swipe the hint describes.
+- swipe:
+    from:
+      text: ".*NoteF ${RUN_ID}.*"
+    direction: LEFT
+- tapOn:
+    id: "action-trash"
+- tapOn: "Trash"
+- extendedWaitUntil:
+    notVisible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+
+# Back to the tabs: Android's back key, iOS's header back button.
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - pressKey: back
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: "Notebooks"
+
+# --- Trash: its own hint, and a tap menu ---
+# The tab is "Trash, tab, 2 of 3" on iOS and a bare "Trash" text on Android
+# (its button reads "<icon>, Trash"), so the tab selectors accept both.
+- tapOn: "Trash(, tab.*)?"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+- extendedWaitUntil:
+    visible:
+      id: "swipe-hint"
+    timeout: 10000
+- assertVisible: "Swipe right on a note to restore it.*"
+- takeScreenshot: qa-10668-s03-trash-hint
+- tapOn:
+    id: "swipe-hint-dismiss"
+- assertNotVisible:
+    id: "swipe-hint"
+
+# A tap offers both actions without a swipe.
+- tapOn: ".*NoteF ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible: "Delete permanently"
+    timeout: 5000
+- assertVisible: "Restore"
+- takeScreenshot: qa-10668-s03-trash-menu
+- tapOn: "Cancel"
+- extendedWaitUntil:
+    notVisible: "Delete permanently"
+    timeout: 5000
+
+# --- Relaunch: every dismissal survived ---
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible: ".*NB ${RUN_ID}"
+    timeout: 30000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "swipe-hint"
+
+- tapOn: "Trash(, tab.*)?"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "swipe-hint"
+
+# Restore from the tap menu: one tap, no second question.
+- tapOn: ".*NoteF ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible: "Restore"
+    timeout: 5000
+- tapOn: "Restore"
+- extendedWaitUntil:
+    notVisible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+
+- tapOn: "Notebooks(, tab.*)?"
+- tapOn: ".*NB ${RUN_ID}"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "swipe-hint"
+
+# --- Cleanup: trash the note, delete it for good, delete the notebook ---
+- swipe:
+    from:
+      text: ".*NoteF ${RUN_ID}.*"
+    direction: LEFT
+- tapOn:
+    id: "action-trash"
+- tapOn: "Trash"
+- extendedWaitUntil:
+    notVisible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - pressKey: back
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: "Notebooks"
+
+- tapOn: "Trash(, tab.*)?"
+- tapOn: ".*NoteF ${RUN_ID}.*"
+- tapOn: "Delete permanently"
+- extendedWaitUntil:
+    visible: "Delete Permanently"
+    timeout: 5000
+- tapOn: "Delete"
+- extendedWaitUntil:
+    notVisible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+
+- tapOn: "Notebooks(, tab.*)?"
+- swipe:
+    from:
+      text: ".*NB ${RUN_ID}"
+    direction: LEFT
+- tapOn:
+    id: "action-trash"
+- tapOn: "Delete"
+- extendedWaitUntil:
+    notVisible: ".*NB ${RUN_ID}"
+    timeout: 10000

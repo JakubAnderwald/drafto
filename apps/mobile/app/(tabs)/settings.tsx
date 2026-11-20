@@ -54,6 +54,7 @@ export default function SettingsScreen() {
             accessibilityRole="radio"
             accessibilityState={{ selected: theme === option.value }}
             accessibilityLabel={`${option.label} theme`}
+            testID={`theme-option-${option.value}`}
           >
             <Ionicons
               name={option.icon}

@@ -187,7 +187,7 @@ describe("POST /api/mcp", () => {
           body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
         }),
       );
-      // A `tools/list` schedules no activity day (ADR 0086), so only the tool's own tasks run.
+      // A `tools/list` schedules no activity day (ADR 0088), so only the tool's own tasks run.
       expect(afterTasks).toHaveLength(0);
       const call = mockTool.mock.calls.find((c: unknown[]) => c[0] === "delete_notebook");
       if (!call) throw new Error("delete_notebook was not registered");
@@ -234,7 +234,7 @@ describe("POST /api/mcp", () => {
   });
 });
 
-describe("POST /api/mcp activity day (ADR 0086)", () => {
+describe("POST /api/mcp activity day (ADR 0088)", () => {
   const today = () => new Date().toISOString().slice(0, 10);
 
   const toolCall = {

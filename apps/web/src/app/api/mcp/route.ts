@@ -147,7 +147,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Count the day the call arrived as a `web-mcp` activity day for this user (ADR 0086), but
+  // Count the day the call arrived as a `web-mcp` activity day for this user (ADR 0088), but
   // only when it runs a tool: the handshake and `tools/list` happen whenever an assistant with
   // the connector starts a session, whether or not the user asks it for anything in Drafto.
   // `after` runs the write once the response has gone out, so it never delays the reply, and
