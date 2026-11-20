@@ -394,7 +394,8 @@ export function resetSyncState(): void {
 
 /**
  * Whether the user has Drafto in front. Only a sync started then counts as
- * opening the app (ADR-0088). Reconnect and retry syncs also run while the app
+ * opening the app (ADR-0088), as does the app coming to the front, which
+ * `DatabaseProvider` marks itself. Reconnect and retry syncs also run while the app
  * sits in the background, and on macOS the app keeps running after its window
  * is closed, so counting those would mark days nobody opened Drafto.
  */

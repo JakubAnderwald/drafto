@@ -12,7 +12,9 @@ import type { ActivityRpcClient } from "@drafto/shared";
 /**
  * Activity days (ADR-0088, docs/features/offline-sync.md): the UTC days on
  * which this device opened Drafto. A sync started while the app is in front
- * marks today, and any sync that gets through sends every queued day to
+ * marks today, and so does the app coming to the front (`DatabaseProvider`'s
+ * `AppState` listener), because the sync it starts can join a pass started in
+ * the background. Any sync that gets through sends every queued day to
  * `record_activity`, so days opened offline still count. Nothing else is
  * recorded: no note, screen or action.
  *
