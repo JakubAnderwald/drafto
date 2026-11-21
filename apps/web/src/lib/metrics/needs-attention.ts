@@ -12,7 +12,7 @@ export interface NeedsAttention {
   emptiedNotes: EmptiedNoteRow[];
   /** Platform limits at `warn` or `critical`, worst first. */
   limits: PlatformLimitRow[];
-  /** Vercel / Supabase readings at `warn` or `critical`, worst first (ADR 0091). */
+  /** Vercel / Supabase readings at `warn` or `critical`, worst first (ADR 0093). */
   hostedLimits: HostedUsageRow[];
   /**
    * When every reading is more than 8 days old, the newest one's time: the weekly readout

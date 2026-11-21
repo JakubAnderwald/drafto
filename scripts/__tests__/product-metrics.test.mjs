@@ -10,7 +10,7 @@
 // metrics_cohort_activation: every activation case below runs against that
 // definition. Its own functions are tested in usage-daily.test.mjs.
 //
-// The hosting-usage migration (20261121000002, ADR 0091) runs last: it reads
+// The hosting-usage migration (20261121000002, ADR 0093) runs last: it reads
 // only its own table, and metrics_hosted_usage is tested at the end of this file.
 //
 // The stand-ins carry only the columns the functions read, with the grants the

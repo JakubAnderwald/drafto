@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * The hosting-usage readout (ADR 0091): what the Mac mini's weekly read of the
+ * The hosting-usage readout (ADR 0093): what the Mac mini's weekly read of the
  * Vercel and Supabase usage dashboards posts to `/api/cron/hosted-usage`.
  *
  * Each reading is in the unit its dashboard shows, the unit

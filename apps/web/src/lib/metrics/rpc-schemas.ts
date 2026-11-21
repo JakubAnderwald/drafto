@@ -98,7 +98,7 @@ export const retentionRowSchema = z.object({
 });
 
 /**
- * `metrics_hosted_usage()` (20261121000002_hosted_usage_snapshots.sql, ADR 0091): the newest
+ * `metrics_hosted_usage()` (20261121000002_hosted_usage_snapshots.sql, ADR 0093): the newest
  * dashboard reading per Vercel / Supabase resource against its plan limit.
  */
 export const hostedUsageRowSchema = z.object({

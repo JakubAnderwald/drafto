@@ -72,7 +72,7 @@ describe("deriveNeedsAttention", () => {
     expect(result.isClear).toBe(false);
   });
 
-  describe("hosting usage (ADR 0091)", () => {
+  describe("hosting usage (ADR 0093)", () => {
     const reading = (
       resource: string,
       pct: number,

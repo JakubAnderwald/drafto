@@ -1,4 +1,4 @@
-# 0091 — Weekly Hosting-Usage Readout from the Vercel and Supabase Dashboards
+# 0093 — Weekly Hosting-Usage Readout from the Vercel and Supabase Dashboards
 
 - **Status**: Accepted
 - **Date**: 2026-11-21

@@ -1,6 +1,6 @@
 -- Hosting usage the database can't measure: Vercel's and Supabase's own usage
 -- figures, read from their dashboards once a week by the Mac mini's read-only
--- usage readout (ADR 0091) and posted to /api/cron/hosted-usage, which inserts
+-- usage readout (ADR 0093) and posted to /api/cron/hosted-usage, which inserts
 -- them here as the service role.
 --
 -- Why a readout: on the plans in use neither provider has an API for these
@@ -48,7 +48,7 @@ create table public.hosted_usage_snapshots (
 );
 
 comment on table public.hosted_usage_snapshots is
-  'Weekly readings of Vercel and Supabase usage from their dashboards (ADR 0091); '
+  'Weekly readings of Vercel and Supabase usage from their dashboards (ADR 0093); '
   'service_role only.';
 
 create index hosted_usage_snapshots_resource_captured_idx
@@ -133,7 +133,7 @@ $$;
 
 comment on function public.metrics_hosted_usage() is
   'The newest Vercel and Supabase usage reading per resource against its plan limit, with '
-  'levels and staleness (ADR 0091).';
+  'levels and staleness (ADR 0093).';
 
 revoke execute on function public.metrics_hosted_usage() from public, anon, authenticated;
 grant execute on function public.metrics_hosted_usage() to service_role;

@@ -80,7 +80,7 @@ export interface ProductMetrics {
   activeUsers: MetricResult<ActiveUsersRow[]>;
   /** Newest cohort first. */
   retention: MetricResult<RetentionRow[]>;
-  /** The newest weekly dashboard reading per Vercel / Supabase resource (ADR 0091). */
+  /** The newest weekly dashboard reading per Vercel / Supabase resource (ADR 0093). */
   hostedReadings: MetricResult<HostedUsageRow[]>;
   /** Links to the providers' usage pages: the source of the readings, and the fallback. */
   hostedUsage: HostedUsageLink[];

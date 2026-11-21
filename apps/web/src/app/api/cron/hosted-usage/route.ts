@@ -7,7 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { env } from "@/env";
 
 /**
- * Receives the weekly hosting-usage readout (ADR 0091): the Mac mini reads the
+ * Receives the weekly hosting-usage readout (ADR 0093): the Mac mini reads the
  * Vercel and Supabase usage dashboards on Sunday evening and POSTs the figures
  * here with `Authorization: Bearer $HOSTED_USAGE_SECRET`. That secret is this
  * route's alone (not CRON_SECRET), so it can't run any other cron job, and this

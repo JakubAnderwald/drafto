@@ -17,7 +17,7 @@ export const NO_READOUT_TEXT =
   "No dashboard readout yet: the Mac mini reads these on Sunday evening.";
 
 /**
- * The weekly Vercel / Supabase dashboard readings (ADR 0091), as bars against their plan
+ * The weekly Vercel / Supabase dashboard readings (ADR 0093), as bars against their plan
  * limits. A reading more than 8 days old is marked stale: check the usage page instead.
  */
 export function HostedUsageList({ readings, now }: HostedUsageListProps) {

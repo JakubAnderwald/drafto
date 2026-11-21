@@ -86,7 +86,7 @@ test.describe("Admin product metrics", () => {
     });
     await expect(page.getByRole("heading", { level: 2 })).toHaveText(STATS_SECTIONS);
 
-    // The weekly hosting-usage readout (ADR-0091): its readings, or why there are none.
+    // The weekly hosting-usage readout (ADR-0093): its readings, or why there are none.
     await expect(page.getByTestId("metrics-section-platform-limits")).toContainText(
       /No dashboard readout yet|Vercel — |Supabase — /,
     );

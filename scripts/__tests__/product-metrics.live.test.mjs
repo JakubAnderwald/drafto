@@ -237,7 +237,7 @@ function functionCalls(since) {
     metrics_emptied_notes: { p_since: since },
     metrics_depth: {},
     metrics_platform_limits: {},
-    // 20261121000002_hosted_usage_snapshots.sql (ADR 0091).
+    // 20261121000002_hosted_usage_snapshots.sql (ADR 0093).
     metrics_hosted_usage: {},
   };
 }
@@ -393,7 +393,7 @@ describe(
       });
       assert.equal(chars, 5);
       assert.equal((await rpcRows("metrics_week_starts", { p_weeks: 3 })).length, 3);
-      // Hosting usage (ADR 0091): readable, and each row names one of the six resources.
+      // Hosting usage (ADR 0093): readable, and each row names one of the six resources.
       for (const row of await rpcRows("metrics_hosted_usage")) {
         assert.match(row.resource, /^(vercel|supabase)_[a-z_]+$/);
       }
