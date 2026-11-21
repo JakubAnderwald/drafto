@@ -237,6 +237,8 @@ function functionCalls(since) {
     metrics_emptied_notes: { p_since: since },
     metrics_depth: {},
     metrics_platform_limits: {},
+    // 20261121000002_hosted_usage_snapshots.sql (ADR 0093).
+    metrics_hosted_usage: {},
   };
 }
 
@@ -391,6 +393,10 @@ describe(
       });
       assert.equal(chars, 5);
       assert.equal((await rpcRows("metrics_week_starts", { p_weeks: 3 })).length, 3);
+      // Hosting usage (ADR 0093): readable, and each row names one of the six resources.
+      for (const row of await rpcRows("metrics_hosted_usage")) {
+        assert.match(row.resource, /^(vercel|supabase)_[a-z_]+$/);
+      }
 
       const limits = await rpcRows("metrics_platform_limits");
       assert.deepEqual(
@@ -411,7 +417,7 @@ describe(
     });
 
     it(
-      "denies anon and a signed-in user every function and the exclusion table",
+      "denies anon and a signed-in user every function and both service-only tables",
       { timeout: 60_000 },
       async () => {
         for (const [who, auth] of [
@@ -423,9 +429,18 @@ describe(
             assert.ok([401, 403].includes(res.status), `${who} ${fn}: ${formatResponse(res)}`);
             assert.equal(res.body?.code, "42501", `${who} ${fn}: ${formatResponse(res)}`);
           }
-          const table = await call("/rest/v1/metrics_excluded_users?select=user_id", auth);
-          assert.ok([401, 403].includes(table.status), `${who} table: ${formatResponse(table)}`);
-          assert.equal(table.body?.code, "42501", `${who} table: ${formatResponse(table)}`);
+          for (const tableName of ["metrics_excluded_users", "hosted_usage_snapshots"]) {
+            const table = await call(`/rest/v1/${tableName}?select=*&limit=1`, auth);
+            assert.ok(
+              [401, 403].includes(table.status),
+              `${who} ${tableName}: ${formatResponse(table)}`,
+            );
+            assert.equal(
+              table.body?.code,
+              "42501",
+              `${who} ${tableName}: ${formatResponse(table)}`,
+            );
+          }
         }
       },
     );

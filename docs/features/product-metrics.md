@@ -230,7 +230,28 @@ The database can't measure egress or Vercel usage, so the step 3 spec asked whet
   - Tested on Nov 21, 2026: `vercel usage --format json` (CLI 56.5, which reads the same billing data) answered `Costs not found (404)` for the Hobby team. So on Hobby there are no usage figures to fetch, whatever token is used. They appear only after moving to Pro, a new monthly cost.
   - No Vercel access token is read-only. Every scope (full account, team, project) can write within it, and the billing endpoint needs at least a team-scoped token.
 
-Neither provider has both the data and a read-only credential. A full-access token in Vercel's environment, kept there just to draw a bar, is a worse trade than a link. So the page has no token and no fetch. `hosted-usage.ts` returns two links, "See the Supabase / Vercel usage page", which the Platform limits section shows. If Vercel adds read-only tokens, or Supabase adds egress to the API, fetch the figure server-side with that token in an optional env var, cache it for at most an hour, and show it with the same 70% / 85% thresholds.
+Neither provider has both the data and a read-only credential, and a full-access token in Vercel's environment just to draw a bar would be a worse trade. Both dashboards do show the figures, so they are read from there once a week ([ADR-0093](../adr/0093-weekly-hosting-usage-readout.md)):
+
+- **The readout.** On Sunday at 20:00 the Mac mini's browser runner opens the two usage pages read-only and posts the figures as shown. Its guard allows only those two URLs, with no clicks or typing. It ships in its own PR (the `usage` kind of the factory's browser runner, documented in the runbook's "Browser runner"). Until it runs, the page says no readout has come in yet.
+- **The route.** `POST /api/cron/hosted-usage` takes the readout with `Authorization: Bearer $HOSTED_USAGE_SECRET`, a secret that can do nothing else. It validates the body (`hosted-usage-readout.ts`: known resources, each once, plausible amounts, no extra fields) and inserts one row per reading into `hosted_usage_snapshots` as the service role.
+- **The metric.** `metrics_hosted_usage()` returns the newest reading per resource against its plan limit:
+
+  | Resource                      | Unit      | Limit     |
+  | ----------------------------- | --------- | --------- |
+  | `vercel_fast_data_transfer`   | GB        | 100       |
+  | `vercel_cdn_requests`         | count     | 1,000,000 |
+  | `vercel_function_invocations` | count     | 1,000,000 |
+  | `vercel_active_cpu`           | CPU-hours | 4         |
+  | `supabase_egress`             | GB        | 5         |
+  | `supabase_cached_egress`      | GB        | 5         |
+
+  Readings and limits are kept in the dashboard's unit, so the percentage doesn't depend on decimal vs binary gigabytes. Levels are as in `metrics_platform_limits()`: `ok` below 70%, `warn` from 70%, `critical` from 85%. A reading more than 8 days old is `stale`. Readings are only added: a resource that drops out of the dashboard keeps its last row and goes stale.
+
+- **The page.**
+  - Platform limits shows the readings as bars, each with when it was read and the dashboard's usage period. A stale one carries a "stale" badge. With no readings yet, it says the Mac mini reads them on Sunday evening.
+  - The links to both usage pages stay, as the source and the fallback.
+  - Needs attention flags a reading at `warn` or `critical`, and a readout that hasn't run: every reading stale, shown with when the newest was read. One stale resource among fresh ones only gets its badge. A readout that was never set up (the function missing) isn't flagged.
+- **Keeping the limits current.** Plan limits change. Update the constants in `metrics_hosted_usage()` in a new migration, as for `metrics_platform_limits()`.
 
 ## If sign-ups and activation fail with permission denied
 
@@ -274,6 +295,10 @@ Don't grant `select` on the whole table: the functions read nothing else, and th
 | E2E: an admin sees every section (`chromium-admin`, `main` only); signed-out and non-admin redirects                                                    | `apps/web/e2e/admin.spec.ts`, `apps/web/e2e/security.spec.ts`                                                                                   |
 | Web data loader: `loadProductMetrics`, row schemas, `MetricResult`, needs attention, formatting, hosting-usage links                                    | `apps/web/src/lib/metrics/{load-product-metrics,rpc-schemas,types,needs-attention,format,hosted-usage}.ts`                                      |
 | Unit: the web loader, formatting and needs attention, with a faked client                                                                               | `apps/web/__tests__/unit/{load-product-metrics,metrics-format,metrics-needs-attention}.test.ts`                                                 |
+| Hosting usage: table, `metrics_hosted_usage()`, permissions (ADR-0093)                                                                                  | `supabase/migrations/20261121000002_hosted_usage_snapshots.sql`                                                                                 |
+| Hosting usage: the ingest route and its body schema                                                                                                     | `apps/web/src/app/api/cron/hosted-usage/route.ts`, `apps/web/src/lib/metrics/hosted-usage-readout.ts`                                           |
+| Hosting usage: the readings on the page                                                                                                                 | `apps/web/src/app/(app)/admin/stats/hosted-usage-list.tsx`                                                                                      |
+| Unit: the route, the readout schema                                                                                                                     | `apps/web/__tests__/unit/{hosted-usage-route,hosted-usage-readout}.test.ts`                                                                     |
 | CLI (`pnpm users:stats`)                                                                                                                                | `scripts/user-stats.mjs`                                                                                                                        |
 | Service-role key reader shared with `users:delete`                                                                                                      | `scripts/lib/service-keys-txt.mjs`                                                                                                              |
 | Operator-only guard for the verification lane                                                                                                           | `scripts/lib/verify-guard.mjs`                                                                                                                  |
@@ -318,6 +343,7 @@ Activity days come from every platform: web from the app shell, iOS, Android and
   - A new client tag (ADR-0023) → `ACTIVE_CLIENT_COLUMNS` in `scripts/user-stats.mjs`, which the writers table's `CLIENT_COLUMNS` extends with `untagged` (unknown tags still print, after the known ones). The web loader's `format.ts` takes its columns from `DRAFTO_CLIENT_TAGS` (the script can't import it), so it follows without an edit. If it should count as an activity day too: `DRAFTO_CLIENT_TAGS`, then a new migration for the `usage_daily_client_check` constraint, `record_activity`'s tag check and the rollup's tag order, and the privacy policy's list of device kinds.
   - What `usage_daily` records, or its 13-month retention → `apps/web/src/app/privacy/page.tsx` and `apps/web/__tests__/integration/legal-pages.test.tsx` ([privacy policy](./privacy-policy.md)), and ADR-0088.
   - A changed definition → the function (in a new migration), this doc's table, the PGlite test and the live test.
+  - A new hosting-usage resource → the table's check constraint and the limits in `metrics_hosted_usage()` (a new migration), `HOSTED_USAGE_RESOURCES` in `hosted-usage-readout.ts`, and the readout's parser and prompt (ADR-0093).
   - A changed return column (a new migration) → the function's row schema in `apps/web/src/lib/metrics/rpc-schemas.ts`, the section that shows it under `apps/web/src/app/(app)/admin/stats/`, and `scripts/user-stats.mjs`. Until the schema matches, the page shows that metric as an error.
 - A new or changed function reaches dev only once the migration is pushed there, so run the live test after `pnpm supabase:push`.
 

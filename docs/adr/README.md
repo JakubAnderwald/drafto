@@ -124,3 +124,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0090](./0090-per-user-note-content-quota.md)                                  | Per-User Note Content Quota in the Database                                     | Accepted           | 2026-11-21 |
 | [0091](./0091-interactive-issue-driving.md)                                    | Interactive Issue Driving Alongside the Factory                                 | Accepted           | 2026-11-21 |
 | [0092](./0092-factory-test-run-screenshots-on-github.md)                       | Factory Test-Run Screenshots on GitHub                                          | Accepted           | 2026-11-10 |
+| [0093](./0093-weekly-hosting-usage-readout.md)                                 | Weekly Hosting-Usage Readout from the Vercel and Supabase Dashboards            | Accepted           | 2026-11-21 |

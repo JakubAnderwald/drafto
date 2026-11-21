@@ -10,6 +10,7 @@ import {
   activeUsersRowSchema,
   depthRowSchema,
   emptiedNoteRowSchema,
+  hostedUsageRowSchema,
   platformLimitRowSchema,
   retentionRowSchema,
   signupsRowSchema,
@@ -40,7 +41,8 @@ type MetricFunction =
   | "metrics_depth"
   | "metrics_platform_limits"
   | "metrics_active_users"
-  | "metrics_retention";
+  | "metrics_retention"
+  | "metrics_hosted_usage";
 
 interface RpcError {
   code?: string;
@@ -188,6 +190,7 @@ export async function loadProductMetrics({
     platformLimits,
     activeUsers,
     retention,
+    hostedReadings,
   ] = await Promise.all([
     readMetric(client, "metrics_signups", weeks, signupsRowSchema, newestFirst),
     readMetric(client, "metrics_activation", weeks, activationRowSchema, newestFirst),
@@ -205,6 +208,7 @@ export async function loadProductMetrics({
     readMetric(client, "metrics_platform_limits", {}, platformLimitRowSchema, (rows) => rows),
     readMetric(client, "metrics_active_users", weeks, activeUsersRowSchema, newestFirst),
     readMetric(client, "metrics_retention", weeks, retentionRowSchema, newestFirst),
+    readMetric(client, "metrics_hosted_usage", {}, hostedUsageRowSchema, (rows) => rows),
   ]);
 
   return {
@@ -219,6 +223,7 @@ export async function loadProductMetrics({
     platformLimits,
     activeUsers,
     retention,
+    hostedReadings,
     hostedUsage: hostedUsageLinks(),
   };
 }

@@ -94,6 +94,34 @@ export const METRIC_ROWS: Record<string, unknown[]> = {
       pct_week4: null,
     },
   ],
+  metrics_hosted_usage: [
+    {
+      provider: "vercel",
+      resource: "vercel_active_cpu",
+      unit: "hours",
+      used: 2.2833,
+      limit_value: 4,
+      pct: 57.1,
+      level: "ok",
+      period_from: "2026-10-22",
+      period_to: "2026-11-21",
+      captured_at: "2026-11-15T19:00:00+00:00",
+      stale: false,
+    },
+    {
+      provider: "supabase",
+      resource: "supabase_egress",
+      unit: "GB",
+      used: 4.25,
+      limit_value: 5,
+      pct: 85,
+      level: "critical",
+      period_from: null,
+      period_to: null,
+      captured_at: "2026-11-15T19:00:00+00:00",
+      stale: false,
+    },
+  ],
 };
 
 /** A fake service-role client whose `rpc` answers from METRIC_ROWS (or an override). */
@@ -127,6 +155,7 @@ export function emptyMetrics(): ProductMetrics {
     platformLimits: { status: "ok", data: [] },
     activeUsers: { status: "ok", data: [] },
     retention: { status: "ok", data: [] },
+    hostedReadings: { status: "ok", data: [] },
     hostedUsage: [
       {
         provider: "Supabase",

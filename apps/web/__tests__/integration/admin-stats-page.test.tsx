@@ -69,11 +69,11 @@ describe("/admin/stats against faked metric functions", () => {
     expect(active.getByText("4 of 6 (66.7%)")).toBeInTheDocument();
     expect(active.getByText("3 of 4 (75%)")).toBeInTheDocument();
 
-    // Every percentage on the page sits next to its counts or its bytes.
+    // Every percentage on the page sits right after an "x of y": its counts, bytes or units.
     const text = document.body.textContent ?? "";
     for (const match of text.matchAll(/\((\d+(?:\.\d)?)%\)/g)) {
       const before = text.slice(Math.max(0, match.index - 30), match.index);
-      expect(before).toMatch(/(\d+ of \d+|MB|GB) $/);
+      expect(before).toMatch(/ of [^()]+ $/);
     }
   });
 
@@ -119,5 +119,21 @@ describe("/admin/stats against faked metric functions", () => {
     expect(
       within(screen.getByTestId("metrics-section-writers")).getByRole("table"),
     ).toBeInTheDocument();
+  });
+
+  it("shows the weekly hosting-usage readout with its age, and flags a critical one", async () => {
+    adminClient.current = fakeMetricsClient();
+    await renderPage();
+
+    const limits = within(screen.getByTestId("metrics-section-platform-limits"));
+    expect(limits.getByTestId("hosted-vercel_active_cpu")).toHaveTextContent(
+      "Vercel — Active CPU2h 17m of 4h (57.1%)ok",
+    );
+    expect(limits.getByRole("progressbar", { name: "Supabase — Egress used" })).toHaveAttribute(
+      "aria-valuenow",
+      "85",
+    );
+    const attention = within(screen.getByTestId("metrics-section-needs-attention"));
+    expect(attention.getByText(/Supabase — Egress: 4.25 GB of 5 GB/)).toBeInTheDocument();
   });
 });

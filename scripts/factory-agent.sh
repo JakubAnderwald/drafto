@@ -524,6 +524,19 @@ if ! [[ "$FACTORY_BROWSER_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
   echo "WARNING: invalid FACTORY_BROWSER_TIMEOUT_SEC='$FACTORY_BROWSER_TIMEOUT_SEC'; defaulting to 900" >&2
   FACTORY_BROWSER_TIMEOUT_SEC=900
 fi
+# The weekly hosting-usage readout (ADR-0093, `--usage-readout`, its own launchd
+# job on Sunday evening): a read-only run of this runner on the Vercel and
+# Supabase usage dashboards. FACTORY_USAGE_READOUT=0 (or FACTORY_BROWSER=0)
+# turns it off. The two pages are the only ones the guard lets it open; the
+# Supabase one names the org, so it is set once on the Mac mini. The figures go
+# to Drafto's POST /api/cron/hosted-usage with the route's own secret, read from
+# a mode-600 file by usage-readout.mjs, never by bash.
+FACTORY_USAGE_READOUT="${FACTORY_USAGE_READOUT:-1}"
+FACTORY_USAGE_VERCEL_URL="${FACTORY_USAGE_VERCEL_URL:-https://vercel.com/jakubanderwalds-projects/~/usage}"
+FACTORY_USAGE_SUPABASE_URL="${FACTORY_USAGE_SUPABASE_URL:-}"
+FACTORY_USAGE_POST_URL="${FACTORY_USAGE_POST_URL:-https://drafto.eu/api/cron/hosted-usage}"
+FACTORY_USAGE_SECRET_FILE="${FACTORY_USAGE_SECRET_FILE:-$HOME/drafto-secrets/hosted-usage.env}"
+case "$FACTORY_USAGE_SECRET_FILE" in "~/"*) FACTORY_USAGE_SECRET_FILE="$HOME/${FACTORY_USAGE_SECRET_FILE#\~/}" ;; esac
 # Seconds the browser runner holds the preview sign-in lease
 # (scripts/lib/browser-signin.mjs). Supabase keeps one live magic-link token
 # per user, so a newer mint kills an older link that hasn't been opened yet.
@@ -786,11 +799,12 @@ MODE_IMPLEMENT=0
 MODE_RELEASE=0
 MODE_WATCH=0
 MODE_BROWSER=0
+USAGE_READOUT=0
 PHASE="A"
 DRY_RUN=0
 usage() {
   cat <<EOF
-Usage: $0 (--plan | --implement | --release | --watch | --browser) [--phase <A|B|C|D>] [--dry-run]
+Usage: $0 (--plan | --implement | --release | --watch | --browser | --usage-readout) [--phase <A|B|C|D>] [--dry-run]
 
 Exactly one of --plan, --implement, --release, --watch, --browser is required.
 
@@ -804,6 +818,10 @@ Exactly one of --plan, --implement, --release, --watch, --browser is required.
                Runs one of the candidates --watch found, after --release:
                Testing's verify lane first (ADR-0053), then In Test's run,
                then plan-stage probes (ADR-0071, FACTORY_PLAN_PROBE=1).
+  --usage-readout  The weekly hosting-usage readout (ADR-0093): a read-only
+               browser run on the Vercel and Supabase usage dashboards, posted
+               to Drafto. Runs under --browser's lock, so never at the same
+               time as a browser run. Its own launchd job, Sunday evening.
   --phase X    Override the phase advertised to Claude (default: A).
   --dry-run    Build context bundles and print them; no board / issue
                mutations and no Claude invocation. Useful for golden-run
@@ -817,6 +835,7 @@ while [[ $# -gt 0 ]]; do
     --release) MODE_RELEASE=1; shift ;;
     --watch) MODE_WATCH=1; shift ;;
     --browser) MODE_BROWSER=1; shift ;;
+    --usage-readout) MODE_BROWSER=1; USAGE_READOUT=1; shift ;;
     --phase)
       if [[ -z "${2:-}" || "${2:0:2}" == "--" ]]; then
         echo "ERROR: --phase requires a value (A|B|C|D)" >&2
@@ -908,6 +927,7 @@ gh() {
 INTEST_PROMPT_FILE="$SCRIPT_DIR/factory-intest-prompt.md"
 REVIEW_PROMPT_FILE="$SCRIPT_DIR/factory-review-prompt.md"
 BROWSER_PROMPT_FILE="$SCRIPT_DIR/factory-browser-prompt.md"
+USAGE_PROMPT_FILE="$SCRIPT_DIR/factory-usage-prompt.md"
 VERIFY_PROMPT_FILE="$SCRIPT_DIR/factory-verify-prompt.md"
 umask 077
 LOG_DIR="$REPO_ROOT/logs/factory"
@@ -1132,7 +1152,9 @@ fi
 # ── Project board lookup ────────────────────────────────────────────────────
 # Cache the projectId in the env so child `factory-project.mjs` invocations
 # don't repeat the lookup (factory-project.mjs reads FACTORY_PROJECT_ID).
-if [[ -z "${FACTORY_PROJECT_ID:-}" ]]; then
+# The usage readout (ADR-0093) never touches the board, so a GitHub hiccup here
+# mustn't cost it its weekly slot.
+if [[ -z "${FACTORY_PROJECT_ID:-}" && "$USAGE_READOUT" -eq 0 ]]; then
   if ! PROJECT_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" find-project 2>>"$LOG_FILE"); then
     # Transient lookup failures shouldn't file a noise issue. Skip this tick.
     log "WARNING: factory-project find-project failed (transient?); skipping this --$MODE_NAME tick"
@@ -5686,11 +5708,21 @@ browser_admin_link() {
 run_browser_task() {
   local kind="$1" run_dir="$2" origin="$3" bundle="$4"
   local guard="$SCRIPT_DIR/lib/browser-guard.mjs" cfg settings allowed uuid input start_iso cwd
-  local exit_code=0
+  local exit_code=0 prompt_file="$BROWSER_PROMPT_FILE" allow_args
   BROWSER_RESULT="error"
   BROWSER_OUT="$run_dir/runner-output.txt"
-  if [[ ! -f "$BROWSER_PROMPT_FILE" ]]; then
-    log "ERROR: browser runner prompt missing ($BROWSER_PROMPT_FILE)"
+  # The usage kind (ADR-0093) is read-only: its own short prompt, and the guard
+  # gets exact pages (--allow-url, USAGE_READOUT_URLS) instead of an origin.
+  if [[ "$kind" == usage ]]; then
+    prompt_file="$USAGE_PROMPT_FILE"
+    allow_args=()
+    local _u
+    for _u in "${USAGE_READOUT_URLS[@]}"; do allow_args+=(--allow-url "$_u"); done
+  else
+    allow_args=(--allow-origin "$origin")
+  fi
+  if [[ ! -f "$prompt_file" ]]; then
+    log "ERROR: browser runner prompt missing ($prompt_file)"
     return 1
   fi
   mkdir -p "$run_dir/evidence" "$run_dir/guard-state" "$LOG_DIR/browser-guard" || return 1
@@ -5700,7 +5732,7 @@ run_browser_task() {
   # is set up here, before the session, and a setup that fails leaves that
   # capability off: the runner SKIPs the steps that needed it.
   local caps=() tools path_prefix="" fixtures
-  if [[ "$kind" != plan ]]; then
+  if [[ "$kind" != plan && "$kind" != usage ]]; then
     if [[ "${FACTORY_BROWSER_UPLOADS:-0}" == 1 ]]; then
       # Only the spec text goes to node, on stdin: the bundle holds the
       # one-time sign-in links and never touches disk.
@@ -5736,7 +5768,7 @@ run_browser_task() {
   # here: `claude -p` silently drops a settings file that fails validation, and
   # would then run with Chrome and no guard at all. `verify` below catches that.
   if ! node "$guard" config --out "$cfg" --device "$FACTORY_BROWSER_DEVICE_ID" \
-      --allow-origin "$origin" --log-dir "$LOG_DIR/browser-guard" \
+      "${allow_args[@]}" --log-dir "$LOG_DIR/browser-guard" \
       --state-dir "$run_dir/guard-state" --evidence-dir "$run_dir/evidence" \
       ${caps[@]+"${caps[@]}"} >>"$LOG_FILE" 2>&1 \
     || ! node "$guard" settings --config "$cfg" --out "$settings" >>"$LOG_FILE" 2>&1; then
@@ -5757,7 +5789,7 @@ run_browser_task() {
   # guard copied, in order. Publishing them later (ADR-0092) finds it here.
   printf '%s\n' "$uuid" >"$run_dir/session-id" 2>>"$LOG_FILE" || true
   input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
-    "$(cat "$BROWSER_PROMPT_FILE")" "$bundle")
+    "$(cat "$prompt_file")" "$bundle")
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_BROWSER_MODEL:-default})"
   # Nothing but this prompt and the guard's settings reach the runner. cwd is
@@ -5823,6 +5855,72 @@ run_browser_task() {
     BROWSER_RESULT="error"
   fi
   rmdir "$cwd" 2>/dev/null || true
+  return 0
+}
+
+# usage_readout_run — the weekly hosting-usage readout (ADR-0093). One
+# read-only browser run on the two usage dashboards, then usage-readout.mjs
+# parses what it printed, posts it to Drafto and emails the operator on any
+# failure. Never touches the board or GitHub, and never fails the tick.
+usage_readout_run() {
+  if [[ "$FACTORY_BROWSER" != 1 || "$FACTORY_USAGE_READOUT" != 1 ]]; then
+    log "Usage readout off (FACTORY_BROWSER=$FACTORY_BROWSER, FACTORY_USAGE_READOUT=$FACTORY_USAGE_READOUT); nothing to do"
+    return 0
+  fi
+  local run_dir result bundle summary last_file="$REPO_ROOT/logs/usage-readout-last"
+  # launchd tries several times on Sunday evening, because a factory browser
+  # run may hold --browser's lock at the first slot (the lock check exits
+  # quietly). The first attempt that gets here counts: any later slot within
+  # 20 hours is skipped, so there is one readout, and at most one email, a week.
+  if [[ "${FACTORY_USAGE_READOUT_FORCE:-0}" != 1 && -f "$last_file" \
+      && -n "$(find "$last_file" -mmin -1200 2>/dev/null)" ]]; then
+    log "Usage readout already ran at $(cat "$last_file" 2>/dev/null); skipping this slot (FACTORY_USAGE_READOUT_FORCE=1 to run again)"
+    return 0
+  fi
+  run_dir="$LOG_DIR/browser-runs/usage-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$run_dir" || return 1
+  USAGE_READOUT_URLS=("$FACTORY_USAGE_VERCEL_URL")
+  if [[ -n "$FACTORY_USAGE_SUPABASE_URL" ]]; then
+    USAGE_READOUT_URLS+=("$FACTORY_USAGE_SUPABASE_URL")
+  else
+    log "WARNING: FACTORY_USAGE_SUPABASE_URL is not set; the usage readout reads Vercel only"
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "[dry-run] would read ${USAGE_READOUT_URLS[*]} and post to $FACTORY_USAGE_POST_URL"
+    return 0
+  fi
+  local providers="vercel" disabled
+  [[ -n "$FACTORY_USAGE_SUPABASE_URL" ]] && providers="vercel,supabase"
+  # The browser health latch (browser-health.mjs): once a session ran without
+  # the guard, no browser run starts until factory:browser-reset, this one
+  # included. It reads the latch itself, not the full preflight, whose checks
+  # are about the preview runs' test account.
+  disabled=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:browser-status --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
+    | jq -r 'if .disabled == true then (.disabledReason // "disabled") else "" end' 2>/dev/null || echo "unknown")
+  if [[ -n "$disabled" ]]; then
+    result="preflight:disabled:$disabled"
+  elif ! pgrep -u "$(id -u)" -x "Google Chrome" >/dev/null 2>&1; then
+    result="preflight:chrome-not-running"
+  else
+    bundle=$(jq -nc --arg device "$FACTORY_BROWSER_DEVICE_ID" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg vercel "$FACTORY_USAGE_VERCEL_URL" --arg supabase "$FACTORY_USAGE_SUPABASE_URL" \
+      '{runKind: "usage", browser: {deviceId: $device}, nowIso: $now,
+        pages: {vercel: $vercel, supabase: (if $supabase == "" then null else $supabase end)}}')
+    if ! run_browser_task usage "$run_dir" "" "$bundle"; then
+      result="error"
+    else
+      result="$BROWSER_RESULT"
+    fi
+    if [[ "$result" == guard-not-loaded ]]; then
+      # The one outcome that turns the runner off: claude ran Chrome unguarded.
+      browser_record_result "$result"
+    fi
+  fi
+  summary=$(node "$SCRIPT_DIR/lib/usage-readout.mjs" run --in "$run_dir/runner-output.txt" \
+    --runner-result "$result" --url "$FACTORY_USAGE_POST_URL" \
+    --secret-file "$FACTORY_USAGE_SECRET_FILE" --to "$ADMIN_EMAIL" --providers "$providers" 2>>"$LOG_FILE") || true
+  log "Usage readout ($result): ${summary:-no summary}"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$last_file" 2>/dev/null || true
   return 0
 }
 
@@ -10931,6 +11029,11 @@ fi
 # report. Each candidate is re-checked against its own column (Testing for
 # verify, In Test for intest: a card dragged out since --watch ran is skipped),
 # and browser_run re-checks every per-SHA condition itself.
+if [[ "$MODE_BROWSER" -eq 1 && "$USAGE_READOUT" -eq 1 ]]; then
+  usage_readout_run || true
+  log "=== factory-agent --usage-readout completed in $(( $(date +%s) - START_TIME ))s ==="
+  exit 0
+fi
 if [[ "$MODE_BROWSER" -eq 1 ]]; then
   if ! browser_kind_enabled verify && ! browser_kind_enabled intest && ! plan_probe_enabled; then
     log "Browser runner off (FACTORY_BROWSER=$FACTORY_BROWSER, kinds='$FACTORY_BROWSER_KINDS'); nothing to do"

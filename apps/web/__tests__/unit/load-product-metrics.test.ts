@@ -133,6 +133,34 @@ const ROWS: Record<string, unknown[]> = {
       pct_week4: null,
     },
   ],
+  metrics_hosted_usage: [
+    {
+      provider: "vercel",
+      resource: "vercel_active_cpu",
+      unit: "hours",
+      used: 2.2833,
+      limit_value: 4,
+      pct: 57.1,
+      level: "ok",
+      period_from: "2026-10-22",
+      period_to: "2026-11-21",
+      captured_at: "2026-11-15T19:00:00+00:00",
+      stale: false,
+    },
+    {
+      provider: "supabase",
+      resource: "supabase_egress",
+      unit: "GB",
+      used: 4.25,
+      limit_value: 5,
+      pct: 85,
+      level: "critical",
+      period_from: null,
+      period_to: null,
+      captured_at: "2026-11-15T19:00:00+00:00",
+      stale: false,
+    },
+  ],
 };
 
 function fakeClient(overrides: Record<string, Outcome | Error> = {}) {
@@ -199,6 +227,11 @@ describe("loadProductMetrics", () => {
     expect(metrics.emptiedNotes.data.map((r) => r.chars_before)).toEqual([300, 512]);
     expect(metrics.platformLimits).toMatchObject({ status: "ok" });
     expect(metrics.hostedUsage.map((l) => l.provider)).toEqual(["Supabase", "Vercel"]);
+    if (metrics.hostedReadings.status !== "ok") throw new Error("expected hosted readings");
+    expect(metrics.hostedReadings.data.map((r) => [r.resource, r.unit, r.level])).toEqual([
+      ["vercel_active_cpu", "hours", "ok"],
+      ["supabase_egress", "GB", "critical"],
+    ]);
     expect(captureException).not.toHaveBeenCalled();
   });
 
@@ -324,7 +357,7 @@ describe("loadProductMetrics", () => {
     createAdminClientMock.mockReturnValue(client);
     await loadProductMetrics({ now: NOW });
     expect(createAdminClientMock).toHaveBeenCalledTimes(1);
-    expect(client.rpc).toHaveBeenCalledTimes(8);
+    expect(client.rpc).toHaveBeenCalledTimes(9);
   });
 
   it("defaults now to the current time", async () => {
