@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Posts a macOS In-Test harness run (ADR-0043) on its issue, with the run's
-// screenshots (ADR-0092). An operator command, never run by the factory.
+// screenshots (ADR-0094). An operator command, never run by the factory.
 //
 // Why it is manual: the harness is started by a person in Terminal, against
 // PRODUCTION, with a throwaway account. Its shots capture only the Drafto

@@ -29,7 +29,7 @@ import { isTerminalLaneState } from "../lib/verify-decide.mjs";
 //   8. the revision no-op path routes through verify_target_status and keeps
 //      its literal In Test move, but only for the head shown at In Test; any
 //      other head goes through the parity gate to In Review (#759);
-//   9. the Web lane's screenshots (ADR-0092) are published only for a browser
+//   9. the Web lane's screenshots (ADR-0094) are published only for a browser
 //      lane that reported, whose dry render withheld neither its text nor the
 //      body, and only after that render; the report is then composed again
 //      with them inside the lane's <details>, and any failure posts the dry
@@ -83,7 +83,7 @@ const REAL_HELPERS = [
   "ci_required_green",
   "browser_kind_enabled",
   "scenario_platforms",
-  // The Web lane's screenshots (verify_publish_screenshots, ADR-0092).
+  // The Web lane's screenshots (verify_publish_screenshots, ADR-0094).
   "evidence_ocr_bin",
   "browser_guard_log",
   "evidence_upload",
@@ -2571,7 +2571,7 @@ describe("packages/shared/ reaches the web app, for verification only (ADR-0053,
   });
 });
 
-describe("the Web lane's screenshots in the verification report (ADR-0092, real composer)", () => {
+describe("the Web lane's screenshots in the verification report (ADR-0094, real composer)", () => {
   const RUN_ID = "verify-20261021T000000";
   const COMMIT = "c".repeat(40);
   const SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -2709,7 +2709,7 @@ describe("the Web lane's screenshots in the verification report (ADR-0092, real 
         ),
       );
       assert.match(body, /\*\*Step 1\*\* · PASS · Open \/notebooks/, "under the step that took it");
-      assert.match(body, /Web screenshots are published in this report \(ADR-0092\)/);
+      assert.match(body, /Web screenshots are published in this report \(ADR-0094\)/);
       assert.doesNotMatch(body, /weren't published/);
       assert.match(body, /\*\*Verdict: PASS\*\*/);
       assert.match(r.log, /composed with the Web lane's screenshots/);

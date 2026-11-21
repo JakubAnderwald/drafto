@@ -35,7 +35,7 @@ import { BROWSER_RUN_KINDS } from "../lib/factory-bundle.mjs";
 //   4. the In Test web run is once per head SHA, bounded per SHA, waits for
 //      the scenario and the per-commit preview, never moves the card, and only
 //      posts what browser-report.mjs rendered;
-//   5. the run's screenshots (ADR-0092) are published by the factory's own
+//   5. the run's screenshots (ADR-0094) are published by the factory's own
 //      node after the run, never inside a claude call: only an In Test run
 //      whose report wasn't withheld, found through the session id the runner
 //      call wrote, scanned with an OCR helper compiled into $LOG_DIR/bin, and
@@ -200,7 +200,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
   });
 
   it("publishes screenshots from the factory's own node only, never inside a claude call", () => {
-    // ADR-0092: the runner keeps no gh and no Bash beyond ADR-0073's
+    // ADR-0094: the runner keeps no gh and no Bash beyond ADR-0073's
     // dev-inspect; the upload is evidence-upload.mjs, run by bash after the
     // session, from one function.
     const calls = script.match(/node "\$SCRIPT_DIR\/lib\/evidence-upload\.mjs"/g) || [];
@@ -581,7 +581,7 @@ describe("factory-agent.sh browser runner: knobs under bash 3.2", () => {
     }
   });
 
-  describe("FACTORY_EVIDENCE_UPLOAD (ADR-0092)", () => {
+  describe("FACTORY_EVIDENCE_UPLOAD (ADR-0094)", () => {
     const evidenceBlock = script.match(
       /FACTORY_EVIDENCE_UPLOAD="\$\{FACTORY_EVIDENCE_UPLOAD:-1\}"[\s\S]*?\nexport FACTORY_EVIDENCE_UPLOAD\n/,
     );
@@ -833,7 +833,7 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
     const sid = args[args.indexOf("--session-id") + 1];
     assert.match(sid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     // The run dir names the session, so the guard's log for it can be found
-    // after the run (ADR-0092's screenshot manifest).
+    // after the run (ADR-0094's screenshot manifest).
     assert.equal(readFileSync(join(dir, "run", "session-id"), "utf8"), `${sid}\n`);
     assert.ok(!args.some((a) => a.includes("s3cret-pw")), "the password must never be in argv");
     assert.match(stdin, /s3cret-pw/, "the bundle reaches the runner on stdin");
@@ -900,7 +900,7 @@ const PUBLISHED = JSON.stringify({
 // browser_run's harness. kind "intest" goes through the intest_browser_run
 // wrapper (its behaviour is pinned below); kind "verify" calls browser_run
 // verify. The board (factory-project.mjs) answers the verify sink's "still in
-// Testing?" check from `testingItems`. The screenshots' half (ADR-0092):
+// Testing?" check from `testingItems`. The screenshots' half (ADR-0094):
 // evidence-upload.mjs is stubbed (`upload`: ok writes PUBLISHED, or the "off"
 // record under FACTORY_EVIDENCE_UPLOAD=0, as the real one refuses; fail exits
 // 1; empty writes no record), the report stub renders "rendered body" first
@@ -1496,7 +1496,7 @@ describe("intest_browser_run", () => {
   });
 });
 
-describe("intest_browser_run: the run's screenshots (ADR-0092)", () => {
+describe("intest_browser_run: the run's screenshots (ADR-0094)", () => {
   const run = (opts) => runBrowser({ ...opts, kind: "intest" });
   const ready = { intestCommentSha: SHA };
   const posted = (callLog) =>

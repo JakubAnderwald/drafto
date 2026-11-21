@@ -72,7 +72,14 @@ echo "$*" >> "\${ADB_LOG:-/dev/null}"
 case "$*" in
   "shell pm path eu.drafto.mobile") echo "package:/data/app/x/base.apk" ;;
   pull*) cp "$FAKE_APK" "$3" ;;
-  "shell settings get secure navigation_mode") echo 2 ;;
+  # Gesture navigation until the runner enables the 3-button overlay, then
+  # FAKE_NAV_MODE_AFTER (default 0, 3-button).
+  "shell settings get secure navigation_mode")
+    if grep -q navbar.threebutton "\${ADB_LOG:-/dev/null}" 2> /dev/null; then
+      echo "\${FAKE_NAV_MODE_AFTER:-0}"
+    else
+      echo 2
+    fi ;;
   "shell cmd uimode night") echo "Night mode: no" ;;
   "shell wm density") cat "${FIXTURES}/wm-density-420.txt" ;;
   "shell dumpsys window") cat "${FIXTURES}/dumpsys-window-3button-light.txt" ;;
@@ -166,6 +173,7 @@ const ALL_FLOWS = [
   "android-only/09-offline-image.yaml",
   "android-only/10-offline-banner-header.yaml",
   "android-only/11-dark-nav-bar.yaml",
+  "android-only/12-delete-dialog-nav-bar.yaml",
   "ios-only/05-offline-mode.yaml",
   "ios-only/06-offline-notebook-sync.yaml",
   "ios-only/08-fab-above-home-indicator.yaml",
@@ -535,6 +543,30 @@ describe("run-qa-10668-e2e.sh", () => {
     assert.match(readFileSync(path.join(ok.out, "run.log"), "utf8"), /debug .*dev project/);
   });
 
+  it("stops before any flow when 3-button navigation never takes effect", () => {
+    const result = run(["android", "--only", "11-dark-nav-bar"], {
+      runner: FAKE_RUNNER,
+      env: { FAKE_NAV_MODE_AFTER: "2", QA_NAV_MODE_WAIT_S: "1" },
+    });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /3-button navigation did not take effect \(navigation_mode=2\)/);
+    // No case ran: in gesture mode they would pass without measuring the scrim.
+    assert.doesNotMatch(result.logs.maestro, /11-dark-nav-bar/);
+  });
+
+  it("only warns when 3-button navigation never applies and no nav-bar step is selected", () => {
+    const result = run(["android", "--only", "09-password-visibility"], {
+      runner: FAKE_RUNNER,
+      env: { FAKE_NAV_MODE_AFTER: "2", QA_NAV_MODE_WAIT_S: "1" },
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(
+      readFileSync(path.join(result.out, "run.log"), "utf8"),
+      /WARNING: 3-button navigation did not take effect .*no selected step measures the nav bar/,
+    );
+    assert.match(result.logs.maestro, /09-password-visibility/);
+  });
+
   it("runs all four dark-nav-bar cases (adb shell can't eat the case list)", () => {
     const result = run(["android", "--only", "11-dark-nav-bar"], { runner: FAKE_RUNNER });
     const steps = readFileSync(path.join(result.out, "results.tsv"), "utf8")
@@ -548,6 +580,20 @@ describe("run-qa-10668-e2e.sh", () => {
       "dark-nav-bar-C2-system-follows-light-os",
     ]);
     assert.match(result.logs.adb, /shell cmd uimode night yes/);
+  });
+
+  it("runs both delete-dialog nav-bar cases, and restores the OS theme", () => {
+    const result = run(["android", "--only", "12-delete-dialog-nav-bar"], { runner: FAKE_RUNNER });
+    const steps = readFileSync(path.join(result.out, "results.tsv"), "utf8")
+      .split("\n")
+      .filter((line) => line.split("\t")[1] === "flow" && /nav-bar-/.test(line.split("\t")[0]))
+      .map((line) => line.split("\t")[0]);
+    // Only flow 12's cases: --only 12-… must not also run flow 11's.
+    assert.deepEqual(steps, [
+      "delete-dialog-nav-bar-D-os-light-app-dark",
+      "delete-dialog-nav-bar-E-os-dark-app-light",
+    ]);
+    assert.match(result.logs.adb, /shell cmd uimode night yes[\s\S]*shell cmd uimode night no/);
   });
 
   it("in --before, only a measured check failing cleanly is 'reproduced'", () => {

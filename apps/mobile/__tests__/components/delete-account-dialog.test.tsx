@@ -1,5 +1,12 @@
 import React from "react";
 import {
+  AccessibilityInfo,
+  BackHandler,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+} from "react-native";
+import {
   appleDeletionNotice,
   describeAccountDeletionFailure,
   type AccountDeletionResult,
@@ -7,6 +14,7 @@ import {
 
 import { render, fireEvent, waitFor, act, within } from "../helpers/test-utils";
 import { DeleteAccountDialog } from "../../src/components/delete-account-dialog";
+import { ModalOverlayHost } from "../../src/components/ui/modal-overlay";
 
 let mockConfirmsWithApple: "sheet" | "browser" | null = null;
 jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
@@ -240,5 +248,97 @@ describe("DeleteAccountDialog", () => {
     expect(getByTestId("delete-account-input").props.value).toBe("");
     expect(queryByTestId("delete-account-error")).toBeNull();
     expect(getByTestId("delete-account-confirm")).toBeDisabled();
+  });
+});
+
+// #862: on Android the dialog draws in the app's own window, through the root
+// ModalOverlayHost, so the navigation bar keeps the in-app theme.
+describe("DeleteAccountDialog on Android", () => {
+  let backListeners: (() => boolean | null | undefined)[];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockConfirmsWithApple = null;
+    jest.replaceProperty(Platform, "OS", "android");
+    backListeners = [];
+    jest.spyOn(BackHandler, "addEventListener").mockImplementation((_event, listener) => {
+      backListeners.push(listener);
+      return {
+        remove: () => {
+          backListeners = backListeners.filter((l) => l !== listener);
+        },
+      };
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function renderOnAndroid(onConfirm = jest.fn<Promise<AccountDeletionResult>, []>()) {
+    const onCancel = jest.fn();
+    const utils = render(
+      <ModalOverlayHost>
+        <DeleteAccountDialog visible onCancel={onCancel} onConfirm={onConfirm} />
+      </ModalOverlayHost>,
+    );
+    const pressBack = () => act(() => void backListeners.at(-1)?.());
+    return { ...utils, onCancel, onConfirm, pressBack };
+  }
+
+  it("is no RN Modal, which would be a window with the OS theme's nav bar", () => {
+    const { getByTestId, UNSAFE_queryByType } = renderOnAndroid();
+
+    expect(getByTestId("delete-account-dialog")).toHaveTextContent(/Delete account\?/);
+    expect(UNSAFE_queryByType(Modal)).toBeNull();
+  });
+
+  it("gives up the keyboard's height, since nothing resizes the shared window", () => {
+    const { UNSAFE_getByType } = renderOnAndroid();
+
+    expect(UNSAFE_getByType(KeyboardAvoidingView).props.behavior).toBe("height");
+  });
+
+  it("moves TalkBack's focus to its title when it opens", () => {
+    jest.useFakeTimers();
+    try {
+      const send = jest.spyOn(AccessibilityInfo, "sendAccessibilityEvent").mockImplementation();
+      const { getByText } = renderOnAndroid();
+
+      jest.advanceTimersByTime(150);
+
+      expect(getByText("Delete account?")).toBeTruthy();
+      expect(send).toHaveBeenCalledTimes(1);
+      const [target, event] = send.mock.calls[0];
+      expect(event).toBe("focus");
+      expect((target as unknown as { props: { children: string } }).props.children).toBe(
+        "Delete account?",
+      );
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it("cancels on hardware back", () => {
+    const { onCancel, pressBack } = renderOnAndroid();
+
+    pressBack();
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores hardware back while the deletion is in flight", async () => {
+    let resolve: (result: AccountDeletionResult) => void = () => {};
+    const onConfirm = jest.fn(() => new Promise<AccountDeletionResult>((r) => (resolve = r)));
+    const { getByTestId, onCancel, pressBack } = renderOnAndroid(onConfirm);
+
+    fireEvent.changeText(getByTestId("delete-account-input"), "DELETE");
+    fireEvent.press(getByTestId("delete-account-confirm"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    pressBack();
+
+    expect(onCancel).not.toHaveBeenCalled();
+    await act(async () => resolve({ status: "network" }));
   });
 });

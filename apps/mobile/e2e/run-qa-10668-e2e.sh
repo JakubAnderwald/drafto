@@ -79,6 +79,8 @@ set -euo pipefail
 #   QA_THEME=dark|light|system
 #                       android-only/11-dark-nav-bar: the in-app theme to pick
 #                       in Settings before ending on the Notebooks tab.
+#                       android-only/12-delete-dialog-nav-bar picks it the same
+#                       way, then ends with the delete-account dialog open.
 #   SIGN_OUT_CONFIRM=1  11-sign-out-confirm: also run the confirm leg. Only
 #                       when SIGN_OUT_CONFIRM=1 is in this runner's environment.
 #                       Mobile sign-out is global, so the leg signs in as a
@@ -595,6 +597,29 @@ if [ "$PLATFORM" = android ]; then
   log "Device state before: navigation_mode=$ORIG_NAV_MODE night=$ORIG_NIGHT"
   # The report's device used 3-button navigation, a light system theme.
   adb_sh cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.threebutton > /dev/null
+  # The overlay applies asynchronously, several seconds later on a cold emulator.
+  # The nav-bar checks measure the 3-button contrast scrim, which gesture
+  # navigation doesn't draw, and the FAB check the 3-button bar's height, so a
+  # run still in gesture mode would pass them without measuring the bug. Wait
+  # for it. If it never applies, stop when one of those steps is selected, and
+  # only warn otherwise.
+  NAV_MODE=""
+  for _ in $(seq 1 "${QA_NAV_MODE_WAIT_S:-20}"); do
+    NAV_MODE="$(adb_sh settings get secure navigation_mode | tr -d '\r')"
+    [ "$NAV_MODE" = 0 ] && break
+    sleep 1
+  done
+  if [ "$NAV_MODE" != 0 ]; then
+    msg="3-button navigation did not take effect (navigation_mode=$NAV_MODE)"
+    if [ -z "$ONLY" ] || printf '%s\n' android-only/08-fab-above-nav-bar.yaml \
+      android-only/11-dark-nav-bar.yaml android-only/12-delete-dialog-nav-bar.yaml |
+      grep -Eq -- "$ONLY"; then
+      log "ERROR: $msg"
+      echo "ERROR: $msg" >&2
+      exit 2
+    fi
+    log "WARNING: $msg; no selected step measures the nav bar"
+  fi
   adb_sh cmd uimode night no > /dev/null
   adb_sh cmd connectivity airplane-mode disable > /dev/null 2>&1 || true
   sleep 2
@@ -662,28 +687,46 @@ if [ "$PLATFORM" = android ]; then
   layout_step offline-banner android-only/10-offline-banner-header.yaml banner-clear-of-back
   adb_sh cmd connectivity airplane-mode disable > /dev/null 2>&1 || true
 
-  # --- M-04: the nav bar follows the in-app theme ---
-  # case | system night | in-app theme | expected bar | expect before the fix
-  NAV_FLOW=android-only/11-dark-nav-bar.yaml
-  if want dark-nav-bar "$NAV_FLOW"; then
+  # nav_bar_cases <step prefix> <flow>: runs the nav-bar cases read from stdin,
+  # one per line: case | system night | in-app theme | expected bar | expect
+  # before the fix. Each case sets the OS theme, runs the flow with that in-app
+  # theme, then checks the focused window's bar.
+  nav_bar_cases() {
+    local prefix="$1" flow="$2" name night theme bar expect step
     while read -r name night theme bar expect; do
       adb_sh cmd uimode night "$night" > /dev/null
       sleep 1
-      step="dark-nav-bar-$name"
-      if run_flow "$step" "$NAV_FLOW" -e QA_THEME="$theme"; then
+      step="$prefix-$name"
+      if run_flow "$step" "$flow" -e QA_THEME="$theme"; then
         record "$step" flow pass any "system night=$night, app theme=$theme"
       else
-        record "$step" flow fail any "$NAV_FLOW failed (see $step.maestro.log)"
+        record "$step" flow fail any "$flow failed (see $step.maestro.log)"
       fi
       capture "$step"
       check "$step" "$step" "$expect" "nav-bar-$bar"
-    done << 'CASES'
+    done
+    adb_sh cmd uimode night no > /dev/null
+  }
+
+  # --- M-04: the nav bar follows the in-app theme ---
+  NAV_FLOW=android-only/11-dark-nav-bar.yaml
+  if want dark-nav-bar "$NAV_FLOW"; then
+    nav_bar_cases dark-nav-bar "$NAV_FLOW" << 'CASES'
 A-os-light-app-dark no dark dark fail
 B-os-dark-app-light yes light light fail
 C1-system-follows-dark-os yes system dark any
 C2-system-follows-light-os no system light any
 CASES
-    adb_sh cmd uimode night no > /dev/null
+  fi
+
+  # --- #862: the same, with the delete-account dialog open ---
+  # The old dialog was an RN Modal in a window of its own, whose bar followed the OS.
+  NAV_DIALOG_FLOW=android-only/12-delete-dialog-nav-bar.yaml
+  if want delete-dialog-nav-bar "$NAV_DIALOG_FLOW"; then
+    nav_bar_cases delete-dialog-nav-bar "$NAV_DIALOG_FLOW" << 'CASES'
+D-os-light-app-dark no dark dark fail
+E-os-dark-app-light yes light light fail
+CASES
   fi
 
   # --- Regression: the offline-mode flows the report's fixes touch ---
@@ -753,7 +796,7 @@ fi
 # --- Any other qa-10668 flow for this platform, judged by Maestro alone ---
 KNOWN="09-password-visibility.yaml 10-swipe-hint.yaml 11-sign-out-confirm.yaml
 android-only/08-fab-above-nav-bar.yaml android-only/09-offline-image.yaml
-android-only/10-offline-banner-header.yaml android-only/11-dark-nav-bar.yaml
+android-only/10-offline-banner-header.yaml android-only/11-dark-nav-bar.yaml android-only/12-delete-dialog-nav-bar.yaml
 android-only/05-offline-mode.yaml android-only/06-offline-notebook-sync.yaml
 ios-only/08-fab-above-home-indicator.yaml ios-only/09-attach-image-offline.yaml
 ios-only/10-offline-banner-header.yaml ios-only/05-offline-mode.yaml ios-only/06-offline-notebook-sync.yaml"

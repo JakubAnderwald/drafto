@@ -1,6 +1,6 @@
 // Tests for scripts/lib/evidence-post.mjs — the operator command that posts a
 // macOS In-Test harness run (ADR-0043) on its issue, with the run's
-// screenshots (ADR-0092). Those screenshots are of PRODUCTION (a throwaway
+// screenshots (ADR-0094). Those screenshots are of PRODUCTION (a throwaway
 // account, and a run starts by signing the operator's own account out, so an
 // early shot can show the operator's own notes). So what this file locks in
 // is that publishing is never automatic: the command refuses in an unattended
@@ -400,7 +400,7 @@ function assertComment(body, commit, { runDir, sha = SHA } = {}) {
   assert.deepEqual(lines.slice(other + 1, other + 3), ["", img(commit, 1, sha)]);
 
   // The macOS footer: production, published by the operator; never "dev data".
-  const footer = lines.findIndex((l) => l.startsWith("<sub>") && l.includes("ADR-0092"));
+  const footer = lines.findIndex((l) => l.startsWith("<sub>") && l.includes("ADR-0094"));
   assert.notEqual(footer, -1, "no footer");
   assert.match(lines[footer], /on production with a throwaway account/);
   assert.doesNotMatch(lines[footer], /dev data/);
@@ -1191,7 +1191,7 @@ describe("posting with --yes", () => {
     assert.equal(t.post({ yes: true }).posted, true);
     assertEvidenceCommit(t);
     const lines = t.gh.posts[0].body.split("\n");
-    const footer = lines.find((l) => l.startsWith("<sub>") && l.includes("ADR-0092"));
+    const footer = lines.find((l) => l.startsWith("<sub>") && l.includes("ADR-0094"));
     assert.ok(footer, "no footer");
     assert.match(footer, /a run that used no throwaway account, so they show the account the app/);
     assert.doesNotMatch(footer, /with a throwaway account/);

@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   ACCOUNT_DELETE_CONFIRMATION,
   appleDeletionNotice,
@@ -17,6 +9,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ModalOverlay } from "@/components/ui/modal-overlay";
 import { useAppleDeletionConfirmation } from "@/hooks/use-apple-deletion-confirmation";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -48,6 +41,8 @@ export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAcco
   // Guards against a double tap firing two requests before `pending` re-renders.
   const pendingRef = useRef(false);
   const mountedRef = useRef(true);
+  // TalkBack's focus moves here when the dialog opens on Android.
+  const titleRef = useRef<Text>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -96,16 +91,19 @@ export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAcco
   };
 
   return (
-    <Modal
+    // Not an RN Modal: on Android that is a window of its own, whose navigation
+    // bar follows the OS theme instead of the app's (#862, ADR-0092).
+    <ModalOverlay
       visible={visible}
-      transparent
-      animationType="fade"
       onRequestClose={handleCancel}
+      initialFocusRef={titleRef}
       testID="delete-account-dialog"
     >
+      {/* On Android the overlay shares the app's edge-to-edge window, which the
+          keyboard doesn't resize, so the view gives up the keyboard's height. */}
       <KeyboardAvoidingView
         style={styles.overlay}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <View style={styles.backdrop} />
         <View
@@ -121,7 +119,7 @@ export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAcco
             keyboardShouldPersistTaps="handled"
             testID="delete-account-scroll"
           >
-            <Text style={styles.title} accessibilityRole="header">
+            <Text ref={titleRef} style={styles.title} accessibilityRole="header">
               Delete account?
             </Text>
             <Text style={styles.warning}>
@@ -180,7 +178,7 @@ export function DeleteAccountDialog({ visible, onCancel, onConfirm }: DeleteAcco
           </View>
         </View>
       </KeyboardAvoidingView>
-    </Modal>
+    </ModalOverlay>
   );
 }
 
