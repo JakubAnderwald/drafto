@@ -5,7 +5,19 @@
 
 on_login_screen() { ax_has desc "Log in"; }
 on_signup_screen() { ! ax_has desc "Log in" && ax_has desc "Sign up"; }
-on_waiting_screen() { ax_has desc "Check approval status"; }
+# The inactive-account screen's check button: "Check again" since open signup (ADR 0094),
+# "Check approval status" on builds before it. Prints the label on screen.
+check_btn_label() {
+  local label
+  for label in "Check again" "Check approval status"; do
+    if ax_has desc "$label"; then
+      echo "$label"
+      return 0
+    fi
+  done
+  return 1
+}
+on_waiting_screen() { check_btn_label > /dev/null; }
 on_main_screen() { ax_has desc "New notebook"; }
 # jq definitions over an ax_dump: a visible element, and the App menu's "Sign
 # out" item. That item is an RN view labelled by its AXDescription; the sign-out

@@ -499,11 +499,11 @@ describe("Auth middleware", () => {
       expect(new URL(response.headers.get("location")!).pathname).toBe("/waiting-for-approval");
     });
 
-    it("redirects a signed-out navigation to the emailed one-click approval link to /login", async () => {
-      // The admin opens this `/api/*` URL from an email as a page, not with `fetch()`. A signed-out
-      // admin must reach the login page, not a raw JSON error.
+    it("redirects a signed-out navigation to an API URL to /login", async () => {
+      // An `/api/*` URL opened as a page, not with `fetch()`: a signed-out user must reach the
+      // login page, not a raw JSON error.
       const response = await updateSession(
-        apiRequest("/api/admin/approve-user/one-click?token=t", {
+        apiRequest("/api/storage-usage", {
           headers: { "sec-fetch-mode": "navigate" },
         }),
       );
@@ -517,7 +517,7 @@ describe("Auth middleware", () => {
       signInWithProfile({ data: { is_approved: false }, error: null });
 
       const response = await updateSession(
-        apiRequest("/api/admin/approve-user/one-click?token=t", {
+        apiRequest("/api/storage-usage", {
           session: true,
           headers: { "sec-fetch-mode": "navigate" },
         }),

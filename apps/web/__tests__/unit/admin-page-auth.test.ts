@@ -21,8 +21,6 @@ vi.mock("next/navigation", () => ({
 
 const { default: AdminPage } = await import("@/app/(app)/admin/page");
 
-const props = { searchParams: Promise.resolve({}) };
-
 describe("isSignedOutAuthError", () => {
   it("is true for a missing session", () => {
     expect(isSignedOutAuthError(new AuthSessionMissingError())).toBe(true);
@@ -53,21 +51,21 @@ describe("AdminPage auth handling", () => {
       error: new AuthSessionMissingError(),
     });
 
-    await expect(AdminPage(props)).rejects.toThrow("NEXT_REDIRECT:/login");
+    await expect(AdminPage()).rejects.toThrow("NEXT_REDIRECT:/login");
     expect(mockRedirect).toHaveBeenCalledWith("/login");
   });
 
   it("redirects to /login when there is no user and no error", async () => {
     mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
 
-    await expect(AdminPage(props)).rejects.toThrow("NEXT_REDIRECT:/login");
+    await expect(AdminPage()).rejects.toThrow("NEXT_REDIRECT:/login");
   });
 
   it("rethrows Auth API server errors instead of redirecting", async () => {
     const serverError = new AuthApiError("boom", 500, "unexpected_failure");
     mockGetUser.mockResolvedValue({ data: { user: null }, error: serverError });
 
-    await expect(AdminPage(props)).rejects.toBe(serverError);
+    await expect(AdminPage()).rejects.toBe(serverError);
     expect(mockRedirect).not.toHaveBeenCalled();
   });
 
@@ -75,7 +73,7 @@ describe("AdminPage auth handling", () => {
     const networkError = new Error("fetch failed");
     mockGetUser.mockResolvedValue({ data: { user: null }, error: networkError });
 
-    await expect(AdminPage(props)).rejects.toBe(networkError);
+    await expect(AdminPage()).rejects.toBe(networkError);
     expect(mockRedirect).not.toHaveBeenCalled();
   });
 });

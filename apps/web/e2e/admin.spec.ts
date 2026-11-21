@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { ADMIN_E2E_SKIP_REASON, getAdminCredentials } from "./helpers/admin-credentials";
 
 /**
- * Admin — User Approval panel: closing it with the ✕ button or Escape.
+ * Admin — Accounts panel: closing it with the ✕ button or Escape.
  *
  * Runs in the `chromium-admin` project, signed in as E2E_ADMIN_EMAIL (see
  * admin.setup.ts). That project is only registered when the admin E2E variables
@@ -10,7 +10,7 @@ import { ADMIN_E2E_SKIP_REASON, getAdminCredentials } from "./helpers/admin-cred
  */
 const hasAdminCredentials = getAdminCredentials() !== null;
 
-const HEADING = "Admin — User Approval";
+const HEADING = "Admin — Accounts";
 
 async function openAdminPanel(page: Page) {
   await page.goto("/admin");

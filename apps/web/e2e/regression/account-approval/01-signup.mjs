@@ -37,9 +37,15 @@ await page.locator("#email").fill(testEmail);
 await page.locator("#password").fill(testPassword);
 await page.locator("form").evaluate((f) => f.requestSubmit());
 
+// Email confirmation is on, so signup stays on /signup with the "check your email" notice.
+// With a session it would go straight into the app (`/`): a new account is active from the
+// start (ADR 0094).
 await Promise.race([
-  page.waitForURL(/waiting-for-approval|login/, { timeout: 20000 }).catch(() => null),
-  page.waitForTimeout(20000),
+  page
+    .getByTestId("signup-check-email")
+    .waitFor({ timeout: 20000 })
+    .catch(() => null),
+  page.waitForURL((url) => url.pathname === "/", { timeout: 20000 }).catch(() => null),
 ]);
 await page.waitForTimeout(2000);
 

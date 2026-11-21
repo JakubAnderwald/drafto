@@ -1,6 +1,6 @@
 #!/bin/bash
 # In-Test scenario for #458 (PR #673): desktop sync must run only for a
-# signed-in AND approved user, and keep working through every trigger (sign-in,
+# signed-in AND active (profiles.is_approved) user, and keep working through every trigger (sign-in,
 # window focus, the 30 s timer, network reconnect, the manual button, sign-out).
 # Drives the installed TestFlight build against PRODUCTION with a throwaway
 # account that it deletes at the end. Guide: docs/operations/macos-in-test-automation.md
@@ -26,8 +26,9 @@ ISSUE=${ISSUE-458}
 PR=${PR-673}
 TOGGLES_NETWORK=1
 PRODUCTION_SUMMARY="  • signs the Drafto app out of its current account (only if it reads Synced, 0 pending)
-  • signs that account up in the app (you get one \"New Drafto signup\" e-mail), confirms
-    its e-mail if prod demands it, and approves it with
+  • signs that account up in the app (you get one \"New Drafto signup\" e-mail), suspends
+    it the way an admin would (a new account is active from the start, ADR 0094), confirms
+    its e-mail, and later reactivates it with
     update public.profiles set is_approved = true where id = '<that user>'
   • as that user: inserts 1 notebook + 30 notes, edits one note title"
 
@@ -54,7 +55,7 @@ else
 fi
 sleep 2
 # Baseline for A1b, taken before the sign-up: the old build pulled as soon as
-# an unapproved user signed in, so a post-sign-up baseline would hide it.
+# an inactive user signed in, so a post-sign-up baseline would hide it.
 BASE_PULLED=$(db_last_pulled)
 BASE_COUNTS="$(db_count notes)/$(db_count notebooks)"
 log "   local DB after sign-out: lastPulledAt='${BASE_PULLED:-unset}', notes/notebooks $BASE_COUNTS"
@@ -74,8 +75,8 @@ for attempt in 1 2; do
   fi
   end=$(($(date +%s) + 12))
   while [ "$(date +%s)" -lt "$end" ]; do
-    if on_waiting_screen; then
-      outcome=waiting
+    if on_main_screen; then
+      outcome=active
       break 2
     fi
     if [ -n "$(sql_user_row)" ]; then
@@ -86,97 +87,105 @@ for attempt in 1 2; do
   done
 done
 [ -n "$outcome" ] || fail_step "Sign up created no account; screen reads: $(ocr_text | redact)"
-if [ "$outcome" = waiting ] || ax_wait 3 desc "Check approval status"; then
-  A1_STATUS=PASS
-  A1_NOTE="no e-mail confirmation needed; Awaiting Approval screen shown"
-else
-  # Prod requires e-mail confirmation ("confirm the e-mail if asked"): record
-  # what the app shows, then stand in for the e-mail link with SQL.
-  sleep 2
-  shot "A1-after-sign-up"
-  screen_text=$(ocr_text | redact)
-  row=$(sql_user_row)
-  [ -n "$(jq -r '.email_confirmed_at // empty' <<< "$row")" ] ||
-    sb_sql "update auth.users set email_confirmed_at = now() where email = '$QA_EMAIL' and email_confirmed_at is null returning id" > /dev/null ||
-    fail_step "could not confirm the e-mail"
-  if grep -qiE 'check your|confirm|verify' <<< "$screen_text"; then
-    A1_STATUS=PASS
-    prompt="the app asked to confirm the e-mail"
-  else
-    A1_STATUS=WARN
-    prompt="the app gave NO confirm-your-e-mail feedback after Sign up (#675; screen reads: $screen_text)"
-  fi
-  # Builds with the check-email state (#675) offer "Back to login"; older ones keep the form.
-  press_contains_until 2 on_login_screen "Back to login" ||
-    press_contains_until 2 on_login_screen "Already have an account" ||
-    fail_step "could not get back to the login screen"
-  log_in on_waiting_screen || fail_step "Awaiting Approval screen never appeared after logging in; screen reads: $(ocr_text | redact)"
-  A1_NOTE="prod requires e-mail confirmation — $prompt; confirmed via SQL in place of the e-mail link, logged in, Awaiting Approval shown"
+# Without e-mail confirmation the new account signs straight in, active, and syncs before this
+# run can suspend it, so the inactive-account checks below would mean nothing. The SQL row
+# usually shows up before the main screen does, so check the confirmation itself too.
+if [ "$outcome" = active ] || [ -n "$(jq -r '.email_confirmed_at // empty' <<< "$(sql_user_row)")" ]; then
+  fail_step "the new account was confirmed at sign-up: prod no longer asks for e-mail confirmation, so it was active and could sync before it was suspended"
 fi
+# Since open signup (ADR 0094) a new account is active from the start. Suspend it the way an
+# admin's Suspend button does (it sets the same column), before its first sign-in.
+rows=$(sb_sql "update public.profiles set is_approved = false where id = (select id from auth.users where email = '$QA_EMAIL') returning id") ||
+  fail_step "could not suspend the new account"
+[ "$(jq 'length' <<< "$rows")" = 1 ] || fail_step "expected 1 profile suspended, got: $rows"
+# Prod requires e-mail confirmation ("confirm the e-mail if asked"): record
+# what the app shows, then stand in for the e-mail link with SQL.
+sleep 2
+shot "A1-after-sign-up"
+screen_text=$(ocr_text | redact)
+row=$(sql_user_row)
+[ -n "$(jq -r '.email_confirmed_at // empty' <<< "$row")" ] ||
+  sb_sql "update auth.users set email_confirmed_at = now() where email = '$QA_EMAIL' and email_confirmed_at is null returning id" > /dev/null ||
+  fail_step "could not confirm the e-mail"
+if grep -qiE 'check your|confirm|verify' <<< "$screen_text"; then
+  A1_STATUS=PASS
+  prompt="the app asked to confirm the e-mail"
+else
+  A1_STATUS=WARN
+  prompt="the app gave NO confirm-your-e-mail feedback after Sign up (#675; screen reads: $screen_text)"
+fi
+# Builds with the check-email state (#675) offer "Back to login"; older ones keep the form.
+press_contains_until 2 on_login_screen "Back to login" ||
+  press_contains_until 2 on_login_screen "Already have an account" ||
+  fail_step "could not get back to the login screen"
+log_in on_waiting_screen || fail_step "Account not active screen never appeared after logging in; screen reads: $(ocr_text | redact)"
+A1_NOTE="prod requires e-mail confirmation — $prompt; suspended via SQL, confirmed via SQL in place of the e-mail link, logged in, Account not active shown"
+CHECK_BTN=$(check_btn_label) || fail_step "no check button on the Account not active screen"
 sb_login || fail_step "GoTrue login as the throwaway account failed: $SB_LOGIN_ERR"
 QA_UID=$SB_UID
 printf 'QA_UID=%q\n' "$QA_UID" >> "$RUN_DIR/state.env"
 step_end "$A1_STATUS" "$A1_NOTE; user $QA_UID"
 
 # ── A1b. Unapproved never syncs ─────────────────────────────────────────────
-step_begin A1b "Unapproved account never pulls (sign-in sync, retry window, window focus)"
+step_begin A1b "Inactive account never pulls (sign-in sync, retry window, window focus)"
 # 35 s outlasts the sync retry delays (2/5/15/30 s). The 30 s periodic timer is
 # not exercised here: it only syncs when local changes are pending, and an
-# unapproved user cannot make any — that gate is covered by the PR's unit tests.
+# inactive user cannot make any — that gate is covered by the PR's unit tests.
 sleep 35
 focus_away_and_back
 sleep 6
 p1=$(db_last_pulled)
 n1="$(db_count notes)/$(db_count notebooks)"
-ax_has desc "Check approval status" || fail_step "left the Awaiting Approval screen"
+on_waiting_screen || fail_step "left the Account not active screen"
 if [ "$p1" != "$BASE_PULLED" ] || [ "$n1" != "$BASE_COUNTS" ]; then
-  fail_step "pulled while unapproved: lastPulledAt '${BASE_PULLED:-unset}' (after sign-out) → '${p1:-unset}', notes/notebooks $BASE_COUNTS → $n1"
+  fail_step "pulled while inactive: lastPulledAt '${BASE_PULLED:-unset}' (after sign-out) → '${p1:-unset}', notes/notebooks $BASE_COUNTS → $n1"
 elif [ -n "$BASE_PULLED" ]; then
-  step_end WARN "no pull while unapproved, but the fresh DB already had lastPulledAt=$BASE_PULLED right after sign-out"
+  step_end WARN "no pull while inactive, but the fresh DB already had lastPulledAt=$BASE_PULLED right after sign-out"
 else
   step_end PASS "lastPulledAt still unset and notes/notebooks still $n1 after sign-up, 35 s idle and a window-focus event"
 fi
 
-# ── A2. Check approval while pending ────────────────────────────────────────
-step_begin A2 "Check approval status while still pending"
+# ── A2. Check again while inactive ──────────────────────────────────────────
+step_begin A2 "Check the account again while it is still inactive"
 # The press runs checkApproval, which sets isCheckingApproval. Up to build 59
 # AppNavigator rendered only a spinner while that was set, so the waiting screen
 # unmounted and its "still pending" message was lost (#676). Later builds keep
 # the screen mounted and show the message. On an old build the press is
 # detected by that remount: the button press_el focused is replaced by an
 # unfocused one (or by the spinner).
-pending_msg_shown() { ocr_has "still pending approval"; }
-check_btn_unfocused() { [ "$(ax_find desc "Check approval status" | jq -r '.focused // false')" != true ]; }
+# "still isn't active" since open signup (ADR 0094); "still pending approval" before it.
+pending_msg_shown() { ocr_has "still isn" || ocr_has "still pending approval"; }
+check_btn_unfocused() { [ "$(ax_find desc "$CHECK_BTN" | jq -r '.focused // false')" != true ]; }
 A2_FIRED=0 A2_MSG=0
 for attempt in 1 2 3 4; do
-  if ! ax_press desc "Check approval status"; then
+  if ! ax_press desc "$CHECK_BTN"; then
     sleep 1
     continue
   fi
   [ "$PRESS_MODE" = space ] && poll 5 check_btn_unfocused && A2_FIRED=1
   poll 6 pending_msg_shown && A2_MSG=1 && break
   [ "$A2_FIRED" = 1 ] && break
-  log "   press on 'Check approval status' had no visible effect (attempt $attempt)"
+  log "   press on '$CHECK_BTN' had no visible effect (attempt $attempt)"
 done
-ax_wait 15 desc "Check approval status" || fail_step "left the Awaiting Approval screen (now: $(ocr_text | head -c 200))"
+poll 15 on_waiting_screen || fail_step "left the Account not active screen (now: $(ocr_text | head -c 200))"
 sleep 3
 p2=$(db_last_pulled)
 n2="$(db_count notes)/$(db_count notebooks)"
 if [ "$p2" != "$BASE_PULLED" ] || [ "$n2" != "$BASE_COUNTS" ]; then
-  fail_step "Check approval status started a pull while unapproved: lastPulledAt '${BASE_PULLED:-unset}' → '${p2:-unset}', notes/notebooks $BASE_COUNTS → $n2"
+  fail_step "$CHECK_BTN started a pull while inactive: lastPulledAt '${BASE_PULLED:-unset}' → '${p2:-unset}', notes/notebooks $BASE_COUNTS → $n2"
 fi
 if [ "$A2_MSG" = 1 ]; then
-  step_end PASS "'Your account is still pending approval.' shown; still on the screen; no pull"
+  step_end PASS "'still inactive' message shown; still on the screen; no pull"
 elif [ "$A2_FIRED" = 1 ]; then
-  step_end WARN "press registered (the screen reloaded: the focused button was replaced), still on Awaiting Approval, no pull — but no 'still pending approval' message: pre-existing desktop bug #676, checkApproval's isCheckingApproval makes AppNavigator swap the screen for a spinner (app-navigator.tsx:58), unmounting WaitingForApprovalScreen and its error state; not touched by #673"
+  step_end WARN "press registered (the screen reloaded: the focused button was replaced), still on Account not active, no pull — but no 'still inactive' message: pre-existing desktop bug #676, checkApproval's isCheckingApproval makes AppNavigator swap the screen for a spinner (app-navigator.tsx:58), unmounting WaitingForApprovalScreen and its error state; not touched by #673"
 else
-  fail_step "no press on Check approval status registered (focus never left the button; no message)"
+  fail_step "no press on $CHECK_BTN registered (focus never left the button; no message)"
 fi
 
-# ── A3. Approve + seed ──────────────────────────────────────────────────────
-step_begin A3 "Approve the account (SQL) and seed 1 notebook + 30 notes as the user"
+# ── A3. Reactivate + seed ───────────────────────────────────────────────────
+step_begin A3 "Reactivate the account (SQL) and seed 1 notebook + 30 notes as the user"
 rows=$(sb_sql "update public.profiles set is_approved = true where id = '$QA_UID' and is_approved = false returning id") ||
-  fail_step "approval SQL failed"
+  fail_step "reactivation SQL failed"
 [ "$(jq 'length' <<< "$rows")" = 1 ] || fail_step "expected 1 profile updated, got: $rows"
 nb=$(sb_rest POST notebooks "$(jq -nc --arg n "Seed 458 $RUN_TAG" --arg u "$QA_UID" '{name: $n, user_id: $u}')") ||
   fail_step "seed notebook insert failed: $nb"
@@ -189,15 +198,15 @@ SEED_NOTE=$(jq -r 'map(select(.title == "Seed note 1")) | first | .id' <<< "$res
 [ "$(sb_count notebooks)" = 1 ] && [ "$(sb_count notes)" = 30 ] || fail_step "server counts after seeding are not 1/30"
 step_end PASS "is_approved=true; server has 1 notebook / 30 notes"
 
-# ── A4. Check approval again → first sync ───────────────────────────────────
-step_begin A4 "Check approval again: main window opens and the first sync completes"
-press_until 20 on_main_screen desc "Check approval status" || fail_step "main window did not open after Check approval status"
+# ── A4. Check again → first sync ────────────────────────────────────────────
+step_begin A4 "Check again: main window opens and the first sync completes"
+press_until 20 on_main_screen desc "$CHECK_BTN" || fail_step "main window did not open after $CHECK_BTN"
 settle 45 || fail_step "indicator never settled on Synced (now '$(sync_help)')"
 has_30_notes() { [ "$(db_count notes)" = 30 ]; }
 poll 30 has_30_notes || true
 pulled=$(db_last_pulled)
 counts="$(db_count notebooks)/$(db_count notes)"
-[ -n "$pulled" ] || fail_step "lastPulledAt still unset after approval"
+[ -n "$pulled" ] || fail_step "lastPulledAt still unset after reactivation"
 [ "$counts" = "1/30" ] || fail_step "local notebooks/notes are $counts, expected 1/30"
 if ocr_has "Just now"; then
   step_end PASS "Synced · Just now; lastPulledAt=$pulled; pulled 1 notebook / 30 notes"

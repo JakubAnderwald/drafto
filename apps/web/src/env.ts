@@ -9,7 +9,6 @@ export const env = createEnv({
     RESEND_API_KEY: z.string().min(1).optional(),
     EMAIL_FROM: z.string().min(1).default("Drafto <hello@drafto.eu>"),
     EMAIL_ADMIN_FALLBACK: z.string().email().default("jakub@anderwald.info"),
-    APPROVAL_LINK_SECRET: z.string().min(32).optional(),
     APP_URL: z.string().url(),
     WEBHOOK_SECRET: z.string().min(16).optional(),
     // Bearer secret of POST /api/cron/hosted-usage, the weekly Vercel / Supabase usage readout
@@ -48,7 +47,6 @@ export const env = createEnv({
     RESEND_API_KEY: process.env.RESEND_API_KEY,
     EMAIL_FROM: process.env.EMAIL_FROM,
     EMAIL_ADMIN_FALLBACK: process.env.EMAIL_ADMIN_FALLBACK,
-    APPROVAL_LINK_SECRET: process.env.APPROVAL_LINK_SECRET,
     APP_URL: process.env.APP_URL,
     WEBHOOK_SECRET: process.env.WEBHOOK_SECRET,
     HOSTED_USAGE_SECRET: process.env.HOSTED_USAGE_SECRET,

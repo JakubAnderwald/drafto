@@ -6,7 +6,7 @@ import * as verifyReport from "../lib/verify-report.mjs";
 
 // The result-table parser moved out of verify-report.mjs so evidence-embed.mjs
 // (imported by browser-report.mjs) can put each screenshot under the step that
-// took it without an import cycle (ADR-0094). These tests lock in what it
+// took it without an import cycle (ADR-0095). These tests lock in what it
 // reads from the runners' tables, and that verify-report.mjs's existing
 // callers still get the very same functions through its re-export.
 

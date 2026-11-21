@@ -1,6 +1,6 @@
 # Account Approval — End-to-End Regression Test
 
-Semi-automated regression runbook for the full signup → admin-notification → one-click-approve → user-confirmed flow introduced in PR #290 and fixed in PR #292.
+Semi-automated regression runbook for the signup → admin-notice → account-active flow. PR #290 introduced it with a one-click approve link (fixed in PR #292). Since open signup ([ADR 0094](../../../../../docs/adr/0094-open-signup-with-admin-suspend.md)) a new account is active from the start and the admin email is a notice, so step 6 below now checks the account is already active instead of waiting for a click. The suspend/reactivate loop is covered in CI by `e2e/account-suspend.admin.spec.ts`.
 
 **Why not a Playwright test in CI?** Verifying that emails actually leave the system and land in the admin's inbox requires a real Gmail account. CI can't read it. These scripts are designed to be run locally via Claude Code, which has a Gmail MCP tool for email assertions.
 
@@ -10,11 +10,9 @@ Semi-automated regression runbook for the full signup → admin-notification →
 2. `handle_new_user` trigger → `public.profiles` INSERT
 3. `notify_admin_new_signup` trigger → `net.http_post` → `/api/webhooks/new-signup`
 4. Webhook endpoint (bypasses auth middleware, verifies `WEBHOOK_SECRET`)
-5. Admin notification email delivery (Resend → admin inbox)
-6. One-click approve link (signed token + admin-session guard)
-7. User-approved email delivery
-8. Pending-state gate (idempotent re-clicks don't re-email)
-9. Cleanup of the test user
+5. Admin notice email delivery (Resend → admin inbox), saying the account is already active
+6. The new profile is active (`is_approved = true`) with no admin action
+7. Cleanup of the test user
 
 ## Prerequisites
 
@@ -38,32 +36,26 @@ node 01-signup.mjs
 # 2. Poll pg_net + Supabase until webhook returns 200 and user row exists
 node 02-verify-webhook.mjs
 
-# 3. Ask Claude Code to read Gmail and confirm the admin email arrived:
+# 3. Ask Claude Code to read Gmail and confirm the admin notice arrived:
 #    "Search for 'from:hello@drafto.eu subject:\"New Drafto signup\" newer_than:5m'"
+#    Expected: "Their account is already active", a link to /admin, and no approve link.
 
-# 4. Extract the approve URL from that email and open it in the admin's
-#    signed-in browser. Claude Code can paste the URL for you; you click.
-#    Expected: redirect to /admin?approved=approved, green flash banner.
-
-# 5. Poll the profile row to confirm the flip
+# 4. Confirm the new profile is active without any admin action
 node 03-verify-approved.mjs
 
-# 6. Ask Claude Code: "Search Gmail for 'Your Drafto account is approved newer_than:5m'"
-#    Must arrive at jakub+<stamp>@anderwald.info
-
-# 7. Cleanup
+# 5. Cleanup
 node 99-cleanup.mjs
 ```
 
 ## Test email addressing
 
-Test emails use the form `jakub+draftoe2e-<timestamp>@anderwald.info`. Gmail-style plus-addressing routes these to `jakub@anderwald.info`'s inbox, so Supabase auth confirmations, the admin notification, and the user-approved email all land where Claude Code can read them via the Gmail MCP tool.
+Test emails use the form `jakub+draftoe2e-<timestamp>@anderwald.info`. Gmail-style plus-addressing routes these to `jakub@anderwald.info`'s inbox, so Supabase auth confirmations and the admin notice all land where Claude Code can read them via the Gmail MCP tool.
 
 ## What each script does
 
 - **`01-signup.mjs`** — Launches headless Chromium, navigates to `https://drafto.eu/signup`, fills `jakub+draftoe2e-<ts>@anderwald.info` + a random password, submits the form via `form.requestSubmit()` (more reliable than button click), captures the Supabase signup response, and saves state to `/tmp/e2e-approval/state.json`.
 - **`02-verify-webhook.mjs`** — Polls `auth.users` + `public.profiles` for the new row, then polls `net._http_response` for a 200 response from the webhook. Fails loudly if the response is 307/401/405 or if it doesn't show up within ~40s.
-- **`03-verify-approved.mjs`** — Polls `profiles.is_approved` until it flips to `true` (fails after 2 min if the admin hasn't clicked yet).
+- **`03-verify-approved.mjs`** — Checks that the new profile has `is_approved = true` straight after signup, with no admin action (open signup, ADR 0094).
 - **`99-cleanup.mjs`** — `DELETE FROM auth.users WHERE email LIKE 'jakub+draftoe2e-%@anderwald.info';` — relies on the FK cascade to clean `profiles`.
 
 ## Known gotchas (lessons from the first run)
@@ -76,10 +68,9 @@ Test emails use the form `jakub+draftoe2e-<timestamp>@anderwald.info`. Gmail-sty
 
 ## Failure modes + triage
 
-| Symptom                                               | Check                                                                                                                                                            |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `02-verify-webhook.mjs` reports 307/401/405           | Middleware fix rolled back, or `WEBHOOK_SECRET` drifted between Vercel and vault                                                                                 |
-| No admin email in Gmail but webhook returned 200      | Resend delivery logs (resend.com → Logs). DKIM/SPF records may have been removed.                                                                                |
-| User row created but trigger didn't fire              | `select tgenabled from pg_trigger where tgname = 'on_profile_insert_notify_admin';` — must be `O` (enabled)                                                      |
-| Approve link returns `error=invalid_or_expired_token` | `APPROVAL_LINK_SECRET` drifted between the signing deploy and the verifying deploy — happens if someone rotated the secret without also rotating the server side |
-| Approve link returns `error=forbidden`                | Admin profile doesn't have `is_admin=true`, or the admin isn't signed in at the moment of click                                                                  |
+| Symptom                                              | Check                                                                                                                                                                  |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `02-verify-webhook.mjs` reports 307/401/405          | Middleware fix rolled back, or `WEBHOOK_SECRET` drifted between Vercel and vault                                                                                       |
+| No admin email in Gmail but webhook returned 200     | Resend delivery logs (resend.com → Logs). DKIM/SPF records may have been removed.                                                                                      |
+| User row created but trigger didn't fire             | `select tgenabled from pg_trigger where tgname = 'on_profile_insert_notify_admin';` — must be `O` (enabled)                                                            |
+| `03-verify-approved.mjs` finds `is_approved = false` | The open-signup default is gone: check `select column_default from information_schema.columns where table_name = 'profiles' and column_name = 'is_approved';` → `true` |
