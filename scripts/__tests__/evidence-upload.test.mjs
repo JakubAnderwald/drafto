@@ -1158,6 +1158,63 @@ describe("upload publishes one parentless commit on the run's own ref", () => {
     assert.equal(published.images, 1);
   });
 
+  it("pins a macOS run reached through a link: the check after the scan reads the same run's state.env", async () => {
+    // runs/latest -> run A. While A's shots are being OCR'd, A's throwaway
+    // account turns out live (state.env appears) and `latest` moves to a clean
+    // run B. The check after the scan must still look at A, whose images it
+    // read, not at wherever the link points now.
+    const fx = uploadFixture({ shots: [] });
+    const runs = join(fx.root, "runs");
+    const runA = join(runs, "20261110-051950");
+    const runB = join(runs, "20261111-061010");
+    for (const run of [runA, runB]) {
+      mkdirSync(join(run, "shots"), { recursive: true });
+      writeFileSync(join(run, "shots", "01-signed-in.png"), PNG(run));
+    }
+    const latest = join(runs, "latest");
+    symlinkSync(runA, latest);
+    const flags = {
+      source: "macos",
+      "evidence-dir": join(latest, "shots"),
+      "guard-log": undefined,
+      "run-id": "macos-20261110-051950",
+    };
+    const ocr = (data, ext) => {
+      writeFileSync(join(runA, "state.env"), "QA_EMAIL=x\n", { mode: 0o600 });
+      rmSync(latest);
+      symlinkSync(runB, latest);
+      return fx.ocr.ocr(data, ext);
+    };
+    const refused = await upload(fx, flags, { env: { DRAFTO_UNATTENDED: "0" }, ocr });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "account-live");
+    assertNothingPushed(fx);
+
+    // The control: a run reached through the link publishes when its account
+    // is cleaned up, so the pin doesn't refuse links as such.
+    rmSync(join(runA, "state.env"));
+    rmSync(latest);
+    symlinkSync(runA, latest);
+    rmSync(fx.out);
+    const published = await upload(fx, flags, { env: { DRAFTO_UNATTENDED: "0" } });
+    assert.equal(published.ok, true);
+    assert.equal(published.images, 1);
+  });
+
+  it("refuses a macOS run whose run dir can't be resolved, before any push", async () => {
+    const fx = uploadFixture({ shots: [] });
+    const flags = {
+      source: "macos",
+      "evidence-dir": join(fx.root, "no-such-run", "shots"),
+      "guard-log": undefined,
+      "run-id": "macos-20261110-051950",
+    };
+    const refused = await upload(fx, flags, { env: { DRAFTO_UNATTENDED: "0" } });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "error");
+    assertNothingPushed(fx);
+  });
+
   it("checks the selftest record again after the scan: moving it aside stops an upload still scanning", async () => {
     const fx = uploadFixture();
     // The operator moves the record aside while the images are being OCR'd.

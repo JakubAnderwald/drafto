@@ -50,7 +50,8 @@
 //        --log-dir <dir> --repo-root <dir> --out <upload.json>
 //     Refuses (ok false, nothing pushed) when FACTORY_EVIDENCE_UPLOAD=0, for
 //     --source macos in an unattended session (DRAFTO_UNATTENDED=1) or while
-//     the run's state.env (beside --evidence-dir) exists, when
+//     the run's state.env (beside --evidence-dir, whose run dir is resolved
+//     once, so both checks and the reads see one run) exists, when
 //     --render-json says the report (or its browser lane, or the composed
 //     body) was withheld or can't be read, when the selftest hasn't passed
 //     (checked again after the scan, just before the push), or
@@ -555,9 +556,26 @@ function selectAndPublish({
 
 // A macOS run's state.env sits beside its shots/: while it exists, the run's
 // throwaway production account may still be live (evidence-post.mjs refuses
-// the same way).
-function macosAccountLive(evidenceDir) {
-  return nodeFs.existsSync(path.join(path.dirname(evidenceDir), "state.env"));
+// the same way). <shotsDir> is pinnedShotsDir's.
+function macosAccountLive(shotsDir) {
+  return nodeFs.existsSync(path.join(path.dirname(shotsDir), "state.env"));
+}
+
+/**
+ * A macOS run's shots/ with its run dir resolved once: the run dir's real path
+ * plus the dir's own name. The state.env gate (before the scan and again after
+ * it) and the screenshot reads then all look at the same run, even when the
+ * path goes through a link (a run's `latest`) that moves meanwhile. The last
+ * component stays as given, so a shots/ that is itself a link is still refused
+ * (rootProblem). null when the run dir can't be resolved.
+ */
+function pinnedShotsDir(evidenceDir) {
+  const abs = path.resolve(evidenceDir);
+  try {
+    return path.join(nodeFs.realpathSync(path.dirname(abs)), path.basename(abs));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -589,11 +607,15 @@ export function uploadRun({
   try {
     // A macOS run is production and is published by a person (evidence-post.mjs
     // refuses the same way): never from an unattended session, and never while
-    // its throwaway account may still be live, whatever calls.
+    // its throwaway account may still be live, whatever calls. Its shots/ is
+    // pinned first, so both gate checks and the reads see one run.
+    const shotsDir = source === "macos" ? pinnedShotsDir(evidenceDir) : evidenceDir;
     const macosGate = () => {
       if (source !== "macos") return null;
       if (env.DRAFTO_UNATTENDED === "1") return "unattended";
-      return macosAccountLive(evidenceDir) ? "account-live" : null;
+      // No run dir to look in: whether its account is live can't be told.
+      if (shotsDir === null) return "error";
+      return macosAccountLive(shotsDir) ? "account-live" : null;
     };
     const gates = () => macosGate() ?? uploadGate({ env, withheld, logDir });
     const gate = gates();
@@ -616,7 +638,7 @@ export function uploadRun({
           sha,
           runId,
           source,
-          evidenceDir,
+          evidenceDir: shotsDir,
           guardLog,
           accountFile,
           bypassFile,
