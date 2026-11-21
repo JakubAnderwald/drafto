@@ -183,6 +183,10 @@ test.describe("Security: admin pages for a signed-in non-admin", () => {
   test("a non-admin visiting /admin/stats is sent to /", async ({ page }) => {
     await page.goto("/admin/stats");
     await page.waitForURL((url) => url.pathname === "/", { timeout: 15000 });
+    // The chromium project signs in as the non-admin E2E user (auth.setup.ts). The app shell
+    // proves this was a signed-in redirect: a signed-out visit goes to /login, and the public
+    // landing page at / has no notebooks pane.
+    await expect(page.getByTestId("notebooks-pane")).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole("heading", { name: "Product metrics" })).toBeHidden();
   });
 });

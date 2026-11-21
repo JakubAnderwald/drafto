@@ -80,7 +80,8 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const params = await searchParams;
 
   return (
-    <div className="mx-auto max-w-2xl p-8" data-testid="admin-panel">
+    // The app shell is a fixed-height row that clips overflow, so the panel scrolls itself.
+    <div className="mx-auto h-full max-w-2xl overflow-y-auto p-8" data-testid="admin-panel">
       <div className="mb-6 flex items-center justify-between gap-4">
         <h1 className="text-fg text-2xl font-bold">Admin — User Approval</h1>
         <div className="flex items-center gap-4">

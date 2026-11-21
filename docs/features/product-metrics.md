@@ -188,7 +188,7 @@ pnpm users:stats -- --project prod --keys-txt <file>
 
 - **Access.** It uses `/admin`'s guard, `requireAdmin()` in `apps/web/src/lib/auth/require-admin.ts`. A signed-out visitor goes to `/login` and a signed-in non-admin to `/`. Only after that does the page read the metrics, server-side through the [loader](#web-data-loader-appswebsrclibmetrics), so the service-role key never reaches the browser.
 - **Freshness.** The page is `dynamic = "force-dynamic"`, so it is recomputed on every load with no caching. The header shows the generated-at time in UTC and notes that admins and test accounts are excluded.
-- **Sections, in order.** Each section is a `Card` with a one-line "what this answers" caption. The captions are written from the [definitions](#definitions).
+- **Sections, in order.** Each section is a `Card` with a one-line "what this answers" caption. The captions are the questions in the planning doc's metrics table ("Drafto user usage metrics: what to track", Nov 11, 2026), followed by the definition where it is needed.
   1. **Needs attention:** notes one save emptied in the last 14 days (date, client, characters before, note and user ids), then any platform limit at `warn` / `critical`. The card is tinted warning. It reads "Nothing needs attention" only when both checks ran and found nothing.
   2. **Platform limits:** a `ProgressBar` per `metrics_platform_limits` row, with used, limit and %. The bar's tone follows the SQL's `level`: `success` below 70%, `warning` from 70%, `danger` from 85%. Below the bars are the [hosting usage](#hosting-usage-egress-vercel) links.
   3. **Activation:** cohorts with signed up, first value and activated, each as "n of m (x%)". A purged `activated` shows as "—*" with a footnote, and an open window as "(open)".
@@ -227,6 +227,7 @@ The database can't measure egress or Vercel usage, so the step 3 spec asked whet
   - No endpoint returns egress (database, storage or cached). The org Usage page in the dashboard is the only place to see it.
 - **Vercel (Hobby).**
   - `GET /v1/billing/charges` (FOCUS-format JSONL, since Feb 2026) returns usage per service, such as fast data transfer, function invocations, active CPU and edge requests. The docs don't say whether it works on Hobby.
+  - Tested on Nov 21, 2026: `vercel usage --format json` (CLI 56.5, which reads the same billing data) answered `Costs not found (404)` for the Hobby team. So on Hobby there are no usage figures to fetch, whatever token is used. They appear only after moving to Pro, a new monthly cost.
   - No Vercel access token is read-only. Every scope (full account, team, project) can write within it, and the billing endpoint needs at least a team-scoped token.
 
 Neither provider has both the data and a read-only credential. A full-access token in Vercel's environment, kept there just to draw a bar, is a worse trade than a link. So the page has no token and no fetch. `hosted-usage.ts` returns two links, "See the Supabase / Vercel usage page", which the Platform limits section shows. If Vercel adds read-only tokens, or Supabase adds egress to the API, fetch the figure server-side with that token in an optional env var, cache it for at most an hour, and show it with the same 70% / 85% thresholds.
