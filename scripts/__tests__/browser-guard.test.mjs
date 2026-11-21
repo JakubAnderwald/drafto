@@ -1213,8 +1213,9 @@ describe("browser-guard: screenshots", () => {
     assert.deepEqual(shot(text(tabContext(OTHER_TAB, both))), [{ copy: good, onOrigin: false }]);
     // Ran on the tab it asked for.
     assert.deepEqual(shot(text(tabContext(OWN_TAB, both))), [{ copy: good, onOrigin: true }]);
-    // No "Executed on" line: the tab it asked for, as before.
-    assert.deepEqual(shot(text(tabContext(null, both))), [{ copy: good, onOrigin: true }]);
+    // No "Executed on" line: nothing says the pixels are the owned tab's,
+    // so the copy is held back. Only a positive match counts.
+    assert.deepEqual(shot(text(tabContext(null, both))), [{ copy: good, onOrigin: false }]);
     // Two blocks that disagree about where it ran.
     assert.deepEqual(shot(text(tabContext(OWN_TAB, both)), text(tabContext(OTHER_TAB, both))), [
       { copy: good, onOrigin: false },

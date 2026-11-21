@@ -1207,10 +1207,11 @@ export function applyPost({
     // own Tab Context: only a shot of an owned tab on the allowed origin may
     // be published (ADR-0090). A click's navigation can show up one call
     // late, so a neutral, unknown or off-origin page records false. So does a
-    // response whose Tab Context says the tool ran on another tab than the
-    // one asked for: the pixels may not be the owned tab's.
+    // response whose Tab Context doesn't say the tool ran on the tab asked
+    // for (no `- Executed on tabId:` line, or another tab's): the pixels may
+    // not be the owned tab's. Only a positive match counts.
     const executed = executedOnTabIds(texts);
-    const sameTab = [...executed].every((id) => id === String(args.tabId));
+    const sameTab = executed.size > 0 && [...executed].every((id) => id === String(args.tabId));
     const tabUrl =
       isTabId(args.tabId) && owns(next, args.tabId) ? next.tabs[String(args.tabId)] : undefined;
     const onOrigin = sameTab && typeof tabUrl === "string" && isAllowedNavigation(tabUrl, origins);

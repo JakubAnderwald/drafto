@@ -49,9 +49,11 @@
 //        [--bypass-file <f>] [--signin-key-file <f>]
 //        --log-dir <dir> --repo-root <dir> --out <upload.json>
 //     Refuses (ok false, nothing pushed) when FACTORY_EVIDENCE_UPLOAD=0, for
-//     --source macos in an unattended session (DRAFTO_UNATTENDED=1), when
+//     --source macos in an unattended session (DRAFTO_UNATTENDED=1) or while
+//     the run's state.env (beside --evidence-dir) exists, when
 //     --render-json says the report (or its browser lane, or the composed
-//     body) was withheld or can't be read, when the selftest hasn't passed, or
+//     body) was withheld or can't be read, when the selftest hasn't passed
+//     (checked again after the scan, just before the push), or
 //     when the OCR helper or a given secret file can't be used (each image's
 //     OCR text is scanned for the password, the bypass secret and the dev
 //     service-role key it names, as well as the patterns). Writes
@@ -530,6 +532,7 @@ function selectAndPublish({
   ocrBin,
   git,
   deps,
+  recheck,
 }) {
   const literal = (file, key) => (file ? readSecretValue(file, key) : "");
   const password = literal(accountFile, "FACTORY_BROWSER_PASSWORD");
@@ -542,9 +545,19 @@ function selectAndPublish({
   if (bypass) secrets.bypass = bypass;
   if (signinKey) secrets.signinKey = signinKey;
   const selection = prepareRun({ source, evidenceDir, guardLog, ocrBin, secrets, deps });
-  return selection.ok
-    ? publishRun({ issue, sha, runId, selection, git })
-    : { ok: false, reason: selection.reason };
+  if (!selection.ok) return { ok: false, reason: selection.reason };
+  // The gates again, after the scan and just before the push: the scan can
+  // take minutes, and moving the selftest record aside (the runbook's kill
+  // switch) must stop an upload that is still scanning too.
+  const gate = recheck();
+  return gate ? { ok: false, reason: gate } : publishRun({ issue, sha, runId, selection, git });
+}
+
+// A macOS run's state.env sits beside its shots/: while it exists, the run's
+// throwaway production account may still be live (evidence-post.mjs refuses
+// the same way).
+function macosAccountLive(evidenceDir) {
+  return nodeFs.existsSync(path.join(path.dirname(evidenceDir), "state.env"));
 }
 
 /**
@@ -575,11 +588,15 @@ export function uploadRun({
   let result;
   try {
     // A macOS run is production and is published by a person (evidence-post.mjs
-    // refuses the same way): never from an unattended session, whatever calls.
-    const gate =
-      source === "macos" && env.DRAFTO_UNATTENDED === "1"
-        ? "unattended"
-        : uploadGate({ env, withheld, logDir });
+    // refuses the same way): never from an unattended session, and never while
+    // its throwaway account may still be live, whatever calls.
+    const macosGate = () => {
+      if (source !== "macos") return null;
+      if (env.DRAFTO_UNATTENDED === "1") return "unattended";
+      return macosAccountLive(evidenceDir) ? "account-live" : null;
+    };
+    const gates = () => macosGate() ?? uploadGate({ env, withheld, logDir });
+    const gate = gates();
     const prior = readJson(out);
     if (gate) {
       result = { ok: false, reason: gate };
@@ -607,6 +624,7 @@ export function uploadRun({
           ocrBin,
           git,
           deps,
+          recheck: gates,
         });
     }
   } catch {

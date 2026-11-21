@@ -454,7 +454,7 @@ export function postMacosRun({
     print("");
     print(reportText(report));
     print("");
-    print("Run again with --yes to publish the screenshots and post the comment.");
+    print(`Run again with --yes --sha ${commit} to publish the screenshots and post the comment.`);
     return { listed: true, publish: selection.upload.length, keep: selection.overflow.length };
   }
 
@@ -542,7 +542,10 @@ function listPrior({ prior, runDir, issue, commit, report, out, print }) {
     `Would post the report of ${runDir} on #${issue} (commit ${commit.slice(0, 12)}), with ` +
       `what an earlier --yes already published${prior.commit ? ` on ${prior.ref}` : ""}:`,
   );
-  for (const i of prior.images) print(`  published  ${i.local ?? i.url}`);
+  // The published image is what the comment shows, so the listing names its
+  // commit-pinned URL; a local file may have changed since it was published.
+  for (const i of prior.images)
+    print(`  published  ${i.url}${i.local ? ` (from ${i.local})` : ""}`);
   for (const o of prior.overflow) print(`  kept     ${o.path} (${o.why})`);
   if (prior.images.length === 0) print("  (no screenshot was published)");
   print("");
@@ -552,7 +555,7 @@ function listPrior({ prior, runDir, issue, commit, report, out, print }) {
   print("");
   print(reportText(report));
   print("");
-  print("Run again with --yes to post the comment.");
+  print(`Run again with --yes --sha ${commit} to post the comment.`);
 }
 
 export function main(argv, deps = {}) {

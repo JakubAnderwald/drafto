@@ -47,6 +47,7 @@ export const REASONS = Object.freeze({
   "not-reported": "the lane didn't report a result",
   off: "publishing is switched off (FACTORY_EVIDENCE_UPLOAD=0)",
   unattended: "a macOS run is published by a person, never from an unattended session",
+  "account-live": "the macOS run's throwaway account may still be live (its state.env exists)",
   "selftest-missing":
     "the publishing self-test hasn't passed on this Mac mini yet (see the factory runbook)",
   "selftest-failed": "the publishing self-test failed (see the factory runbook)",

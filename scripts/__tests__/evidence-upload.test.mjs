@@ -1129,6 +1129,50 @@ describe("upload publishes one parentless commit on the run's own ref", () => {
     assert.equal(evidenceRefs(fx.origin).length, 1);
   });
 
+  it("refuses a macOS run while its state.env exists, before any push", async () => {
+    // The direct CLI holds a run whose throwaway account may still be live,
+    // as evidence-post.mjs does: state.env sits beside shots/.
+    const fx = uploadFixture({ shots: [] });
+    const runDir = join(fx.root, "macos-run");
+    const shotsDir = join(runDir, "shots");
+    mkdirSync(shotsDir, { recursive: true });
+    writeFileSync(join(shotsDir, "01-signed-in.png"), PNG("m1"));
+    writeFileSync(join(runDir, "state.env"), "QA_EMAIL=x\n", { mode: 0o600 });
+    const flags = {
+      source: "macos",
+      "evidence-dir": shotsDir,
+      "guard-log": undefined,
+      "run-id": "macos-20261110-051950",
+    };
+    const refused = await upload(fx, flags, { env: { DRAFTO_UNATTENDED: "0" } });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "account-live");
+    assert.deepEqual(readJsonFile(fx.out), { ok: false, reason: "account-live" });
+    assertNothingPushed(fx);
+    assert.equal(fx.ocr.seen.length, 0);
+
+    // The control: once the account is cleaned up, the same run is published.
+    rmSync(join(runDir, "state.env"));
+    const published = await upload(fx, flags, { env: { DRAFTO_UNATTENDED: "0" } });
+    assert.equal(published.ok, true);
+    assert.equal(published.images, 1);
+  });
+
+  it("checks the selftest record again after the scan: moving it aside stops an upload still scanning", async () => {
+    const fx = uploadFixture();
+    // The operator moves the record aside while the images are being OCR'd.
+    const ocr = (data, ext) => {
+      rmSync(join(fx.logDir, SELFTEST_FILE), { force: true });
+      return fx.ocr.ocr(data, ext);
+    };
+    const summary = await upload(fx, {}, { ocr });
+    assert.equal(summary.ok, false);
+    assert.equal(summary.reason, "selftest-missing");
+    assert.ok(fx.ocr.seen.length > 0, "the scan ran before the record went");
+    assertNothingPushed(fx);
+    assert.deepEqual(readJsonFile(fx.out), { ok: false, reason: "selftest-missing" });
+  });
+
   it("doesn't hold a browser run for DRAFTO_UNATTENDED: the factory publishes those", async () => {
     const fx = uploadFixture();
     const summary = await upload(fx, {}, { env: { DRAFTO_UNATTENDED: "1" } });

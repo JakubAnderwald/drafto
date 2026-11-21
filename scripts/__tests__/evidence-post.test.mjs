@@ -760,9 +760,10 @@ describe("postMacosRun without --yes", () => {
     // The report exactly as it would be posted: title as bold, the table.
     assert.ok(out.includes(`**${TITLE} — automated In-Test run ${RUN_NAME}**`));
     assert.ok(out.includes("| 1 | Sign in with the throwaway account | PASS | 12 s |"));
+    // The last line pins the commit the listing resolved, for the --yes.
     assert.equal(
       t.printed.at(-1),
-      "Run again with --yes to publish the screenshots and post the comment.",
+      `Run again with --yes --sha ${SHA} to publish the screenshots and post the comment.`,
     );
     // Every listed shot was OCR-scanned, as it would be for real.
     assert.equal(t.ocrCalls.length, 4);
@@ -1238,11 +1239,11 @@ describe("posting with --yes", () => {
       // Refusing the post is safe too; posting the key is not.
       assert.equal(err.constructor.name, "Refusal");
     }
-    if (posted) {
-      const body = t.gh.posts[0].body;
+    // Whichever way it ended, no body that reached gh carries the key.
+    for (const { body } of t.gh.posts) {
       assert.equal(body.replace(/\\/g, "").includes(FAKE_KEY), false, "the key was posted");
-      assert.equal(srcs(body).length, 4);
     }
+    if (posted) assert.equal(srcs(t.gh.posts[0].body).length, 4);
   });
 });
 
@@ -1420,14 +1421,19 @@ describe("a retry after an earlier --yes", () => {
     const listed = t.post({ gh: fakeGh().gh });
     assert.deepEqual(listed, { listed: true, publish: 4, keep: 0, published: true });
     const ref = evidenceRef(ISSUE, SHA, RUN_ID);
+    const commitOnRef = git(t.origin, ["rev-parse", ref]).stdout.trim();
     assert.deepEqual(t.printed.slice(0, 5), [
       `Would post the report of ${t.runDir} on #797 (commit ${SHA.slice(0, 12)}), with what an earlier --yes already published on ${ref}:`,
-      ...Object.keys(DEFAULT_SHOTS).map((n) => `  published  ${join(shots, n)}`),
+      // The commit-pinned image the comment will show, then the file it came from.
+      ...Object.keys(DEFAULT_SHOTS).map(
+        (n, i) =>
+          `  published  ${rawUrl(commitOnRef, imagePath(ISSUE, SHA, RUN_ID, i + 1, "png"))} (from ${join(shots, n)})`,
+      ),
     ]);
     const out = t.printed.join("\n");
     assert.match(out, /Moving a file out of shots\/ no longer changes what is posted/);
     assert.ok(out.includes(`delete ${join(t.runDir, UPLOAD_FILE)}`), out);
-    assert.equal(t.printed.at(-1), "Run again with --yes to post the comment.");
+    assert.equal(t.printed.at(-1), `Run again with --yes --sha ${SHA} to post the comment.`);
     assert.deepEqual(t.ocrCalls, [], "nothing to scan: nothing new is published");
 
     // And that is what --yes posts: the moved shot too.
