@@ -42,27 +42,22 @@ pnpm release:beta
 A green compile is still not proof. Only a TestFlight build that opens a note validates a desktop
 build.
 
-## One-time step: the primary checkout
+## One-time step: the primary checkout (done)
 
-The primary checkout's first post-merge `pnpm install` destroys the fossil. Before running it,
-take a clonefile snapshot of the fossil's `node_modules` trees:
+This step no longer applies. It asked for a clonefile snapshot of the fossil's `node_modules`
+before the primary checkout's first post-ADR-0067 `pnpm install`, and for the factory's macOS
+lane to stay off (`FACTORY_INTEST_BETA_DESKTOP=0`) until a post-merge TestFlight build opened a
+note. As found on 2026-11-21:
 
-```bash
-cd /Users/jakub/code/drafto
-cp -c -R node_modules ../drafto-fossil-snapshot-node_modules
-cp -c -R apps/desktop/node_modules ../drafto-fossil-snapshot-desktop-node_modules
-```
+- The primary checkout's `node_modules` had already been reinstalled: react-native-macos 0.83.0,
+  on the standard pnpm store rather than the fossil's `/Volumes/Zewnętrzny/pnpm-store`. No
+  snapshot was kept.
+- Post-merge desktop betas `desktop@0.4.6+94` and `desktop@0.4.6+97` were built on rnm 0.83, and
+  the pre-merge build 96 opened notes in the #861 In-Test run.
 
-Then install. The fossil's `node_modules` record the old store (`/Volumes/Zewnętrzny/pnpm-store`),
-so pnpm asks to remove them first. Answer yes, or in a session without a TTY run
-`pnpm install --config.confirm-modules-purge=false`, which otherwise aborts with
-`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`.
+So the validation is done. If `FACTORY_INTEST_BETA_DESKTOP=0` is still set in the factory plist,
+turn it back on ([`factory-runbook.md`](./factory-runbook.md#pre-merge-beta-dispatch-in-test)).
 
-Keep the snapshot until a post-merge TestFlight build opens a note. To roll back, revert the
-ADR-0067 PR and restore the snapshot. `drafto-beta-desktop` is not a backup: the factory
-reinstalls it on its first post-merge build, purging its old `node_modules` without a prompt
-(`run_pnpm_install` passes the same flag).
-
-Until that TestFlight build has opened a note, keep the factory's macOS lane off: set
-`FACTORY_INTEST_BETA_DESKTOP=0` in the factory plist before merging, and turn it back on after the
-validation in [`factory-runbook.md`](./factory-runbook.md#pre-merge-beta-dispatch-in-test).
+The old primary checkout also kept a `apps/desktop/macos/Pods` cache from rnm 0.81, which made
+CocoaPods refuse the first post-merge build there ("could not find compatible versions for pod
+hermes-engine"). The Fastfile now clears such a cache before CocoaPods (`clear_stale_pods_cache!`).

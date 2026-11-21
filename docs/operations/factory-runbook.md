@@ -1177,6 +1177,31 @@ The first lists the snapshots, the second restores one into the worktree, and th
 
 A worktree that has **diverged** from the PR branch (commits on both sides), or has a merge in progress, still fails the resume with `reconcile … by hand`. Push or drop the local commits, or finish or abort the merge, in `worktrees/factory-issue-<n>`.
 
+## Driving a card from an interactive session
+
+Sometimes you want a card to go through the factory's stages with you in the loop: the plan approved in conversation, the In-Test build installed on your own Mac. An interactive Claude Code session can do the factory's part by hand. #861 (PR #877) went this way. Keep the factory off the card and leave the same markers the factory would, so its later ticks, the In-Test tooling and the reports read the card correctly.
+
+1. **Pause the card first:** `gh issue edit <n> --add-label factory-pause`. Every factory mode skips the card from the next tick on, so the Mac mini can't pick up a card you're also moving. Do this before any Status change, then make sure nothing the factory started is still working on the card:
+   - **A tick already running.** The label is read when a tick starts, so a tick that is already running can still change the card. Wait for it to end (up to one 5-minute cadence; `pgrep -fl factory-agent.sh` on the Mac mini shows none running) before you move the card.
+   - **A detached implement run** ([Detached implement runs](#detached-implement-runs)) isn't stopped by the label, and once it ends the pause also stops the factory from collecting it, so it keeps its slot and worktree lock. Carry on only once `node scripts/lib/implement-lane.mjs status --issue <n>` no longer lists the card, the same rule as "Resuming by hand" there. If it lists a run, live or ended, stop and release it with `node scripts/lib/implement-lane.mjs kill --issue <n> --finish 1 --outcome stopped`.
+2. **Plan.** Post the plan as an issue comment whose first line is `<!-- drafto-factory-plan -->`, the marker the planner uses. Approving it in the session is the plan-approval gate.
+3. **Move the card the way the factory does:** set the board's Status and swap the matching `status:*` label together. `factory-project.mjs set-status` resolves the project, field and option ids itself, as the factory's `transition_status` does:
+
+   ```bash
+   # the card's item id
+   gh api graphql -f query='{repository(owner:"JakubAnderwald",name:"drafto"){issue(number:<n>){projectItems(first:10){nodes{id project{title}}}}}}' \
+     --jq '.data.repository.issue.projectItems.nodes[] | select(.project.title=="Drafto Factory") | .id'
+   node scripts/lib/factory-project.mjs set-status --item-id <item id> --status "In Review"
+   gh issue edit <n> --remove-label status:<old> --add-label status:<new>
+   ```
+
+4. **Implement** in a worktree from `origin/main` (`pnpm install`, `bash scripts/worktree-bootstrap.sh`), then `/code-review` and `/push`. The PR body says `Closes #<n>`. Set In Review once the PR is open.
+5. **Pre-merge beta (macOS):** `cd apps/desktop && bundle install && DRAFTO_INTEST_ISSUE=<n> pnpm release:beta`. The lane skips the release tag and posts the `drafto-factory-intest-build:macos:<build>` marker on the issue. Scenario preflights check that marker.
+6. **In Test.** Post the test scenario as a comment ending with `<!-- drafto-factory-in-test -->`, `<!-- drafto-factory-test-scenario -->` and `<!-- drafto-factory-scenario-sha:<PR head sha> -->` (the full 40-character lowercase SHA, `git rev-parse HEAD`; the factory's `SCENARIO_SHA_LINE_RE` rejects a short one). Then set In Test. An In-Test scenario under `apps/desktop/e2e/in-test/scenarios/` that writes to production is started by a person, not by the session ([macOS In-Test automation](./macos-in-test-automation.md#who-starts-a-run)).
+7. **Approved → Released.** Once the user approves, set Approved and run `/merge`. For a head the CodeRabbit bot skipped, it runs the CLI review first ([Reviewing a hand-made PR with the CLI](#reviewing-a-hand-made-pr-with-the-cli)). Then set Released.
+8. **Post-merge beta** from `main`: the primary checkout after `git pull && pnpm install`, or a fresh worktree of `origin/main`. This one tags `desktop@<version>+<build>`.
+9. **Unpause:** remove `factory-pause` and post a short release note on the issue. Done stays the human's move.
+
 ## Rollback drills
 
 The factory's blast radius is bounded by:

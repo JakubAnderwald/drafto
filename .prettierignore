@@ -2,3 +2,5 @@ pnpm-lock.yaml
 .next
 coverage
 node_modules
+# Written by `next dev` (Next.js agent rules); committed as Next writes it.
+apps/web/AGENTS.md

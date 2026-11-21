@@ -24,7 +24,7 @@ pnpm release:beta
 
 A normal release builds merged `main`, because the lane tags the commit and pushes the tag. To build an unmerged branch for testing, run `DRAFTO_INTEST_ISSUE=<issue> pnpm release:beta`. The lane then skips the tag and posts the build number on the card.
 
-The Fastfile's `build_and_submit` checks two things before CocoaPods runs:
+The Fastfile's `build_and_submit` does three things before CocoaPods runs:
 
 - **Dependency preflight.** The installed `node_modules/react-native-macos` must equal the version
   `apps/desktop/package.json` declares, and `node_modules/react` must be 19.2.x. Otherwise the lane
@@ -33,6 +33,9 @@ The Fastfile's `build_and_submit` checks two things before CocoaPods runs:
   before the factory spawns a desktop lane.
 - **`NODE_BINARY`.** If `macos/.xcode.env.local` is missing, or its `NODE_BINARY` is not an
   executable file, the lane rewrites it from `node -p process.execPath`.
+- **Stale Pods.** If `macos/Pods/Manifest.lock` is missing or differs from `Podfile.lock`, the lane
+  deletes `macos/Pods` and `macos/build` (`clear_stale_pods_cache!`, the same rule as the factory's
+  build roots), so the build runs a full `pod install` and a cold build.
 
 ## Rules
 

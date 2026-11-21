@@ -5,6 +5,18 @@
 
 : "${RUN_DIR:?}" "${APP:?}" "${SCENARIO_TITLE:?}"
 
+# Numbers in a C format for every scenario: awk's printf follows the locale, so
+# under pl_PL "%.4f" prints 0,0037, which the Swift helpers reject. LC_ALL would
+# override LC_NUMERIC, so drop it, but keep what it set for everything else:
+# LC_ALL beats LC_CTYPE and LANG, so copy it into LC_CTYPE (the character set,
+# UTF-8 for the ✓ menu-checkmark match) and, when LANG is unset, into LANG.
+if [ -n "${LC_ALL:-}" ]; then
+  export LC_CTYPE="$LC_ALL"
+  export LANG="${LANG:-$LC_ALL}"
+  unset LC_ALL
+fi
+export LC_NUMERIC=C
+
 RESULTS="$RUN_DIR/results.jsonl"
 SHOT_N=0
 STEP_ID=""

@@ -237,6 +237,21 @@ describe("Fastfile build_and_submit preflight", () => {
     assert.ok(nodeBinary < pods, "NODE_BINARY must be derived before cocoapods");
   });
 
+  it("clears a Pods cache that doesn't match Podfile.lock, before cocoapods", () => {
+    const lane = laneBody();
+    const guard = lane.indexOf("clear_stale_pods_cache!");
+    assert.notEqual(guard, -1, "build_and_submit does not clear a stale Pods cache");
+    assert.ok(guard < lane.indexOf("cocoapods("), "the stale-Pods guard must run before cocoapods");
+    const def = src.slice(src.indexOf("def clear_stale_pods_cache!"));
+    assert.ok(src.includes("def clear_stale_pods_cache!"), "stale-Pods helper is not defined");
+    const body = def.slice(0, def.indexOf("\nend\n"));
+    // Same rule as the factory's _beta_root_drop_stale_pods: a missing manifest
+    // or any difference from Podfile.lock clears both caches.
+    assert.match(body, /File\.file\?\(manifest\)/);
+    assert.match(body, /File\.binread\(manifest\) != File\.binread\(podfile_lock\)/);
+    assert.match(body, /FileUtils\.rm_rf\(\[pods, File\.join\(macos, "build"\)\]\)/);
+  });
+
   it("the preflight compares installed rnm with the declared one, needs React 19.2 and says to install", () => {
     const def = src.slice(src.indexOf("def assert_desktop_dependencies!"));
     assert.ok(src.includes("def assert_desktop_dependencies!"), "preflight helper is not defined");
