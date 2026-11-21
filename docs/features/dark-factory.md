@@ -1,6 +1,6 @@
 # Dark factory
 
-**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-11-16
+**Status:** rolling out (Phase B engine + `--release` auto-merge built; runtime phase set on the plist) **Updated:** 2026-11-21
 
 ## What it is
 
@@ -72,6 +72,7 @@ The full set is created idempotently by `scripts/setup-factory-labels.sh`. Refer
 | `status:done`           | human / support      | Final acceptance.                                                                                                      |
 | `status:blocked`        | factory              | Hard stop — see comment on issue.                                                                                      |
 | `factory-pause`         | operator             | Global kill switch on this issue (factory ignores).                                                                    |
+| `driver:interactive`    | interactive session  | An interactive Claude Code session owns the card (`/drive-issue`); the factory skips it (ADR-0090).                    |
 | `migration-approved`    | operator             | Authorises merging the PR's migration SQL as it is when added; an SQL edit removes it.                                 |
 | `hosted-config-applied` | operator             | Its `config.toml` changes are applied to dev and prod (ADR-0065).                                                      |
 | `factory-failure`       | factory failure trap | Filed by `cleanup()` on a run error, or by the toolchain check.                                                        |
@@ -96,7 +97,8 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 
 ## Kill switches
 
-- **Per-card**: drag the card to **Blocked**, or apply `factory-pause` to the issue. The factory ignores the card on the next tick. To drive a card's stages yourself from an interactive session, pause it this way first: [factory-runbook.md → "Driving a card from an interactive session"](../operations/factory-runbook.md#driving-a-card-from-an-interactive-session).
+- **Per-card**: drag the card to **Blocked**, or apply `factory-pause` to the issue. The factory ignores the card on the next tick.
+- **Interactive driving**: to drive a card's stages yourself from a Claude Code session, run `/drive-issue <n>`. Its claim adds `driver:interactive`, which the factory skips like `factory-pause`, and `drive-issue.mjs release` hands the card back at any column. See [interactive-driving.md](./interactive-driving.md) and [factory-runbook.md → "Driving a card from an interactive session"](../operations/factory-runbook.md#driving-a-card-from-an-interactive-session).
 - **Global**: run `node scripts/lib/state-cli.mjs factory:pause` on the Mac mini. The agent reads the flag every cycle and exits early when set. A manual pause never auto-expires; `factory:resume` to unpause. (Available once Wave 2 lands; until then, unload the launchd plist.)
 - **Automatic (self-healing)**: when a claude call dies on a Claude subscription _session usage_ limit, the factory pauses itself until the limit resets (`factory:pause-until`) instead of burning the card's retry budget, then auto-resumes on the first tick past the deadline. See [factory-runbook.md → "Automatic pause on a Claude session limit"](../operations/factory-runbook.md#automatic-pause-on-a-claude-session-limit-self-healing).
 - **Automatic toolchain pause (self-healing)**: every tick probes git / gh / claude on the Mac mini before running the modes. If one stays broken for two ticks (e.g. git refusing to run on an unaccepted Xcode license after an Xcode update), the factory pauses itself, emails the operator the exact fix and files one `factory-failure` issue, then resumes on its own once the probes pass. See [factory-runbook.md → "Automatic toolchain pause"](../operations/factory-runbook.md#automatic-toolchain-pause-self-healing).
@@ -113,7 +115,7 @@ After filing, drag the card to **Ready** on the board. The factory picks it up o
 
 1. The factory polls every 5 minutes; wait one tick. Confirm the launchd job is alive on the Mac mini: `launchctl list | grep eu.drafto.factory`. PID column `-` with exit `0` is normal between ticks; a non-zero exit means the last tick failed — check `logs/launchd-factory-stderr.log`.
 2. Check the agent saw the card on its latest tick: `logs/launchd-factory-stdout.log` (or `logs/factory-plan-*.log`) should mention the board fetch. A `factory-project find-project failed` warning means the `gh` token on the Mac mini is missing the `project` scope — run `gh auth refresh -s project`.
-3. If the tick ran and the card was in scope but ignored: check the issue for a `factory-pause` label, or `logs/factory-state.json` for a global `paused: true` flag, or the issue's retry budget under `issues[<n>].attempts`.
+3. If the tick ran and the card was in scope but ignored: check the issue for a `factory-pause` or `driver:interactive` label, or `logs/factory-state.json` for a global `paused: true` flag, or the issue's retry budget under `issues[<n>].attempts`.
 4. A card that _was_ picked up can still look idle during its first implement while dependencies install. The factory now seeds `node_modules` from the main checkout by clonefile and runs a fast offline reconcile (seconds — logged as `seeding node_modules (clonefile) + reconciling deps`); a multi-hour `pnpm install` was the old behavior (#451) and is no longer expected.
 
 ### "A card is stuck in Planning"
@@ -238,7 +240,7 @@ Testing is factory-owned and bounded: a card leaves it at the latest `FACTORY_VE
 - **skip (pr-merged / pr-closed)** — the PR left by another route. The factory leaves the card for you: drag it to the right column.
 - **hand-back (…)** — the card went back to In Review, with one comment on the issue saying why. It comes back to Testing by itself once the fix loop is done.
 
-Nothing in the log at all means the sweep isn't seeing the card. Check for a `factory-pause` or `support` label, a global pause, or a `query-status-items 'Testing' failed` warning. `node scripts/lib/state-cli.mjs factory:verify-status` shows each card's `verify*` fields. To start a card's round again, run `factory:verify-reset <n>`. To skip verification for it, drag it to In Test. The runbook's "Pre-In-Test verification (Testing)" has the full triage.
+Nothing in the log at all means the sweep isn't seeing the card. Check for a `factory-pause`, `driver:interactive` or `support` label, a global pause, or a `query-status-items 'Testing' failed` warning. `node scripts/lib/state-cli.mjs factory:verify-status` shows each card's `verify*` fields. To start a card's round again, run `factory:verify-reset <n>`. To skip verification for it, drag it to In Test. The runbook's "Pre-In-Test verification (Testing)" has the full triage.
 
 ### "The verification report says INCOMPLETE"
 

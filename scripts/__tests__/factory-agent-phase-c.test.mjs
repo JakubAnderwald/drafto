@@ -46,14 +46,15 @@ describe("support-label skip guard (nightly-support.sh coexistence)", () => {
     );
   });
 
-  it("pairs each support skip with the factory-pause kill switch", () => {
-    // The support guard mirrors the per-card factory-pause guard at each site,
-    // so there must be at least as many factory-pause guards as support guards.
-    const pause = script.match(/",factory-pause,"\*/g) || [];
+  it("pairs each support skip with the per-card opt-out guard", () => {
+    // The support guard mirrors the per-card opt-out guard (card_opted_out:
+    // factory-pause or driver:interactive) at each site, so there must be at
+    // least as many opt-out guards as support guards.
+    const optOut = script.match(/card_opted_out "\$(ITEM_LABELS|item_labels)"/g) || [];
     const support = script.match(/",support,"\*/g) || [];
     assert.ok(
-      pause.length >= support.length,
-      `factory-pause guards (${pause.length}) should be >= support guards (${support.length})`,
+      optOut.length >= support.length,
+      `opt-out guards (${optOut.length}) should be >= support guards (${support.length})`,
     );
   });
 });

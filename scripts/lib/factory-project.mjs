@@ -33,6 +33,13 @@
 //        Combines getStatusFieldMeta + setItemStatus when you don't already
 //        hold the meta. Caches meta per-projectId per-process.
 //
+//   findItemForIssue(projectId, issueNumber, {repo}) → {itemId, contentId, status} | null
+//        The issue's card on this board (itemId null when the issue isn't on
+//        it). Used by scripts/drive-issue.mjs (ADR-0090).
+//
+//   addIssueToProject(projectId, contentId) → itemId
+//        Put an issue on the board (idempotent on GitHub's side).
+//
 //   hasStatusOption(projectId, name) → boolean (read-only)
 //        Whether the Status field has an option with exactly this name. Lets
 //        a caller check a column exists (e.g. "Testing") before moving a card
@@ -178,7 +185,7 @@ export async function findProject({ owner, title = DEFAULT_PROJECT_TITLE } = {})
 
 // Caller-side hook — bash sets FACTORY_PROJECT_ID once at startup. Direct env
 // access (instead of resolveProjectId(...)) keeps single-shot CLI calls fast.
-async function resolveProjectId({ projectId, owner, title } = {}) {
+export async function resolveProjectId({ projectId, owner, title } = {}) {
   if (projectId) return projectId;
   if (process.env.FACTORY_PROJECT_ID) return process.env.FACTORY_PROJECT_ID;
   const found = await findProject({ owner, title });
@@ -419,6 +426,81 @@ export async function setItemStatusByName({ projectId, itemId, statusName }) {
     statusFieldId: meta.statusFieldId,
     optionId,
   });
+}
+
+const ISSUE_ITEM_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      id
+      projectItems(first: 20) {
+        nodes {
+          id
+          project { id }
+          fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+// The card for issue #<issueNumber> on project <projectId>:
+// {itemId, contentId, status} (status null when the card has no Status yet),
+// {itemId: null, contentId, status: null} when the issue isn't on the board,
+// or null when the issue doesn't exist. Used by scripts/drive-issue.mjs.
+export async function findItemForIssue(projectId, issueNumber, { repo = DEFAULT_REPO } = {}) {
+  if (!projectId) throw new Error("findItemForIssue requires projectId");
+  if (!Number.isInteger(issueNumber)) throw new Error("findItemForIssue requires an issue number");
+  const [owner, name] = repo.split("/");
+  const raw = await runGh([
+    "api",
+    "graphql",
+    "-f",
+    `query=${ISSUE_ITEM_QUERY}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    "-F",
+    `number=${issueNumber}`,
+  ]);
+  const issue = JSON.parse(raw)?.data?.repository?.issue;
+  if (!issue) return null;
+  const item = (issue.projectItems?.nodes ?? []).find((n) => n?.project?.id === projectId);
+  if (!item) return { itemId: null, contentId: issue.id ?? null, status: null };
+  const status = item.fieldValueByName?.name;
+  return {
+    itemId: item.id,
+    contentId: issue.id ?? null,
+    status: typeof status === "string" ? status : null,
+  };
+}
+
+const ADD_ITEM_MUTATION = `mutation($projectId: ID!, $contentId: ID!) {
+  addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+    item { id }
+  }
+}`;
+
+// Put an issue (by its node id) on the board. Returns the new item id. GitHub
+// returns the existing item when the issue is already there, so this is safe
+// to repeat.
+export async function addIssueToProject(projectId, contentId) {
+  if (!projectId || !contentId) throw new Error("addIssueToProject requires projectId, contentId");
+  const raw = await runGh([
+    "api",
+    "graphql",
+    "-f",
+    `query=${ADD_ITEM_MUTATION}`,
+    "-f",
+    `projectId=${projectId}`,
+    "-f",
+    `contentId=${contentId}`,
+  ]);
+  const itemId = JSON.parse(raw)?.data?.addProjectV2ItemById?.item?.id;
+  if (!itemId) throw new Error(`addIssueToProject: no item id returned for ${contentId}`);
+  return itemId;
 }
 
 export async function hasStatusOption(projectId, name) {

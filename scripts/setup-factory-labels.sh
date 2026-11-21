@@ -11,7 +11,8 @@
 # docs/features/dark-factory.md and ADR-0026. The status:* set mirrors the
 # Project v2 Status field (the agent writes them as transition side-effects);
 # parity:* and migration-approved are operator gates; factory-pause and
-# factory-failure are kill-switch / failure-trap signals; factory-oversize
+# factory-failure are kill-switch / failure-trap signals; driver:interactive
+# marks a card an interactive session owns (ADR-0090); factory-oversize
 # flags a plan whose size estimate suggests a split (ADR-0083).
 
 set -euo pipefail
@@ -58,6 +59,7 @@ LABELS=(
 
   # Operator gates.
   "factory-pause|D93F0B|Global kill switch — factory exits early when set."
+  "driver:interactive|5319E7|An interactive Claude Code session owns this card; the factory skips it (ADR-0090)."
   "migration-approved|0052CC|Authorises merging this PR's migration SQL as it is when added; an SQL edit removes it."
   "hosted-config-applied|0052CC|Operator applied this PR's supabase/config.toml changes to dev and prod."
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."

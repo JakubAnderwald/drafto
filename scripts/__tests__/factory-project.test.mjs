@@ -737,3 +737,62 @@ fs.writeSync(1, JSON.stringify(out));
     assert.ok(!r.calls[0].some((a) => /\bmutation\b/.test(a)));
   });
 });
+
+describe("findItemForIssue / addIssueToProject (drive-issue, ADR-0090)", () => {
+  const issueResp = (items) =>
+    ghResp({
+      data: { repository: { issue: { id: "ISSUE_NODE", projectItems: { nodes: items } } } },
+    });
+
+  it("returns this board's card and its Status", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (_c, a) => a.join(" ").includes("projectItems"),
+          response: issueResp([
+            { id: "OTHER", project: { id: "P2" }, fieldValueByName: { name: "Done" } },
+            { id: "ITEM", project: { id: "P1" }, fieldValueByName: { name: "In Test" } },
+          ]),
+        },
+      ]),
+    );
+    assert.deepEqual(await lib.findItemForIssue("P1", 42), {
+      itemId: "ITEM",
+      contentId: "ISSUE_NODE",
+      status: "In Test",
+    });
+    const args = execCalls[0].args;
+    assert.ok(args.includes("owner=JakubAnderwald") && args.includes("name=drafto"));
+    assert.ok(args.includes("number=42"));
+  });
+
+  it("reports an issue that isn't on the board, and a missing issue", async () => {
+    lib._setExecFileForTests(makeExecFile([{ match: () => true, response: issueResp([]) }]));
+    assert.deepEqual(await lib.findItemForIssue("P1", 42), {
+      itemId: null,
+      contentId: "ISSUE_NODE",
+      status: null,
+    });
+    lib._setExecFileForTests(
+      makeExecFile([
+        { match: () => true, response: ghResp({ data: { repository: { issue: null } } }) },
+      ]),
+    );
+    assert.equal(await lib.findItemForIssue("P1", 42), null);
+    await assert.rejects(lib.findItemForIssue("P1", "42"), /issue number/);
+  });
+
+  it("adds an issue to the board and returns the item id", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (_c, a) => a.join(" ").includes("addProjectV2ItemById"),
+          response: ghResp({ data: { addProjectV2ItemById: { item: { id: "NEW_ITEM" } } } }),
+        },
+      ]),
+    );
+    assert.equal(await lib.addIssueToProject("P1", "ISSUE_NODE"), "NEW_ITEM");
+    assert.ok(execCalls[0].args.includes("contentId=ISSUE_NODE"));
+    await assert.rejects(lib.addIssueToProject("P1", ""), /requires/);
+  });
+});

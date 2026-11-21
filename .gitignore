@@ -74,6 +74,8 @@ Thumbs.db
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/.gitkeep
+# project skills tracked in the repo (ADR-0090)
+!.claude/skills/drive-issue/
 
 # nightly support logs
 logs/

@@ -60,7 +60,9 @@
 #   - `logs/factory-state.json::paused === true` (set via
 #     `state-cli.mjs factory:pause`) — exit 0 silently.
 #   - `factory-pause` label on a board item — bash filters it out before
-#     handing the queue to mode-specific work.
+#     handing the queue to mode-specific work. `driver:interactive` (an
+#     interactive session owns the card, ADR-0090) is filtered the same way;
+#     see card_opted_out.
 #
 # Failure trap (exit code != 0): file a `factory-failure`-labelled GitHub
 # issue (mirrors the `nightly-failure` pattern in support-agent.sh /
@@ -1124,6 +1126,22 @@ if [[ -z "${FACTORY_PROJECT_ID:-}" ]]; then
 fi
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+# card_opted_out <labels-csv> — is a card out of the factory's hands? Prints
+# the reason and returns 0 for `factory-pause` (the operator's per-card kill
+# switch) or `driver:interactive` (an interactive Claude Code session owns the
+# card, scripts/drive-issue.mjs, ADR-0090); prints nothing and returns 1
+# otherwise. Every mode that walks a column skips such a card, and a detached
+# implement run that ends meanwhile is held, not collected.
+card_opted_out() {
+  if [[ ",$1," == *",factory-pause,"* ]]; then
+    echo "factory-pause label set"; return 0
+  fi
+  if [[ ",$1," == *",driver:interactive,"* ]]; then
+    echo "driver:interactive label set — an interactive session owns it"; return 0
+  fi
+  return 1
+}
 
 # Status field option name (board side) → status:* label name (issue side).
 # Used by transition_status so a board move always co-emits the matching
@@ -8053,8 +8071,8 @@ verify_sweep() {
     item_id=$(echo "$item" | jq -r '.itemId')
     issue_num=$(echo "$item" | jq -r '.issueNumber')
     item_labels=$(echo "$item" | jq -r '.labels // [] | join(",")')
-    if [[ ",$item_labels," == *",factory-pause,"* ]]; then
-      log "Issue #$issue_num: skipping (factory-pause label set)"; continue
+    if CARD_OPT_OUT=$(card_opted_out "$item_labels"); then
+      log "Issue #$issue_num: skipping ($CARD_OPT_OUT)"; continue
     fi
     if [[ ",$item_labels," == *",support,"* ]]; then
       log "Issue #$issue_num: skipping (support label — nightly-support.sh owns these)"; continue
@@ -8112,8 +8130,8 @@ if [[ "$MODE_PLAN" -eq 1 ]]; then
       ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
       ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
 
-      if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
-        log "Issue #$ISSUE_NUM: skipping rescue (factory-pause label set)"
+      if CARD_OPT_OUT=$(card_opted_out "$ITEM_LABELS"); then
+        log "Issue #$ISSUE_NUM: skipping rescue ($CARD_OPT_OUT)"
         continue
       fi
 
@@ -8201,10 +8219,11 @@ card back to **Ready**.
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
 
-    # `factory-pause` label on a single card opts that card out of automation.
-    # The global pause flag covers the whole agent; this is the per-card knob.
-    if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
-      log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"
+    # `factory-pause` (or `driver:interactive`) on a single card opts that card
+    # out of automation. The global pause flag covers the whole agent; this is
+    # the per-card knob.
+    if CARD_OPT_OUT=$(card_opted_out "$ITEM_LABELS"); then
+      log "Issue #$ISSUE_NUM: skipping ($CARD_OPT_OUT)"
       continue
     fi
 
@@ -8427,7 +8446,7 @@ and drag the card back to **Ready** to retry.
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
 
-    if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
+    if card_opted_out "$ITEM_LABELS" >/dev/null; then
       continue
     fi
 
@@ -9121,7 +9140,7 @@ implement_lane_start() {
 # implement_lane_card_check <issue> — where an ended run's card stands now,
 # re-read before its result is acted on: the tick that collects can come long
 # after the one that started it. Prints "ok" (open, in In Progress, In Review
-# or Testing, no factory-pause), "paused" (factory-pause is set), "left" (closed,
+# or Testing, no factory-pause or driver:interactive), "paused" (either is set), "left" (closed,
 # or in any other column) or "unknown" (the issue or its column can't be read).
 implement_lane_card_check() {
   local view
@@ -9130,7 +9149,7 @@ implement_lane_card_check() {
     return 0
   fi
   jq -r '
-    if ((.labels // []) | map(.name) | index("factory-pause")) != null then "paused"
+    if ((.labels // []) | map(.name) | (index("factory-pause") != null or index("driver:interactive") != null)) then "paused"
     elif (.state // "") != "OPEN" then "left"
     else ([(.projectItems // [])[] | select(.title == "Drafto Factory")] | .[0].status.name // "") as $col
       | if $col == "" then "unknown"
@@ -9255,14 +9274,14 @@ implement_lane_collect_one() {
       return 0 ;;
   esac
 
-  # The card as it is now. factory-pause holds the result back (the run
+  # The card as it is now. factory-pause or driver:interactive holds the result back (the run
   # stays in the ledger, the card held) until the label goes; a card moved
   # out of the factory's columns, or closed, gets its run dropped unread, as
   # the --watch sweep would have done.
   case "$(implement_lane_card_check "$issue")" in
     ok) ;;
     paused)
-      log "Issue #$issue: factory-pause is set; leaving its ended detached implement run $run_id uncollected"
+      log "Issue #$issue: factory-pause or driver:interactive is set; leaving its ended detached implement run $run_id uncollected"
       IMPLEMENT_LIVE_ISSUES+="$issue "
       return 0 ;;
     left)
@@ -9405,8 +9424,8 @@ if [[ "$MODE_IMPLEMENT" -eq 1 ]]; then
     ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
-    if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
-      log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"
+    if CARD_OPT_OUT=$(card_opted_out "$ITEM_LABELS"); then
+      log "Issue #$ISSUE_NUM: skipping ($CARD_OPT_OUT)"
       continue
     fi
 
@@ -9871,8 +9890,8 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
     ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
-    if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
-      log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"; continue
+    if CARD_OPT_OUT=$(card_opted_out "$ITEM_LABELS"); then
+      log "Issue #$ISSUE_NUM: skipping ($CARD_OPT_OUT)"; continue
     fi
 
     if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
@@ -10534,7 +10553,7 @@ A human should take a look. Reset with \
     ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
-    [[ ",$ITEM_LABELS," == *",factory-pause,"* ]] && continue
+    card_opted_out "$ITEM_LABELS" >/dev/null && continue
     if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
       log "Issue #$ISSUE_NUM: skipping (support label — nightly-support.sh owns these)"; continue
     fi
@@ -10806,6 +10825,7 @@ if [[ "$MODE_BROWSER" -eq 1 ]]; then
     if [[ "$(echo "$BROWSER_COLUMN_JSON" | jq --argjson n "$BROWSER_ISSUE" \
         '[.[] | select(.issueNumber == $n)
               | select(((.labels // []) | index("factory-pause")) == null)
+              | select(((.labels // []) | index("driver:interactive")) == null)
               | select(((.labels // []) | index("support")) == null)] | length' 2>/dev/null)" != "1" ]]; then
       log "Issue #$BROWSER_ISSUE: no longer a $BROWSER_COLUMN candidate; skipping its browser run"
       continue
@@ -10876,8 +10896,8 @@ if [[ "$MODE_RELEASE" -eq 1 ]]; then
     ITEM_ID=$(echo "$ITEM" | jq -r '.itemId')
     ISSUE_NUM=$(echo "$ITEM" | jq -r '.issueNumber')
     ITEM_LABELS=$(echo "$ITEM" | jq -r '.labels // [] | join(",")')
-    if [[ ",$ITEM_LABELS," == *",factory-pause,"* ]]; then
-      log "Issue #$ISSUE_NUM: skipping (factory-pause label set)"; continue
+    if CARD_OPT_OUT=$(card_opted_out "$ITEM_LABELS"); then
+      log "Issue #$ISSUE_NUM: skipping ($CARD_OPT_OUT)"; continue
     fi
 
     if [[ ",$ITEM_LABELS," == *",support,"* ]]; then
