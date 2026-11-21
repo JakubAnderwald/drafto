@@ -56,6 +56,14 @@ appId: eu.drafto.mobile
             - tapOn: "Sign in to your Drafto account"
             - tapOn:
                 id: "login-button"
+            # The save-password sheet can come with this sign-in instead:
+            # the same wait and restart clear it.
+            - extendedWaitUntil:
+                visible: "never-present-just-wait"
+                timeout: 8000
+                optional: true
+            - stopApp
+            - launchApp
 
 - extendedWaitUntil:
     visible: "Notebooks"
