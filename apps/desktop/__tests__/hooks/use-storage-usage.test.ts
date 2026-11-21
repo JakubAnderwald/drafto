@@ -1,13 +1,15 @@
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 
-import { fetchStorageUsage } from "@/lib/data";
-import { useStorageUsage } from "@/hooks/use-storage-usage";
+import { fetchContentUsage, fetchStorageUsage } from "@/lib/data";
+import { useContentUsage, useStorageUsage } from "@/hooks/use-storage-usage";
 
 jest.mock("@/lib/data", () => ({
   fetchStorageUsage: jest.fn(),
+  fetchContentUsage: jest.fn(),
 }));
 
 const mockFetchStorageUsage = fetchStorageUsage as jest.Mock;
+const mockFetchContentUsage = fetchContentUsage as jest.Mock;
 
 describe("useStorageUsage", () => {
   beforeEach(() => {
@@ -65,5 +67,34 @@ describe("useStorageUsage", () => {
       await slow;
     });
     expect(result.current.usage).toEqual({ usedBytes: 50, quotaBytes: 100 });
+  });
+});
+
+describe("useContentUsage (ADR 0090)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("reads the note content usage, not the storage usage", async () => {
+    mockFetchContentUsage.mockResolvedValue({ usedBytes: 10, quotaBytes: 100 });
+    const { result } = renderHook(() => useContentUsage());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.usage).toEqual({ usedBytes: 10, quotaBytes: 100 });
+    expect(mockFetchStorageUsage).not.toHaveBeenCalled();
+  });
+
+  it("keeps the last reading when a refresh can't read it", async () => {
+    mockFetchContentUsage
+      .mockResolvedValueOnce({ usedBytes: 10, quotaBytes: 100 })
+      .mockResolvedValueOnce(null);
+    const { result } = renderHook(() => useContentUsage());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.usage).toEqual({ usedBytes: 10, quotaBytes: 100 });
   });
 });

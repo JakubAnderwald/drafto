@@ -2,11 +2,16 @@ import { act, renderHook, waitFor } from "@testing-library/react-native";
 import { DEFAULT_STORAGE_QUOTA_BYTES } from "@drafto/shared";
 import type { StorageUsage } from "@drafto/shared";
 
-import { useStorageUsage } from "@/hooks/use-storage-usage";
+import { useContentUsage, useStorageUsage } from "@/hooks/use-storage-usage";
 
 const mockFetchStorageUsage = jest.fn();
 jest.mock("@/lib/data/storage-usage", () => ({
   fetchStorageUsage: () => mockFetchStorageUsage(),
+}));
+
+const mockFetchContentUsage = jest.fn();
+jest.mock("@/lib/data/content-usage", () => ({
+  fetchContentUsage: () => mockFetchContentUsage(),
 }));
 
 const HALF: StorageUsage = {
@@ -85,6 +90,50 @@ describe("useStorageUsage", () => {
     await act(async () => {
       slow.resolve(HALF);
     });
+    expect(result.current.usage).toEqual(FULL);
+  });
+});
+
+describe("useContentUsage (ADR 0090)", () => {
+  beforeEach(() => {
+    mockFetchStorageUsage.mockReset();
+    mockFetchContentUsage.mockReset();
+  });
+
+  it("reads the note content usage, not the storage usage", async () => {
+    mockFetchContentUsage.mockResolvedValue(HALF);
+
+    const { result } = renderHook(() => useContentUsage());
+
+    await waitFor(() => expect(result.current.usage).toEqual(HALF));
+    expect(result.current.loading).toBe(false);
+    expect(mockFetchStorageUsage).not.toHaveBeenCalled();
+  });
+
+  it("re-reads when the refresh key changes", async () => {
+    mockFetchContentUsage.mockResolvedValueOnce(HALF).mockResolvedValueOnce(FULL);
+
+    const { result, rerender } = renderHook(({ key }: { key: number }) => useContentUsage(key), {
+      initialProps: { key: 1 },
+    });
+    await waitFor(() => expect(result.current.usage).toEqual(HALF));
+
+    rerender({ key: 2 });
+
+    await waitFor(() => expect(result.current.usage).toEqual(FULL));
+    expect(mockFetchContentUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it("refresh() reads again", async () => {
+    mockFetchContentUsage.mockResolvedValueOnce(null).mockResolvedValueOnce(FULL);
+
+    const { result } = renderHook(() => useContentUsage());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
     expect(result.current.usage).toEqual(FULL);
   });
 });

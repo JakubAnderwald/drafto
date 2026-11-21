@@ -1,13 +1,15 @@
 import { useMemo } from "react";
 import { View, Text, StyleSheet } from "react-native";
 import {
+  formatContentUsage,
   formatStorageUsage,
   storageUsageRatio,
   storageUsageTone,
+  type StorageUsage as StorageUsageReading,
   type StorageUsageTone,
 } from "@drafto/shared";
 
-import { useStorageUsage } from "@/hooks/use-storage-usage";
+import { useContentUsage, useStorageUsage } from "@/hooks/use-storage-usage";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -19,14 +21,46 @@ const FILL_COLORS: Record<StorageUsageTone, string> = {
   danger: colors.error,
 };
 
+type Styles = ReturnType<typeof createStyles>;
+
+/**
+ * "Notes: 1.2 MB of 25 MB used" (ADR 0090), in the storage line's tones. Nothing
+ * until a reading arrives, or when none can be made.
+ */
+function ContentUsageLine({
+  usage,
+  styles,
+}: {
+  usage: StorageUsageReading | null;
+  styles: Styles;
+}) {
+  if (!usage) return null;
+  const tone = storageUsageTone(usage);
+  return (
+    <Text
+      style={[
+        styles.label,
+        tone === "warning" && styles.labelWarning,
+        tone === "danger" && styles.labelDanger,
+      ]}
+      testID="content-usage"
+    >
+      {formatContentUsage(usage.usedBytes, usage.quotaBytes)}
+    </Text>
+  );
+}
+
 /**
  * The signed-in user's attachment storage (issue #794): one line of usage, plus a
- * thin bar of how much of the quota it is (none when unlimited). Re-read after
- * every sync, which is when queued attachments upload.
+ * thin bar of how much of the quota it is (none when unlimited), and the note
+ * content line below it (ADR 0090). Re-read after every sync, which is when queued
+ * attachments upload and edited notes are pushed.
  */
 export function StorageUsage() {
   const { lastSyncedAt } = useDatabase();
-  const { usage, loading } = useStorageUsage(lastSyncedAt?.getTime() ?? null);
+  const refreshKey = lastSyncedAt?.getTime() ?? null;
+  const { usage, loading } = useStorageUsage(refreshKey);
+  const { usage: contentUsage } = useContentUsage(refreshKey);
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
@@ -36,6 +70,7 @@ export function StorageUsage() {
         <Text style={styles.quiet}>
           {loading ? "Checking storage…" : "Storage usage is unavailable right now."}
         </Text>
+        <ContentUsageLine usage={contentUsage} styles={styles} />
       </View>
     );
   }
@@ -70,6 +105,7 @@ export function StorageUsage() {
           />
         </View>
       ) : null}
+      <ContentUsageLine usage={contentUsage} styles={styles} />
     </View>
   );
 }

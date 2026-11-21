@@ -11,6 +11,8 @@ export interface Database {
           display_name: string | null;
           // Attachment storage quota in bytes; null = unlimited (issue #794).
           storage_quota_bytes: number | null;
+          // Note content quota in bytes; null = unlimited (ADR 0090).
+          content_quota_bytes: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -20,6 +22,7 @@ export interface Database {
           is_admin?: boolean;
           display_name?: string | null;
           storage_quota_bytes?: number | null;
+          content_quota_bytes?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -29,6 +32,7 @@ export interface Database {
           is_admin?: boolean;
           display_name?: string | null;
           storage_quota_bytes?: number | null;
+          content_quota_bytes?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -275,6 +279,32 @@ export interface Database {
           user_id: string;
           used_bytes: number;
           quota_bytes: number | null;
+        }[];
+      };
+      // The caller's note content usage and quota (ADR 0090). One row.
+      get_my_content_usage: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          used_bytes: number;
+          quota_bytes: number | null;
+        }[];
+      };
+      // Every user's content usage and quota; raises 42501 unless the caller is an admin.
+      admin_content_usage: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          user_id: string;
+          used_bytes: number;
+          quota_bytes: number | null;
+        }[];
+      };
+      // Service role only: users whose attachment objects exceed quota + 50 MB.
+      storage_quota_overruns: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          user_id: string;
+          object_bytes: number;
+          quota_bytes: number;
         }[];
       };
       // Used by the attachments bucket's storage policies.

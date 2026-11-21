@@ -24,4 +24,8 @@ export interface TickTickImportBatchResult {
   notesImported: number;
   notesFailed: number;
   errors: string[];
+  /** Set when the content quota refused at least one item (ADR 0090). */
+  contentQuotaExceeded?: boolean;
+  /** The notes-full message for those refusals; also in `errors`, once. */
+  contentQuotaMessage?: string;
 }

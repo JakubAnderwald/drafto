@@ -1,7 +1,7 @@
-// Static checks on the profiles privilege-column guard (issues #457 and #794).
+// Static checks on the profiles privilege-column guard (issues #457 and #794, ADR 0090).
 // The guard is the only thing stopping a signed-in user from PATCHing their own
 // profile to is_admin / is_approved = true or lifting their own
-// storage_quota_bytes, and a Postgres instance is not available in CI, so these
+// storage_quota_bytes / content_quota_bytes, and a Postgres instance is not available in CI, so these
 // tests pin the exact guard shape. The live check in
 // profile-privilege-guard.live.test.mjs exercises it against the dev project.
 //
@@ -26,7 +26,7 @@ const GUARD_FILE = "20260922000001_guard_profile_privilege_columns.sql";
 // The columns the newest definition must guard, in the order its condition
 // compares them. A new column users must not set for themselves goes here and
 // into a new migration's `create or replace function`.
-const GUARDED_COLUMNS = ["is_admin", "is_approved", "storage_quota_bytes"];
+const GUARDED_COLUMNS = ["is_admin", "is_approved", "storage_quota_bytes", "content_quota_bytes"];
 
 // Lowercased SQL with `--` comments removed and whitespace collapsed, so the
 // header comment (which mentions SECURITY DEFINER) cannot satisfy or trip a check.

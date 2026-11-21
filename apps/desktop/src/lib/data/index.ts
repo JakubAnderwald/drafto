@@ -27,6 +27,7 @@ export { ensureLocalIdentity } from "./local-identity";
 export type { LocalIdentityStatus } from "./local-identity";
 
 export { fetchStorageUsage } from "./storage-usage";
+export { fetchContentUsage } from "./content-usage";
 
 export { openAttachment } from "./open-attachment";
 export type { OpenAttachmentParams, OpenAttachmentResult } from "./open-attachment";

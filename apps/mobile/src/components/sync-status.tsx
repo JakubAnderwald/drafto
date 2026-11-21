@@ -40,8 +40,15 @@ function useTick(intervalMs: number): void {
 }
 
 export function SyncStatus() {
-  const { sync, isSyncing, lastSyncedAt, lastSyncError, pendingChangesCount, hasPendingChanges } =
-    useDatabase();
+  const {
+    sync,
+    isSyncing,
+    lastSyncedAt,
+    lastSyncError,
+    isContentFull,
+    pendingChangesCount,
+    hasPendingChanges,
+  } = useDatabase();
   const { isConnected } = useNetworkStatus();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
@@ -71,7 +78,9 @@ export function SyncStatus() {
     : !isConnected
       ? "Offline"
       : hasSyncError
-        ? "Sync failed"
+        ? isContentFull
+          ? "Notes full"
+          : "Sync failed"
         : hasPendingChanges
           ? `${pendingChangesCount} pending ${pendingChangesCount === 1 ? "change" : "changes"}`
           : "All synced";

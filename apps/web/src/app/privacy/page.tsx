@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
-import { DEFAULT_STORAGE_QUOTA_BYTES, formatMegabytes } from "@drafto/shared";
+import {
+  DEFAULT_CONTENT_QUOTA_BYTES,
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  formatMegabytes,
+} from "@drafto/shared";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { outlineEntry, type OutlineEntry } from "@/components/legal/document-outline";
@@ -113,7 +117,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;20,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;21,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -180,13 +184,17 @@ export default function PrivacyPolicyPage() {
             Your notebooks, notes, and attachments are stored in our database and file storage
             (hosted by Supabase) so they can sync across your devices. Content is associated with
             your user account. When you edit a note, we keep the earlier versions of its content for
-            30 days so they can be recovered after an accidental overwrite.
+            up to 30 days so they can be recovered after an accidental overwrite. If those earlier
+            versions take more space than your note content quota, we delete the oldest of them
+            sooner.
           </p>
           <p>
             Each account has an attachment storage quota (
             {formatMegabytes(DEFAULT_STORAGE_QUOTA_BYTES)} by default), which we store with your
-            account. We work out how much of it you use from the sizes of your attachments. Our
-            administrator can see each account&apos;s storage usage and quota.
+            account. We work out how much of it you use from the sizes of your attachments. Each
+            account also has a note content quota ({formatMegabytes(DEFAULT_CONTENT_QUOTA_BYTES)} by
+            default), worked out from the size of your notes&apos; content. Our administrator can
+            see each account&apos;s usage and quotas.
           </p>
           <p>
             Imports from Evernote (.enex) and TickTick (CSV) are processed from files you upload. We
@@ -600,7 +608,8 @@ export default function PrivacyPolicyPage() {
               app until you delete it there or sign out
             </li>
             <li>
-              Earlier versions of a note&apos;s content are deleted automatically after 30 days
+              Earlier versions of a note&apos;s content are deleted automatically after 30 days, or
+              sooner once they take more space than your note content quota
             </li>
             <li>
               Attachment files of permanently deleted notes are deleted from storage too, by an

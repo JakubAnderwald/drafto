@@ -20,6 +20,8 @@ jest.mock("@/lib/supabase", () => ({
   },
 }));
 
+import { CONTENT_QUOTA_EXCEEDED_CODE } from "@drafto/shared";
+
 import {
   ACTIVITY_PING_MAX_WAIT_MS,
   syncDatabase,
@@ -278,6 +280,178 @@ describe("pushChanges: attachments", () => {
   });
 });
 
+// Mirror of the content quota suite in apps/desktop/__tests__/db/sync.test.ts.
+describe("pushChanges: notes refused for the content quota (ADR 0090)", () => {
+  type Changes = { created: unknown[]; updated: unknown[]; deleted: string[] };
+  type PushChanges = (params: { changes: Record<string, Changes> }) => Promise<unknown>;
+
+  const NO_CHANGES: Changes = { created: [], updated: [], deleted: [] };
+  const QUOTA_ERROR = {
+    code: "P0001",
+    message: CONTENT_QUOTA_EXCEEDED_CODE,
+    details: "used_bytes=100 quota_bytes=200 note_bytes=150",
+  };
+  const note = (id: string) => ({
+    id,
+    remote_id: id,
+    notebook_id: "nb-1",
+    user_id: "user-1",
+    title: id,
+    content: JSON.stringify([{ type: "paragraph" }]),
+    is_trashed: false,
+    trashed_at: null,
+  });
+  const attachment = (id: string, noteId: string) => ({
+    id,
+    remote_id: id,
+    note_id: noteId,
+    user_id: "user-1",
+    file_name: `${id}.png`,
+    file_path: `user-1/${noteId}/${id}.png`,
+    file_size: 10,
+    mime_type: "image/png",
+    upload_status: "uploaded",
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSynchronize.mockReset();
+    resetSyncState();
+  });
+
+  /** Runs one push with <changes>; <server> answers each notes/attachments call. */
+  async function push(
+    changes: Record<string, Changes>,
+    server: {
+      noteUpsert?: (rows: unknown) => { error: unknown };
+      noteUpdate?: (id: string) => { error: unknown };
+    },
+  ) {
+    const noteUpsert = jest.fn(
+      async (rows: unknown) => server.noteUpsert?.(rows) ?? { error: null },
+    );
+    const attachmentUpsert = jest.fn().mockResolvedValue({ error: null });
+    const updatedIds: string[] = [];
+    mockSupabaseFrom.mockImplementation((table: string) => ({
+      upsert: table === "notes" ? noteUpsert : attachmentUpsert,
+      update: () => ({
+        eq: async (_col: string, id: string) => {
+          updatedIds.push(id);
+          return server.noteUpdate?.(id) ?? { error: null };
+        },
+      }),
+      delete: () => ({ in: jest.fn().mockResolvedValue({ error: null }) }),
+    }));
+    let pushResult: unknown;
+    mockSynchronize.mockImplementation(async (opts: { pushChanges: PushChanges }) => {
+      pushResult = await opts.pushChanges({
+        changes: { notebooks: NO_CHANGES, notes: NO_CHANGES, attachments: NO_CHANGES, ...changes },
+      });
+    });
+    const result = await syncDatabase(mockDb);
+    return { result, pushResult, noteUpsert, attachmentUpsert, updatedIds };
+  }
+
+  it("pushes new notes one at a time after a refused batch, holding back only the refused ones", async () => {
+    const { result, pushResult, noteUpsert, attachmentUpsert } = await push(
+      {
+        notes: { created: [note("a"), note("b")], updated: [], deleted: [] },
+        attachments: {
+          created: [attachment("att-a", "a"), attachment("att-b", "b")],
+          updated: [],
+          deleted: [],
+        },
+      },
+      {
+        noteUpsert: (rows) =>
+          Array.isArray(rows) || (rows as { id: string }).id === "b"
+            ? { error: QUOTA_ERROR }
+            : { error: null },
+      },
+    );
+
+    // The batch, then each row alone.
+    expect(noteUpsert).toHaveBeenCalledTimes(3);
+    expect(noteUpsert.mock.calls[1][0]).toEqual(expect.objectContaining({ id: "a" }));
+    expect(noteUpsert.mock.calls[2][0]).toEqual(expect.objectContaining({ id: "b" }));
+    // The refused note's attachment waits for its note; the other goes out.
+    expect(attachmentUpsert).toHaveBeenCalledWith([expect.objectContaining({ id: "att-a" })], {
+      onConflict: "id",
+      ignoreDuplicates: true,
+    });
+    expect(pushResult).toEqual({
+      experimentalRejectedIds: { notes: ["b"], attachments: ["att-b"] },
+    });
+    expect(result).toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 1,
+      contentUsage: { usedBytes: 100, quotaBytes: 200 },
+    });
+  });
+
+  it("keeps pushing the other edits after a refused one", async () => {
+    const { pushResult, updatedIds, result } = await push(
+      { notes: { created: [], updated: [note("a"), note("b"), note("c")], deleted: [] } },
+      { noteUpdate: (id) => (id === "b" ? { error: QUOTA_ERROR } : { error: null }) },
+    );
+
+    expect(updatedIds).toEqual(["a", "b", "c"]);
+    expect(pushResult).toEqual({ experimentalRejectedIds: { notes: ["b"], attachments: [] } });
+    expect(result.contentQuotaRefused).toBe(1);
+  });
+
+  it("returns nothing to reject when every note fits", async () => {
+    const { pushResult, noteUpsert, result } = await push(
+      { notes: { created: [note("a")], updated: [note("b")], deleted: [] } },
+      {},
+    );
+
+    expect(noteUpsert).toHaveBeenCalledTimes(1);
+    expect(pushResult).toBeUndefined();
+    expect(result).toEqual({ remoteChangeCount: 0, contentQuotaRefused: 0, contentUsage: null });
+  });
+
+  it("fails the sync as before for any other error", async () => {
+    mockSupabaseFrom.mockImplementation(() => ({
+      upsert: jest.fn().mockResolvedValue({ error: { message: "permission denied" } }),
+    }));
+    mockSynchronize.mockImplementation(async (opts: { pushChanges: PushChanges }) => {
+      await opts.pushChanges({
+        changes: {
+          notebooks: NO_CHANGES,
+          notes: { created: [note("a")], updated: [], deleted: [] },
+          attachments: NO_CHANGES,
+        },
+      });
+    });
+
+    await expect(syncDatabase(mockDb)).rejects.toThrow(
+      "Push notes (create) failed: permission denied",
+    );
+  });
+
+  it("fails the sync when a single-row retry hits another error", async () => {
+    await expect(
+      push(
+        { notes: { created: [note("a"), note("b")], updated: [], deleted: [] } },
+        {
+          noteUpsert: (rows) =>
+            Array.isArray(rows) ? { error: QUOTA_ERROR } : { error: { message: "boom" } },
+        },
+      ),
+    ).rejects.toThrow("Push notes (create) failed: boom");
+  });
+
+  it("fails the sync when an edit hits another error", async () => {
+    await expect(
+      push(
+        { notes: { created: [], updated: [note("a")], deleted: [] } },
+        { noteUpdate: () => ({ error: { message: "boom" } }) },
+      ),
+    ).rejects.toThrow("Push note update failed: boom");
+  });
+});
+
 // Mirror of apps/desktop/__tests__/db/sync.test.ts's coalescing suite. Guards
 // the module-level in-flight latch and the sign-out invalidation (resetSyncState)
 // that stops a new user coalescing onto the previous session's still-running
@@ -315,7 +489,11 @@ describe("in-flight sync coalescing + resetSyncState", () => {
     mockSynchronize.mockRejectedValueOnce(new Error("Some database error"));
     await expect(syncDatabase(mockDb)).rejects.toThrow();
 
-    await expect(syncDatabase(mockDb)).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(syncDatabase(mockDb)).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
     expect(mockSynchronize).toHaveBeenCalledTimes(2);
   });
 
@@ -330,7 +508,7 @@ describe("in-flight sync coalescing + resetSyncState", () => {
 
     const fresh = await syncDatabase(mockDb);
     expect(mockSynchronize).toHaveBeenCalledTimes(2);
-    expect(fresh).toEqual({ remoteChangeCount: 0 });
+    expect(fresh).toEqual({ remoteChangeCount: 0, contentQuotaRefused: 0, contentUsage: null });
 
     releaseStale();
     await stale;
@@ -419,7 +597,11 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
     async (tag) => {
       mockClientTag = tag;
 
-      await expect(syncDatabase(makeDb())).resolves.toEqual({ remoteChangeCount: 0 });
+      await expect(syncDatabase(makeDb())).resolves.toEqual({
+        remoteChangeCount: 0,
+        contentQuotaRefused: 0,
+        contentUsage: null,
+      });
 
       expect(pings()).toEqual([ping([TODAY], tag)]);
       expect(mockSupabaseRpc.mock.invocationCallOrder[0]).toBeGreaterThan(
@@ -439,17 +621,29 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
     await expect(syncDatabase(db)).rejects.toBe(original);
     expect(pings()).toEqual([]);
 
-    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(syncDatabase(db)).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
     expect(pings()).toEqual([ping([TODAY, TOMORROW])]);
   });
 
   it("doesn't fail the sync when the ping fails, and the next sync sends it again", async () => {
     const db = makeDb();
     mockSupabaseRpc.mockResolvedValueOnce({ data: null, error: { message: "permission denied" } });
-    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(syncDatabase(db)).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
 
     mockSupabaseRpc.mockRejectedValueOnce(new Error("Network request failed"));
-    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(syncDatabase(db)).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
 
     await syncDatabase(db);
     await syncDatabase(db);
@@ -463,7 +657,11 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
       // (macOS) keeps running with its window closed: nobody opened Drafto.
       AppState.currentState = state;
       const db = makeDb();
-      await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+      await expect(syncDatabase(db)).resolves.toEqual({
+        remoteChangeCount: 0,
+        contentQuotaRefused: 0,
+        contentUsage: null,
+      });
       expect(pings()).toEqual([]);
 
       AppState.currentState = "active";
@@ -479,7 +677,11 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
 
     // The network comes back after the user has switched away.
     AppState.currentState = "background";
-    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(syncDatabase(db)).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
     expect(pings()).toEqual([ping([TODAY])]);
   });
 
@@ -518,11 +720,19 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
 
     const first = syncDatabase(db);
     await jest.advanceTimersByTimeAsync(ACTIVITY_PING_MAX_WAIT_MS);
-    await expect(first).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(first).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
 
     // The latch is free, so the next sync runs its own synchronize(), and the
     // unanswered day is still queued, so it goes again.
-    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(syncDatabase(db)).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
     expect(mockSynchronize).toHaveBeenCalledTimes(2);
     expect(pings()).toEqual([ping([TODAY]), ping([TODAY])]);
   });
@@ -547,7 +757,11 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
   it("syncs without pinging on a build whose tag usage_daily doesn't accept", async () => {
     mockClientTag = "mobile";
 
-    await expect(syncDatabase(makeDb())).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(syncDatabase(makeDb())).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
 
     expect(mockSynchronize).toHaveBeenCalledTimes(1);
     expect(pings()).toEqual([]);
@@ -567,11 +781,19 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
     await rpcCalled;
     // Sign-out's final sync, or a follow-up pass for an edit made after the
     // first push: it must push again, not join a sync whose push is done.
-    await expect(syncDatabase(db)).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(syncDatabase(db)).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
     expect(mockSynchronize).toHaveBeenCalledTimes(2);
 
     release();
-    await expect(first).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(first).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
   });
 
   it("sends no ping for a sync that resetSyncState superseded", async () => {
@@ -584,7 +806,11 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
     const stale = syncDatabase(db);
     resetSyncState();
     release();
-    await expect(stale).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(stale).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
 
     expect(pings()).toEqual([]);
   });
@@ -612,7 +838,11 @@ describe("activity ping after a successful sync (ADR-0088)", () => {
     expect(mockSynchronize).toHaveBeenCalledTimes(2);
     resetSyncState(); // sign-out
     releaseMark();
-    await expect(stale).resolves.toEqual({ remoteChangeCount: 0 });
+    await expect(stale).resolves.toEqual({
+      remoteChangeCount: 0,
+      contentQuotaRefused: 0,
+      contentUsage: null,
+    });
 
     expect(pings()).toEqual([]);
   });

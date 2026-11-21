@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
+import { contentQuotaResponseFor } from "@/lib/api/content-quota";
 import type { ImportNoteRequest } from "@/lib/import/types";
 
 /**
@@ -70,6 +71,8 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (noteError || !note) {
+    const quotaResponse = contentQuotaResponseFor(noteError);
+    if (quotaResponse) return quotaResponse;
     return errorResponse(`Failed to create note: ${noteError?.message || "unknown"}`, 500);
   }
 

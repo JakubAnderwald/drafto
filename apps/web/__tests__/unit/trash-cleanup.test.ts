@@ -36,6 +36,11 @@ vi.mock("@/lib/storage/remove-orphaned-attachments", () => ({
   removeOrphanedAttachments: (...args: unknown[]) => mockRemoveOrphanedAttachments(...args),
 }));
 
+const mockReportStorageOverruns = vi.fn();
+vi.mock("@/lib/storage/report-storage-overruns", () => ({
+  reportStorageOverruns: (...args: unknown[]) => mockReportStorageOverruns(...args),
+}));
+
 const mockCaptureException = vi.fn();
 const mockCaptureMessage = vi.fn();
 vi.mock("@sentry/nextjs", () => ({
@@ -83,6 +88,7 @@ beforeEach(() => {
   mockEnv.CRON_SECRET = undefined;
   mockCreateAdminClient.mockReturnValue(adminClient);
   mockRemoveOrphanedAttachments.mockResolvedValue(0);
+  mockReportStorageOverruns.mockResolvedValue(0);
 });
 
 describe("POST /api/cron/cleanup-trash", () => {
@@ -137,6 +143,22 @@ describe("POST /api/cron/cleanup-trash", () => {
     expect(mockAdminRpc.mock.invocationCallOrder[0]).toBeLessThan(
       mockRemoveOrphanedAttachments.mock.invocationCallOrder[0],
     );
+    // Then the storage overrun report, with the same service-role client.
+    expect(mockReportStorageOverruns).toHaveBeenCalledWith(adminClient);
+    expect(mockRemoveOrphanedAttachments.mock.invocationCallOrder[0]).toBeLessThan(
+      mockReportStorageOverruns.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("keeps the response unchanged when the overrun report finds users", async () => {
+    authenticateAs("admin-1");
+    mockAdminCheck(true);
+    mockAdminRpc.mockResolvedValue({ data: 1, error: null });
+    mockReportStorageOverruns.mockResolvedValue(2);
+
+    const response = await POST(createRequest("POST"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deleted: 1, removedFiles: 0 });
   });
 
   it("returns deleted count of 0 when no notes to clean up", async () => {
@@ -159,6 +181,7 @@ describe("POST /api/cron/cleanup-trash", () => {
     const body = await response.json();
     expect(body.error).toBe("Failed to cleanup trashed notes");
     expect(mockRemoveOrphanedAttachments).not.toHaveBeenCalled();
+    expect(mockReportStorageOverruns).not.toHaveBeenCalled();
   });
 
   it("returns 500 and reports to Sentry when the service-role key is missing", async () => {

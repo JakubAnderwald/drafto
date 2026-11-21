@@ -25,11 +25,11 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: vi.fn(),
 }));
 
-// The Storage section loads GET /api/storage-usage on its own; answer it here so the queued
-// responses below only feed the API key requests.
+// The Storage and Notes sections load GET /api/storage-usage and /api/content-usage on their
+// own; answer them here so the queued responses below only feed the API key requests.
 const mockFetch = vi.fn();
 global.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
-  input === "/api/storage-usage"
+  input === "/api/storage-usage" || input === "/api/content-usage"
     ? Promise.resolve({ ok: true, json: () => Promise.resolve({ usedBytes: 0, quotaBytes: null }) })
     : mockFetch(input, init)) as typeof fetch;
 

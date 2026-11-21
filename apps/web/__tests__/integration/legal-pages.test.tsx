@@ -96,7 +96,7 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     expect(screen.getByText(/Effective date: March 8, 2026/)).toHaveTextContent(
-      "Last updated: November 20, 2026",
+      "Last updated: November 21, 2026",
     );
   });
 
@@ -139,7 +139,9 @@ describe("Privacy policy page", () => {
     expect(collected).toMatch(/Google shares your email address and basic profile/);
     expect(collected).toMatch(/Apple shares your email address, which can be a private relay/);
     expect(collected).toMatch(/new sign-ups are reviewed manually before the account is activated/);
-    expect(collected).toMatch(/earlier versions of its content for 30 days/);
+    expect(collected).toMatch(/earlier versions of its content for up to 30 days/);
+    expect(collected).toMatch(/take more space than your note content quota/);
+    expect(collected).toMatch(/note content quota \(25 MB by default\)/);
   });
 
   it("discloses Session Replay, says PostHog is not enabled, and keeps the native-apps sentence", () => {

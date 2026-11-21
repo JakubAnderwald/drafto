@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
-import { storageUsageFromRow } from "@drafto/shared";
+import { storageUsageFromRow, type StorageUsage } from "@drafto/shared";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isSignedOutAuthError } from "@/lib/supabase/auth-errors";
@@ -37,7 +37,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   if (profileError) throw profileError;
   if (!profile?.is_admin) redirect("/");
 
-  const [pendingResult, storageResult] = await Promise.all([
+  const [pendingResult, storageResult, contentResult] = await Promise.all([
     supabase
       .from("profiles")
       .select("id, display_name, created_at")
@@ -45,6 +45,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
       .order("created_at", { ascending: true }),
     // The admin's own session: the RPC refuses anyone who isn't an admin.
     supabase.rpc("admin_storage_usage"),
+    supabase.rpc("admin_content_usage"),
   ]);
 
   const { data: pendingProfiles, error: pendingUsersError } = pendingResult;
@@ -55,6 +56,18 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   const { data: storageRows, error: storageError } = storageResult;
   if (storageError) {
     Sentry.captureException(storageError, { extra: { where: "admin-page:admin_storage_usage" } });
+  }
+
+  // Note content usage (ADR 0090) is optional the same way: without it the table still
+  // shows storage, and each row's notes cells say it's unavailable.
+  const { data: contentRows, error: contentError } = contentResult;
+  if (contentError) {
+    Sentry.captureException(contentError, { extra: { where: "admin-page:admin_content_usage" } });
+  }
+  const contentByUser = new Map<string, StorageUsage>();
+  for (const row of contentError ? [] : (contentRows ?? [])) {
+    const usage = storageUsageFromRow(row);
+    if (usage) contentByUser.set(row.user_id, usage);
   }
 
   // One auth lookup per user, shared by both lists.
@@ -92,6 +105,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
               email,
               usedBytes: usage.usedBytes,
               quotaBytes: usage.quotaBytes,
+              content: contentByUser.get(row.user_id) ?? null,
             })),
           ];
         }),

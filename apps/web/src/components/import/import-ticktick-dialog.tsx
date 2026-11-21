@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { contentFullMessage } from "@drafto/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { parseTickTickCsv } from "@/lib/import/ticktick-parser";
@@ -60,6 +61,9 @@ export function ImportTickTickDialog({ onClose, onComplete }: ImportTickTickDial
     let totalImported = 0;
     let totalFailed = 0;
     const allErrors: string[] = [];
+    // The content quota's notes-full message (ADR 0090), when it refused any item. Each
+    // batch reports it; it is shown once, after the other errors.
+    let quotaMessage: string | null = null;
 
     for (const group of groups) {
       let notebookId: string | undefined;
@@ -91,7 +95,13 @@ export function ImportTickTickDialog({ onClose, onComplete }: ImportTickTickDial
           lastNotebookId = result.notebookId;
           totalImported += result.notesImported;
           totalFailed += result.notesFailed;
-          allErrors.push(...result.errors);
+          const batchQuotaMessage = result.contentQuotaExceeded
+            ? (result.contentQuotaMessage ?? null)
+            : null;
+          allErrors.push(...result.errors.filter((e) => e !== batchQuotaMessage));
+          // The quota refuses by size, so later (smaller) items may still fit: keep going.
+          if (result.contentQuotaExceeded)
+            quotaMessage = batchQuotaMessage ?? contentFullMessage(null, null);
         } catch (err) {
           totalFailed += batch.length;
           allErrors.push(err instanceof Error ? err.message : "Network error");
@@ -100,6 +110,8 @@ export function ImportTickTickDialog({ onClose, onComplete }: ImportTickTickDial
         setProgress((prev) => ({ ...prev, current: prev.current + batch.length }));
       }
     }
+
+    if (quotaMessage) allErrors.push(quotaMessage);
 
     setImportedCount(totalImported);
     setFailedCount(totalFailed);

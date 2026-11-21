@@ -134,6 +134,19 @@ describe("POST /api/import/evernote/note", () => {
     );
   });
 
+  it("returns the content quota 413 when the note insert is refused for it", async () => {
+    singleResults.push({ data: { id: "nb-1" }, error: null }); // notebook insert ok
+    singleResults.push({
+      data: null,
+      error: { code: "P0001", message: "content_quota_exceeded", details: "" },
+    });
+
+    const response = await POST(makeRequest(noteBody));
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ code: "content_quota_exceeded" });
+    expect(mockErrorResponse).not.toHaveBeenCalled();
+  });
+
   it("returns the auth error when unauthenticated", async () => {
     mockGetAuthenticatedUser.mockResolvedValue({
       data: null,

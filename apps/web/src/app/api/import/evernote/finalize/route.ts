@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedNoteOwner, errorResponse, successResponse } from "@/lib/api/utils";
+import { contentQuotaResponseFor } from "@/lib/api/content-quota";
 import { convertEnmlToBlocks } from "@/lib/import/enml-to-blocknote";
 import type { ImportFinalizeRequest } from "@/lib/import/types";
 import type { Json } from "@/lib/supabase/database.types";
@@ -81,6 +82,8 @@ export async function POST(request: NextRequest) {
     .eq("user_id", user.id);
 
   if (updateError) {
+    const quotaResponse = contentQuotaResponseFor(updateError);
+    if (quotaResponse) return quotaResponse;
     return errorResponse(`Failed to update note content: ${updateError.message}`, 500);
   }
 

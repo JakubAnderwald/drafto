@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardBody } from "@/components/ui/card";
 import { DeleteAccountSection } from "@/components/settings/delete-account-section";
 import { StorageUsageSection } from "@/components/settings/storage-usage-section";
+import { ContentUsageSection } from "@/components/settings/content-usage-section";
 import { usePageOrigin } from "@/hooks/use-page-origin";
 
 interface ApiKey {
@@ -209,6 +210,8 @@ export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>)
       </Card>
 
       <StorageUsageSection className="mt-6" />
+
+      <ContentUsageSection className="mt-6" />
 
       <DeleteAccountSection className="mt-6" />
 

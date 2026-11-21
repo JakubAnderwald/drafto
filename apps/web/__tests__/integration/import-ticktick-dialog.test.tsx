@@ -140,4 +140,65 @@ describe("ImportTickTickDialog", () => {
     const status = await screen.findByTestId("ticktick-import-status");
     expect(status.textContent).toContain("0 imported, 1 failed");
   });
+  it("keeps sending batches after a content quota refusal and shows the message once at the end", async () => {
+    const user = userEvent.setup();
+    const item = (title: string) => ({
+      folderName: "Work",
+      listName: "Inbox",
+      title,
+      content: "body",
+      isCheckList: false,
+      created: "2025-01-01T00:00:00.000Z",
+      updated: "2025-01-01T00:00:00.000Z",
+    });
+    const { parseTickTickCsv } = await import("@/lib/import/ticktick-parser");
+    (parseTickTickCsv as ReturnType<typeof vi.fn>).mockReturnValueOnce([
+      { notebookName: "Work / Inbox", items: [item("A"), item("B")] },
+      { notebookName: "Home / Inbox", items: [item("C")] },
+      { notebookName: "Misc / Inbox", items: [item("D")] },
+    ]);
+    const NOTES_FULL = "Notes full: you've used 25 MB of your 25 MB for notes.";
+    const quotaBatch = (imported: number, failed: number) => ({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          notebookId: "nb-1",
+          notesImported: imported,
+          notesFailed: failed,
+          errors: [NOTES_FULL],
+          contentQuotaExceeded: true,
+          contentQuotaMessage: NOTES_FULL,
+        }),
+    });
+    (global.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(quotaBatch(1, 1))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            notebookId: "nb-2",
+            notesImported: 0,
+            notesFailed: 1,
+            errors: ["Bad row"],
+          }),
+      })
+      .mockResolvedValueOnce(quotaBatch(0, 1));
+
+    render(<ImportTickTickDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+
+    const file = new File(["x"], "ticktick.csv", { type: "text/csv" });
+    await user.upload(screen.getByTestId("ticktick-file-input"), file);
+    await user.click(screen.getByTestId("start-ticktick-import-button"));
+
+    const status = await screen.findByTestId("ticktick-import-status");
+    expect(status.textContent).toContain("1 imported, 3 failed");
+    // Every batch was still sent.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    // The notes-full message appears once, after the other errors.
+    const message = screen.getByText(/Completed with errors/).textContent ?? "";
+    expect(message.match(/Notes full/g)).toHaveLength(1);
+    expect(message.indexOf("Bad row")).toBeLessThan(message.indexOf("Notes full"));
+  });
 });

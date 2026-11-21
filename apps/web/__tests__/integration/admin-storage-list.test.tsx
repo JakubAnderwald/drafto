@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { DEFAULT_STORAGE_QUOTA_BYTES, megabytesToBytes } from "@drafto/shared";
+import {
+  DEFAULT_CONTENT_QUOTA_BYTES,
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  megabytesToBytes,
+} from "@drafto/shared";
 
 vi.mock("@/env", () => ({
   env: {
@@ -245,5 +249,89 @@ describe("AdminStorageList", () => {
     expect(within(rowFor(ALICE.email)).getByText("50 MB", { selector: "td" })).toHaveClass(
       "text-error-text",
     );
+  });
+  describe("notes quota", () => {
+    const BOB = {
+      id: "33333333-3333-4333-8333-333333333333",
+      email: "bob@example.com",
+      usedBytes: 0,
+      quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      content: { usedBytes: megabytesToBytes(3), quotaBytes: DEFAULT_CONTENT_QUOTA_BYTES },
+    };
+
+    it("shows the notes used and quota next to storage", () => {
+      render(<AdminStorageList users={[BOB]} />);
+
+      const row = within(rowFor(BOB.email));
+      expect(row.getByText("3 MB")).toBeInTheDocument();
+      expect(row.getByText("Current: 25 MB")).toBeInTheDocument();
+      expect(row.getByLabelText(`Notes quota in MB for ${BOB.email}`)).toHaveValue(25);
+    });
+
+    it("says notes usage is unavailable when it couldn't be loaded", () => {
+      render(<AdminStorageList users={[{ ...BOB, content: null }]} />);
+
+      const row = within(rowFor(BOB.email));
+      expect(row.getByText("Unavailable")).toBeInTheDocument();
+      expect(row.queryByLabelText(`Notes quota in MB for ${BOB.email}`)).not.toBeInTheDocument();
+    });
+
+    it("saves the notes quota as contentQuotaMb and shows the saved value", async () => {
+      const user = userEvent.setup();
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, { userId: BOB.id, contentQuotaBytes: megabytesToBytes(100) }),
+      );
+      render(<AdminStorageList users={[BOB]} />);
+
+      const row = within(rowFor(BOB.email));
+      const input = row.getByLabelText(`Notes quota in MB for ${BOB.email}`);
+      await user.clear(input);
+      await user.type(input, "100");
+      await user.click(row.getByRole("button", { name: `Save notes quota for ${BOB.email}` }));
+
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+        userId: BOB.id,
+        contentQuotaMb: 100,
+      });
+      expect(await row.findByRole("status")).toHaveTextContent("Saved");
+      expect(row.getByText("Current: 100 MB")).toBeInTheDocument();
+      // The storage quota is untouched.
+      expect(row.getByText("Current: 50 MB")).toBeInTheDocument();
+    });
+
+    it("saves Unlimited notes as null and offers the notes default when unticked", async () => {
+      const user = userEvent.setup();
+      fetchMock.mockResolvedValue(jsonResponse(200, { userId: BOB.id, contentQuotaBytes: null }));
+      render(<AdminStorageList users={[BOB]} />);
+
+      const row = within(rowFor(BOB.email));
+      const unlimited = row.getByLabelText(`Unlimited notes for ${BOB.email}`);
+      await user.click(unlimited);
+      await user.click(row.getByRole("button", { name: `Save notes quota for ${BOB.email}` }));
+
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+        userId: BOB.id,
+        contentQuotaMb: null,
+      });
+      expect(await row.findByText("Current: Unlimited")).toBeInTheDocument();
+
+      await user.click(unlimited);
+      expect(row.getByLabelText(`Notes quota in MB for ${BOB.email}`)).toHaveValue(25);
+    });
+
+    it("reports a failed notes save to Sentry under its own tag", async () => {
+      const user = userEvent.setup();
+      const failure = new Error("network down");
+      fetchMock.mockRejectedValue(failure);
+      render(<AdminStorageList users={[BOB]} />);
+
+      const row = within(rowFor(BOB.email));
+      await user.click(row.getByRole("button", { name: `Save notes quota for ${BOB.email}` }));
+
+      expect(await row.findByRole("alert")).toHaveTextContent("Failed to save the quota");
+      expect(captureExceptionMock).toHaveBeenCalledWith(failure, {
+        extra: { where: "admin-storage-list:save-content", userId: BOB.id },
+      });
+    });
   });
 });
