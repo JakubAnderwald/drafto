@@ -62,3 +62,34 @@ test.describe("Admin panel close button", () => {
     await expectClosesWithoutReload(page, () => page.keyboard.press("Escape"));
   });
 });
+
+const STATS_SECTIONS = [
+  "Needs attention",
+  "Platform limits",
+  "Activation",
+  "Writers",
+  "Depth",
+  "Sign-ups",
+  "Active users and retention",
+];
+
+test.describe("Admin product metrics", () => {
+  test.skip(!hasAdminCredentials, ADMIN_E2E_SKIP_REASON);
+
+  test("the admin panel links to /admin/stats, which shows every section", async ({ page }) => {
+    await openAdminPanel(page);
+    await page.getByRole("link", { name: "Product metrics" }).click();
+
+    await page.waitForURL((url) => url.pathname === "/admin/stats", { timeout: 15000 });
+    await expect(page.getByRole("heading", { level: 1, name: "Product metrics" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("heading", { level: 2 })).toHaveText(STATS_SECTIONS);
+
+    // The page scrolls inside the app shell, which clips overflow: the last section must be
+    // reachable, not cut off below the fold.
+    const last = page.getByRole("heading", { level: 2, name: STATS_SECTIONS.at(-1) });
+    await last.scrollIntoViewIfNeeded();
+    await expect(last).toBeInViewport();
+  });
+});

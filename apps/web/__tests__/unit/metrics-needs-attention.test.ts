@@ -54,7 +54,10 @@ describe("deriveNeedsAttention", () => {
       emptiedNotes: { status: "error", message: "boom" },
       platformLimits: { status: "unavailable" },
     });
-    expect(result.unchecked).toEqual(["Emptied notes", "Platform limits"]);
+    expect(result.unchecked).toEqual([
+      { check: "Emptied notes", reason: "boom" },
+      { check: "Platform limits", reason: "the function isn't on this database" },
+    ]);
     expect(result.isClear).toBe(false);
   });
 });

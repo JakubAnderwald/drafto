@@ -205,10 +205,30 @@ describe("loadProductMetrics", () => {
   it("derives depth counts from the rounded shares", async () => {
     const { metrics } = await load();
     if (metrics.depth.status !== "ok" || !metrics.depth.data) throw new Error("expected depth");
-    expect(metrics.depth.data.withAttachment).toEqual({ pct: 37.5, count: 3, of: 8 });
-    expect(metrics.depth.data.withApiKey).toEqual({ pct: 12.5, count: 1, of: 8 });
-    expect(metrics.depth.data.withMcpWrite).toEqual({ pct: 0, count: 0, of: 8 });
-    expect(metrics.depth.data.multiClient).toEqual({ pct: null, count: null, of: 8 });
+    expect(metrics.depth.data.withAttachment).toEqual({
+      pct: 37.5,
+      count: 3,
+      of: 8,
+      approximate: false,
+    });
+    expect(metrics.depth.data.withApiKey).toEqual({
+      pct: 12.5,
+      count: 1,
+      of: 8,
+      approximate: false,
+    });
+    expect(metrics.depth.data.withMcpWrite).toEqual({
+      pct: 0,
+      count: 0,
+      of: 8,
+      approximate: false,
+    });
+    expect(metrics.depth.data.multiClient).toEqual({
+      pct: null,
+      count: null,
+      of: 8,
+      approximate: false,
+    });
     expect(metrics.depth.data).not.toHaveProperty("pct_with_attachment");
   });
 
@@ -316,6 +336,24 @@ describe("loadProductMetrics", () => {
 });
 
 describe("toDepthMetrics", () => {
+  it("flags counts derived for 1,000 or more writers as approximate", () => {
+    const depth = toDepthMetrics({
+      writers: 1500,
+      live_notes_median: 3,
+      live_notes_max: 90,
+      notebooks_median: 1,
+      notebooks_max: 9,
+      attachment_mb_median: 0,
+      attachment_mb_max: 4,
+      pct_with_attachment: 40,
+      pct_with_api_key: null,
+      pct_with_mcp_write: 1.1,
+      pct_multi_client: 10,
+    });
+    expect(depth.withAttachment).toEqual({ pct: 40, count: 600, of: 1500, approximate: true });
+    expect(depth.withApiKey.approximate).toBe(true);
+  });
+
   it("handles no writers", () => {
     const depth = toDepthMetrics({
       writers: 0,
@@ -330,6 +368,6 @@ describe("toDepthMetrics", () => {
       pct_with_mcp_write: null,
       pct_multi_client: null,
     });
-    expect(depth.withAttachment).toEqual({ pct: null, count: null, of: 0 });
+    expect(depth.withAttachment).toEqual({ pct: null, count: null, of: 0, approximate: false });
   });
 });
