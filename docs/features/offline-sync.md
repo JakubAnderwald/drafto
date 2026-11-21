@@ -22,7 +22,83 @@ screens only need to write to WatermelonDB (mobile's older screens still call
 instead of being dropped, and the run makes another pass if the caller's write
 is still unpushed. Mobile uploads queued attachments before pushing metadata;
 desktop uploads them after, and makes one more pass after an upload so the
-attachment's new status is pushed too.
+attachment's new status is pushed too. After each successful sync, the sync code
+also sends the UTC days the app was opened ([Activity ping](#activity-ping)).
+
+## Activity ping
+
+Each sync also tells the server on which UTC days the app was opened, so weekly
+active users include people who only read their notes
+([product metrics → Activity days](./product-metrics.md#activity-days-usage_daily),
+[ADR-0088](../adr/0088-activity-days-instead-of-event-analytics.md)). It sends
+days only: no note, screen or action. `apps/{mobile,desktop}/src/db/activity-days.ts`
+holds the logic, identical on both apps.
+
+- **Marking a day.** `syncDatabase()` starts `markAppOpened(db)` on entry,
+  before the in-flight latch, and doesn't wait for it there, so coalescing and
+  `resetSyncState()` behave as before. A sync marks today only when it starts
+  while the app is in front (`AppState.currentState` is `active`). Reconnect and
+  retry syncs also run in the background, and the macOS app keeps running after
+  its window is closed, so those mark nothing; their ping still sends the days
+  already queued. The login and foreground syncs start even without a network
+  and then fail, which is how days spent offline get queued. `DatabaseProvider`'s
+  `AppState` listener also calls `markAppOpened` when the app comes to the
+  front: its `sync()` can join a pass that started in the background, which
+  marked nothing, and joining never reaches `syncDatabase()`. That pass's ping,
+  or the next sync's, sends the day.
+- **The queue.** The days live in WatermelonDB's `localStorage` under one key,
+  `drafto_activity_days`, as `{ days, lastSent }`. It keeps the 30 newest days
+  at most (`ACTIVITY_QUEUE_MAX_DAYS` in `@drafto/shared`). Today isn't added
+  again once it equals `lastSent`, so after today has been sent the queue stays
+  empty until the next UTC day: at most one ping per day per device. A
+  `lastSent` after today was sent while the device clock ran ahead, and the
+  server dropped it as a future day, so marking a day forgets it.
+  Then the real day isn't held back when it comes. That only happens when the
+  server's date couldn't be read (see Sending).
+- **Sending.** After `synchronize()` resolves, `syncDatabase()` frees the
+  in-flight latch, waits for the mark, then calls
+  `flushActivityDays(db, supabase, clientTag)`, unless sign-out reset the
+  sync while the mark was still waiting. That sends the whole queue
+  through `record_activity` (`recordActivity` in `@drafto/shared`). On success
+  it reads the queue again, removes only the days the server took (a day marked
+  in the meantime stays), and moves `lastSent` to the newest of them. When
+  `record_activity` adds fewer rows than days sent, `recordActivity` asks
+  `get_server_time` for the server's date and leaves out any day after it: a
+  device clock running a few minutes ahead sends its new day just after its own
+  midnight, and the server drops that day as a future one. That day stays
+  queued for the next sync instead of becoming `lastSent`, which would have
+  kept it from being queued again when it really comes. The caller that
+  started the sync waits for the ping at most `ACTIVITY_PING_MAX_WAIT_MS`
+  (10 s). A ping that hasn't answered by then carries on in the background with
+  its days still queued. Because the latch is already free, a sync started
+  while the ping is out (sign-out's final sync, a follow-up pass for a local
+  edit) runs its own `synchronize()` and pushes, rather than joining a sync
+  whose push has already finished.
+- **A failed ping never fails the sync.** The flush runs inside a try/catch and
+  never rejects, so the sync's result doesn't change. It only logs a
+  `console.warn`, because the native apps have no Sentry SDK. The queue is kept
+  and the next successful sync sends it again.
+- **One writer at a time.** `markAppOpened` and `flushActivityDays` run their
+  read-modify-write through one module-level promise chain, so overlapping
+  syncs can't lose a day.
+- **Per user.** `unsafeResetDatabase()` clears `localStorage` with the rest of
+  the local database on sign-out and on an account switch
+  (`providers/auth-provider.tsx`, `lib/data/local-identity.ts`), so one user's
+  days are never sent under another user's session. Before that reset,
+  sign-out's `resetSyncState()` calls `invalidateActivityDays()`: a mark or
+  flush started for the user signing out (a flush whose call is still out, say)
+  then writes nothing, so it can't put that user's days or `lastSent` into the
+  next user's queue. A sync that `resetSyncState()` superseded sends no ping.
+- **The tag.** `lib/supabase.ts` exports `clientTag`, the same value it sends as
+  the `x-drafto-client` header: `mobile-ios`, `mobile-android` or
+  `desktop-macos`. Mobile's fallback `mobile` (neither iOS nor Android) isn't a
+  tag `usage_daily` accepts, so such a device keeps its queue and never sends it.
+- **Waiting for approval.** Mobile syncs for a signed-in user who isn't
+  approved yet (the pull just comes back empty), so it pings too.
+  `record_activity` answers such a user with 0 and records nothing, and the
+  client drops those days like any sent day, so a user on the waiting list
+  never counts as active. The day the user is approved isn't sent again from
+  that device once it has been dropped.
 
 ### Offline attachment cache
 
@@ -60,30 +136,33 @@ the network.
 
 ## Code paths
 
-| Concern                              | Path                                                                                                           |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Mobile schema (version 2)            | `apps/mobile/src/db/schema.ts`                                                                                 |
-| Mobile migrations                    | `apps/mobile/src/db/migrations.ts`                                                                             |
-| Mobile WatermelonDB instance         | `apps/mobile/src/db/index.ts`                                                                                  |
-| Mobile models                        | `apps/mobile/src/db/models/{notebook,note,attachment}.ts`                                                      |
-| Mobile sync driver (pull / push)     | `apps/mobile/src/db/sync.ts`                                                                                   |
-| Mobile sync orchestration + triggers | `apps/mobile/src/providers/database-provider.tsx`                                                              |
-| Mobile attachment upload queue       | `apps/mobile/src/lib/data/attachment-queue.ts`                                                                 |
-| Attachment cache (mirrored)          | `apps/{mobile,desktop}/src/lib/data/attachment-{cache,resolver,prefetch}.ts`                                   |
-| Attachment cache policy (shared)     | `packages/shared/src/storage/attachment-cache-{policy,index}.ts`, `attachment-prefetch.ts`                     |
-| Desktop schema (must match mobile)   | `apps/desktop/src/db/schema.ts`                                                                                |
-| Desktop migrations                   | `apps/desktop/src/db/migrations.ts`                                                                            |
-| Desktop WatermelonDB instance        | `apps/desktop/src/db/index.ts`                                                                                 |
-| Desktop models                       | `apps/desktop/src/db/models/{notebook,note,attachment}.ts`                                                     |
-| Desktop sync driver                  | `apps/desktop/src/db/sync.ts`                                                                                  |
-| Desktop sync orchestration           | `apps/desktop/src/providers/database-provider.tsx`                                                             |
-| Desktop attachment upload queue      | `apps/desktop/src/lib/data/attachment-queue.ts`                                                                |
-| Shared sync helpers                  | `packages/shared/src/sync/remote-change.ts`, `packages/shared/src/sync/local-edit.ts`                          |
-| Supabase tables (source of truth)    | `supabase/migrations/*notebooks*`, `*notes*`, `*attachments*`                                                  |
-| Server timestamp RPC                 | `get_server_time` Supabase function                                                                            |
-| Sync driver tests                    | `apps/desktop/__tests__/db/sync.test.ts`, `sync-mappers.test.ts`                                               |
-| Schema / migration tests             | `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts`                                                 |
-| Sync UI + perf tests                 | `apps/mobile/__tests__/components/sync-status.test.tsx`, `apps/mobile/__tests__/performance/sync-perf.test.ts` |
+| Concern                                | Path                                                                                                           |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Mobile schema (version 2)              | `apps/mobile/src/db/schema.ts`                                                                                 |
+| Mobile migrations                      | `apps/mobile/src/db/migrations.ts`                                                                             |
+| Mobile WatermelonDB instance           | `apps/mobile/src/db/index.ts`                                                                                  |
+| Mobile models                          | `apps/mobile/src/db/models/{notebook,note,attachment}.ts`                                                      |
+| Mobile sync driver (pull / push)       | `apps/mobile/src/db/sync.ts`                                                                                   |
+| Mobile sync orchestration + triggers   | `apps/mobile/src/providers/database-provider.tsx`                                                              |
+| Mobile attachment upload queue         | `apps/mobile/src/lib/data/attachment-queue.ts`                                                                 |
+| Attachment cache (mirrored)            | `apps/{mobile,desktop}/src/lib/data/attachment-{cache,resolver,prefetch}.ts`                                   |
+| Attachment cache policy (shared)       | `packages/shared/src/storage/attachment-cache-{policy,index}.ts`, `attachment-prefetch.ts`                     |
+| Desktop schema (must match mobile)     | `apps/desktop/src/db/schema.ts`                                                                                |
+| Desktop migrations                     | `apps/desktop/src/db/migrations.ts`                                                                            |
+| Desktop WatermelonDB instance          | `apps/desktop/src/db/index.ts`                                                                                 |
+| Desktop models                         | `apps/desktop/src/db/models/{notebook,note,attachment}.ts`                                                     |
+| Desktop sync driver                    | `apps/desktop/src/db/sync.ts`                                                                                  |
+| Desktop sync orchestration             | `apps/desktop/src/providers/database-provider.tsx`                                                             |
+| Desktop attachment upload queue        | `apps/desktop/src/lib/data/attachment-queue.ts`                                                                |
+| Shared sync helpers                    | `packages/shared/src/sync/remote-change.ts`, `packages/shared/src/sync/local-edit.ts`                          |
+| Activity ping and day queue (mirrored) | `apps/mobile/src/db/activity-days.ts`, `apps/desktop/src/db/activity-days.ts`                                  |
+| Shared day logic and `recordActivity`  | `packages/shared/src/activity/`                                                                                |
+| Activity ping tests                    | `apps/{mobile,desktop}/__tests__/db/activity-days.test.ts`, `apps/{mobile,desktop}/__tests__/db/sync.test.ts`  |
+| Supabase tables (source of truth)      | `supabase/migrations/*notebooks*`, `*notes*`, `*attachments*`                                                  |
+| Server timestamp RPC                   | `get_server_time` Supabase function                                                                            |
+| Sync driver tests                      | `apps/desktop/__tests__/db/sync.test.ts`, `sync-mappers.test.ts`                                               |
+| Schema / migration tests               | `apps/desktop/__tests__/db/{schema,migrations,models}.test.ts`                                                 |
+| Sync UI + perf tests                   | `apps/mobile/__tests__/components/sync-status.test.tsx`, `apps/mobile/__tests__/performance/sync-perf.test.ts` |
 
 ## Offline banner
 
@@ -146,6 +225,7 @@ header's Back arrow and took its taps (PrimeTestLab report 10668, M-03).
 - [0015 — Desktop App Technology Choice](../adr/0015-desktop-app-technology-choice.md)
 - [0048 — Local Writes Trigger a Debounced Sync](../adr/0048-local-writes-trigger-debounced-sync.md)
 - [0086 — Offline Attachment Cache on Mobile and Desktop](../adr/0086-offline-attachment-cache.md)
+- [0088 — Activity Days Instead of Event Analytics](../adr/0088-activity-days-instead-of-event-analytics.md)
 
 ## Cross-platform notes
 
@@ -209,6 +289,14 @@ it. This file is hand-maintained, not generated: when a column changes, update
   (or, on desktop, their approval) changes, the provider forgets the run, so the
   next user's `sync()` starts its own and the old one cannot report into the new
   session. This mirrors `resetSyncState()` for `syncDatabase()`.
+- The [activity ping](#activity-ping) never changes a sync's result and never
+  holds the in-flight latch: the day is marked without being awaited on entry,
+  and the flush runs only after `synchronize()` resolved and the latch was
+  freed, inside a try/catch, with `syncDatabase()` waiting for it at most
+  `ACTIVITY_PING_MAX_WAIT_MS`. So a caller only ever coalesces onto a sync whose
+  push is still to come, and sign-out's final sync can't skip a note edited
+  while a ping was out. Keep all three when touching `syncDatabase()` or
+  `runSync`.
 - Note `content` is a JSON column on Supabase and a stringified JSON column in
   WatermelonDB — round-trip with `JSON.parse` / `JSON.stringify` on every hop.
 - Desktop: no sync trigger may pull for a signed-out or unapproved user. RLS
@@ -260,6 +348,10 @@ it. This file is hand-maintained, not generated: when a column changes, update
   deletion detection's empty-server-ID-set guard and its skip of attachments
   that haven't uploaded. Mobile's file also covers
   the pull shape and cursor.
+- `apps/{mobile,desktop}/__tests__/db/activity-days.test.ts` — the day queue:
+  today marked once, at most 30 days kept, only the sent days removed, a failed
+  or skipped ping keeps the queue. The two `sync.test.ts` files check that the
+  ping runs after a successful sync, and that a failed ping doesn't fail it.
 - `apps/desktop/__tests__/db/sync-mappers.test.ts` — column mapping drift, the
   pull shape and cursor, and the attachment push's `ignoreDuplicates`.
 - `apps/{mobile,desktop}/__tests__/db/sync-diagnostics.test.ts` — the real
@@ -280,8 +372,8 @@ it. This file is hand-maintained, not generated: when a column changes, update
 
 **Files that must change together:**
 
-- `apps/mobile/src/db/{schema,migrations,sync}.ts`
-- `apps/desktop/src/db/{schema,migrations,sync}.ts`
+- `apps/mobile/src/db/{schema,migrations,sync,activity-days}.ts`
+- `apps/desktop/src/db/{schema,migrations,sync,activity-days}.ts`
 - `supabase/migrations/*` (when columns change)
 - `packages/shared/src/types/database.ts` (update by hand when columns change)
 

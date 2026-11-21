@@ -93,17 +93,6 @@ pf() { # pf <ok|fail|info> <message>
   esac
 }
 
-# Compile the Swift helpers into IN_TEST_BIN when missing or older than the source.
-build_helpers() {
-  local name
-  mkdir -p "$IN_TEST_BIN" || return 1
-  for name in axq ocr; do
-    if [ ! -x "$IN_TEST_BIN/$name" ] || [ "$IN_TEST_DIR/lib/$name.swift" -nt "$IN_TEST_BIN/$name" ]; then
-      swiftc -O -o "$IN_TEST_BIN/$name" "$IN_TEST_DIR/lib/$name.swift" || return 1
-    fi
-  done
-}
-
 preflight() {
   log "Preflight (read-only) — $SCENARIO_TITLE"
   local t

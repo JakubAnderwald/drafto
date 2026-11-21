@@ -1012,7 +1012,7 @@ node scripts/lib/state-cli.mjs factory:verify-reset <n>                    # for
 
 ## Test-run screenshots on GitHub
 
-The In Test browser report and the verification report's Web lane embed the run's screenshots under the steps that took them ([ADR-0088](../adr/0088-factory-test-run-screenshots-on-github.md)). After a run, and only once its report has passed the secret scan, the factory's own code does this, never a claude session:
+The In Test browser report and the verification report's Web lane embed the run's screenshots under the steps that took them ([ADR-0090](../adr/0090-factory-test-run-screenshots-on-github.md)). After a run, and only once its report has passed the secret scan, the factory's own code does this, never a claude session:
 
 1. `scripts/lib/evidence-upload.mjs` takes the screenshots the guard copied, in the order its decision log recorded them;
 2. it checks each file and OCR-scans it for secrets (`scripts/lib/evidence-images.mjs`);
@@ -1023,7 +1023,7 @@ The ref isn't a branch or a tag, so a normal clone or fetch never downloads it a
 
 | Setting                   | Default | What it does                                                                                                                                                                                                                                        |
 | ------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FACTORY_EVIDENCE_UPLOAD` | `1`     | `0` keeps every screenshot on the Mac mini, as before ADR-0088, and each report says so. Any value but `0` or `1` warns in the launchd log and acts as `0`. Even at `1`, nothing is published until the selftest below has passed on this Mac mini. |
+| `FACTORY_EVIDENCE_UPLOAD` | `1`     | `0` keeps every screenshot on the Mac mini, as before ADR-0090, and each report says so. Any value but `0` or `1` warns in the launchd log and acts as `0`. Even at `1`, nothing is published until the selftest below has passed on this Mac mini. |
 
 Fixed in the code: at most 20 images and 20 MB per comment, 5 MB per image, `.png` or `.jpg` only.
 
@@ -1069,7 +1069,7 @@ Fixed in the code: at most 20 images and 20 MB per comment, 5 MB per image, `.pn
 git push origin <commit>:refs/factory-evidence/selftest/<epoch>
 ```
 
-If GitHub refuses the namespace itself, the fallback is a tag prefix, `refs/tags/factory-evidence/`. That's one constant, `EVIDENCE_REF_PREFIX` in `scripts/lib/evidence-upload.mjs`, changed in a PR, not a setting. ADR-0088 gives the cost: every evidence tag is listed on the repo's Tags page, and `git fetch --tags` downloads them all. Once it's merged, run the selftest again.
+If GitHub refuses the namespace itself, the fallback is a tag prefix, `refs/tags/factory-evidence/`. That's one constant, `EVIDENCE_REF_PREFIX` in `scripts/lib/evidence-upload.mjs`, changed in a PR, not a setting. ADR-0090 gives the cost: every evidence tag is listed on the repo's Tags page, and `git fetch --tags` downloads them all. Once it's merged, run the selftest again.
 
 **The OCR helper.** Each screenshot's text is read with `logs/factory/bin/ocr` and scanned like the report. The factory compiles it on first use from the macOS harness's `apps/desktop/e2e/in-test/lib/ocr.swift`, with `swiftc -O` (the Xcode command-line tools) under a 300-second cap. It compiles it again whenever `ocr.swift` is newer than the binary. Without it nothing is published (`ocr-missing`), and the browser log says `the OCR helper that scans screenshots for secrets isn't available (swiftc?)`. To build and try it by hand:
 
@@ -1464,6 +1464,38 @@ A stopped run's unpushed `chore(wip)` commits plus a push to the PR branch leave
 
 To turn resuming off, set `FACTORY_IMPLEMENT_RESUME=0` in the plist. The deadline facts and the prompt's Time budget stay. See [ADR-0084](../adr/0084-factory-implement-deadline-and-resume.md).
 
+#### Resume drill
+
+To rehearse a resume by hand, on a scratch card:
+
+1. Unload the job, so a 5-minute tick can't take the card or reset the checkout between your two runs:
+
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/eu.drafto.factory.plist
+   ```
+
+2. Put a scratch card in **In Progress** with an approved plan. `--implement` takes every In Progress card, not only this one, and would run each under the drill's short cap. So put the `factory-pause` label on every other In Progress card for the drill; `--implement` skips a paused card. Note which of them already had the label, so step 8 leaves those paused.
+
+   The scratch card also needs a worktree slot. `node scripts/lib/state-cli.mjs factory:slot-status` shows who holds the two. Cards in In Review and Testing keep theirs, a paused card keeps its own, and a detached run keeps its card's even with the job unloaded. If both are held by other cards, the run only logs `Issue #<n>: both worktree slots busy; deferring to a later tick`. Don't release a slot another card is using. Stop the drill as step 8 does: park the scratch card, remove `factory-pause` only from the cards you added it to, then reload the job. Run the drill another time, when a slot is free.
+
+3. Run the implement stage once with a short cap and let it stop. Hitting the cap and stopping itself with `action=incomplete` at the soft deadline are both recorded as resumable, so either counts. `FACTORY_AUTOPULL=0` is read only by the loop wrapper (`scripts/factory-agent-loop.sh`); it is kept so pasting the command into the wrapper doesn't reset the tree. Don't export `FACTORY_IMPLEMENT_DETACHED`, so both runs stay in the foreground.
+
+   ```bash
+   FACTORY_AUTOPULL=0 FACTORY_IMPLEMENT_TIMEOUT_SEC=<short> bash scripts/factory-agent.sh --implement --phase C
+   ```
+
+   If you scrub the environment with `env -i …` to mimic launchd, keep `USER`, `LOGNAME` and `TMPDIR`. Without them `claude` can't read its keychain login: it exits 1 within seconds with `Not logged in · Please run /login` in the implement log, and the run spends an attempt.
+
+4. In the day's implement log, `logs/factory/factory-agent-implement-<YYYY-MM-DD>.log`, find `Issue #<n>: recorded resumable session <id>` from the first run (without it, the drill already failed). Note the transcript's size before the second run: `ls -l ~/.claude/projects/*/<id>.jsonl`.
+5. Run the same command again. Change nothing in between: the resume conditions above all have to hold.
+6. In the same log, check for `Issue #<n>: resume session <id>` from the second run, with the same `<id>`. A `fresh session <id> (no resume: <reason>)` line means the drill failed, and the reason says why.
+7. Check that the second run appended to the same transcript: `ls -l ~/.claude/projects/*/<id>.jsonl` still shows one file, and it is larger than the size you noted in step 4.
+8. Move the scratch card to **Blocked** or **Done** (or Backlog): no mode reads those columns. Closing the issue too is fine. Closing it alone isn't enough: `--implement` picks cards by column, not by issue state. Ready, Planning, Plan Review, In Progress, In Review, Testing, In Test or Approved gets the card worked again: Ready is re-planned, and Approved merges its PR. Remove `factory-pause` from the cards you added it to in step 2, and leave it on the ones that already had it. Only then reload the job, so its first tick can't take the scratch card:
+
+   ```bash
+   launchctl load ~/Library/LaunchAgents/eu.drafto.factory.plist
+   ```
+
 ### Detached implement runs
 
 With `FACTORY_IMPLEMENT_DETACHED=1` ([ADR-0085](../adr/0085-detached-implement-runs.md)), `--implement` prepares a card as before (slot, worktree, install, resume decision), then starts the claude call detached and goes on: `started detached implement run <runId> (pid <p>, slot <s>, cap 2700s until <iso>, …); a later tick collects it`. The other modes keep their 5-minute cadence while it runs. The next `--implement` ticks report it (`detached implement run <runId> is running`) and skip the card. Once it has ended, one collects it (`collecting detached implement run <runId> (exit <code>, …)`) and the usual implement lines follow. `--watch` and `--release` leave a card alone while a run holds it, until it is collected.
@@ -1571,6 +1603,6 @@ The pnpm store sits on the same volume as the factory's checkouts, so installs c
 - [`docs/features/dark-factory.md`](../features/dark-factory.md) — operator manual.
 - [ADR-0026](../adr/0026-dark-factory-pipeline.md) — decision record.
 - [ADR-0035](../adr/0035-factory-code-review-gate.md) / [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md) — review-thread merge gate and the CodeRabbit CLI gap-fill lane.
-- [ADR-0051](../adr/0051-factory-browser-runner.md) / [ADR-0088](../adr/0088-factory-test-run-screenshots-on-github.md) — the browser runner, and its screenshots on GitHub.
+- [ADR-0051](../adr/0051-factory-browser-runner.md) / [ADR-0090](../adr/0090-factory-test-run-screenshots-on-github.md) — the browser runner, and its screenshots on GitHub.
 - [`docs/operations/migrations.md`](./migrations.md) — migration safety + rollback workflow.
 - [`docs/operations/builds-and-releases.md`](./builds-and-releases.md) — release commands, beta lanes.

@@ -23,8 +23,31 @@
 
 AXQ="$IN_TEST_BIN/axq"
 OCR="$IN_TEST_BIN/ocr"
+LUMA="$IN_TEST_BIN/luma"
 
-drafto_pid() { pgrep -x Drafto | head -1; }
+# Compile the Swift helpers into IN_TEST_BIN when missing or older than the source.
+build_helpers() {
+  local name src
+  src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  mkdir -p "$IN_TEST_BIN" || return 1
+  for name in axq ocr luma; do
+    if [ ! -x "$IN_TEST_BIN/$name" ] || [ "$src/$name.swift" -nt "$IN_TEST_BIN/$name" ]; then
+      swiftc -O -o "$IN_TEST_BIN/$name" "$src/$name.swift" || return 1
+    fi
+  done
+}
+
+# The macOS app's pid. An iOS-simulator Drafto has the same process name, so
+# skip anything running from a CoreSimulator container.
+drafto_pid() {
+  local pid
+  for pid in $(pgrep -x Drafto); do
+    if [[ "$(ps -o comm= -p "$pid")" != */CoreSimulator/* ]]; then
+      echo "$pid"
+      return 0
+    fi
+  done
+}
 
 drafto_wid() { "$AXQ" "$(drafto_pid)" wid; }
 

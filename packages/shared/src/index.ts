@@ -32,6 +32,9 @@ export {
   SIGNUP_EMAIL_REDIRECT_URL,
   SIGNUP_CONFIRMATION_SENT,
   EMAIL_CONFIRMED,
+  DRAFTO_CLIENT_TAGS,
+  ACTIVITY_QUEUE_MAX_DAYS,
+  RECORD_ACTIVITY_MAX_DAYS,
   PASSWORD_VISIBILITY_LABELS,
   SIGN_OUT_CONFIRM_TITLE,
   SIGN_OUT_SYNCED_MESSAGE,
@@ -39,6 +42,21 @@ export {
   SIGN_OUT_CONFIRM_LABEL,
   SIGN_OUT_ANYWAY_LABEL,
 } from "./constants";
+export type { DraftoClientTag } from "./constants";
+export {
+  utcDay,
+  isUtcDay,
+  normalizeActivityQueue,
+  addDay,
+  withoutSent,
+  isDraftoClientTag,
+} from "./activity/activity-days";
+export { recordActivity } from "./activity/record-activity";
+export type {
+  ActivityRpcClient,
+  ActivityRpcResponse,
+  RecordActivityOutcome,
+} from "./activity/record-activity";
 export {
   ACCOUNT_DELETION_PATH,
   APPLE_NATIVE_CLIENT_ID,

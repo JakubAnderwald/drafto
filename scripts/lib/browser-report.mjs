@@ -36,7 +36,7 @@
 // reads back as trusted) into a comment posted under the owner's token.
 // See ADR-0051.
 //
-// Screenshots (ADR-0088): with --images-json <upload.json> (evidence-upload.mjs's
+// Screenshots (ADR-0090): with --images-json <upload.json> (evidence-upload.mjs's
 // record of what it published), the intest and verify kinds embed the run's
 // screenshots under the step rows that mention them (evidence-embed.mjs). Room
 // for them is reserved before the report text is truncated. A withheld report

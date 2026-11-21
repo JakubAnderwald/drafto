@@ -1,5 +1,5 @@
 // Picks the screenshots of one factory test run that may be published with its
-// report, and checks each one before it leaves the Mac mini (ADR-0088).
+// report, and checks each one before it leaves the Mac mini (ADR-0090).
 //
 // Why this exists: the repo is public, and a screenshot is pixels the text
 // secret scan never sees. So only files with provenance are considered, each
@@ -91,7 +91,7 @@ export function showsEmail(text) {
 const DRIFT_EVENTS = Object.freeze(["quarantined", "unknown", "ambiguous", "gone"]);
 // A copy the guard didn't see taken on the preview's origin: a neutral page
 // (the new-tab page), a page off the preview, or a log from before the guard
-// recorded it (ADR-0088).
+// recorded it (ADR-0090).
 export const OFF_ORIGIN_WHY = "taken while the tab wasn't on the preview";
 
 /**

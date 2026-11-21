@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  ACTIVE_CLIENT_COLUMNS,
   CLIENT_COLUMNS,
   DEFAULT_WEEKS,
   MAX_WEEKS,
@@ -65,6 +66,53 @@ const ROWS = {
       first_value: 1,
       activated: 0,
       window_complete: false,
+    },
+  ],
+  metrics_retention: [
+    {
+      week_start: "2026-09-14",
+      iso_week: "2026-W38",
+      activated: null,
+      active_week1: null,
+      pct_week1: null,
+      active_week4: null,
+      pct_week4: null,
+    },
+    {
+      week_start: "2026-09-28",
+      iso_week: "2026-W40",
+      activated: 3,
+      active_week1: 2,
+      pct_week1: 66.7,
+      active_week4: 1,
+      pct_week4: 33.3,
+    },
+    {
+      week_start: "2026-10-26",
+      iso_week: "2026-W44",
+      activated: 0,
+      active_week1: 0,
+      pct_week1: null,
+      active_week4: null,
+      pct_week4: null,
+    },
+  ],
+  metrics_active_users: [
+    {
+      week_start: "2026-11-02",
+      iso_week: "2026-W45",
+      active_users: 6,
+      writers: 4,
+      by_client: { web: 4, "mobile-ios": 2, "web-mcp": 1 },
+      week_complete: true,
+    },
+    {
+      week_start: "2026-11-09",
+      iso_week: "2026-W46",
+      active_users: 0,
+      writers: 0,
+      by_client: {},
+      week_complete: false,
     },
   ],
   metrics_writers: [
@@ -238,6 +286,8 @@ describe("metricParams", () => {
     assert.deepEqual(metricParams({ weeks: 2, now: NOW }), {
       signups: { p_weeks: 2 },
       activation: { p_weeks: 2 },
+      retention: { p_weeks: 2 },
+      activeUsers: { p_weeks: 2 },
       writers: { p_weeks: 2 },
       emptiedNotes: { p_since: "2026-10-29T10:00:00.000Z" },
       depth: {},
@@ -415,6 +465,9 @@ describe("columnsFor", () => {
       "web-cron",
     ]);
     assert.deepEqual(columnsFor([null, {}], ["email"]), []);
+    // Active users have no untagged column: every usage_daily row has a tag.
+    assert.deepEqual(ACTIVE_CLIENT_COLUMNS, CLIENT_COLUMNS.slice(0, -1));
+    assert.ok(!ACTIVE_CLIENT_COLUMNS.includes("untagged"));
   });
 });
 
@@ -423,6 +476,8 @@ describe("formatReport", () => {
   const metrics = {
     signups: ROWS.metrics_signups,
     activation: ROWS.metrics_activation,
+    retention: ROWS.metrics_retention,
+    activeUsers: ROWS.metrics_active_users,
     writers: ROWS.metrics_writers,
     emptiedNotes: ROWS.metrics_emptied_notes,
     depth: ROWS.metrics_depth[0],
@@ -439,6 +494,8 @@ describe("formatReport", () => {
     for (const title of [
       "== Sign-ups per ISO week (UTC)",
       "== Activation by sign-up week",
+      "== Retention by sign-up week",
+      "== Active users per ISO week",
       "== Writers per ISO week",
       "== Notes emptied by one save (200+ characters to none, still empty 24h later), since 2026-09-17",
       "== Depth of use",
@@ -451,6 +508,29 @@ describe("formatReport", () => {
     // A cohort past the history retention shows n/a, not 0.
     assert.match(text, /2026-W38 .* 50\.0% +n\/a +n\/a +closed/);
     assert.match(text, /2026-W46 .* 0 +0\.0% +open/);
+    // Retention: a dash for every null, n/a for an activation nobody can
+    // tell any more, and percentages with one decimal.
+    assert.match(
+      text,
+      /Cohort {4}Starts {6}Activated {2}Week 1 {2}Week 1 % {2}Week 4 {2}Week 4 %\n/,
+    );
+    assert.match(text, /2026-W38 {2}2026-09-14 {8}n\/a {7}– {9}– {7}– {9}–\n/);
+    assert.match(text, /2026-W40 {2}2026-09-28 {10}3 {7}2 {5}66\.7% {7}1 {5}33\.3%\n/);
+    assert.match(text, /2026-W44 {2}2026-10-26 {10}0 {7}0 {9}– {7}– {9}–\n/);
+    // Active users: every client column, even one nobody used, and the
+    // current week marked as still in progress.
+    assert.match(
+      text,
+      /Week {6}Starts {6}Active {2}Writers {2}web {2}mobile-ios {2}mobile-android {2}desktop-macos {2}web-mcp {2}Status\n/,
+    );
+    assert.match(
+      text,
+      /2026-W45 {2}2026-11-02 {7}6 {8}4 {4}4 {11}2 {15}0 {14}0 {8}1 {2}complete\n/,
+    );
+    assert.match(
+      text,
+      /2026-W46 {2}2026-11-09 {7}0 {8}0 {4}0 {11}0 {15}0 {14}0 {8}0 {2}in progress\n/,
+    );
     // Every client column, plus a tag outside the known set.
     assert.match(
       text,
@@ -534,6 +614,8 @@ describe("main", () => {
       assert.equal(json.weeks, DEFAULT_WEEKS);
       assert.deepEqual(json.errors, {});
       assert.deepEqual(json.metrics.platformLimits, ROWS.metrics_platform_limits);
+      assert.deepEqual(json.metrics.activeUsers, ROWS.metrics_active_users);
+      assert.deepEqual(json.metrics.retention, ROWS.metrics_retention);
       assert.deepEqual(json.metrics.depth, ROWS.metrics_depth[0]);
       assert.equal(r.calls[0].headers.apikey, DEV_KEY);
       assert.ok(!r.out.includes(DEV_KEY) && !r.out.includes(PROD_KEY));

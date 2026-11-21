@@ -1,5 +1,5 @@
 // Renders a test run's published screenshots into the Markdown of the comment
-// that reports the run (ADR-0088). Markdown only: what gets published, and
+// that reports the run (ADR-0090). Markdown only: what gets published, and
 // how, is evidence-images.mjs and evidence-upload.mjs; this module only reads
 // the upload record (upload.json) they wrote.
 //
@@ -344,12 +344,12 @@ export function localFooter(evidenceDir, reason = null) {
 export function publishedFooter(evidenceDir, mode = "report") {
   if (mode === "macos") {
     return (
-      "<sub>Screenshots published by the operator (ADR-0088): the Drafto window during a run " +
+      "<sub>Screenshots published by the operator (ADR-0090): the Drafto window during a run " +
       `on production with a throwaway account. Local copies: \`${pathText(evidenceDir)}\`.</sub>`
     );
   }
   return (
-    "<sub>Screenshots are published with this report (ADR-0088): they show the dev test " +
+    "<sub>Screenshots are published with this report (ADR-0090): they show the dev test " +
     `account on dev data. Local copies and the runner's output: \`${pathText(evidenceDir)}\`.</sub>`
   );
 }

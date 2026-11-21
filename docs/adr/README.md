@@ -119,4 +119,6 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0085](./0085-detached-implement-runs.md)                                      | Detached Implement Runs                                                         | Accepted           | 2026-11-17 |
 | [0086](./0086-offline-attachment-cache.md)                                     | Offline Attachment Cache on Mobile and Desktop                                  | Accepted           | 2026-11-18 |
 | [0087](./0087-android-navigation-bar-follows-in-app-theme.md)                  | Android Navigation Bar Follows the In-App Theme                                 | Accepted           | 2026-11-18 |
-| [0088](./0088-factory-test-run-screenshots-on-github.md)                       | Factory Test-Run Screenshots on GitHub                                          | Accepted           | 2026-11-10 |
+| [0088](./0088-activity-days-instead-of-event-analytics.md)                     | Activity Days Instead of Event Analytics                                        | Accepted           | 2026-11-13 |
+| [0089](./0089-macos-native-appearance-follows-in-app-theme.md)                 | macOS Native Appearance Follows the In-App Theme                                | Accepted           | 2026-11-21 |
+| [0090](./0090-factory-test-run-screenshots-on-github.md)                       | Factory Test-Run Screenshots on GitHub                                          | Accepted           | 2026-11-10 |

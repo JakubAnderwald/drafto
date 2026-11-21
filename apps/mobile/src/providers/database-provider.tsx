@@ -7,6 +7,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { hasLocalEdit, storageFullMessage } from "@drafto/shared";
 
 import { database } from "@/db";
+import { markAppOpened } from "@/db/activity-days";
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 import { cleanupOrphanedFiles, processPendingUploads } from "@/lib/data/attachment-queue";
 import type { UploadResult } from "@/lib/data/attachment-queue";
@@ -405,6 +406,12 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active" && userId && identityReadyRef.current) {
+        // Coming to the front is itself an open (ADR-0088). The sync() below
+        // may join a pass that started in the background: that pass marked
+        // nothing, and joining it never reaches syncDatabase()'s own mark. So
+        // mark here too; that pass's ping, or the next sync's, sends the day.
+        // markAppOpened never rejects.
+        void markAppOpened(database);
         sync();
       }
     });
