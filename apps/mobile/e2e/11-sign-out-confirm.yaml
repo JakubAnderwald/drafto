@@ -40,6 +40,17 @@ tags:
 #
 # No RUN_ID needed — this flow creates no user data.
 
+# --- SIGN_OUT_CONFIRM=1 needs the dedicated account: checked before any tap ---
+# A build without the fix signs out at the first tap, so this can't wait for
+# the confirm leg.
+- runFlow:
+    when:
+      true: ${typeof SIGN_OUT_CONFIRM !== 'undefined' && SIGN_OUT_CONFIRM == '1'}
+    commands:
+      - assertTrue:
+          condition: ${typeof E2E_SIGNOUT_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL.trim() !== ''}
+          label: "SIGN_OUT_CONFIRM=1 needs -e E2E_SIGNOUT_EMAIL: the confirm leg signs out a dedicated dev account, never the shared E2E user"
+
 # --- On the dedicated sign-out account, when one is given ---
 # With -e E2E_SIGNOUT_EMAIL (run-qa-10668-e2e.sh passes it for SIGN_OUT_CONFIRM=1
 # and for --before), the whole flow runs on that account: a clean start drops
@@ -48,10 +59,11 @@ tags:
 # without the fix signs out at the first tap with no dialog.
 - runFlow:
     when:
-      true: ${typeof E2E_SIGNOUT_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL !== ''}
+      true: ${typeof E2E_SIGNOUT_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL.trim() !== ''}
     commands:
+      # Trimmed and lower-cased as the login screen trims it: " qa@x " is qa@x.
       - assertTrue:
-          condition: ${typeof E2E_TEST_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL.toLowerCase() !== E2E_TEST_EMAIL.toLowerCase() && (typeof E2E_SIGNOUT_PASSWORD !== 'undefined' || typeof MAESTRO_E2E_SIGNOUT_PASSWORD !== 'undefined')}
+          condition: ${typeof E2E_TEST_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL.trim().toLowerCase() !== E2E_TEST_EMAIL.trim().toLowerCase() && (typeof E2E_SIGNOUT_PASSWORD !== 'undefined' || typeof MAESTRO_E2E_SIGNOUT_PASSWORD !== 'undefined')}
           label: "E2E_SIGNOUT_EMAIL needs -e E2E_TEST_EMAIL (and must differ from it) and a password: -e E2E_SIGNOUT_PASSWORD or MAESTRO_E2E_SIGNOUT_PASSWORD"
       - runFlow:
           file: helpers/sign-in-clean.yaml
@@ -144,11 +156,8 @@ tags:
     when:
       true: ${typeof SIGN_OUT_CONFIRM !== 'undefined' && SIGN_OUT_CONFIRM == '1'}
     commands:
-      # The flow switched to the dedicated account at its start (above); a
-      # confirm without it would sign the shared E2E user out everywhere.
-      - assertTrue:
-          condition: ${typeof E2E_SIGNOUT_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL !== ''}
-          label: "SIGN_OUT_CONFIRM=1 needs -e E2E_SIGNOUT_EMAIL: the confirm leg signs out a dedicated dev account, never the shared E2E user"
+      # The flow switched to the dedicated account at its start (above), after
+      # checking SIGN_OUT_CONFIRM=1 had one.
       - tapOn:
           id: "sign-out-button"
       - extendedWaitUntil:

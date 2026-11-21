@@ -41,6 +41,21 @@ appId: eu.drafto.mobile
           optional: true
       - stopApp
       - launchApp
+      # The fixed wait can't see whether the sign-in had finished (the sheet
+      # hides the app): if the restart beat it, the app is back on Log In, so
+      # sign in once more, with no restart this time.
+      - runFlow:
+          when:
+            visible: "Log In"
+          commands:
+            - tapOn: "you@example.com"
+            - inputText: ${SIGN_IN_EMAIL}
+            - tapOn: "Sign in to your Drafto account"
+            - tapOn: "Your password"
+            - inputText: ${SIGN_IN_PASSWORD}
+            - tapOn: "Sign in to your Drafto account"
+            - tapOn:
+                id: "login-button"
 
 - extendedWaitUntil:
     visible: "Notebooks"

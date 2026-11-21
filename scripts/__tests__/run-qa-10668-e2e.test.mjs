@@ -104,10 +104,9 @@ echo "Input text \${MAESTRO_E2E_TEST_PASSWORD:-}"
 [ -z "\${MAESTRO_E2E_SIGNOUT_PASSWORD:-}" ] || echo "Input text \${MAESTRO_E2E_SIGNOUT_PASSWORD}"
 if [ -n "$debug" ]; then
   mkdir -p "$debug"
-  printf '%s' "\${MAESTRO_E2E_TEST_PASSWORD:-}" |
-    perl -ne 's/(["\\\\])/\\\\$1/g; print "{\\"inputText\\":\\"$_\\"}\\n"' > "$debug/commands-flow.json"
-  [ -z "\${MAESTRO_E2E_SIGNOUT_PASSWORD:-}" ] || printf '%s' "\${MAESTRO_E2E_SIGNOUT_PASSWORD}" |
-    perl -ne 's/(["\\\\])/\\\\$1/g; print "{\\"inputText\\":\\"$_\\"}\\n"' > "$debug/commands-signout.json"
+  perl -MJSON::PP -e 'print JSON::PP->new->canonical->encode({inputText => $ENV{MAESTRO_E2E_TEST_PASSWORD} // ""}), "\\n"' > "$debug/commands-flow.json"
+  [ -z "\${MAESTRO_E2E_SIGNOUT_PASSWORD:-}" ] ||
+    perl -MJSON::PP -e 'print JSON::PP->new->canonical->encode({inputText => $ENV{MAESTRO_E2E_SIGNOUT_PASSWORD}}), "\\n"' > "$debug/commands-signout.json"
 fi
 case " \${FAIL_FLOWS:-} " in *" $(basename "$flow") "*) echo "Assert that id: probe is visible FAILED"; exit 1 ;; esac
 if [ -n "\${FAIL_PHASE:-}" ] && [ "$phase" = "$FAIL_PHASE" ]; then echo "Assert that id: probe is visible FAILED"; exit 1; fi
@@ -384,6 +383,28 @@ describe("run-qa-10668-e2e.sh", () => {
       assert.equal(result.status, 0, result.stdout + result.stderr);
       const saved = savedText(result.out);
       assert.ok(!saved.includes("-tail"), "the sign-out password's tail survived");
+    });
+
+    it("refuses an E2E_SIGNOUT_EMAIL that is the shared user with stray whitespace", () => {
+      const result = confirmRun(
+        envWith(
+          `E2E_SIGNOUT_EMAIL=" e2e@example.com "\nE2E_SIGNOUT_PASSWORD=${SIGNOUT_PASSWORD}\n`,
+        ),
+      );
+      assert.equal(result.status, 2, result.stdout + result.stderr);
+      assert.match(result.stderr, /E2E_SIGNOUT_EMAIL is the shared E2E user/);
+    });
+
+    it("scrubs a sign-out password with a control character, raw and JSON-escaped", () => {
+      const tabbed = "Sign\tout-Pass";
+      // A real tab inside the quotes: bash keeps it, so the value holds one.
+      const result = confirmRun(
+        envWith(`E2E_SIGNOUT_EMAIL=signout@example.com\nE2E_SIGNOUT_PASSWORD="${tabbed}"\n`),
+      );
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const saved = savedText(result.out);
+      assert.ok(!saved.includes("out-Pass"), "part of the sign-out password survived");
+      assert.ok(saved.includes('{"inputText":"[redacted]"}'));
     });
 
     it("without SIGN_OUT_CONFIRM, needs no sign-out account and passes none", () => {

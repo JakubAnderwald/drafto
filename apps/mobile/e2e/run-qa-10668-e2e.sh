@@ -233,7 +233,10 @@ elif [ "$BEFORE" = 1 ] && [ -n "${E2E_SIGNOUT_EMAIL:-}" ] && [ -n "${E2E_SIGNOUT
   SIGNOUT_ACCOUNT=1
 fi
 if [ "$SIGNOUT_ACCOUNT" = 1 ]; then
-  if [ "$(printf '%s' "$E2E_SIGNOUT_EMAIL" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$E2E_TEST_EMAIL" | tr '[:upper:]' '[:lower:]')" ]; then
+  # Trimmed and lower-cased, as the app's login trims the email: a stray space
+  # would otherwise let the shared user through.
+  norm_email() { printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'; }
+  if [ "$(norm_email "$E2E_SIGNOUT_EMAIL")" = "$(norm_email "$E2E_TEST_EMAIL")" ]; then
     echo "ERROR: E2E_SIGNOUT_EMAIL is the shared E2E user; the sign-out step would sign it out everywhere" >&2
     exit 2
   fi
@@ -264,11 +267,13 @@ redact_out() {
   [ "${#signout}" -le "${#E2E_TEST_PASSWORD}" ] || order="E2E_SIGNOUT_PASSWORD E2E_TEST_PASSWORD"
   for var in $order; do
     [ -n "${!var:-}" ] || continue
+    # The JSON form is JSON::PP's (core perl): quotes, backslashes and control
+    # characters escaped the way Maestro's commands JSON has them.
     {
-      printf '%s\n' "${!var}" | perl -ne 'chomp; print "$_\n"; s/(["\\])/\\$1/g; print "$_\n"' |
+      REDACT_VAR="$var" perl -MJSON::PP -e '$p = $ENV{$ENV{REDACT_VAR}}; print "$p\n", substr(JSON::PP->new->allow_nonref->encode($p), 1, -1), "\n"' |
         LC_ALL=C grep -r -l -F --null -f - "$OUT" 2> /dev/null || true
     } |
-      REDACT_VAR="$var" xargs -0 -r perl -pi -e 'BEGIN { $p = $ENV{$ENV{REDACT_VAR}}; ($j = $p) =~ s/(["\\])/\\$1/g } s/\Q$j\E/[redacted]/g; s/\Q$p\E/[redacted]/g' 2> /dev/null || true
+      REDACT_VAR="$var" xargs -0 -r perl -MJSON::PP -pi -e 'BEGIN { $p = $ENV{$ENV{REDACT_VAR}}; $j = substr(JSON::PP->new->allow_nonref->encode($p), 1, -1) } s/\Q$j\E/[redacted]/g; s/\Q$p\E/[redacted]/g' 2> /dev/null || true
   done
 }
 
