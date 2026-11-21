@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const captureException = vi.fn();
+const captureMessage = vi.fn();
 vi.mock("@sentry/nextjs", () => ({
   captureException: (...args: unknown[]) => captureException(...args),
+  captureMessage: (...args: unknown[]) => captureMessage(...args),
 }));
 
 const createAdminClientMock = vi.fn();
