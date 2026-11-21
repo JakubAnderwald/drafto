@@ -5,7 +5,9 @@ import { MetricResultView } from "@/app/(app)/admin/stats/metric-result-view";
 import { MetricsTable } from "@/app/(app)/admin/stats/metrics-table";
 
 function shareCell(share: DepthShare): string {
-  return formatCountOf(share.count, share.of);
+  const text = formatCountOf(share.count, share.of);
+  // From 1,000 writers the count is derived from a rounded share, so it may be off by one.
+  return share.approximate && share.count !== null ? `≈${text}` : text;
 }
 
 export function DepthSection({ depth }: { depth: MetricResult<DepthMetrics | null> }) {
