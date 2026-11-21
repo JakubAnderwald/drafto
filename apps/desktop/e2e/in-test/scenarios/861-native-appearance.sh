@@ -373,11 +373,11 @@ else
   f=$(capture_rect alert-sheet $sheet_frame)
   l=$([ -n "$f" ] && region_luma "$f" 0.05 0.05 0.95 0.95)
   ax_native_press "$cancel_btn" || osascript -e 'tell application "System Events" to key code 53' > /dev/null
-  # An empty dump or [] (a failed read) must not count as closed.
+  # Ask System Events, not the AX dump: axq returns [] for a child list it
+  # can't read, so a partial dump could omit an open sheet. Here a failed read
+  # prints nothing, which never counts as closed.
   sheet_closed() {
-    local d
-    d=$(ax_dump) && [ -n "$d" ] &&
-      jq -e 'type == "array" and length > 0 and all(.[]; .role != "AXSheet")' <<< "$d" > /dev/null
+    [ "$(se "tell $(dp) to get count of sheets of window \"Drafto\"")" = 0 ]
   }
   poll 5 sheet_closed || fail_step "the sign-out confirmation was still open after Cancel"
   on_main_screen || fail_step "the app left the main screen after Cancel"
