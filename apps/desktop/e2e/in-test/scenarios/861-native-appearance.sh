@@ -373,10 +373,11 @@ else
   f=$(capture_rect alert-sheet $sheet_frame)
   l=$([ -n "$f" ] && region_luma "$f" 0.05 0.05 0.95 0.95)
   ax_native_press "$cancel_btn" || osascript -e 'tell application "System Events" to key code 53' > /dev/null
-  # An empty dump (a failed read) must not count as closed.
+  # An empty dump or [] (a failed read) must not count as closed.
   sheet_closed() {
     local d
-    d=$(ax_dump) && [ -n "$d" ] && ! jq -e 'any(.[]; .role == "AXSheet")' <<< "$d" > /dev/null
+    d=$(ax_dump) && [ -n "$d" ] &&
+      jq -e 'type == "array" and length > 0 and all(.[]; .role != "AXSheet")' <<< "$d" > /dev/null
   }
   poll 5 sheet_closed || fail_step "the sign-out confirmation was still open after Cancel"
   on_main_screen || fail_step "the app left the main screen after Cancel"
