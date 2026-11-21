@@ -796,3 +796,40 @@ describe("findItemForIssue / addIssueToProject (drive-issue, ADR-0090)", () => {
     await assert.rejects(lib.addIssueToProject("P1", ""), /requires/);
   });
 });
+
+describe("findItemForIssue pagination (PR #888)", () => {
+  it("reads every page of the issue's projects before saying it isn't on the board", async () => {
+    const page = (nodes, hasNextPage) =>
+      ghResp({
+        data: {
+          repository: {
+            issue: {
+              id: "ISSUE_NODE",
+              projectItems: { pageInfo: { hasNextPage, endCursor: "C1" }, nodes },
+            },
+          },
+        },
+      });
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (_c, a) => a.includes("cursor=C1"),
+          response: page(
+            [{ id: "ITEM", project: { id: "P1" }, fieldValueByName: { name: "In Review" } }],
+            false,
+          ),
+        },
+        {
+          match: () => true,
+          response: page([{ id: "X", project: { id: "P9" }, fieldValueByName: null }], true),
+        },
+      ]),
+    );
+    assert.deepEqual(await lib.findItemForIssue("P1", 42), {
+      itemId: "ITEM",
+      contentId: "ISSUE_NODE",
+      status: "In Review",
+    });
+    assert.equal(execCalls.length, 2);
+  });
+});

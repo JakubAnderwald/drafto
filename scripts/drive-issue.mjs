@@ -45,16 +45,25 @@
 //                                       the factory's parity check on the PR's
 //                                       diff, or on the local branch vs base.
 //   approve-migration <n> [--pr <p>]    after the operator's explicit yes: add
-//                                       migration-approved and log the SQL hash.
-//   gates <n> [--pr <p>] [--log]        the --release pre-merge checks (exit 1
-//                                       when any fails).
+//                                       migration-approved and log the PR's SQL
+//                                       hash (gates and release check it).
+//   gates <n> [--pr <p>] [--log]        the --release pre-merge checks, all on
+//                                       one PR head (exit 1 when any fails).
+//   merge <n> [--pr <p>]                gates --log, then squash-merge pinned to
+//                                       the head the gates passed.
+//   hosted-config <n> [--pr <p>]        the hosted-config gate alone, before a
+//                                       pre-merge beta (exit 1 unless ok).
 //   release <n> [--to <Status>] --note <t> [--force]
 //                                       hand the card back to the factory (in
 //                                       its current column without --to). The
 //                                       column must fit; --force skips only the
-//                                       plan / open-PR requirement.
+//                                       plan / open-PR requirement. Handing a
+//                                       card past a human gate needs that
+//                                       gate's approval logged first. Re-run it
+//                                       to post a handback log that failed.
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,6 +177,21 @@ const PLAN_REQUIRED_COLUMNS = new Set([
 const PR_REQUIRED_COLUMNS = new Set(["In Review", "Testing", "In Test", "Approved"]);
 const BOARD_COLUMNS = new Set(["Backlog", ...Object.keys(STATUS_LABELS)]);
 
+// The board's columns in flow order (Blocked sits outside it).
+export const COLUMN_ORDER = Object.freeze([
+  "Backlog",
+  "Ready",
+  "Planning",
+  "Plan Review",
+  "In Progress",
+  "In Review",
+  "Testing",
+  "In Test",
+  "Approved",
+  "Released",
+  "Done",
+]);
+
 export class DriveError extends Error {}
 
 export const branchFor = (issue) => `factory/issue-${issue}`;
@@ -195,6 +219,45 @@ export function ownerCommentWithMarker(comments, marker) {
       c.body.split("\n").some((line) => line.trim() === marker),
   );
   return hits.length ? hits[hits.length - 1] : null;
+}
+
+// The OWNER comments carrying a session marker for `step` (any key), in order.
+export function sessionEntries(comments, step) {
+  const marker = `<!-- ${SESSION_MARKER_PREFIX}${step}`;
+  return (comments ?? []).filter(
+    (c) =>
+      c?.authorAssociation === "OWNER" &&
+      typeof c.body === "string" &&
+      c.body.split("\n").some((l) => {
+        const t = l.trim();
+        return t.startsWith(`${marker} -->`) || t.startsWith(`${marker}:`);
+      }),
+  );
+}
+
+// Index of the newest comment carrying any of `steps`, or -1.
+export function lastEntryIndex(comments, steps) {
+  const want = new Set(steps.flatMap((st) => sessionEntries(comments, st)));
+  let at = -1;
+  (comments ?? []).forEach((c, i) => {
+    if (want.has(c)) at = i;
+  });
+  return at;
+}
+
+// The session's newest migration approval for PR `prNumber`: {hash, comment}
+// or null. Keys are pr<P>-<hash>-<stamp>, so a re-approval always posts anew
+// and an approval for another PR on the same issue never counts.
+export function latestMigrationApproval(comments, prNumber) {
+  const re = new RegExp(
+    `<!-- ${SESSION_MARKER_PREFIX}migration-approved:pr${prNumber}-([0-9a-f]+)-[0-9a-z]+ -->`,
+  );
+  let found = null;
+  for (const c of sessionEntries(comments, "migration-approved")) {
+    const m = re.exec(c.body);
+    if (m) found = { hash: m[1], comment: c };
+  }
+  return found;
 }
 
 // The factory's plan comment: an OWNER comment whose body starts with the plan
@@ -314,9 +377,41 @@ export function handbackBlocker(to, { hasPlan, pr, issue }) {
   return out;
 }
 
+// Handing a card forward past a human gate needs that gate's approval in the
+// session log first, because the factory acts on the column alone: into In
+// Progress or later from before it needs `plan-approved` newer than the latest
+// plan or replan; into Approved (or Released) from before it needs `approved`
+// newer than the latest revision. Returns the reason, or "".
+export function approvalBlocker(to, from, comments) {
+  const at = (col) => COLUMN_ORDER.indexOf(col);
+  const fromAt = at(from ?? "");
+  if (at(to) >= at("In Progress") && fromAt !== -1 && fromAt < at("In Progress")) {
+    const ok =
+      lastEntryIndex(comments, ["plan-approved"]) > lastEntryIndex(comments, ["plan", "replan"]);
+    if (!ok) {
+      return "the plan isn't approved in this session (gate 1): log plan-approved after the operator approves, or hand back to Plan Review";
+    }
+  }
+  if (at(to) >= at("Approved") && fromAt !== -1 && fromAt < at("Approved")) {
+    const ok =
+      lastEntryIndex(comments, ["approved"]) > lastEntryIndex(comments, ["revision"]) &&
+      lastEntryIndex(comments, ["approved"]) !== -1;
+    if (!ok) {
+      return "the merge isn't approved in this session (gate 2): log approved after the operator approves, or hand back to In Test";
+    }
+  }
+  return "";
+}
+
 // ── Driver ──────────────────────────────────────────────────────────────────
 
-export function createDriver({ exec = defaultExec, project = projectLib, repoRoot } = {}) {
+export function createDriver({
+  exec = defaultExec,
+  project = projectLib,
+  repoRoot,
+  nonce = () => randomBytes(4).toString("hex"),
+  now = () => Date.now(),
+} = {}) {
   const root = repoRoot ?? SCRIPT_REPO_ROOT;
 
   async function gh(args, { stdin, allowFail = false } = {}) {
@@ -416,17 +511,49 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
     return { projectId, ...item };
   }
 
+  // Board first, then the label, as transition_status does.
   async function setColumn(issue, labels, status, c) {
     await project.setItemStatusByName({
       projectId: c.projectId,
       itemId: c.itemId,
       statusName: status,
     });
+    await syncStatusLabel(issue, labels, status);
+  }
+
+  // Make the status:* labels say `status` (a no-op when they already do).
+  async function syncStatusLabel(issue, labels, status) {
     const { add, remove } = labelSwap(labels, status);
     const args = ["issue", "edit", String(issue), "--repo", REPO];
-    if (add) args.push("--add-label", add);
+    if (add && !labels.includes(add)) args.push("--add-label", add);
     for (const l of remove) args.push("--remove-label", l);
     if (args.length > 5) await gh(args);
+  }
+
+  // Put a claimed card on the board (in Ready) if it isn't there yet. Safe to
+  // repeat: a claim interrupted between the label and the board is finished
+  // by `claim --resume`.
+  async function ensureOnBoard(issue, labels, c) {
+    let { itemId, status } = c;
+    let addedToBoard = false;
+    if (!itemId) {
+      itemId = await project.addIssueToProject(c.projectId, c.contentId);
+      addedToBoard = true;
+    }
+    if (!status) {
+      status = "Ready";
+      await setColumn(issue, labels, status, { ...c, itemId });
+    }
+    return { itemId, status, addedToBoard };
+  }
+
+  async function deleteComment(url) {
+    const id = /issuecomment-(\d+)/.exec(url ?? "")?.[1];
+    if (id) {
+      await gh(["api", "--method", "DELETE", `repos/${REPO}/issues/comments/${id}`], {
+        allowFail: true,
+      });
+    }
   }
 
   function requireClaim(issueData, force) {
@@ -457,10 +584,7 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
       // Two sessions driving one card would race on the branch, the column and
       // the comments, so an existing claim is only picked up on purpose.
       if (!resume) {
-        const prior = (await issueComments(issue))
-          .filter((cm) => cm.authorAssociation === "OWNER")
-          .filter((cm) => (cm.body ?? "").includes(sessionMarker("claim")))
-          .at(-1);
+        const prior = sessionEntries(await issueComments(issue), "claim").at(-1);
         throw new DriveError(
           `#${issue} is already claimed by an interactive session` +
             (prior ? ` (${prior.createdAt}: ${prior.url})` : "") +
@@ -468,15 +592,19 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
             "if another session is still driving it, leave the card to it.",
         );
       }
+      const board = await ensureOnBoard(issue, data.labels, c);
       await log(issue, {
         step: "claim",
         heading: "Claim resumed",
-        body: `A new interactive session picked up the existing claim. Column: ${c.status ?? "—"}.`,
+        body:
+          `A new interactive session picked up the existing claim. Column: ${board.status}` +
+          `${board.addedToBoard ? " (added to the board: the first claim stopped before it)" : ""}.`,
       });
       return {
         issue,
         already: true,
-        status: c.status,
+        status: board.status,
+        addedToBoard: board.addedToBoard,
         branch: branchFor(issue),
         pr: pr?.url ?? null,
       };
@@ -491,20 +619,30 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
     }
     // Label first, so the factory never sees the card on the board unclaimed.
     await gh(["issue", "edit", String(issue), "--repo", REPO, "--add-label", DRIVER_LABEL]);
-    let { itemId, status } = c;
-    let addedToBoard = false;
-    if (!itemId) {
-      itemId = await project.addIssueToProject(c.projectId, c.contentId);
-      addedToBoard = true;
+    // Two sessions can both pass the label check above. Each claim log entry
+    // carries its own nonce; the earliest claim since the last handback wins,
+    // and a later one withdraws its entry and stops.
+    const key = nonce();
+    const entry = await log(issue, {
+      step: "claim",
+      key,
+      body: `Claiming… (claim \`${key}\`)`,
+      force: true,
+    });
+    const comments = await issueComments(issue);
+    const since = lastEntryIndex(comments, ["handback"]);
+    const winner = sessionEntries(comments.slice(since + 1), "claim")[0];
+    if (winner && winner.url !== entry.url) {
+      await deleteComment(entry.url);
+      throw new DriveError(
+        `lost a claim race: another session claimed #${issue} first (${winner.url}). Leave the card to it.`,
+      );
     }
-    if (!status) {
-      status = "Ready";
-      await setColumn(issue, data.labels, status, { ...c, itemId });
-    }
+    const board = await ensureOnBoard(issue, data.labels, c);
     const lines = [
-      `This card is now driven from an interactive Claude Code session. The factory skips it while \`${DRIVER_LABEL}\` is on.`,
+      `This card is now driven from an interactive Claude Code session (claim \`${key}\`). The factory skips it while \`${DRIVER_LABEL}\` is on.`,
       "",
-      `- **Column:** ${status}${addedToBoard ? " (added to the board)" : ""}`,
+      `- **Column:** ${board.status}${board.addedToBoard ? " (added to the board)" : ""}`,
       `- **Branch:** \`${branchFor(issue)}\``,
       `- **PR:** ${pr ? `${pr.url} (${pr.state})` : "none yet"}`,
     ];
@@ -513,12 +651,14 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
       "",
       `Hand it back with \`node scripts/drive-issue.mjs release ${issue} --to <column> --note …\`.`,
     );
-    const entry = await log(issue, { step: "claim", body: lines.join("\n"), force: true });
+    const finalBody = renderLogComment({ step: "claim", key, body: lines.join("\n") });
+    const claimId = /issuecomment-(\d+)/.exec(entry.url ?? "")?.[1];
+    if (claimId) await editComment(claimId, finalBody);
     return {
       issue,
       already: false,
-      status,
-      addedToBoard,
+      status: board.status,
+      addedToBoard: board.addedToBoard,
       branch: branchFor(issue),
       pr: pr?.url ?? null,
       log: entry.url,
@@ -592,11 +732,18 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
     const mb = await exec("git", ["merge-base", base, "HEAD"], { cwd: root });
     if (mb.code !== 0)
       throw new DriveError(`git merge-base ${base} HEAD failed: ${mb.stderr.trim()}`);
-    const diff = await exec("git", ["diff", "--name-only", mb.stdout.trim()], { cwd: root });
-    const untracked = await exec("git", ["ls-files", "--others", "--exclude-standard"], {
-      cwd: root,
-    });
-    return [...new Set(`${diff.stdout}\n${untracked.stdout}`.split("\n").filter(Boolean))];
+    // -z: unquoted paths, so `apps/web/café.ts` still starts with apps/.
+    const lists = [
+      ["diff", "--name-only", "-z", mb.stdout.trim()],
+      ["ls-files", "-z", "--others", "--exclude-standard"],
+    ];
+    const files = [];
+    for (const args of lists) {
+      const r = await exec("git", args, { cwd: root });
+      if (r.code !== 0) throw new DriveError(`git ${args[0]} failed: ${r.stderr.trim()}`);
+      files.push(...r.stdout.split("\0").filter(Boolean));
+    }
+    return [...new Set(files)];
   }
 
   async function parity(issue, { pr: prNumber, base = "origin/main" } = {}) {
@@ -642,7 +789,7 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
     await gh(["pr", "edit", String(pr.number), "--repo", REPO, "--add-label", MIGRATION_LABEL]);
     const entry = await log(issue, {
       step: "migration-approved",
-      key: hash,
+      key: `pr${pr.number}-${hash}-${now().toString(36)}`,
       body: [
         `The operator approved PR #${pr.number}'s migration SQL in this session (hash \`${hash}\`, head \`${pr.headRefOid.slice(0, 12)}\`).`,
         "",
@@ -676,22 +823,77 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
       : { ok: true, detail: `${list.length} required check(s) green` };
   }
 
+  // Unresolved review threads across every page. A page that can't be read
+  // throws, so the gate fails rather than counting it as empty.
   async function unresolvedThreads(prNumber) {
     const [owner, name] = REPO.split("/");
-    const r = await gh([
-      "api",
-      "graphql",
-      "-f",
-      "query=query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100){nodes{isResolved}}}}}",
-      "-f",
-      `o=${owner}`,
-      "-f",
-      `n=${name}`,
-      "-F",
-      `p=${prNumber}`,
-    ]);
-    const nodes = JSON.parse(r.stdout)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
-    return nodes.filter((t) => !t.isResolved).length;
+    let open = 0;
+    let cursor = null;
+    for (let page = 0; page < 50; page++) {
+      const args = [
+        "api",
+        "graphql",
+        "-f",
+        "query=query($o:String!,$n:String!,$p:Int!,$c:String){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}nodes{isResolved}}}}}",
+        "-f",
+        `o=${owner}`,
+        "-f",
+        `n=${name}`,
+        "-F",
+        `p=${prNumber}`,
+      ];
+      if (cursor) args.push("-f", `c=${cursor}`);
+      const conn = JSON.parse((await gh(args)).stdout)?.data?.repository?.pullRequest
+        ?.reviewThreads;
+      if (!conn) throw new DriveError(`couldn't read PR #${prNumber}'s review threads`);
+      open += (conn.nodes ?? []).filter((t) => !t.isResolved).length;
+      if (!conn.pageInfo?.hasNextPage) return open;
+      cursor = conn.pageInfo.endCursor;
+    }
+    throw new DriveError(`PR #${prNumber} has more review threads than this check reads`);
+  }
+
+  // Fetch main and the PR head so the ref-reading checks see current commits.
+  // Returns "" or the reason the refs can't be trusted.
+  async function refreshRefs(pr) {
+    const f = await exec("git", ["fetch", "--quiet", "origin", "main", pr.headRefName], {
+      cwd: root,
+    });
+    if (f.code !== 0) return `git fetch failed: ${f.stderr.trim() || `exit ${f.code}`}`;
+    const has = await exec("git", ["cat-file", "-e", `${pr.headRefOid}^{commit}`], { cwd: root });
+    if (has.code !== 0) return `the PR head ${pr.headRefOid.slice(0, 12)} isn't in the local clone`;
+    return "";
+  }
+
+  // hosted-config.mjs on the PR head commit itself (not a moving ref):
+  // {ok, detail}. Run refreshRefs first.
+  async function hostedConfig(pr, where) {
+    const hc = await exec(
+      "node",
+      [
+        join(SCRIPTS_DIR, "lib", "hosted-config.mjs"),
+        "check",
+        "--base-ref",
+        "origin/main",
+        "--head-ref",
+        pr.headRefOid,
+        "--labels",
+        pr.labels.join(","),
+        "--pr",
+        String(pr.number),
+        "--where",
+        where,
+      ],
+      { cwd: root },
+    );
+    const status = { 0: "ok", 3: "hold", 4: "unknown" }[hc.code] ?? "error";
+    return {
+      ok: status === "ok",
+      detail:
+        status === "ok"
+          ? "nothing to apply"
+          : `${status}: run \`pnpm hosted-config:check\` for what to apply to dev and prod`,
+    };
   }
 
   // The --release merge gates, in the factory's order (factory-agent.sh
@@ -705,8 +907,12 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
       add("open PR", false, `no open PR on ${branchFor(issue)}`);
       return { issue, ok: false, pr: pr?.number ?? null, checks };
     }
-    // hosted-config and the migration order read origin refs.
-    await exec("git", ["fetch", "--quiet", "origin", "main", pr.headRefName], { cwd: root });
+    // hosted-config, the migration order and the SQL hash read git refs.
+    const stale = await refreshRefs(pr);
+    if (stale) {
+      add("refs up to date", false, stale);
+      return { issue, ok: false, pr: pr.number, head: pr.headRefOid, checks };
+    }
     const files = await prFiles(pr.number);
     const touchesMigrations = files.some((f) => f.startsWith("supabase/migrations/"));
 
@@ -727,23 +933,24 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
       mig || (touchesMigrations ? "label present" : "no migrations"),
     );
     if (touchesMigrations && !mig) {
-      const comments = await issueComments(issue);
-      const approvals = comments.filter(
-        (c) =>
-          c.authorAssociation === "OWNER" &&
-          (c.body ?? "").includes(`${SESSION_MARKER_PREFIX}migration-approved:`),
-      );
-      if (approvals.length) {
-        const { hash } = await migrationHash(pr);
-        const matches = approvals.some((c) =>
-          (c.body ?? "").includes(sessionMarker("migration-approved", hash)),
-        );
+      // A merge from the session needs the operator's approval of exactly this
+      // SQL, recorded by approve-migration: a label alone (added on the board,
+      // or left by a failed approve-migration) isn't enough.
+      const approval = latestMigrationApproval(await issueComments(issue), pr.number);
+      if (!approval) {
         add(
-          "migration SQL unchanged since approval",
-          matches,
-          matches
+          "migration SQL approved in session",
+          false,
+          "no approval recorded for this PR; after the operator's explicit yes, run approve-migration",
+        );
+      } else {
+        const { hash } = await migrationHash(pr);
+        add(
+          "migration SQL approved in session",
+          approval.hash === hash,
+          approval.hash === hash
             ? `hash ${hash}`
-            : `SQL hash is now ${hash}; ask the operator again, then approve-migration`,
+            : `SQL hash is now ${hash}, approved ${approval.hash}; ask the operator again, then approve-migration`,
         );
       }
     }
@@ -785,31 +992,17 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
     );
     const open = await unresolvedThreads(pr.number);
     add("review threads resolved", open === 0, `${open} unresolved`);
-    const hc = await exec(
-      "node",
-      [
-        join(SCRIPTS_DIR, "lib", "hosted-config.mjs"),
-        "check",
-        "--base-ref",
-        "origin/main",
-        "--head-ref",
-        `origin/${pr.headRefName}`,
-        "--labels",
-        pr.labels.join(","),
-        "--pr",
-        String(pr.number),
-        "--where",
-        "Approved",
-      ],
-      { cwd: root },
-    );
-    const hcStatus = { 0: "ok", 3: "hold", 4: "unknown" }[hc.code] ?? "error";
+    const hc = await hostedConfig(pr, "Approved");
+    add("hosted config applied", hc.ok, hc.detail);
+    // Every check above must describe one commit. A push mid-run invalidates
+    // the result.
+    const after = await findPr(issue, pr.number);
     add(
-      "hosted config applied",
-      hcStatus === "ok",
-      hcStatus === "ok"
-        ? "nothing to apply"
-        : `${hcStatus}: run \`pnpm hosted-config:check\` for what to apply`,
+      "head unchanged while checking",
+      after?.headRefOid === pr.headRefOid,
+      after?.headRefOid === pr.headRefOid
+        ? pr.headRefOid.slice(0, 12)
+        : `moved to ${String(after?.headRefOid).slice(0, 12)}; re-run gates`,
     );
 
     const ok = checks.every((c) => c.ok);
@@ -817,7 +1010,9 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
     if (logResult) {
       const entry = await log(issue, {
         step: "gates",
-        key: pr.headRefOid.slice(0, 12),
+        // One entry per head and outcome: a re-run with the same results
+        // posts nothing, a changed result posts anew.
+        key: `${pr.headRefOid.slice(0, 12)}-${checks.map((c) => (c.ok ? 1 : 0)).join("")}`,
         body: [
           `PR #${pr.number} at \`${pr.headRefOid.slice(0, 12)}\`: **${ok ? "all gates pass" : "blocked"}**`,
           "",
@@ -831,15 +1026,35 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
     return { issue, ok, pr: pr.number, head: pr.headRefOid, checks, log: logUrl };
   }
 
+  function handbackBody(issue, note, column, pr, markerAdded) {
+    return [
+      String(note).trim(),
+      "",
+      `- **Column:** ${column ?? "unknown"}`,
+      `- **PR:** ${pr ? `${pr.url} (${pr.state})` : "none"}${markerAdded ? " — added the factory PR marker" : ""}`,
+      `- **Factory next:** ${(HANDBACK_NEXT[column] ?? "picks the card up on its next tick.").replace("<n>", String(issue))}`,
+    ].join("\n");
+  }
+
   async function release(issue, { to, note, force = false } = {}) {
     if (!note || !String(note).trim())
       throw new DriveError("release needs --note: say what state the card is in");
     const data = await issueView(issue);
-    if (!data.labels.includes(DRIVER_LABEL))
-      throw new DriveError(`#${issue} isn't claimed (no ${DRIVER_LABEL} label)`);
     const comments = await issueComments(issue);
-    const pr = await findPr(issue);
     const c = await card(issue);
+    const pr = await findPr(issue);
+    if (!data.labels.includes(DRIVER_LABEL)) {
+      // An earlier release took the label off but couldn't post its log:
+      // post just the log now, with no board or PR writes.
+      if (lastEntryIndex(comments, ["claim"]) > lastEntryIndex(comments, ["handback"])) {
+        const entry = await log(issue, {
+          step: "handback",
+          body: handbackBody(issue, note, c.status, pr, false),
+        });
+        return { issue, column: c.status, pr: pr?.url ?? null, logOnly: true, log: entry.url };
+      }
+      throw new DriveError(`#${issue} isn't claimed (no ${DRIVER_LABEL} label)`);
+    }
     // Without --to the card stays where it is, and that column is checked.
     const column = to ?? c.status;
     const blocker = handbackBlocker(column, {
@@ -851,6 +1066,25 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
       throw new DriveError(`can't hand back in ${column ?? "no column"}: ${blocker.hard}`);
     if (blocker.soft && !force)
       throw new DriveError(`can't hand back in ${column}: ${blocker.soft}`);
+    const gate = approvalBlocker(column, c.status, comments);
+    if (gate) throw new DriveError(`can't hand back in ${column}: ${gate}`);
+    // The factory vouches for the SQL it first sees with the label (ADR-0078),
+    // so handing back a label the operator gave to older SQL would pass the new
+    // SQL off as approved.
+    if (pr && pr.state === "OPEN" && pr.labels.includes(MIGRATION_LABEL)) {
+      const approval = latestMigrationApproval(comments, pr.number);
+      if (approval) {
+        const stale = await refreshRefs(pr);
+        if (stale) throw new DriveError(`can't check the approved migration SQL: ${stale}`);
+        const { hash } = await migrationHash(pr);
+        if (hash !== approval.hash) {
+          throw new DriveError(
+            `PR #${pr.number}'s migration SQL changed since the operator approved it (approved ${approval.hash}, now ${hash}). ` +
+              `Get a new yes and run approve-migration, or remove the ${MIGRATION_LABEL} label, before handing back.`,
+          );
+        }
+      }
+    }
     let markerAdded = false;
     if (pr && pr.state === "OPEN" && !(pr.body ?? "").trimStart().startsWith(PR_MARKER)) {
       await gh(["pr", "edit", String(pr.number), "--repo", REPO, "--body-file", "-"], {
@@ -858,20 +1092,69 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
       });
       markerAdded = true;
     }
+    // Reconcile the label even when the column already matches: a release that
+    // moved the board but failed on the label is finished here.
     if (column !== c.status) await setColumn(issue, data.labels, column, c);
-    const body = [
-      String(note).trim(),
-      "",
-      `- **Column:** ${column}`,
-      `- **PR:** ${pr ? `${pr.url} (${pr.state})` : "none"}${markerAdded ? " — added the factory PR marker" : ""}`,
-      `- **Factory next:** ${(HANDBACK_NEXT[column] ?? "picks the card up on its next tick.").replace("<n>", String(issue))}`,
-    ].join("\n");
+    else await syncStatusLabel(issue, data.labels, column);
     // Label off first: a handback log must never claim a handback that didn't
-    // happen. The log carries the session marker, so the factory can't misread
-    // it whichever lands first.
+    // happen. If the log then fails, re-running release posts it.
     await gh(["issue", "edit", String(issue), "--repo", REPO, "--remove-label", DRIVER_LABEL]);
-    const entry = await log(issue, { step: "handback", body });
+    const entry = await log(issue, {
+      step: "handback",
+      body: handbackBody(issue, note, column, pr, markerAdded),
+    });
     return { issue, column, pr: pr?.url ?? null, markerAdded, log: entry.url };
+  }
+
+  // Squash-merge the card's PR at exactly the head `gates` passed: GitHub's
+  // `sha` parameter refuses the merge if the head moved after the check.
+  async function merge(issue, { pr: prNumber } = {}) {
+    requireClaim(await issueView(issue), false);
+    const result = await gates(issue, { pr: prNumber, logResult: true });
+    if (!result.ok) {
+      const failed = result.checks.filter((ch) => !ch.ok).map((ch) => ch.name);
+      throw new DriveError(`gates failed (${failed.join(", ")}); nothing merged`);
+    }
+    const r = await gh(
+      [
+        "api",
+        "--method",
+        "PUT",
+        `repos/${REPO}/pulls/${result.pr}/merge`,
+        "-f",
+        "merge_method=squash",
+        "-f",
+        `sha=${result.head}`,
+      ],
+      { allowFail: true },
+    );
+    let body = {};
+    try {
+      body = JSON.parse(r.stdout || "{}");
+    } catch {
+      body = {};
+    }
+    if (r.code !== 0 || body.merged !== true) {
+      throw new DriveError(
+        `GitHub refused the merge of PR #${result.pr} at ${result.head.slice(0, 12)}: ` +
+          `${body.message || r.stderr.trim() || "unknown error"}`,
+      );
+    }
+    const entry = await log(issue, {
+      step: "merged",
+      key: String(body.sha ?? "").slice(0, 12),
+      body: `Squash-merged PR #${result.pr} at the gated head \`${result.head.slice(0, 12)}\` as \`${String(body.sha ?? "").slice(0, 12)}\`.`,
+    });
+    return { issue, pr: result.pr, head: result.head, mergeSha: body.sha ?? null, log: entry.url };
+  }
+
+  // The hosted-config gate on its own, for a pre-merge beta dispatch.
+  async function hostedConfigGate(issue, { pr: prNumber } = {}) {
+    const pr = await findPr(issue, prNumber);
+    if (!pr || pr.state !== "OPEN") throw new DriveError(`no open PR on ${branchFor(issue)}`);
+    const stale = await refreshRefs(pr);
+    if (stale) return { issue, pr: pr.number, head: pr.headRefOid, ok: false, detail: stale };
+    return { issue, pr: pr.number, head: pr.headRefOid, ...(await hostedConfig(pr, "beta")) };
   }
 
   async function status(issue) {
@@ -916,6 +1199,8 @@ export function createDriver({ exec = defaultExec, project = projectLib, repoRoo
     parity,
     approveMigration,
     gates,
+    merge,
+    hostedConfig: hostedConfigGate,
     release,
     status,
   };
@@ -983,6 +1268,8 @@ function render(cmd, result) {
       return result.violation
         ? `❌ parity (${result.source}): ${result.violation}`
         : `✅ parity (${result.source}, ${result.files} files)`;
+    case "hosted-config":
+      return `${result.ok ? "✅" : "❌"} hosted config (PR #${result.pr} at ${result.head.slice(0, 12)}): ${result.detail}`;
     case "gates":
       return [
         `${result.ok ? "✅ all gates pass" : "❌ blocked"} — PR #${result.pr ?? "?"}`,
@@ -1060,6 +1347,12 @@ export async function main(argv, driver = createDriver()) {
     case "gates":
       result = await driver.gates(issueArg(positional), { pr: flags.pr, logResult: flags.log });
       break;
+    case "merge":
+      result = await driver.merge(issueArg(positional), { pr: flags.pr });
+      break;
+    case "hosted-config":
+      result = await driver.hostedConfig(issueArg(positional), { pr: flags.pr });
+      break;
     case "release":
       result = await driver.release(issueArg(positional), {
         to: flags.to,
@@ -1069,14 +1362,15 @@ export async function main(argv, driver = createDriver()) {
       break;
     default:
       throw new DriveError(
-        "Usage: drive-issue.mjs <claim|status|spec|move|log|plan|scenario|parity|approve-migration|gates|release> <issue> [flags]\n" +
+        "Usage: drive-issue.mjs <claim|status|spec|move|log|plan|scenario|parity|approve-migration|gates|merge|hosted-config|release> <issue> [flags]\n" +
           "See the header of scripts/drive-issue.mjs or docs/features/interactive-driving.md.",
       );
   }
   const failed =
     (cmd === "spec" && Boolean(result.missing)) ||
     (cmd === "parity" && Boolean(result.violation)) ||
-    (cmd === "gates" && !result.ok);
+    (cmd === "gates" && !result.ok) ||
+    (cmd === "hosted-config" && !result.ok);
   return {
     text: flags.json ? JSON.stringify(result, null, 2) : render(cmd, result),
     code: failed ? 1 : 0,

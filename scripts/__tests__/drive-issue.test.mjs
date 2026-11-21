@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   DRIVER_LABEL,
   PR_MARKER,
+  approvalBlocker,
   createDriver,
   handbackBlocker,
   labelSwap,
@@ -63,6 +64,10 @@ function world({
   hostedConfigCode = 0,
   gitHead = HEAD,
   comments = [],
+  gitFail = "",
+  threadPages = null,
+  headAfter = null,
+  mergeResponse = { code: 0, body: { merged: true, sha: "b".repeat(40) } },
 } = {}) {
   const w = {
     issue: {
@@ -81,6 +86,7 @@ function world({
     },
     pr,
     calls: [],
+    merges: [],
     nextId: 100,
   };
   const reply = (stdout, code = 0, stderr = "") => ({ code, stdout, stderr });
@@ -88,7 +94,12 @@ function world({
 
   async function exec(cmd, args, { stdin } = {}) {
     w.calls.push([cmd, ...args].join(" "));
-    if (cmd === "git") return reply(args[0] === "rev-parse" ? `${gitHead}\n` : "");
+    if (cmd === "git") {
+      if (gitFail && args[0] === gitFail) return reply("", 128, `fatal: ${gitFail} broke`);
+      if (args[0] === "rev-parse") return reply(`${gitHead}\n`);
+      if (args[0] === "diff") return reply("apps/web/café.ts\0scripts/x.mjs\0");
+      return reply("");
+    }
     if (cmd === "node") {
       if (args[0].endsWith("hosted-config.mjs")) return reply("{}", hostedConfigCode);
       if (args[0].endsWith("check-migration-order.mjs")) return reply("");
@@ -107,6 +118,20 @@ function world({
     if (a === "api" && /issues\/42\/comments$/.test(b)) {
       return reply(w.comments.map((c) => JSON.stringify(c)).join("\n"));
     }
+    if (a === "api" && args.includes("DELETE")) {
+      const id = Number(
+        args
+          .find((x) => x.includes("/comments/"))
+          .split("/")
+          .pop(),
+      );
+      w.comments = w.comments.filter((c) => c.id !== id);
+      return reply("");
+    }
+    if (a === "api" && args.includes("PUT")) {
+      w.merges.push(args.filter((x) => x.startsWith("sha=") || x.startsWith("merge_method=")));
+      return reply(JSON.stringify(mergeResponse.body), mergeResponse.code);
+    }
     if (a === "api" && args.includes("PATCH")) {
       const id = Number(
         args
@@ -118,10 +143,15 @@ function world({
       return reply("{}");
     }
     if (a === "api" && b === "graphql") {
+      const pages = threadPages ?? [threads];
+      const cursor = args.find((x) => x.startsWith("c="));
+      const page = cursor ? Number(cursor.slice(2)) : 0;
+      const conn = {
+        nodes: pages[page],
+        pageInfo: { hasNextPage: page + 1 < pages.length, endCursor: String(page + 1) },
+      };
       return reply(
-        JSON.stringify({
-          data: { repository: { pullRequest: { reviewThreads: { nodes: threads } } } },
-        }),
+        JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: conn } } } }),
       );
     }
     if (a === "issue" && b === "comment") {
@@ -138,6 +168,10 @@ function world({
           w.issue.labels = w.issue.labels.filter((l) => l !== args[i + 1]);
       });
       return reply("");
+    }
+    // The first lookup lists PRs; every later `pr view` sees the moved head.
+    if (a === "pr" && b === "view" && headAfter) {
+      return reply(JSON.stringify({ ...w.pr, headRefOid: headAfter, labels: [] }));
     }
     if (a === "pr" && (b === "list" || b === "view")) {
       const shape = (p) => ({ ...p, labels: (p.labels ?? []).map((name) => ({ name })) });
@@ -170,7 +204,13 @@ function world({
       w.card.status = statusName;
     },
   };
-  w.driver = createDriver({ exec, project, repoRoot: "/repo" });
+  w.driver = createDriver({
+    exec,
+    project,
+    repoRoot: "/repo",
+    nonce: () => "n1",
+    now: () => 1000,
+  });
   return w;
 }
 
@@ -188,6 +228,15 @@ const openPr = (over = {}) => ({
   mergeStateStatus: "CLEAN",
   ...over,
 });
+
+const entry = (step, key = "", id = 50) => ({
+  id,
+  authorAssociation: "OWNER",
+  body: `x\n${sessionMarker(step, key)}`,
+  createdAt: `t${id}`,
+  url: `u${id}`,
+});
+const approvedEntry = entry("approved", "", 60);
 
 const planComment = {
   id: 5,
@@ -299,7 +348,8 @@ describe("claim", () => {
     assert.equal(r.branch, "factory/issue-42");
     assert.ok(w.issue.labels.includes(DRIVER_LABEL));
     assert.equal(w.comments.length, 1);
-    assert.match(w.comments[0].body, /<!-- drafto-factory-session:claim -->/);
+    assert.match(w.comments[0].body, /<!-- drafto-factory-session:claim:n1 -->/);
+    assert.doesNotMatch(w.comments[0].body, /Claiming…/, "the placeholder is replaced");
     assert.match(w.comments[0].body, /factory skips it while `driver:interactive` is on/);
   });
 
@@ -442,10 +492,18 @@ describe("gates", () => {
         "up to date with main",
         "review threads resolved",
         "hosted config applied",
+        "head unchanged while checking",
       ],
     );
     assert.match(w.comments.at(-1).body, /all gates pass/);
-    assert.match(w.comments.at(-1).body, new RegExp(sessionMarker("gates", HEAD.slice(0, 12))));
+    assert.match(
+      w.comments.at(-1).body,
+      new RegExp(`drafto-factory-session:gates:${HEAD.slice(0, 12)}-1{10} `),
+    );
+    // An unchanged re-run posts nothing new.
+    const before = w.comments.length;
+    await w.driver.gates(42, { logResult: true });
+    assert.equal(w.comments.length, before);
   });
 
   it("names every failing gate", async () => {
@@ -482,7 +540,7 @@ describe("gates", () => {
     const stale = {
       id: 9,
       authorAssociation: "OWNER",
-      body: sessionMarker("migration-approved", "0000000000000000"),
+      body: sessionMarker("migration-approved", "pr7-0000000000000000-a"),
       url: "u9",
     };
     const w = world({
@@ -491,7 +549,7 @@ describe("gates", () => {
       comments: [stale],
     });
     const r = await w.driver.gates(42);
-    const sql = r.checks.find((c) => c.name === "migration SQL unchanged since approval");
+    const sql = r.checks.find((c) => c.name === "migration SQL approved in session");
     assert.equal(sql.ok, false);
     assert.match(sql.detail, /feedfacecafebeef/);
     assert.ok(r.checks.find((c) => c.name === "migration order").ok);
@@ -524,7 +582,7 @@ describe("approve-migration", () => {
     assert.ok(w.pr.labels.includes("migration-approved"));
     assert.match(
       w.comments.at(-1).body,
-      /drafto-factory-session:migration-approved:feedfacecafebeef/,
+      /drafto-factory-session:migration-approved:pr7-feedfacecafebeef-rs -->/,
     );
   });
 });
@@ -535,7 +593,7 @@ describe("release", () => {
       labels: [DRIVER_LABEL, "status:in-review"],
       status: "In Review",
       pr: openPr({ body: "Closes #42" }),
-      comments: [planComment],
+      comments: [planComment, approvedEntry],
     });
     const r = await w.driver.release(42, { to: "Approved", note: "tested on all platforms" });
     assert.equal(r.column, "Approved");
@@ -600,5 +658,215 @@ describe("CLI", () => {
     await assert.rejects(main(["spec", "x"], stubDriver()), /issue number/);
     await assert.rejects(main(["nope", "1"], stubDriver()), /Usage/);
     await assert.rejects(main(["move", "1", "Ready"], stubDriver()), /--note/);
+  });
+});
+
+describe("CodeRabbit round 1 (PR #888)", () => {
+  it("lets the earliest claim since the last handback win a race", async () => {
+    const rival = entry("claim", "zz", 10);
+    const w = world({ labels: [], comments: [rival] });
+    await assert.rejects(w.driver.claim(42), /lost a claim race.*u10/);
+    assert.deepEqual(
+      w.comments.map((c) => c.id),
+      [10],
+      "the loser withdraws its entry",
+    );
+    // A claim from before the last handback doesn't count.
+    const w2 = world({ labels: [], comments: [rival, entry("handback", "", 11)] });
+    assert.equal((await w2.driver.claim(42)).already, false);
+  });
+
+  it("finishes an interrupted board setup on --resume", async () => {
+    const w = world({ labels: [DRIVER_LABEL], onBoard: false });
+    const r = await w.driver.claim(42, { resume: true });
+    assert.equal(r.addedToBoard, true);
+    assert.equal(r.status, "Ready");
+    assert.ok(w.issue.labels.includes("status:ready"));
+  });
+
+  it("reads local paths unquoted, and fails parity when git fails", async () => {
+    const w = world();
+    const r = await w.driver.parity(42);
+    assert.equal(r.files, 2);
+    assert.equal(r.violation, "", "apps/web/café.ts counts as a web change");
+    for (const gitFail of ["diff", "ls-files"]) {
+      await assert.rejects(
+        world({ gitFail }).driver.parity(42),
+        new RegExp(`git ${gitFail} failed`),
+      );
+    }
+  });
+
+  it("counts unresolved threads on every page", async () => {
+    const w = world({
+      labels: [DRIVER_LABEL],
+      pr: openPr(),
+      threadPages: [[{ isResolved: true }], [{ isResolved: false }]],
+    });
+    const r = await w.driver.gates(42);
+    const t = r.checks.find((c) => c.name === "review threads resolved");
+    assert.equal(t.ok, false);
+    assert.equal(t.detail, "1 unresolved");
+  });
+
+  it("stops when the refs can't be refreshed", async () => {
+    for (const gitFail of ["fetch", "cat-file"]) {
+      const r = await world({ pr: openPr(), gitFail }).driver.gates(42);
+      assert.equal(r.ok, false);
+      assert.equal(r.checks.at(-1).name, "refs up to date");
+    }
+  });
+
+  it("requires the session's approval of the PR's current SQL", async () => {
+    const files = ["apps/web/x.ts", "supabase/migrations/20261101000000_x.sql"];
+    const labelled = openPr({ labels: ["migration-approved"] });
+    const check = async (comments) =>
+      (await world({ pr: labelled, prFiles: files, comments }).driver.gates(42)).checks.find(
+        (c) => c.name === "migration SQL approved in session",
+      );
+    assert.equal((await check([])).ok, false, "a label without a recorded approval");
+    assert.equal(
+      (await check([entry("migration-approved", "pr7-feedfacecafebeef-a", 1)])).ok,
+      true,
+    );
+    // Approved A (the current SQL), then B: the latest approval is B.
+    assert.equal(
+      (
+        await check([
+          entry("migration-approved", "pr7-feedfacecafebeef-a", 1),
+          entry("migration-approved", "pr7-1111111111111111-b", 2),
+        ])
+      ).ok,
+      false,
+    );
+    // An approval for another PR on the issue doesn't count.
+    assert.equal(
+      (await check([entry("migration-approved", "pr8-feedfacecafebeef-a", 1)])).ok,
+      false,
+    );
+  });
+
+  it("fails the gates when the head moves while they run", async () => {
+    const r = await world({ pr: openPr(), headAfter: "c".repeat(40) }).driver.gates(42);
+    const h = r.checks.find((c) => c.name === "head unchanged while checking");
+    assert.equal(h.ok, false);
+    assert.equal(r.ok, false);
+  });
+
+  it("logs a changed gate result on the same head", async () => {
+    const w = world({
+      labels: [DRIVER_LABEL],
+      pr: openPr(),
+      checks: [{ name: "ci", bucket: "pending" }],
+    });
+    await w.driver.gates(42, { logResult: true });
+    assert.match(w.comments.at(-1).body, /blocked/);
+    w.pr.labels = [];
+    const passing = world({ labels: [DRIVER_LABEL], pr: openPr(), comments: w.comments });
+    await passing.driver.gates(42, { logResult: true });
+    assert.match(passing.comments.at(-1).body, /all gates pass/);
+    assert.equal(passing.comments.length, w.comments.length + 1);
+  });
+
+  it("merges pinned to the gated head, and only when the gates pass", async () => {
+    const w = world({ labels: [DRIVER_LABEL], pr: openPr() });
+    const r = await w.driver.merge(42);
+    assert.deepEqual(w.merges, [["merge_method=squash", `sha=${HEAD}`]]);
+    assert.equal(r.mergeSha, "b".repeat(40));
+    assert.match(w.comments.at(-1).body, /drafto-factory-session:merged:bbbbbbbbbbbb/);
+
+    const red = world({
+      labels: [DRIVER_LABEL],
+      pr: openPr(),
+      checks: [{ name: "ci", bucket: "fail" }],
+    });
+    await assert.rejects(
+      red.driver.merge(42),
+      /gates failed \(required CI green\); nothing merged/,
+    );
+    assert.deepEqual(red.merges, []);
+
+    const moved = world({
+      labels: [DRIVER_LABEL],
+      pr: openPr(),
+      mergeResponse: { code: 1, body: { message: "Head branch was modified" } },
+    });
+    await assert.rejects(moved.driver.merge(42), /refused the merge.*Head branch was modified/);
+  });
+
+  it("runs the hosted-config gate alone before a beta", async () => {
+    const hold = await world({ pr: openPr(), hostedConfigCode: 3 }).driver.hostedConfig(42);
+    assert.equal(hold.ok, false);
+    assert.match(hold.detail, /^hold/);
+    assert.equal((await world({ pr: openPr() }).driver.hostedConfig(42)).ok, true);
+    const r = await main(
+      ["hosted-config", "42"],
+      world({ pr: openPr(), hostedConfigCode: 4 }).driver,
+    );
+    assert.equal(r.code, 1);
+  });
+
+  it("needs the gate's approval before handing a card past it", () => {
+    const plan = entry("plan", "", 1);
+    const approvedPlan = entry("plan-approved", "", 2);
+    assert.match(approvalBlocker("In Progress", "Plan Review", [plan]), /gate 1/);
+    assert.equal(approvalBlocker("In Progress", "Plan Review", [plan, approvedPlan]), "");
+    assert.match(
+      approvalBlocker("In Progress", "Plan Review", [plan, approvedPlan, entry("replan", "", 3)]),
+      /gate 1/,
+      "a replan after the approval needs a new one",
+    );
+    assert.match(approvalBlocker("Approved", "In Test", []), /gate 2/);
+    assert.equal(approvalBlocker("Approved", "In Test", [entry("approved", "", 4)]), "");
+    assert.match(
+      approvalBlocker("Approved", "In Test", [entry("approved", "", 4), entry("revision", "", 5)]),
+      /gate 2/,
+    );
+    assert.equal(approvalBlocker("Approved", "Approved", []), "", "already past the gate");
+    assert.equal(approvalBlocker("Plan Review", "Plan Review", []), "");
+  });
+
+  it("refuses to hand back In Progress without the plan approved", async () => {
+    const w = world({ labels: [DRIVER_LABEL], status: "Plan Review", comments: [planComment] });
+    await assert.rejects(w.driver.release(42, { to: "In Progress", note: "x" }), /gate 1/);
+    assert.ok(w.issue.labels.includes(DRIVER_LABEL));
+  });
+
+  it("reconciles the status label even when the column already matches", async () => {
+    const w = world({
+      labels: [DRIVER_LABEL, "status:in-test"],
+      status: "Approved",
+      pr: openPr(),
+      comments: [planComment],
+    });
+    await w.driver.release(42, { note: "retry after a failed label swap" });
+    assert.ok(w.issue.labels.includes("status:approved"));
+    assert.ok(!w.issue.labels.includes("status:in-test"));
+  });
+
+  it("refuses to hand back a migration approval for older SQL", async () => {
+    const w = world({
+      labels: [DRIVER_LABEL],
+      status: "Approved",
+      pr: openPr({ labels: ["migration-approved"] }),
+      comments: [planComment, entry("migration-approved", "pr7-0000000000000000-a", 9)],
+    });
+    await assert.rejects(
+      w.driver.release(42, { note: "x" }),
+      /SQL changed since the operator approved it/,
+    );
+    assert.ok(w.issue.labels.includes(DRIVER_LABEL));
+  });
+
+  it("posts a handback log a failed release left out, without other writes", async () => {
+    const w = world({ labels: [], status: "In Test", comments: [entry("claim", "n0", 1)] });
+    const r = await w.driver.release(42, { note: "log retry" });
+    assert.equal(r.logOnly, true);
+    assert.match(w.comments.at(-1).body, /drafto-factory-session:handback/);
+    assert.ok(
+      !w.calls.some((c) => c.startsWith("project set-status") || c.startsWith("gh issue edit")),
+    );
+    // Once logged, a second retry is refused.
+    await assert.rejects(w.driver.release(42, { note: "again" }), /isn't claimed/);
   });
 });

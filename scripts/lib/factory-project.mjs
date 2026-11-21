@@ -428,11 +428,12 @@ export async function setItemStatusByName({ projectId, itemId, statusName }) {
   });
 }
 
-const ISSUE_ITEM_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+const ISSUE_ITEM_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       id
-      projectItems(first: 20) {
+      projectItems(first: 20, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           project { id }
@@ -448,33 +449,46 @@ const ISSUE_ITEM_QUERY = `query($owner: String!, $name: String!, $number: Int!) 
 // The card for issue #<issueNumber> on project <projectId>:
 // {itemId, contentId, status} (status null when the card has no Status yet),
 // {itemId: null, contentId, status: null} when the issue isn't on the board,
-// or null when the issue doesn't exist. Used by scripts/drive-issue.mjs.
+// or null when the issue doesn't exist. Reads every page of the issue's
+// project memberships, and throws rather than report "not on the board" when
+// it can't finish. Used by scripts/drive-issue.mjs.
 export async function findItemForIssue(projectId, issueNumber, { repo = DEFAULT_REPO } = {}) {
   if (!projectId) throw new Error("findItemForIssue requires projectId");
   if (!Number.isInteger(issueNumber)) throw new Error("findItemForIssue requires an issue number");
   const [owner, name] = repo.split("/");
-  const raw = await runGh([
-    "api",
-    "graphql",
-    "-f",
-    `query=${ISSUE_ITEM_QUERY}`,
-    "-f",
-    `owner=${owner}`,
-    "-f",
-    `name=${name}`,
-    "-F",
-    `number=${issueNumber}`,
-  ]);
-  const issue = JSON.parse(raw)?.data?.repository?.issue;
-  if (!issue) return null;
-  const item = (issue.projectItems?.nodes ?? []).find((n) => n?.project?.id === projectId);
-  if (!item) return { itemId: null, contentId: issue.id ?? null, status: null };
-  const status = item.fieldValueByName?.name;
-  return {
-    itemId: item.id,
-    contentId: issue.id ?? null,
-    status: typeof status === "string" ? status : null,
-  };
+  let cursor = null;
+  for (let page = 0; page < 50; page++) {
+    const args = [
+      "api",
+      "graphql",
+      "-f",
+      `query=${ISSUE_ITEM_QUERY}`,
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `name=${name}`,
+      "-F",
+      `number=${issueNumber}`,
+    ];
+    if (cursor) args.push("-f", `cursor=${cursor}`);
+    const issue = JSON.parse(await runGh(args))?.data?.repository?.issue;
+    if (!issue) return null;
+    const conn = issue.projectItems;
+    if (!conn) throw new Error(`findItemForIssue: #${issueNumber}'s project items can't be read`);
+    const item = (conn.nodes ?? []).find((n) => n?.project?.id === projectId);
+    if (item) {
+      const status = item.fieldValueByName?.name;
+      return {
+        itemId: item.id,
+        contentId: issue.id ?? null,
+        status: typeof status === "string" ? status : null,
+      };
+    }
+    if (!conn.pageInfo?.hasNextPage)
+      return { itemId: null, contentId: issue.id ?? null, status: null };
+    cursor = conn.pageInfo.endCursor;
+  }
+  throw new Error(`findItemForIssue: #${issueNumber} is on too many projects to read`);
 }
 
 const ADD_ITEM_MUTATION = `mutation($projectId: ID!, $contentId: ID!) {

@@ -17,7 +17,7 @@ Interactive mode has three things the factory lacks:
 
 Every material step is posted on the issue, so the issue is the log of what happened, whichever driver did the work.
 
-A card can switch drivers at any column, in either direction. An interactive session leaves the artifacts the factory expects, so the factory carries on from wherever the card is handed back. See [ADR-0090](../adr/0090-interactive-issue-driving.md).
+A card can switch drivers in almost any column, in either direction. A card in Planning is handed back to Ready. In Progress and Approved need their gate's approval logged first. An interactive session leaves the artifacts the factory expects, so the factory carries on from wherever the card is handed back. See [ADR-0090](../adr/0090-interactive-issue-driving.md).
 
 ## How it works
 
@@ -54,17 +54,17 @@ A card can switch drivers at any column, in either direction. An interactive ses
 
 ## Stages
 
-| Column                 | The session                                                                                                                                                    | Log steps                                                        |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Ready                  | Worktree on `factory/issue-<n>`, claim, spec gate. Missing spec sections are drafted with you rather than blocking the card.                                   | `claim`, `spec`                                                  |
-| Planning → Plan Review | Reproduces the bug or observes the screens on the real platform, then writes the plan in the factory's structure.                                              | `plan`, `replan`                                                 |
-| **Gate 1**             | You approve in the session; the session moves the card to In Progress.                                                                                         | `plan-approved`                                                  |
-| In Progress            | Implements the plan and runs the full test matrix, including manual E2E. Runs the parity check, then `/code-review` against the factory's review checklist.    | `implement-start`, `tests`, `code-review`                        |
-| In Review              | Opens the PR, then runs `/push` until CI and every review thread are green.                                                                                    | `pr-opened`, `ci-green`                                          |
-| Testing                | Posts the scenario and dispatches pre-merge betas. Drives every affected platform itself: Chrome, emulator, simulator, macOS app. Posts a verification report. | `scenario`, `beta-dispatched`, `verify-report`, `handoff-to-you` |
-| **Gate 2** (In Test)   | You test, then approve or ask for changes. Changes send the card back to In Progress.                                                                          | `approved`, `revision`                                           |
-| Approved → Released    | Runs the merge gates. Approves migrations only after your explicit yes. Runs `/merge`, then the post-merge beta wave, then takes the label off.                | `gates`, `migration-approved`, `merged`, `beta-released`         |
-| Any                    | Blocked, or handed back to the factory.                                                                                                                        | `blocked`, `handback`                                            |
+| Column                 | The session                                                                                                                                                                                                                  | Log steps                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Ready                  | Worktree on `factory/issue-<n>`, claim, spec gate. Missing spec sections are drafted with you rather than blocking the card.                                                                                                 | `claim`, `spec`                                                  |
+| Planning → Plan Review | Reproduces the bug or observes the screens on the real platform, then writes the plan in the factory's structure.                                                                                                            | `plan`, `replan`                                                 |
+| **Gate 1**             | You approve in the session; the session moves the card to In Progress.                                                                                                                                                       | `plan-approved`                                                  |
+| In Progress            | Implements the plan and runs the full test matrix, including manual E2E. Runs the parity check, then `/code-review` against the factory's review checklist.                                                                  | `implement-start`, `tests`, `code-review`                        |
+| In Review              | Opens the PR, then runs `/push` until CI and every review thread are green.                                                                                                                                                  | `pr-opened`, `ci-green`                                          |
+| Testing                | Posts the scenario. Dispatches pre-merge betas once `drive-issue.mjs hosted-config` passes. Drives every affected platform itself: Chrome, emulator, simulator, macOS app. Posts a verification report.                      | `scenario`, `beta-dispatched`, `verify-report`, `handoff-to-you` |
+| **Gate 2** (In Test)   | You test, then approve or ask for changes. Changes send the card back to In Progress.                                                                                                                                        | `approved`, `revision`                                           |
+| Approved → Released    | Runs the merge gates. Approves migrations only after your explicit yes. Merges with `drive-issue.mjs merge`, squash-merging pinned to the head the gates passed. Then runs the post-merge beta wave and takes the label off. | `gates`, `migration-approved`, `merged`, `beta-released`         |
+| Any                    | Blocked, or handed back to the factory.                                                                                                                                                                                      | `blocked`, `handback`                                            |
 
 Every `move` also posts a `move` entry. `note` is for anything else worth recording.
 
@@ -72,20 +72,20 @@ Every `move` also posts a `move` entry. `note` is for anything else worth record
 
 Everything in `CLAUDE.md` applies to both modes. These are the rules that differ:
 
-| Rule                                              | Factory (Mac mini, unattended)                                            | Interactive (`/drive-issue`)                                                                          |
-| ------------------------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Who works the card                                | The board column decides. Skips `factory-pause` and `driver:interactive`. | The session that put `driver:interactive` on it.                                                      |
-| Plan approval (gate 1)                            | You drag Plan Review → In Progress on the board.                          | You approve in the session. It logs `plan-approved` and moves the card.                               |
-| Merge approval (gate 2)                           | You drag In Test → Approved on the board.                                 | You approve in the session. It logs `approved`, then runs `gates` and `/merge`.                       |
-| Migration SQL                                     | `migration-approved` label, voided on any SQL change (ADR-0078).          | The same label, added by `approve-migration` after your explicit yes. `gates` re-hashes the SQL.      |
-| Production data, prod DB, public stores           | Never.                                                                    | Only after your explicit yes, every time.                                                             |
-| Devices, Mobile/Desktop E2E, `test:live:supabase` | Never; the live tests run only through the verify lane's filtered runner. | Yes. Desktop E2E and the macOS In-Test harness still need your yes, because they write to production. |
-| Browser                                           | The locked-down browser runner only, on the Mac mini's Chrome.            | This Mac's own Chrome, per `~/.claude/CLAUDE.md`.                                                     |
-| Secrets                                           | Only what its own scripts load.                                           | The Local Secrets recipes in `CLAUDE.md`.                                                             |
-| Permissions                                       | `--dangerously-skip-permissions`, or `dontAsk` in guarded lanes.          | Normal permission prompts.                                                                            |
-| Pre-merge and post-merge betas                    | Factory dispatch (`dispatch-release.mjs`).                                | Pre-authorized lanes run in the session.                                                              |
-| Log                                               | 🏭 marker comments.                                                       | 🧑‍💻 session comments, one per material step.                                                           |
-| Branch and PR                                     | `factory/issue-<n>`, PR marker.                                           | The same.                                                                                             |
+| Rule                                              | Factory (Mac mini, unattended)                                            | Interactive (`/drive-issue`)                                                                                                                                     |
+| ------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Who works the card                                | The board column decides. Skips `factory-pause` and `driver:interactive`. | The session that put `driver:interactive` on it.                                                                                                                 |
+| Plan approval (gate 1)                            | You drag Plan Review → In Progress on the board.                          | You approve in the session. It logs `plan-approved` and moves the card.                                                                                          |
+| Merge approval (gate 2)                           | You drag In Test → Approved on the board.                                 | You approve in the session. It logs `approved`, then runs `gates` and `/merge`.                                                                                  |
+| Migration SQL                                     | `migration-approved` label, voided on any SQL change (ADR-0078).          | The same label, added by `approve-migration` after your explicit yes. `gates` re-hashes the SQL.                                                                 |
+| Production data, prod DB, public stores           | Never.                                                                    | Only after your explicit yes, every time.                                                                                                                        |
+| Devices, Mobile/Desktop E2E, `test:live:supabase` | Never; the live tests run only through the verify lane's filtered runner. | Yes. Desktop E2E needs your yes, because it can write to production. A macOS In-Test scenario that writes to production is started by you, never by the session. |
+| Browser                                           | The locked-down browser runner only, on the Mac mini's Chrome.            | This Mac's own Chrome, per `~/.claude/CLAUDE.md`.                                                                                                                |
+| Secrets                                           | Only what its own scripts load.                                           | The Local Secrets recipes in `CLAUDE.md`.                                                                                                                        |
+| Permissions                                       | `--dangerously-skip-permissions`, or `dontAsk` in guarded lanes.          | Normal permission prompts.                                                                                                                                       |
+| Pre-merge and post-merge betas                    | Factory dispatch (`dispatch-release.mjs`).                                | Pre-authorized lanes run in the session.                                                                                                                         |
+| Log                                               | 🏭 marker comments.                                                       | 🧑‍💻 session comments, one per material step.                                                                                                                      |
+| Branch and PR                                     | `factory/issue-<n>`, PR marker.                                           | The same.                                                                                                                                                        |
 
 ## Switching drivers
 
@@ -96,18 +96,18 @@ Everything in `CLAUDE.md` applies to both modes. These are the rules that differ
 
 **Handing a card to the factory.** Commit and push everything first: unpushed commits make the factory's worktree diverge, and its implement stage then blocks the card. Then run `drive-issue.mjs release <n> --to <Column> --note "<state, what's left>"`.
 
-| Hand back to                        | Needs            | The factory then                                                  |
-| ----------------------------------- | ---------------- | ----------------------------------------------------------------- |
-| Ready                               | —                | plans it (spec gate first)                                        |
-| Plan Review                         | —                | waits for your board drag; your comments trigger a replan         |
-| In Progress                         | the plan comment | implements the plan on `factory/issue-<n>`                        |
-| In Review                           | plan + open PR   | fixes CI and threads, runs its code review, hands on              |
-| Testing                             | plan + open PR   | runs its verification lanes                                       |
-| In Test                             | plan + open PR   | waits for your board drag; actionable comments trigger a revision |
-| Approved                            | plan + open PR   | runs `--release`: gates, merge, betas                             |
-| Released / Done / Blocked / Backlog | —                | nothing                                                           |
+| Hand back to                        | Needs                                                                                             | The factory then                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Ready                               | —                                                                                                 | plans it (spec gate first)                                        |
+| Plan Review                         | —                                                                                                 | waits for your board drag; your comments trigger a replan         |
+| In Progress                         | the plan comment; from before In Progress, `plan-approved` logged after the latest plan or replan | implements the plan on `factory/issue-<n>`                        |
+| In Review                           | plan + open PR                                                                                    | fixes CI and threads, runs its code review, hands on              |
+| Testing                             | plan + open PR                                                                                    | runs its verification lanes                                       |
+| In Test                             | plan + open PR                                                                                    | waits for your board drag; actionable comments trigger a revision |
+| Approved                            | plan + open PR; from before Approved, `approved` logged after the latest revision                 | runs `--release`: gates, merge, betas                             |
+| Released / Done / Blocked / Backlog | —                                                                                                 | nothing                                                           |
 
-Planning can't be a handback target: it is the factory's own transient column.
+Planning can't be a handback target, even with `--force`: it is the factory's own transient column, so a card in Planning goes back to Ready. `--force` waives only the plan and open-PR requirements, never a missing approval. A `migration-approved` label whose SQL changed since the session's approval blocks the handback. If a release removes the label but fails to post its log, re-run it: it posts just the log.
 
 The factory keeps its SHA-keyed state on the Mac mini. On a handed-back card it re-runs whatever it hasn't seen at the current head, such as its code review, scenario and verification. That is deliberate.
 
@@ -122,7 +122,7 @@ The factory keeps its SHA-keyed state on the Mac mini. On a handed-back card it 
 ## Key files
 
 - `.claude/skills/drive-issue/SKILL.md`: the `/drive-issue` skill, stage by stage.
-- `scripts/drive-issue.mjs`: the session CLI (`claim`, `status`, `spec`, `move`, `log`, `plan`, `scenario`, `parity`, `approve-migration`, `gates`, `release`).
+- `scripts/drive-issue.mjs`: the session CLI (`claim`, `status`, `spec`, `move`, `log`, `plan`, `scenario`, `parity`, `approve-migration`, `gates`, `merge`, `hosted-config`, `release`).
 - `scripts/lib/issue-gates.mjs`: the gates shared with the factory.
 - `scripts/lib/factory-project.mjs`: board I/O (`findItemForIssue`, `addIssueToProject`, `setItemStatusByName`).
 - `scripts/factory-agent.sh`: `card_opted_out`, the factory-side skip.

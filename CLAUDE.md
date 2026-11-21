@@ -229,18 +229,18 @@ gh issue create --project "Drafto Factory" --title "feat: ..." --body-file spec.
 
 ## Driving an Issue: Factory Mode vs Interactive Mode
 
-A factory issue has one driver at a time: the **factory** on the Mac mini, or an **interactive** Claude Code session started with `/drive-issue <n>` (`.claude/skills/drive-issue/SKILL.md`). The session claims the card with the `driver:interactive` label, which every factory mode skips like `factory-pause`. It moves the card through the same columns and leaves the factory's artifacts (`factory/issue-<n>`, the plan, PR and scenario markers). It also posts a 🧑‍💻 log comment on the issue after every material step through `node scripts/drive-issue.mjs`. Never use a bare `gh issue comment` on a factory issue: comments without a `<!-- drafto-factory` marker read as operator feedback. `drive-issue.mjs release` hands the card back at any column. Manual: [`docs/features/interactive-driving.md`](./docs/features/interactive-driving.md) · [ADR-0090](./docs/adr/0090-interactive-issue-driving.md).
+A factory issue has one driver at a time: the **factory** on the Mac mini, or an **interactive** Claude Code session started with `/drive-issue <n>` (`.claude/skills/drive-issue/SKILL.md`). The session claims the card with the `driver:interactive` label, which every factory mode skips like `factory-pause`. It moves the card through the same columns and leaves the factory's artifacts (`factory/issue-<n>`, the plan, PR and scenario markers). It also posts a 🧑‍💻 log comment on the issue after every material step through `node scripts/drive-issue.mjs`. Never use a bare `gh issue comment` on a factory issue: comments without a `<!-- drafto-factory` marker read as operator feedback. `drive-issue.mjs release` hands the card back in almost any column. A card in Planning goes back with `--to Ready`. In Progress and Approved need that gate's approval logged first. The other prerequisites are in the manual. Manual: [`docs/features/interactive-driving.md`](./docs/features/interactive-driving.md) · [ADR-0090](./docs/adr/0090-interactive-issue-driving.md).
 
 Every other rule in this file applies in both modes. Only these differ:
 
-| Rule                                         | Factory (unattended)              | Interactive (`/drive-issue`)                                                         |
-| -------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------ |
-| Plan and merge approval                      | board drags (the two human gates) | the operator's words in the session, quoted in the issue log                         |
-| Devices, Mobile/Desktop E2E, live tests      | never                             | yes (Desktop E2E and the macOS In-Test harness need the operator's yes)              |
-| Browser                                      | locked-down runner only           | this Mac's Chrome, per `~/.claude/CLAUDE.md`                                         |
-| Secrets                                      | only what its scripts load        | the [Local Secrets](#local-secrets-drafto-secrets) recipes                           |
-| Betas                                        | factory dispatch                  | the pre-authorized lanes, run in the session                                         |
-| `migration-approved`, prod DB, public stores | label / never / never             | label via `approve-migration` after an explicit yes; prod only after an explicit yes |
+| Rule                                         | Factory (unattended)              | Interactive (`/drive-issue`)                                                                        |
+| -------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Plan and merge approval                      | board drags (the two human gates) | the operator's words in the session, quoted in the issue log                                        |
+| Devices, Mobile/Desktop E2E, live tests      | never                             | yes (Desktop E2E needs the operator's yes; a person starts any prod-writing macOS In-Test scenario) |
+| Browser                                      | locked-down runner only           | this Mac's Chrome, per `~/.claude/CLAUDE.md`                                                        |
+| Secrets                                      | only what its scripts load        | the [Local Secrets](#local-secrets-drafto-secrets) recipes                                          |
+| Betas                                        | factory dispatch                  | the pre-authorized lanes, run in the session                                                        |
+| `migration-approved`, prod DB, public stores | label / never / never             | label via `approve-migration` after an explicit yes; prod only after an explicit yes                |
 
 A session working on a factory issue without `/drive-issue` must still claim it first (`node scripts/drive-issue.mjs claim <n>`) and follow the skill's stage rules.
 
