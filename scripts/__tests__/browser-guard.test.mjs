@@ -31,6 +31,8 @@ import {
   INFLIGHT_REASON,
   PERL_ALARM_SCRIPT,
   PRE_ALARM_SEC,
+  READONLY_COMPUTER_ACTIONS,
+  READONLY_TOOLS,
   RUNNER_TOOLS,
   UNKNOWN_URL,
   allowedToolsArg,
@@ -43,8 +45,12 @@ import {
   isAllowedNavigation,
   isNeutralUrl,
   keyVerdict,
+  isReadOnly,
   normaliseOrigin,
   parseAllowOrigin,
+  parseAllowUrl,
+  runnerTools,
+  urlNavigationVerdict,
   parseAvailableTabsJson,
   parseTabContextBlock,
   redactUrl,
@@ -1958,5 +1964,234 @@ describe("browser-guard CLI: fails closed", () => {
     const r = runGuard(["frobnicate"]);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /Usage:/);
+  });
+});
+
+// ── Read-only runs (ADR-0093): the usage kind reads two dashboard pages ─────
+
+describe("browser-guard: read-only runs (allowUrls)", () => {
+  const VERCEL_USAGE = "https://vercel.com/jakubanderwalds-projects/~/usage";
+  const SUPABASE_USAGE = "https://supabase.com/dashboard/org/abcdefghijklmnop/usage";
+  const RO_CONFIG = {
+    deviceId: DEVICE,
+    allowUrls: [VERCEL_USAGE, SUPABASE_USAGE],
+    logDir: "/x/log",
+    stateDir: "/x/state",
+    evidenceDir: "/x/evidence",
+  };
+  const roPre = (tool, input, state) =>
+    decidePre({ tool: T(tool), input, config: RO_CONFIG, state });
+  const roPost = (tool, input, responseBlocks, state) =>
+    applyPost({
+      tool: T(tool),
+      input,
+      responseBlocks,
+      config: RO_CONFIG,
+      state,
+      now: "2026-11-22T19:00:00.000Z",
+    });
+  const onUsage = () => selectedState({ [OWN_TAB]: VERCEL_USAGE });
+
+  test("accepts exact usage pages on the two dashboard hosts only", () => {
+    assert.equal(parseAllowUrl(VERCEL_USAGE), VERCEL_USAGE);
+    assert.equal(parseAllowUrl(SUPABASE_USAGE), SUPABASE_USAGE);
+    for (const bad of [
+      "http://vercel.com/jakubanderwalds-projects/~/usage",
+      "https://vercel.com/",
+      "https://vercel.com",
+      "https://drafto.eu/admin/stats",
+      "https://evil.vercel.com/usage",
+      "https://vercel.com.evil.example/usage",
+      "https://vercel.com:8443/x/~/usage",
+      "https://vercel.com/x/~/usage?tab=1",
+      "https://vercel.com/x/~/usage#top",
+      "https://user@vercel.com/x/~/usage",
+      "https://vercel.com/x/%7E/usage",
+      "https://vercel.com/x/../y",
+      "https://vercel.com/x/ ~/usage",
+      "https://VERCEL.com/x/~/usage",
+    ]) {
+      assert.throws(() => parseAllowUrl(bad), undefined, bad);
+    }
+  });
+
+  test("takes exactly one of allowOrigins and allowUrls, and no capabilities", () => {
+    const valid = validateConfig(RO_CONFIG);
+    assert.deepEqual(valid.allowUrls, [VERCEL_USAGE, SUPABASE_USAGE]);
+    assert.equal(valid.allowOrigins, undefined);
+    assert.equal(isReadOnly(valid), true);
+    assert.equal(isReadOnly(CONFIG), false);
+    assert.throws(() => validateConfig({ ...RO_CONFIG, allowOrigins: [PREVIEW] }), /exactly one/);
+    assert.throws(() => validateConfig({ ...RO_CONFIG, allowUrls: [] }), /exactly one/);
+    assert.throws(() => validateConfig({ ...RO_CONFIG, capabilities: ["js"] }), /no capabilities/);
+    // vercel.com stays forbidden as a preview run's origin.
+    assert.throws(
+      () => validateConfig({ ...CONFIG, allowOrigins: ["https://vercel.com"] }),
+      /signed in to for real/,
+    );
+  });
+
+  test("offers only the read-only tools, and denies the rest", () => {
+    assert.deepEqual(runnerTools(RO_CONFIG), [...READONLY_TOOLS]);
+    assert.equal(allowedToolsArg(RO_CONFIG).split(",").length, READONLY_TOOLS.length);
+    for (const tool of [
+      "find",
+      "form_input",
+      "read_console_messages",
+      "read_network_requests",
+      "resize_window",
+      "javascript_tool",
+      "file_upload",
+      "browser_batch",
+    ]) {
+      assert.equal(roPre(tool, { tabId: OWN_TAB }, onUsage()).allow, false, tool);
+    }
+    assert.equal(roPre("get_page_text", { tabId: OWN_TAB }, onUsage()).allow, true);
+    assert.equal(roPre("read_page", { tabId: OWN_TAB }, onUsage()).allow, true);
+  });
+
+  test("navigates only to the configured pages, written exactly", () => {
+    const st = selectedState({ [OWN_TAB]: "chrome://newtab/" });
+    assert.equal(roPre("navigate", { tabId: OWN_TAB, url: VERCEL_USAGE }, st).allow, true);
+    assert.equal(roPre("navigate", { tabId: OWN_TAB, url: SUPABASE_USAGE }, st).allow, true);
+    assert.equal(
+      roPre("navigate", { tabId: OWN_TAB, url: "vercel.com/jakubanderwalds-projects/~/usage" }, st)
+        .allow,
+      true,
+      "the extension adds https:// itself",
+    );
+    for (const url of [
+      "https://vercel.com/jakubanderwalds-projects/~/settings",
+      "https://vercel.com/jakubanderwalds-projects/drafto/settings/environment-variables",
+      `${VERCEL_USAGE}?x=1`,
+      `${VERCEL_USAGE}/`,
+      `${VERCEL_USAGE}#a`,
+      "https://vercel.com/",
+      "https://supabase.com/dashboard/project/tbmjbxxseonkciqovnpl/settings/api",
+      "https://drafto.eu/admin/stats",
+      PREVIEW,
+      "back",
+    ]) {
+      assert.equal(roPre("navigate", { tabId: OWN_TAB, url }, st).allow, false, url);
+    }
+    assert.match(
+      urlNavigationVerdict("https://vercel.com/", RO_CONFIG.allowUrls).reason,
+      /only these pages/,
+    );
+  });
+
+  test("looks and scrolls, but never clicks, hovers, types or presses a key", () => {
+    for (const action of READONLY_COMPUTER_ACTIONS) {
+      const input = {
+        tabId: OWN_TAB,
+        action,
+        coordinate: [10, 10],
+        ref: "ref_1",
+        duration: 1,
+        region: [0, 0, 9, 9],
+      };
+      assert.equal(roPre("computer", input, onUsage()).allow, true, action);
+    }
+    for (const action of COMPUTER_ACTIONS.filter((a) => !READONLY_COMPUTER_ACTIONS.includes(a))) {
+      const input = { tabId: OWN_TAB, action, coordinate: [10, 10], text: "Enter" };
+      assert.equal(roPre("computer", input, onUsage()).allow, false, action);
+    }
+    assert.equal(
+      roPre(
+        "computer",
+        { tabId: OWN_TAB, action: "scroll", coordinate: [1, 1], modifiers: "cmd" },
+        onUsage(),
+      ).allow,
+      false,
+      "no modifiers on a scroll either",
+    );
+  });
+
+  test("a page with a query is still on the allowed page; anywhere else is quarantined", () => {
+    let st = selectedState({ [OWN_TAB]: "chrome://newtab/" });
+    st = roPost(
+      "navigate",
+      { tabId: OWN_TAB, url: VERCEL_USAGE },
+      [text(tabContext(OWN_TAB, [[OWN_TAB, "Usage", `${VERCEL_USAGE}?period=30d`]]))],
+      st,
+    ).state;
+    assert.equal(roPre("get_page_text", { tabId: OWN_TAB }, st).allow, true);
+
+    // A redirect to a login page (the session expired) quarantines the tab.
+    const out = roPost(
+      "get_page_text",
+      { tabId: OWN_TAB },
+      [text(tabContext(OWN_TAB, [[OWN_TAB, "Login", "https://vercel.com/login?next=%2Fusage"]]))],
+      st,
+    );
+    assert.deepEqual(out.events, [{ quarantined: OWN_TAB }]);
+    st = out.state;
+    assert.equal(roPre("get_page_text", { tabId: OWN_TAB }, st).allow, false);
+    assert.equal(roPre("computer", { tabId: OWN_TAB, action: "screenshot" }, st).allow, false);
+    assert.equal(roPre("tabs_close_mcp", { tabId: OWN_TAB }, st).allow, true);
+    assert.equal(roPre("navigate", { tabId: OWN_TAB, url: SUPABASE_USAGE }, st).allow, true);
+  });
+
+  test("still requires the pinned browser first", () => {
+    assert.equal(
+      roPre("navigate", { tabId: OWN_TAB, url: VERCEL_USAGE }, { selected: false, tabs: {} }).allow,
+      false,
+    );
+    assert.equal(roPre("select_browser", { deviceId: MACBOOK }, emptyState()).allow, false);
+  });
+
+  test("the CLI builds a read-only config from --allow-url", () => {
+    const dir = mkdtempSync(join(tmpdir(), "guard-ro-"));
+    try {
+      const out = join(dir, "cfg.json");
+      const r = spawnSync(
+        process.execPath,
+        [
+          GUARD,
+          "config",
+          "--out",
+          out,
+          "--device",
+          DEVICE,
+          "--allow-url",
+          VERCEL_USAGE,
+          "--allow-url",
+          SUPABASE_USAGE,
+          "--log-dir",
+          join(dir, "log"),
+          "--state-dir",
+          join(dir, "state"),
+          "--evidence-dir",
+          join(dir, "evidence"),
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const cfg = JSON.parse(readFileSync(out, "utf8"));
+      assert.deepEqual(cfg.allowUrls, [VERCEL_USAGE, SUPABASE_USAGE]);
+      const bad = spawnSync(
+        process.execPath,
+        [
+          GUARD,
+          "config",
+          "--out",
+          out,
+          "--device",
+          DEVICE,
+          "--allow-url",
+          "https://vercel.com/",
+          "--log-dir",
+          join(dir, "log"),
+          "--state-dir",
+          join(dir, "state"),
+          "--evidence-dir",
+          join(dir, "evidence"),
+        ],
+        { encoding: "utf8" },
+      );
+      assert.notEqual(bad.status, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

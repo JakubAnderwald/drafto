@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-10-17
 - **Authors**: Jakub Anderwald (with Claude Code)
-- **Amended by**: [0073](./0073-factory-verification-data-checks-live-tests-uploads-admin-js.md) (opt-in uploads, admin steps, page JavaScript and `dev-inspect`)
+- **Amended by**: [0073](./0073-factory-verification-data-checks-live-tests-uploads-admin-js.md) (opt-in uploads, admin steps, page JavaScript and `dev-inspect`), [0093](./0093-weekly-hosting-usage-readout.md) (a read-only `usage` kind that may open two exact dashboard pages on vercel.com and supabase.com)
 
 > **Update 2026-10-20**: The runner is now on by default: `FACTORY_BROWSER` defaults to `1`, so point 9's "off by default" no longer holds. `FACTORY_BROWSER=0` in the plist is still the kill switch, and a value other than `0`/`1` still turns the runner off.
 

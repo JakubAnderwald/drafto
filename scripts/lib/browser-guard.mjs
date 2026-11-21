@@ -78,6 +78,19 @@
 //      the guard does not know is denied. `type` stays allowed: a denied key
 //      never ran, so focus is still on the page element it types into.
 //
+// Read-only runs (ADR-0093). A config with `allowUrls` instead of
+// `allowOrigins` is the `usage` kind: it reads the Vercel and Supabase usage
+// dashboards, in a profile signed in to both with full control. For such a run:
+//   - navigate must name one of the configured URLs exactly (https, the
+//     provider's host, that path, no query or fragment), and a tab whose page
+//     is not one of those paths (any query) is quarantined;
+//   - the tools are READONLY_TOOLS only: no find, form_input, network or
+//     console readers, resize, or any capability;
+//   - computer may only look and move: screenshot, wait, scroll, scroll_to,
+//     zoom. No click, hover, typing or key of any kind.
+// NEVER_ALLOW_DOMAINS still applies to every allowed origin; only an exact
+// allowUrls entry on READONLY_URL_HOSTS can reach vercel.com.
+//
 // Residual risk the guard cannot close: the Tab Context in a click's response
 // can be captured before the navigation it started has committed, so ONE more
 // call can land on the new page before the next response reveals it. The
@@ -175,12 +188,42 @@ export const RUNNER_TOOLS = Object.freeze([
 export const CAPABILITIES = Object.freeze(["uploads", "js", "inspect"]);
 const CAPABILITY_TOOL = Object.freeze({ uploads: "file_upload", js: "javascript_tool" });
 
+// A read-only run's tools (ADR-0093): look at its own tabs, never act on a page.
+export const READONLY_TOOLS = Object.freeze([
+  "list_connected_browsers",
+  "select_browser",
+  "tabs_context_mcp",
+  "tabs_create_mcp",
+  "tabs_close_mcp",
+  "navigate",
+  "computer",
+  "read_page",
+  "get_page_text",
+]);
+// The computer actions a read-only run may take: none of them clicks, types or
+// presses a key.
+export const READONLY_COMPUTER_ACTIONS = Object.freeze([
+  "screenshot",
+  "wait",
+  "scroll",
+  "scroll_to",
+  "zoom",
+]);
+// The only hosts an allowUrls entry may name: the providers' usage dashboards.
+export const READONLY_URL_HOSTS = Object.freeze(["vercel.com", "supabase.com"]);
+
+/** Whether the config is a read-only run's (allowUrls, ADR-0093). */
+export function isReadOnly(config = null) {
+  return Array.isArray(config?.allowUrls) && config.allowUrls.length > 0;
+}
+
 function capabilitiesOf(config) {
   return Array.isArray(config?.capabilities) ? config.capabilities : [];
 }
 
 /** The Chrome tools this run may use: RUNNER_TOOLS plus its capabilities' tools. */
 export function runnerTools(config = null) {
+  if (isReadOnly(config)) return [...READONLY_TOOLS];
   const extra = capabilitiesOf(config)
     .map((c) => CAPABILITY_TOOL[c])
     .filter(Boolean);
@@ -596,6 +639,69 @@ function isQuarantinedUrl(url, allowOrigins) {
   return !isNeutralUrl(url) && !isAllowedNavigation(url, allowOrigins);
 }
 
+/** origin + pathname of an https URL without credentials, or null. */
+function pageKey(url) {
+  if (typeof url !== "string" || url === "" || url.length > MAX_URL_LENGTH) return null;
+  if (UNSAFE_URL_CHARS.test(url)) return null;
+  const candidate = candidateUrl(url);
+  const authority = candidate.slice(candidate.indexOf("//") + 2).split(/[/?#]/, 1)[0];
+  if (authority.includes("@")) return null;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+function normaliseUrlList(allowUrls) {
+  if (!Array.isArray(allowUrls)) return [];
+  return [...new Set(allowUrls.filter((u) => typeof u === "string" && pageKey(u) === u))];
+}
+
+/**
+ * Why a read-only run's navigation target is (not) acceptable: it must be one
+ * of the configured URLs, written exactly (no query, fragment or other
+ * spelling), so nothing a page or a parser could reinterpret gets through.
+ */
+export function urlNavigationVerdict(url, allowUrls) {
+  if (typeof url !== "string" || url === "") return verdict(false, "navigate needs a url");
+  if (/^(back|forward)$/i.test(url.trim())) {
+    return verdict(
+      false,
+      "history navigation (back/forward) is not allowed; navigate to an explicit URL",
+    );
+  }
+  if (url.length > MAX_URL_LENGTH) return verdict(false, "the URL is too long");
+  if (UNSAFE_URL_CHARS.test(url)) {
+    return verdict(false, "the URL contains whitespace, control characters or a backslash");
+  }
+  const allowed = normaliseUrlList(allowUrls);
+  if (!allowed.includes(candidateUrl(url))) {
+    return verdict(
+      false,
+      `a read-only run may open only these pages, written exactly: ${allowed.join(", ") || "none configured"}`,
+    );
+  }
+  return verdict(true, `on ${candidateUrl(url)}`);
+}
+
+/** Whether a read-only run's tab is on one of its pages (any query) or a neutral one. */
+function isQuarantinedReadOnly(url, allowUrls) {
+  if (isNeutralUrl(url)) return false;
+  const key = pageKey(url);
+  return key === null || !normaliseUrlList(allowUrls).includes(key);
+}
+
+/** Whether the tab's page is outside what this run may be on. */
+function isQuarantinedFor(url, config) {
+  return isReadOnly(config)
+    ? isQuarantinedReadOnly(url, config.allowUrls)
+    : isQuarantinedUrl(url, normaliseAllowList(config?.allowOrigins));
+}
+
 /** A URL fit for the decision log: query and fragment are replaced by markers. */
 export function redactUrl(url) {
   if (typeof url !== "string") return null;
@@ -655,6 +761,43 @@ export function parseAllowOrigin(value) {
   return parsed.origin;
 }
 
+/**
+ * Validate one read-only page (ADR-0093): https, exactly on one of
+ * READONLY_URL_HOSTS, a path other than `/`, no query, fragment, credentials
+ * or percent-encoding, already in canonical form.
+ */
+export function parseAllowUrl(value) {
+  if (typeof value !== "string" || value === "") throw new Error("allow url must be a string");
+  if (UNSAFE_URL_CHARS.test(value) || value.includes("%")) {
+    throw new Error(`allow url has unsafe characters: ${value}`);
+  }
+  if (!value.startsWith("https://"))
+    throw new Error(`allow url must start with https://: ${value}`);
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`allow url is not a URL: ${value}`);
+  }
+  if (parsed.username || parsed.password || value.includes("@")) {
+    throw new Error(`allow url must not carry credentials: ${value}`);
+  }
+  if (parsed.search || parsed.hash || value.includes("?") || value.includes("#")) {
+    throw new Error(`allow url must have no query or fragment: ${value}`);
+  }
+  if (!READONLY_URL_HOSTS.includes(parsed.hostname) || parsed.port) {
+    throw new Error(
+      `allow url must be on ${READONLY_URL_HOSTS.join(" or ")} (the usage dashboards): ${value}`,
+    );
+  }
+  if (parsed.pathname === "/")
+    throw new Error(`allow url must name a page, not the site: ${value}`);
+  if (`${parsed.origin}${parsed.pathname}` !== value) {
+    throw new Error(`allow url is not in canonical form: ${value}`);
+  }
+  return value;
+}
+
 function absoluteDir(label, v) {
   if (typeof v !== "string" || v === "") throw new Error(`${label} is required`);
   if (!path.isAbsolute(v)) throw new Error(`${label} must be an absolute path: ${v}`);
@@ -668,16 +811,28 @@ export function validateConfig(raw) {
   if (typeof raw.deviceId !== "string" || !DEVICE_ID_RE.test(raw.deviceId)) {
     throw new Error("config.deviceId must be a UUID");
   }
-  if (!Array.isArray(raw.allowOrigins) || raw.allowOrigins.length === 0) {
-    throw new Error("config.allowOrigins must be a non-empty array");
+  const origins = raw.allowOrigins === undefined ? [] : raw.allowOrigins;
+  const urls = raw.allowUrls === undefined ? [] : raw.allowUrls;
+  if (!Array.isArray(origins) || !Array.isArray(urls)) {
+    throw new Error("config.allowOrigins and config.allowUrls must be arrays");
+  }
+  if (origins.length > 0 === urls.length > 0) {
+    throw new Error(
+      "config needs exactly one of allowOrigins (a preview run) or allowUrls (a read-only run)",
+    );
   }
   const capabilities = raw.capabilities === undefined ? [] : raw.capabilities;
   if (!Array.isArray(capabilities) || capabilities.some((c) => !CAPABILITIES.includes(c))) {
     throw new Error(`config.capabilities must be a list of ${CAPABILITIES.join(", ")}`);
   }
+  if (urls.length > 0 && capabilities.length > 0) {
+    throw new Error("a read-only run (allowUrls) takes no capabilities");
+  }
   const out = {
     deviceId: raw.deviceId,
-    allowOrigins: [...new Set(raw.allowOrigins.map(parseAllowOrigin))],
+    ...(urls.length > 0
+      ? { allowUrls: [...new Set(urls.map(parseAllowUrl))] }
+      : { allowOrigins: [...new Set(origins.map(parseAllowOrigin))] }),
     logDir: absoluteDir("config.logDir", raw.logDir),
     stateDir: absoluteDir("config.stateDir", raw.stateDir),
     evidenceDir: absoluteDir("config.evidenceDir", raw.evidenceDir),
@@ -766,8 +921,12 @@ function decide({ tool, input, config, state }) {
   if (!isPlainObject(config) || typeof config.deviceId !== "string" || !config.deviceId) {
     return deny("the guard has no pinned device configured");
   }
-  const origins = normaliseAllowList(config.allowOrigins);
-  if (origins.length === 0) return deny("the guard has no allowed origin configured");
+  const readOnly = isReadOnly(config);
+  const origins = readOnly ? [] : normaliseAllowList(config.allowOrigins);
+  const urls = readOnly ? normaliseUrlList(config.allowUrls) : [];
+  if (readOnly ? urls.length === 0 : origins.length === 0) {
+    return deny("the guard has no allowed origin configured");
+  }
   const st = validateState(state ?? emptyState());
   const args = isPlainObject(input) ? input : {};
 
@@ -800,25 +959,33 @@ function decide({ tool, input, config, state }) {
   }
 
   if (name === "navigate") {
-    const v = navigationVerdict(args.url, origins);
+    const v = readOnly
+      ? urlNavigationVerdict(args.url, urls)
+      : navigationVerdict(args.url, origins);
     return v.ok ? allow(v.reason) : deny(v.reason);
   }
 
   const current = st.tabs[String(tabId)];
-  if (name !== "tabs_close_mcp" && isQuarantinedUrl(current, origins)) {
+  if (name !== "tabs_close_mcp" && isQuarantinedFor(current, config)) {
     const where =
       current === UNKNOWN_URL || current === AMBIGUOUS_URL
         ? "the guard could not confirm which page it is on"
         : `it is now on ${normaliseOrigin(current) ?? "a page outside the allowed origin"}`;
     return deny(
       `tab ${tabId} has left the allowed origin (${where}); only tabs_close_mcp, or a ` +
-        `navigate back to ${origins.join(" or ")}, is allowed on it`,
+        `navigate back to ${(readOnly ? urls : origins).join(" or ")}, is allowed on it`,
     );
   }
 
   if (name === "computer") {
     const v = computerVerdict(args);
     if (!v.ok) return deny(v.reason);
+    if (readOnly && !READONLY_COMPUTER_ACTIONS.includes(args.action)) {
+      return deny(
+        `a read-only run may only look and scroll (${READONLY_COMPUTER_ACTIONS.join(", ")}), ` +
+          `not ${args.action}`,
+      );
+    }
   }
   if (name === "file_upload") {
     const v = uploadVerdict(args, config);
@@ -1118,9 +1285,8 @@ export function applyPost({
   const texts = normaliseBlocks(responseBlocks)
     .filter((b) => isPlainObject(b) && b.type === "text" && typeof b.text === "string")
     .map((b) => b.text);
-  const origins = normaliseAllowList(config?.allowOrigins);
   const quarantinedBefore = new Set(
-    Object.keys(next.tabs).filter((id) => isQuarantinedUrl(next.tabs[id], origins)),
+    Object.keys(next.tabs).filter((id) => isQuarantinedFor(next.tabs[id], config)),
   );
 
   if (name === "select_browser") {
@@ -1192,7 +1358,7 @@ export function applyPost({
   }
 
   for (const id of Object.keys(next.tabs)) {
-    if (!quarantinedBefore.has(id) && isQuarantinedUrl(next.tabs[id], origins)) {
+    if (!quarantinedBefore.has(id) && isQuarantinedFor(next.tabs[id], config)) {
       events.push({ quarantined: Number(id) });
     }
   }
@@ -1610,6 +1776,7 @@ const CLI_OPTIONS = {
   out: { type: "string" },
   device: { type: "string" },
   "allow-origin": { type: "string", multiple: true },
+  "allow-url": { type: "string", multiple: true },
   "log-dir": { type: "string" },
   "state-dir": { type: "string" },
   "evidence-dir": { type: "string" },
@@ -1668,6 +1835,7 @@ export async function main(
       const config = validateConfig({
         deviceId: required(values, "device"),
         allowOrigins: values["allow-origin"] ?? [],
+        allowUrls: values["allow-url"] ?? [],
         logDir: path.resolve(required(values, "log-dir")),
         stateDir: path.resolve(required(values, "state-dir")),
         evidenceDir: path.resolve(required(values, "evidence-dir")),
