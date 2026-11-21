@@ -50,6 +50,13 @@ describe("usage-readout: number parsing", () => {
     assert.equal(parseDashboardNumber("1,234.5"), 1234.5);
     assert.equal(parseDashboardNumber("1 234"), 1234);
     assert.equal(parseDashboardNumber("12"), 12);
+    // A leading 0 or a 4-digit integer part can't be a thousands group.
+    assert.equal(parseDashboardNumber("0.123"), 0.123);
+    assert.equal(parseDashboardNumber("1234.567"), 1234.567);
+    // Without grouping (byte amounts, suffixed counts) a lone separator is decimal.
+    assert.equal(parseDashboardNumber("1.234", { grouping: false }), 1.234);
+    assert.equal(parseDashboardNumber("1,234", { grouping: false }), 1.234);
+    assert.equal(parseDashboardNumber("1,23,4"), null);
     for (const bad of ["", "abc", "-1", "1.2.3,4.5", "1e3", null]) {
       assert.equal(parseDashboardNumber(bad), null, String(bad));
     }
@@ -62,6 +69,9 @@ describe("usage-readout: number parsing", () => {
     assert.equal(parseGigabytes("2 TB"), 2000);
     assert.equal(parseGigabytes("0 B"), 0);
     assert.equal(parseGigabytes("12 KB"), 0.000012);
+    assert.equal(parseGigabytes("0.123 GB"), 0.123);
+    assert.equal(parseGigabytes("365.520 MB"), 0.36552);
+    assert.equal(parseGigabytes("1,420 GB"), 1.42);
     assert.equal(parseGigabytes("1.42"), null);
     assert.equal(parseGigabytes("1.42 GB / 100 GB"), null);
   });
@@ -72,6 +82,8 @@ describe("usage-readout: number parsing", () => {
     assert.equal(parseCount("1,2M"), 1200000);
     assert.equal(parseCount("122,034"), 122034);
     assert.equal(parseCount("6"), 6);
+    assert.equal(parseCount("1.234K"), 1234);
+    assert.equal(parseCount("0,5K"), 500);
     assert.equal(parseCount("lots"), null);
   });
 
@@ -95,6 +107,24 @@ describe("usage-readout: number parsing", () => {
       to: "2026-11-30",
     });
     assert.deepEqual(parsePeriod("Dec 23 - Jan 22", new Date("2027-01-23T00:00:00Z")), {
+      from: "2026-12-23",
+      to: "2027-01-22",
+    });
+    // A billing cycle that ends in the future, and day-first dates.
+    const nov21 = new Date("2026-11-21T12:00:00Z");
+    assert.deepEqual(parsePeriod("Nov 15 - Dec 15", nov21), {
+      from: "2026-11-15",
+      to: "2026-12-15",
+    });
+    assert.deepEqual(parsePeriod("Nov 1 - Nov 30", nov21), {
+      from: "2026-11-01",
+      to: "2026-11-30",
+    });
+    assert.deepEqual(parsePeriod("21 Oct - 21 Nov", nov21), {
+      from: "2026-10-21",
+      to: "2026-11-21",
+    });
+    assert.deepEqual(parsePeriod("Dec 23 - Jan 22, 2027", new Date("2027-01-23Z")), {
       from: "2026-12-23",
       to: "2027-01-22",
     });
@@ -159,11 +189,33 @@ describe("usage-readout: buildReadout", () => {
     assert.equal(r.readings.length, 3);
   });
 
-  test("posts nothing when the runner stopped, the block is missing, or nothing parsed", () => {
-    assert.equal(
-      buildReadout(output(USAGE, "browser=auth-expired")).problem,
-      "browser=auth-expired",
-    );
+  test("posts what a run that stopped part-way read, and nothing from a blocked one", () => {
+    const vercelOnly = { vercel: USAGE.vercel };
+    const stopped = buildReadout(output(vercelOnly, "browser=auth-expired"), { now: NOW });
+    assert.equal(stopped.problem, null);
+    assert.equal(stopped.status, "auth-expired");
+    assert.equal(stopped.readings.length, 4);
+    assert.deepEqual(stopped.missing, ["supabase_egress", "supabase_cached_egress"]);
+    assert.equal(buildReadout(output({}, "browser=unavailable")).problem, "browser=unavailable");
+    assert.equal(buildReadout(output(USAGE, "browser=blocked")).problem, "browser=blocked");
+    assert.equal(buildReadout(output(USAGE, "browser=blocked")).readings.length, 0);
+  });
+
+  test("expects only the configured providers, and drops implausible figures", () => {
+    const vercelOnly = buildReadout(output({ vercel: USAGE.vercel }), {
+      now: NOW,
+      providers: ["vercel"],
+    });
+    assert.deepEqual(vercelOnly.missing, []);
+    assert.equal(vercelOnly.readings.length, 4);
+    const usage = structuredClone(USAGE);
+    usage.vercel.cdnRequests = "20B";
+    const huge = buildReadout(output(usage), { now: NOW });
+    assert.ok(huge.missing.includes("vercel_cdn_requests"));
+    assert.equal(huge.readings.length, 5);
+  });
+
+  test("posts nothing when the block is missing, or nothing parsed", () => {
     assert.equal(buildReadout("no block\nbrowser=ok\n").problem, "no readable USAGE block");
     assert.equal(buildReadout("<<<USAGE\n{}\nUSAGE>>>\n").problem, "browser=malformed");
     assert.equal(buildReadout(output({ vercel: {} })).problem, "no figure could be read");
@@ -289,10 +341,36 @@ describe("usage-readout: run", () => {
     }
   });
 
+  test("posts a stopped run's partial readout, and emails why", async () => {
+    const t = setup(output({ vercel: USAGE.vercel }, "browser=auth-expired"));
+    try {
+      const r = await run(t.base, t.deps);
+      assert.equal(r.posted, true);
+      assert.equal(t.posts[0].readings.length, 4);
+      assert.equal(t.emails.length, 1);
+      assert.match(t.emails[0], /readout incomplete \(browser=auth-expired\)/);
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a Vercel-only setup emails nobody about Supabase", async () => {
+    const t = setup(output({ vercel: USAGE.vercel }));
+    try {
+      const r = await run({ ...t.base, providers: ["vercel"] }, t.deps);
+      assert.equal(r.posted, true);
+      assert.deepEqual(r.missing, []);
+      assert.deepEqual(t.emails, []);
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
   test("emails, and posts nothing, when the runner failed or stopped", async () => {
     for (const [runnerResult, text, reason] of [
       ["timeout", output(), /runner timeout/],
-      ["ran", output(USAGE, "browser=auth-expired"), /browser=auth-expired/],
+      ["preflight:disabled:guard-not-loaded", undefined, /runner preflight:disabled/],
+      ["ran", output({}, "browser=auth-expired"), /browser=auth-expired/],
       ["ran", undefined, /no runner output/],
     ]) {
       const t = setup(text);

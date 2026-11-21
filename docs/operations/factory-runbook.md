@@ -784,18 +784,20 @@ Once a week, on Sunday evening, the runner reads the Vercel and Supabase usage d
 - **Prompt.** It has its own, `scripts/factory-usage-prompt.md`. A login wall ends the run with `browser=auth-expired`, and the runner never signs in.
 - **Other kinds.** `vercel.com` stays forbidden for them, and `drafto.eu` for every kind.
 
-The runner prints the figures as shown. `scripts/lib/usage-readout.mjs` then turns them into numbers, refuses output that looks like a secret, posts the readout, and emails you on any failure. Nothing goes to GitHub.
+The runner prints the figures as shown. `scripts/lib/usage-readout.mjs` then turns them into numbers, refuses output that looks like a secret, posts the readout, and emails you on any failure. A run that stopped part-way, at one site's login wall for example, still posts what it read. The readout itself posts nothing to GitHub. If the script crashes, the factory's usual `factory-failure` issue is filed as for any mode.
+
+It starts no session while the browser runner is disabled (the `guard-not-loaded` latch, cleared with `factory:browser-reset`). It is also skipped, with no email, while the factory is paused or in Phase A, like every other mode. Readings then go stale on `/admin/stats` after 8 days.
 
 **Variables** (in the usage job's plist):
 
-| Variable                      | Default                                               | Meaning                                                                                                        |
-| ----------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `FACTORY_USAGE_READOUT`       | `1`                                                   | `0` turns the readout off. `FACTORY_BROWSER=0` does too.                                                       |
-| `FACTORY_USAGE_VERCEL_URL`    | `https://vercel.com/jakubanderwalds-projects/~/usage` | The Vercel team's usage page. Exact, with no query.                                                            |
-| `FACTORY_USAGE_SUPABASE_URL`  | (empty)                                               | The Supabase org's usage page, `https://supabase.com/dashboard/org/<org-slug>/usage`. Empty means Vercel only. |
-| `FACTORY_USAGE_POST_URL`      | `https://drafto.eu/api/cron/hosted-usage`             | Where the readout goes.                                                                                        |
-| `FACTORY_USAGE_SECRET_FILE`   | `~/drafto-secrets/hosted-usage.env`                   | Holds `HOSTED_USAGE_SECRET=…`, mode 600. Only `usage-readout.mjs` reads it.                                    |
-| `FACTORY_USAGE_READOUT_FORCE` | `0`                                                   | `1` runs even if a readout already ran in the last 20 hours, for a manual run.                                 |
+| Variable                      | Default                                               | Meaning                                                                                                                                                                              |
+| ----------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FACTORY_USAGE_READOUT`       | `1`                                                   | `0` turns the readout off. `FACTORY_BROWSER=0` does too.                                                                                                                             |
+| `FACTORY_USAGE_VERCEL_URL`    | `https://vercel.com/jakubanderwalds-projects/~/usage` | The Vercel team's usage page. Exact, with no query.                                                                                                                                  |
+| `FACTORY_USAGE_SUPABASE_URL`  | (empty)                                               | The Supabase org's usage page, `https://supabase.com/dashboard/org/<org-slug>/usage`. Empty means Vercel only, and then the Supabase figures are neither expected nor emailed about. |
+| `FACTORY_USAGE_POST_URL`      | `https://drafto.eu/api/cron/hosted-usage`             | Where the readout goes.                                                                                                                                                              |
+| `FACTORY_USAGE_SECRET_FILE`   | `~/drafto-secrets/hosted-usage.env`                   | Holds `HOSTED_USAGE_SECRET=…`, mode 600. Only `usage-readout.mjs` reads it.                                                                                                          |
+| `FACTORY_USAGE_READOUT_FORCE` | `0`                                                   | `1` runs even if a readout already ran in the last 20 hours, for a manual run.                                                                                                       |
 
 **One-time setup** (on the Mac mini):
 
@@ -824,7 +826,8 @@ The runner prints the figures as shown. `scripts/lib/usage-readout.mjs` then tur
 **Triage.** Every failure emails you ("Drafto factory: weekly usage readout failed (…)"), with the reason:
 
 - `runner preflight:chrome-not-running`: Chrome isn't running on the Mac mini.
-- `browser=auth-expired`: the profile is signed out of vercel.com or supabase.com. Sign back in by hand. The runner never signs in.
+- `runner preflight:disabled:guard-not-loaded`: an earlier browser session ran without the guard, so every browser run is off. Fix the cause, then run `node scripts/lib/state-cli.mjs factory:browser-reset` (see "Browser runner" above).
+- `browser=auth-expired`: the profile is signed out of vercel.com or supabase.com. Sign back in by hand. The runner never signs in. Whatever it read before the wall was still posted, so the email says "incomplete" and names what wasn't read.
 - `browser=unavailable`: the extension isn't connected, or the display was off and the browser wasn't drawing (see "Browser runner" above).
 - `no figure could be read`, or "incomplete" with `Not read: …`: a dashboard redesign moved or renamed a figure. Update the field names in `scripts/factory-usage-prompt.md` (and the parser, `usage-readout.mjs`, if the format changed).
 - `post failed: HTTP 401`: the two copies of `HOSTED_USAGE_SECRET` differ. `HTTP 500`: Vercel doesn't have it yet, or the insert failed (Sentry has the cause).

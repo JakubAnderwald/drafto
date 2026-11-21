@@ -83,6 +83,7 @@ describe("usage_readout_run", () => {
     browserResult = "ran",
     lastAgeMin = null,
     dryRun = 0,
+    browserStatus = '{"streak":0}',
   } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "usage-readout-"));
     const calls = join(dir, "calls.txt");
@@ -99,6 +100,7 @@ describe("usage_readout_run", () => {
 LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
 LOG_DIR=${JSON.stringify(join(dir, "logs", "factory"))}
 REPO_ROOT=${JSON.stringify(dir)}
+STATE_FILE=${JSON.stringify(join(dir, "logs", "factory-state.json"))}
 SCRIPT_DIR=${JSON.stringify(scriptsDir)}
 ADMIN_EMAIL=operator@example.com
 DRY_RUN=${dryRun}
@@ -120,6 +122,9 @@ run_browser_task() {
   return 0
 }
 node() {
+  case "$1" in
+    */state-cli.mjs) echo ${JSON.stringify(browserStatus)}; return 0 ;;
+  esac
   echo "node $*" >>${JSON.stringify(calls)}
   echo '{"posted":true}'
 }
@@ -150,7 +155,7 @@ echo "rc=$?"
     assert.match(node, /usage-readout\.mjs run --in .*runner-output\.txt --runner-result ran/);
     assert.match(
       node,
-      /--url https:\/\/drafto\.eu\/api\/cron\/hosted-usage --secret-file \/x\/hosted-usage\.env --to operator@example\.com/,
+      /--url https:\/\/drafto\.eu\/api\/cron\/hosted-usage --secret-file \/x\/hosted-usage\.env --to operator@example\.com --providers vercel,supabase/,
     );
     assert.match(last, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m);
     assert.match(r.stdout, /Usage readout \(ran\): \{"posted":true\}/);
@@ -161,6 +166,7 @@ echo "rc=$?"
     assert.equal((callLog.match(/^url /gm) ?? []).length, 1);
     assert.match(r.stdout, /FACTORY_USAGE_SUPABASE_URL is not set/);
     assert.equal(JSON.parse(callLog.match(/^bundle (.*)$/m)[1]).pages.supabase, null);
+    assert.match(callLog, /--providers vercel$/m);
   });
 
   it("skips a later slot once this week's readout has run, unless forced", () => {
@@ -171,6 +177,14 @@ echo "rc=$?"
     assert.match(stale.callLog, /^task usage/m);
     const forced = run({ lastAgeMin: 30, env: { FACTORY_USAGE_READOUT_FORCE: "1" } });
     assert.match(forced.callLog, /^task usage/m);
+  });
+
+  it("starts no session while the browser runner is disabled (guard-not-loaded latch)", () => {
+    const { callLog } = run({
+      browserStatus: '{"disabled":true,"disabledReason":"guard-not-loaded"}',
+    });
+    assert.doesNotMatch(callLog, /^task /m);
+    assert.match(callLog, /--runner-result preflight:disabled:guard-not-loaded/);
   });
 
   it("reports Chrome not running without starting a session", () => {

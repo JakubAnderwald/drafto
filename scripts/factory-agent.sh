@@ -5863,7 +5863,17 @@ usage_readout_run() {
     log "[dry-run] would read ${USAGE_READOUT_URLS[*]} and post to $FACTORY_USAGE_POST_URL"
     return 0
   fi
-  if ! pgrep -u "$(id -u)" -x "Google Chrome" >/dev/null 2>&1; then
+  local providers="vercel" disabled
+  [[ -n "$FACTORY_USAGE_SUPABASE_URL" ]] && providers="vercel,supabase"
+  # The browser health latch (browser-health.mjs): once a session ran without
+  # the guard, no browser run starts until factory:browser-reset, this one
+  # included. It reads the latch itself, not the full preflight, whose checks
+  # are about the preview runs' test account.
+  disabled=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:browser-status --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
+    | jq -r 'if .disabled == true then (.disabledReason // "disabled") else "" end' 2>/dev/null || echo "unknown")
+  if [[ -n "$disabled" ]]; then
+    result="preflight:disabled:$disabled"
+  elif ! pgrep -u "$(id -u)" -x "Google Chrome" >/dev/null 2>&1; then
     result="preflight:chrome-not-running"
   else
     bundle=$(jq -nc --arg device "$FACTORY_BROWSER_DEVICE_ID" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -5882,7 +5892,7 @@ usage_readout_run() {
   fi
   summary=$(node "$SCRIPT_DIR/lib/usage-readout.mjs" run --in "$run_dir/runner-output.txt" \
     --runner-result "$result" --url "$FACTORY_USAGE_POST_URL" \
-    --secret-file "$FACTORY_USAGE_SECRET_FILE" --to "$ADMIN_EMAIL" 2>>"$LOG_FILE") || true
+    --secret-file "$FACTORY_USAGE_SECRET_FILE" --to "$ADMIN_EMAIL" --providers "$providers" 2>>"$LOG_FILE") || true
   log "Usage readout ($result): ${summary:-no summary}"
   date -u +%Y-%m-%dT%H:%M:%SZ >"$last_file" 2>/dev/null || true
   return 0
