@@ -118,6 +118,8 @@ The Hermes and bundling script phases source `$REACT_NATIVE_PATH/scripts/xcode/w
 
 Before CocoaPods, `build_and_submit` checks the checkout's dependencies. It refuses to build unless the installed `node_modules/react-native-macos` is exactly the version `apps/desktop/package.json` declares, and `node_modules/react` is 19.2.x. A stale checkout (the retired fossil, or a `git pull` with no install after it) compiles green and then crashes in Hermes at launch. The fix is `pnpm install` at the repo root. `scripts/lib/dispatch-release.mjs` (`assertDesktopDeps`) runs the same check before the factory spawns a desktop lane.
 
+The lane also clears a stale Pods cache. A gitignored `apps/desktop/macos/Pods` that doesn't match the committed `Podfile.lock` can make CocoaPods refuse to install ("could not find compatible versions for pod `hermes-engine`", seen in a checkout whose `Pods` dated from react-native-macos 0.81). When `Pods/Manifest.lock` is missing or differs from `Podfile.lock`, `clear_stale_pods_cache!` deletes `macos/Pods` and `macos/build`, so the build runs a full `pod install` and a cold Xcode build. The factory's build roots apply the same rule (`_beta_root_drop_stale_pods` in `scripts/lib/beta-build-root.sh`).
+
 The lane also keeps `apps/desktop/macos/.xcode.env.local` valid. Xcode's script phases read `NODE_BINARY` from it. `pod install` writes it only when it is missing, so a path to a removed or upgraded node would survive. The lane rewrites it from `node -p process.execPath` when it is missing or its `NODE_BINARY` is not executable. Don't copy it from another checkout.
 
 ### `react-native-macos` patch key `~0.83.0`
@@ -692,7 +694,7 @@ reaches the public stores needs explicit user approval. When a feature merges to
 - **iOS**: `cd apps/mobile && pnpm release:beta:ios` → TestFlight
 - **macOS**: `cd apps/desktop && pnpm release:beta` → TestFlight (run `pnpm install` after the `git pull` first)
 
-> **One time, after the #558 merge:** the primary checkout's first `pnpm install` destroys the old desktop fossil. Take a clonefile snapshot (`cp -c -R`) of its `node_modules` trees first, and keep it until a post-merge TestFlight build opens a note. Its `node_modules` record an old pnpm store, so without a TTY run `pnpm install --config.confirm-modules-purge=false` ([`desktop-build-fossil.md`](./desktop-build-fossil.md#one-time-step-the-primary-checkout)). Rollback is: revert the PR, then restore the snapshot ([ADR-0067](../adr/0067-desktop-moves-to-react-native-macos-0-83.md)).
+> **One time, after the #558 merge (done):** the primary checkout's first `pnpm install` was to be preceded by a snapshot of the old desktop fossil. That no longer applies: the fossil was already replaced, and post-merge builds on react-native-macos 0.83 have shipped ([`desktop-build-fossil.md`](./desktop-build-fossil.md#one-time-step-the-primary-checkout-done)).
 
 The three store lanes can run concurrently in separate terminals; web deploys on its
 own. On the Mac mini, `scripts/lib/dispatch-release.mjs` dispatches exactly these

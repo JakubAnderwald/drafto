@@ -210,6 +210,7 @@ Remove a line once its fix ships, and turn the WARN back into a PASS/FAIL check.
 ## Shell gotchas
 
 - **macOS bash is 3.2:** no associative arrays, no `${var,,}`.
+- **Numbers follow the locale.** Under pl_PL, `awk 'BEGIN { printf "%.4f", x }'` prints `0,0037`, which the Swift helpers can't parse. `lib/common.sh` exports `LC_NUMERIC=C` for every scenario and unsets `LC_ALL`, which would override it, after copying it into `LC_CTYPE` (and into `LANG` if `LANG` is unset). The rest of the locale stays, because matching the `✓` menu checkmark needs UTF-8.
 - **`pipefail` breaks `cmd | grep -q`:** `grep -q` exits early, the writer gets SIGPIPE, and the pipeline fails. Match on captured output instead.
 - **A function named `log` shadows `/usr/bin/log`.** Call the binary by its path.
 - **zsh treats `"$var:a…"` as a path modifier.** In `git show "origin/$B:apps/…"` the `:a` expands. Write `${B}`.

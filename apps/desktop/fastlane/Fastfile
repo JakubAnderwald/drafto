@@ -187,6 +187,34 @@ def assert_desktop_dependencies!
   UI.success("Dependency preflight: react-native-macos #{rnm}, react #{react}")
 end
 
+# A gitignored macos/Pods that doesn't match the committed Podfile.lock can make
+# CocoaPods refuse to install ("could not find compatible versions for pod
+# hermes-engine": the primary checkout kept a Pods from rnm 0.81 after the move
+# to 0.83). Same rule as the factory's build roots (_beta_root_drop_stale_pods in
+# scripts/lib/beta-build-root.sh): when Pods has no Manifest.lock, or it differs
+# from Podfile.lock (a missing Podfile.lock counts as different), delete
+# macos/Pods and macos/build. Both are caches; the build then runs a full
+# pod install and a cold Xcode build.
+def clear_stale_pods_cache!
+  require "fileutils"
+  macos = File.join(PROJECT_ROOT, "macos")
+  pods = File.join(macos, "Pods")
+  return unless File.exist?(pods) || File.symlink?(pods)
+
+  manifest = File.join(pods, "Manifest.lock")
+  podfile_lock = File.join(macos, "Podfile.lock")
+  reason =
+    if !File.file?(manifest)
+      "macos/Pods has no Manifest.lock"
+    elsif !File.file?(podfile_lock) || File.binread(manifest) != File.binread(podfile_lock)
+      "macos/Pods/Manifest.lock differs from Podfile.lock"
+    end
+  return if reason.nil?
+
+  UI.important("Stale CocoaPods sandbox (#{reason}): deleting macos/Pods and macos/build, so this build runs a full pod install and a cold build")
+  FileUtils.rm_rf([pods, File.join(macos, "build")])
+end
+
 # Xcode's script phases source macos/.xcode.env, which sources the gitignored
 # .xcode.env.local for NODE_BINARY. `pod install` writes that file only when it
 # is missing, so a path left behind by a removed or upgraded node survives and
@@ -775,6 +803,7 @@ platform :mac do
     # and the Pods' Hermes / codegen phases need a NODE_BINARY that exists.
     assert_desktop_dependencies!
     ensure_xcode_env_local_node_binary
+    clear_stale_pods_cache!
 
     # Install CocoaPods dependencies
     cocoapods(
