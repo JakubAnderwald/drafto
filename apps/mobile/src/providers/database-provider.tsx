@@ -4,7 +4,7 @@ import type { Database } from "@nozbe/watermelondb";
 import { Q } from "@nozbe/watermelondb";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
 import NetInfo from "@react-native-community/netinfo";
-import { hasLocalEdit, storageFullMessage } from "@drafto/shared";
+import { contentFullMessage, hasLocalEdit, storageFullMessage } from "@drafto/shared";
 
 import { database } from "@/db";
 import { markAppOpened } from "@/db/activity-days";
@@ -57,6 +57,11 @@ interface DatabaseContextValue {
   lastSyncedAt: Date | null;
   /** Why the latest sync failed, or null once a sync succeeds. */
   lastSyncError: string | null;
+  /**
+   * The latest sync left notes unsynced because they don't fit the content quota
+   * (ADR 0090). `lastSyncError` then holds the message saying so.
+   */
+  isContentFull: boolean;
   isSyncing: boolean;
 }
 
@@ -101,6 +106,10 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const [pendingChangesCount, setPendingChangesCount] = useState(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [isContentFull, setIsContentFull] = useState(false);
+  // Mirrors isContentFull for the sync callback, so the notice shows once when
+  // notes first stop fitting, not on every pass that retries them.
+  const contentFullRef = useRef(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
   const checkPendingChanges = useCallback(async (): Promise<boolean> => {
@@ -194,7 +203,22 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         if (!isCurrentSession()) return { ok: false, pending: false, uploadResult };
         retryCountRef.current = 0;
         setLastSyncedAt(new Date());
-        setLastSyncError(null);
+        if (result.contentQuotaRefused > 0) {
+          // The sync got through, but the refused notes wait on this device
+          // until they fit. Say so once, and keep it in the status until then.
+          const message = contentFullMessage(
+            result.contentUsage?.usedBytes,
+            result.contentUsage?.quotaBytes,
+          );
+          setLastSyncError(message);
+          if (!contentFullRef.current) showToast(message, "warning");
+          contentFullRef.current = true;
+          setIsContentFull(true);
+        } else {
+          setLastSyncError(null);
+          contentFullRef.current = false;
+          setIsContentFull(false);
+        }
         const pending = await checkPendingChanges();
         // The session can end during any await; a stale pass reports nothing.
         if (!isCurrentSession()) return { ok: false, pending: false, uploadResult };
@@ -214,6 +238,10 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       } catch (err) {
         if (!isCurrentSession()) return { ok: false, pending: false, uploadResult };
         setLastSyncError(describeSyncError(err));
+        // This failure isn't the content quota: the status says "Sync failed",
+        // and a later refusal shows its notice again.
+        contentFullRef.current = false;
+        setIsContentFull(false);
         if (err instanceof SyncNetworkError) {
           // Network error — schedule retry with backoff
           const retryIndex = Math.min(retryCountRef.current, RETRY_DELAYS_MS.length - 1);
@@ -381,6 +409,8 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       editedDuringSyncRef.current = false;
       setIsSyncing(false);
       setLastSyncError(null);
+      contentFullRef.current = false;
+      setIsContentFull(false);
     };
   }, [userId, sync]);
 
@@ -445,6 +475,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         pendingChangesCount,
         lastSyncedAt,
         lastSyncError,
+        isContentFull,
         isSyncing,
       }}
     >

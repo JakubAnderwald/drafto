@@ -221,4 +221,93 @@ describe("POST /api/admin/storage-quota", () => {
     expect(response.status).toBe(500);
     expect((await response.json()).error).toBe("Failed to update storage quota");
   });
+  describe("contentQuotaMb", () => {
+    it("sets only the content quota when only contentQuotaMb is sent", async () => {
+      const bytes = megabytesToBytes(100);
+      const { update, select } = mockProfiles({
+        updateResult: { data: { id: TARGET_ID, content_quota_bytes: bytes }, error: null },
+      });
+
+      const response = await POST(createRequest({ userId: TARGET_ID, contentQuotaMb: 100 }));
+      expect(response.status).toBe(200);
+      expect(update).toHaveBeenCalledWith({ content_quota_bytes: bytes });
+      expect(select).toHaveBeenCalledWith("id, content_quota_bytes");
+      expect(await response.json()).toEqual({ userId: TARGET_ID, contentQuotaBytes: bytes });
+    });
+
+    it("sets an unlimited content quota for null", async () => {
+      const { update } = mockProfiles({
+        updateResult: { data: { id: TARGET_ID, content_quota_bytes: null }, error: null },
+      });
+
+      const response = await POST(createRequest({ userId: TARGET_ID, contentQuotaMb: null }));
+      expect(response.status).toBe(200);
+      expect(update).toHaveBeenCalledWith({ content_quota_bytes: null });
+      expect(await response.json()).toEqual({ userId: TARGET_ID, contentQuotaBytes: null });
+    });
+
+    it("sets both quotas in one update", async () => {
+      const { update, select } = mockProfiles({
+        updateResult: {
+          data: {
+            id: TARGET_ID,
+            storage_quota_bytes: megabytesToBytes(10),
+            content_quota_bytes: null,
+          },
+          error: null,
+        },
+      });
+
+      const response = await POST(
+        createRequest({ userId: TARGET_ID, quotaMb: 10, contentQuotaMb: null }),
+      );
+      expect(update).toHaveBeenCalledWith({
+        storage_quota_bytes: megabytesToBytes(10),
+        content_quota_bytes: null,
+      });
+      expect(select).toHaveBeenCalledWith("id, storage_quota_bytes, content_quota_bytes");
+      expect(await response.json()).toEqual({
+        userId: TARGET_ID,
+        quotaBytes: megabytesToBytes(10),
+        contentQuotaBytes: null,
+      });
+    });
+
+    it.each([
+      ["zero", 0],
+      ["a fraction", 2.5],
+      ["a string", "10"],
+      ["above the cap", 1_000_001],
+    ])("returns 400 when contentQuotaMb is %s", async (_label, contentQuotaMb) => {
+      const { update } = mockProfiles();
+
+      const response = await POST(createRequest({ userId: TARGET_ID, contentQuotaMb }));
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toMatch(/contentQuotaMb/);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["the notes quota", { contentQuotaMb: 10 }, "Failed to update notes quota"],
+      ["both quotas", { quotaMb: 10, contentQuotaMb: 10 }, "Failed to update quotas"],
+    ])("names %s in the 500 when the update fails", async (_label, fields, message) => {
+      mockProfiles({
+        updateResult: { data: null, error: { message: "permission denied", code: "42501" } },
+      });
+
+      const response = await POST(createRequest({ userId: TARGET_ID, ...fields }));
+      expect(response.status).toBe(500);
+      expect((await response.json()).error).toBe(message);
+    });
+
+    it("refuses an invalid contentQuotaMb even when quotaMb is valid", async () => {
+      const { update } = mockProfiles();
+
+      const response = await POST(
+        createRequest({ userId: TARGET_ID, quotaMb: 10, contentQuotaMb: -1 }),
+      );
+      expect(response.status).toBe(400);
+      expect(update).not.toHaveBeenCalled();
+    });
+  });
 });

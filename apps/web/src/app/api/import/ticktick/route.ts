@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
+import { contentQuotaMessageFor } from "@/lib/api/content-quota";
 import { ticktickItemToBlocks } from "@/lib/import/ticktick-to-blocks";
 import type {
   TickTickImportBatchRequest,
@@ -59,6 +60,17 @@ export async function POST(request: NextRequest) {
       await importItem(supabase, user.id, notebookId, item);
       result.notesImported++;
     } catch (err) {
+      if (err instanceof ContentQuotaRefusal) {
+        // The quota refuses by size, so a smaller later item may still fit: keep going,
+        // and report the notes-full message once per batch.
+        result.notesFailed++;
+        if (!result.contentQuotaExceeded) {
+          result.errors.push(err.message);
+          result.contentQuotaMessage = err.message;
+          result.contentQuotaExceeded = true;
+        }
+        continue;
+      }
       result.notesFailed++;
       const message = err instanceof Error ? err.message : "Unknown error";
       result.errors.push(`"${item.title}": ${message}`);
@@ -86,6 +98,11 @@ async function importItem(
   });
 
   if (insertError) {
+    const quotaMessage = contentQuotaMessageFor(insertError);
+    if (quotaMessage) throw new ContentQuotaRefusal(quotaMessage);
     throw new Error(`Failed to create note: ${insertError.message}`);
   }
 }
+
+/** The notes trigger refused an item for the content quota (ADR 0090). */
+class ContentQuotaRefusal extends Error {}

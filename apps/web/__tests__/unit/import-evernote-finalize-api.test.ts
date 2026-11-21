@@ -138,4 +138,22 @@ describe("POST /api/import/evernote/finalize", () => {
       500,
     );
   });
+  it("returns the content quota 413 when the content write is refused for it", async () => {
+    mockEqUser.mockResolvedValue({
+      error: {
+        code: "P0001",
+        message: "content_quota_exceeded",
+        details: "used_bytes=10 quota_bytes=20 note_bytes=15",
+      },
+    });
+
+    const response = await POST(makeRequest(body));
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      code: "content_quota_exceeded",
+      usedBytes: 10,
+      quotaBytes: 20,
+    });
+    expect(mockErrorResponse).not.toHaveBeenCalled();
+  });
 });

@@ -4,7 +4,11 @@ import userEvent from "@testing-library/user-event";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
 import type { EnexNote } from "@/lib/import/types";
 import {
+  CONTENT_QUOTA_EXCEEDED_CODE,
+  CONTENT_QUOTA_EXCEEDED_MESSAGE,
+  DEFAULT_CONTENT_QUOTA_BYTES,
   DEFAULT_STORAGE_QUOTA_BYTES,
+  contentFullMessage,
   STORAGE_QUOTA_EXCEEDED_CODE,
   STORAGE_QUOTA_EXCEEDED_MESSAGE,
   storageFullMessage,
@@ -699,6 +703,77 @@ describe("ImportEvernoteDialog", () => {
         "1 notes imported",
       );
       expect(screen.queryByTestId("import-error")).not.toBeInTheDocument();
+    });
+  });
+  describe("content quota (ADR 0090)", () => {
+    const contentRefusal = () =>
+      Promise.resolve({
+        ok: false,
+        status: 413,
+        json: () =>
+          Promise.resolve({
+            error: CONTENT_QUOTA_EXCEEDED_MESSAGE,
+            code: CONTENT_QUOTA_EXCEEDED_CODE,
+            usedBytes: DEFAULT_CONTENT_QUOTA_BYTES,
+            quotaBytes: DEFAULT_CONTENT_QUOTA_BYTES,
+            status: 413,
+          }),
+      });
+    const expectedMessage = `${contentFullMessage(DEFAULT_CONTENT_QUOTA_BYTES, DEFAULT_CONTENT_QUOTA_BYTES)} The remaining notes weren't imported.`;
+
+    it("stops when creating a note is refused, without listing anything for retry", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(note({ title: "First" }), note({ title: "Second" }), note({ title: "Third" })),
+      );
+      let noteCalls = 0;
+      global.fetch = routeFetch({
+        note: () => {
+          noteCalls += 1;
+          return noteCalls === 2
+            ? contentRefusal()
+            : jsonOk({ notebookId: "nb-1", noteId: `note-${noteCalls}` });
+        },
+      }) as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      expect(noteCalls).toBe(2);
+      expect(screen.getByText("Notes full")).toBeInTheDocument();
+      expect(screen.queryByText("Storage full")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("retry-failed-button")).not.toBeInTheDocument();
+      expect((await screen.findByTestId("import-status")).textContent).toContain(
+        "Stopped: 1 imported",
+      );
+    });
+
+    it("stops when a note's finalize is refused, and lists that note for retry", async () => {
+      const user = userEvent.setup();
+      mockParseEnexStream.mockImplementation(() =>
+        streamOf(note({ title: "First" }), note({ title: "Second" })),
+      );
+      let noteCalls = 0;
+      const fetchMock = routeFetch({
+        note: () => {
+          noteCalls += 1;
+          return jsonOk({ notebookId: "nb-1", noteId: `note-${noteCalls}` });
+        },
+        finalize: contentRefusal,
+      });
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      render(<ImportEvernoteDialog onClose={mockOnClose} onComplete={mockOnComplete} />);
+      await user.upload(screen.getByTestId("file-input"), new File(["x"], "n.enex"));
+      await user.click(screen.getByTestId("start-import-button"));
+
+      expect((await screen.findByTestId("import-error")).textContent).toBe(expectedMessage);
+      // The second note was never created.
+      expect(noteCalls).toBe(1);
+      expect(screen.getByText("Notes full")).toBeInTheDocument();
+      expect(screen.getByTestId("import-failed-list")).toHaveTextContent("First");
     });
   });
 });

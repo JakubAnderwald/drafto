@@ -9,6 +9,7 @@ let mockDatabaseContext = {
   isSyncing: false,
   lastSyncedAt: null as Date | null,
   lastSyncError: null as string | null,
+  isContentFull: false,
   pendingChangesCount: 0,
   hasPendingChanges: false,
 };
@@ -34,6 +35,7 @@ describe("SyncStatus", () => {
       isSyncing: false,
       lastSyncedAt: null,
       lastSyncError: null,
+      isContentFull: false,
       pendingChangesCount: 0,
       hasPendingChanges: false,
     };
@@ -52,6 +54,16 @@ describe("SyncStatus", () => {
 
     expect(getByText("Sync failed")).toBeTruthy();
     expect(queryByText("3 pending")).toBeNull();
+  });
+
+  it("shows 'Notes full' when notes were left unsynced for the content quota", () => {
+    mockDatabaseContext.lastSyncError = "Notes full: you've used all of your space for notes.";
+    mockDatabaseContext.isContentFull = true;
+
+    const { getByText, queryByText } = render(<SyncStatus />);
+
+    expect(getByText("Notes full")).toBeTruthy();
+    expect(queryByText("Sync failed")).toBeNull();
   });
 
   it("prefers 'Offline' and 'Syncing...' over a sync failure", () => {

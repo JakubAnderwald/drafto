@@ -16,6 +16,9 @@
 //     ADR 0088: record_activity's limits, the table's lockdown and who may read
 //     the active-user and retention metrics; needs the dev URL, anon key and
 //     service-role key, and the usage_daily migration applied to dev)
+//   - content-quota: scripts/__tests__/content-quota.live.test.mjs (note content
+//     quota, ADR 0090: the notes trigger, the history cap and who may read usage;
+//     needs the dev URL, anon key and service-role key)
 //
 // Each creates real users on dev and deletes them again; storage-quota also
 // uploads a few tiny objects and deletes them before the users.
@@ -44,9 +47,9 @@
 // also denies any command naming it or a `test:live` script.
 //
 // Usage:
-//   pnpm test:live:supabase [-- --only profile-guard|account-deletion|metrics|storage-quota|usage-daily] [--dry-run]
+//   pnpm test:live:supabase [-- --only profile-guard|account-deletion|metrics|storage-quota|usage-daily|content-quota] [--dry-run]
 //   node scripts/run-dev-live-tests.mjs [--key-file <f>] [--keys-txt <f>] [--env-local <f>]
-//        [--only profile-guard|account-deletion|metrics|storage-quota|usage-daily] [--dry-run] [--help]
+//        [--only profile-guard|account-deletion|metrics|storage-quota|usage-daily|content-quota] [--dry-run] [--help]
 //
 // --dry-run prints the commands and the names of the env vars it would set,
 // then exits 0. Output names files and variables, never a key's value. Exit 0
@@ -113,6 +116,11 @@ export const LIVE_TESTS = {
   "usage-daily": {
     command: "node",
     args: ["--test", "scripts/__tests__/usage-daily.live.test.mjs"],
+    needs: [URL_VAR, ANON_VAR, SERVICE_VAR],
+  },
+  "content-quota": {
+    command: "node",
+    args: ["--test", "scripts/__tests__/content-quota.live.test.mjs"],
     needs: [URL_VAR, ANON_VAR, SERVICE_VAR],
   },
 };

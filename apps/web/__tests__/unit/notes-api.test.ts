@@ -201,6 +201,61 @@ describe("Notes API", () => {
   });
 
   describe("PATCH /api/notes/[id]", () => {
+    function mockUpdateResult(result: { data: unknown; error: unknown }) {
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          update: () => ({
+            eq: () => ({
+              eq: () => ({
+                select: () => ({ single: () => Promise.resolve(result) }),
+              }),
+            }),
+          }),
+        };
+      });
+    }
+
+    function patchContent() {
+      return new NextRequest("http://localhost:3000/api/notes/note-1", {
+        method: "PATCH",
+        body: JSON.stringify({ content: [{ type: "paragraph", content: [] }] }),
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    it("answers 413 with the usage when the content quota refuses the save", async () => {
+      authenticateAs("user-1");
+      mockUpdateResult({
+        data: null,
+        error: {
+          code: "P0001",
+          message: "content_quota_exceeded",
+          details: "used_bytes=100 quota_bytes=200 note_bytes=150",
+        },
+      });
+
+      const { PATCH } = await import("@/app/api/notes/[id]/route");
+      const response = await PATCH(patchContent(), { params });
+      expect(response.status).toBe(413);
+      expect(await response.json()).toEqual({
+        error: "Note content quota exceeded",
+        code: "content_quota_exceeded",
+        usedBytes: 100,
+        quotaBytes: 200,
+        status: 413,
+      });
+    });
+
+    it("still answers 404 for any other update failure", async () => {
+      authenticateAs("user-1");
+      mockUpdateResult({ data: null, error: { code: "PGRST116", message: "no rows" } });
+
+      const { PATCH } = await import("@/app/api/notes/[id]/route");
+      const response = await PATCH(patchContent(), { params });
+      expect(response.status).toBe(404);
+    });
+
     it("updates note title", async () => {
       authenticateAs("user-1");
       const updated = { id: "note-1", title: "Updated" };

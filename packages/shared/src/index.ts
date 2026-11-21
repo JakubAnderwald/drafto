@@ -22,6 +22,9 @@ export {
   DEFAULT_STORAGE_QUOTA_BYTES,
   STORAGE_QUOTA_EXCEEDED_CODE,
   STORAGE_QUOTA_EXCEEDED_MESSAGE,
+  DEFAULT_CONTENT_QUOTA_BYTES,
+  CONTENT_QUOTA_EXCEEDED_CODE,
+  CONTENT_QUOTA_EXCEEDED_MESSAGE,
   STORAGE_WARNING_RATIO,
   DEBOUNCE_MS,
   BUCKET_NAME,
@@ -168,6 +171,14 @@ export {
   storageUsageFromRow,
 } from "./storage/storage-quota";
 export type { StorageUsage, StorageUsageRow, StorageUsageTone } from "./storage/storage-quota";
+export {
+  ContentQuotaError,
+  formatContentUsage,
+  contentFullMessage,
+  isContentQuotaError,
+  contentUsageFromError,
+  contentQuotaErrorFromResponse,
+} from "./storage/content-quota";
 export {
   colors,
   semanticLight,

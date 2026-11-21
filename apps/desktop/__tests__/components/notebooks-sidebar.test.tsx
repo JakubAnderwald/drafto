@@ -53,6 +53,7 @@ jest.mock("@/hooks/use-storage-usage", () => ({
     loading: false,
     refresh: mockRefreshStorageUsage,
   }),
+  useContentUsage: () => ({ usage: null, loading: false, refresh: jest.fn() }),
 }));
 
 const mockSync = jest.fn();

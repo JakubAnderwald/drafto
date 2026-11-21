@@ -119,6 +119,7 @@ export function NoteEditorPanel({
 
   const {
     saveStatus,
+    saveError,
     debouncedSave,
     lastSavedAt,
     lastSavedTitle,
@@ -267,6 +268,8 @@ export function NoteEditorPanel({
           </span>
         </div>
       </div>
+
+      {saveError && saveStatus === "error" && <NoteSyncBanner tone="error" message={saveError} />}
 
       {lifecycle === "deleted" && (
         <NoteSyncBanner tone="error" message="This note was permanently deleted on another device.">

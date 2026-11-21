@@ -1,14 +1,21 @@
 import { StyleSheet } from "react-native";
-import { DEFAULT_STORAGE_QUOTA_BYTES } from "@drafto/shared";
+import { DEFAULT_CONTENT_QUOTA_BYTES, DEFAULT_STORAGE_QUOTA_BYTES } from "@drafto/shared";
 
 import { render } from "../../helpers/test-utils";
 import { StorageUsageMeter } from "@/components/sidebar/storage-usage";
 import { colors } from "@/theme/tokens";
 
 let mockUsage: { usedBytes: number; quotaBytes: number | null } | null = null;
+let mockContentUsage: { usedBytes: number; quotaBytes: number | null } | null = null;
 const mockRefresh = jest.fn().mockResolvedValue(undefined);
+const mockRefreshContent = jest.fn().mockResolvedValue(undefined);
 jest.mock("@/hooks/use-storage-usage", () => ({
   useStorageUsage: () => ({ usage: mockUsage, loading: false, refresh: mockRefresh }),
+  useContentUsage: () => ({
+    usage: mockContentUsage,
+    loading: false,
+    refresh: mockRefreshContent,
+  }),
 }));
 
 let mockIsSyncing = false;
@@ -29,6 +36,7 @@ describe("StorageUsageMeter", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUsage = null;
+    mockContentUsage = null;
     mockIsSyncing = false;
   });
 
@@ -80,5 +88,47 @@ describe("StorageUsageMeter", () => {
     mockIsSyncing = false;
     utils.rerender(<StorageUsageMeter />);
     expect(mockRefresh).toHaveBeenCalledTimes(1);
+    expect(mockRefreshContent).toHaveBeenCalledTimes(1);
+  });
+
+  describe("note content line (ADR 0090)", () => {
+    const CONTENT_QUOTA = DEFAULT_CONTENT_QUOTA_BYTES;
+
+    it("shows the notes line below the storage line", () => {
+      mockUsage = { usedBytes: 0, quotaBytes: QUOTA };
+      mockContentUsage = { usedBytes: 1024 * 1024, quotaBytes: CONTENT_QUOTA };
+      const utils = render(<StorageUsageMeter />);
+
+      expect(utils.getByTestId("content-usage")).toHaveTextContent("Notes: 1 MB of 25 MB used");
+    });
+
+    it("turns the notes line danger at its quota", () => {
+      mockUsage = { usedBytes: 0, quotaBytes: QUOTA };
+      mockContentUsage = { usedBytes: CONTENT_QUOTA, quotaBytes: CONTENT_QUOTA };
+      const utils = render(<StorageUsageMeter />);
+
+      const plain = render(<StorageUsageMeter />);
+      mockContentUsage = { usedBytes: 0, quotaBytes: CONTENT_QUOTA };
+      plain.rerender(<StorageUsageMeter />);
+
+      const color = (el: ReturnType<typeof utils.getByTestId>) =>
+        (StyleSheet.flatten(el.props.style) as { color: string }).color;
+      expect(color(utils.getByTestId("content-usage"))).not.toBe(
+        color(plain.getByTestId("content-usage")),
+      );
+    });
+
+    it("shows the notes line alone when storage can't be read", () => {
+      mockContentUsage = { usedBytes: 0, quotaBytes: null };
+      const utils = render(<StorageUsageMeter />);
+
+      expect(utils.getByTestId("content-usage")).toHaveTextContent("Notes: 0 MB used");
+      expect(utils.queryByTestId("storage-usage-bar")).toBeNull();
+    });
+
+    it("shows nothing when neither can be read", () => {
+      const utils = render(<StorageUsageMeter />);
+      expect(utils.queryByTestId("content-usage")).toBeNull();
+    });
   });
 });

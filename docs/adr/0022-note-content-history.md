@@ -64,6 +64,7 @@ No client schema changes. The trigger fires on the existing `supabase.from('note
 
 ## Related
 
+- [ADR-0090](./0090-per-user-note-content-quota.md) caps each user's history at their note content quota: `archive_note_content()` drops a capped user's oldest versions once their history exceeds it.
 - [ADR 0008 — Production Data Safety Guardrails](./0008-production-data-safety-guardrails.md)
 - [ADR 0010 — Offline Sync Strategy with WatermelonDB](./0010-offline-sync-strategy.md)
 - [`docs/operations/migrations.md`](../operations/migrations.md) — recovery runbook

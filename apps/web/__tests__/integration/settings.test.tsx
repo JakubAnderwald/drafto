@@ -26,15 +26,19 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: vi.fn(),
 }));
 
-// Mock fetch. The Storage section loads its usage on its own, so GET /api/storage-usage is
-// answered by `mockStorageFetch`; every other request (the API key calls) goes to `mockFetch`.
+// Mock fetch. The Storage and Notes sections load their usage on their own, so
+// GET /api/storage-usage is answered by `mockStorageFetch` and GET /api/content-usage by
+// `mockContentFetch`; every other request (the API key calls) goes to `mockFetch`.
 const STORAGE_USAGE_URL = "/api/storage-usage";
+const CONTENT_USAGE_URL = "/api/content-usage";
 const mockFetch = vi.fn();
 const mockStorageFetch = vi.fn();
-global.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
-  input === STORAGE_USAGE_URL
-    ? mockStorageFetch(input, init)
-    : mockFetch(input, init)) as typeof fetch;
+const mockContentFetch = vi.fn();
+global.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  if (input === STORAGE_USAGE_URL) return mockStorageFetch(input, init);
+  if (input === CONTENT_USAGE_URL) return mockContentFetch(input, init);
+  return mockFetch(input, init);
+}) as typeof fetch;
 
 const MB = BYTES_PER_MEGABYTE;
 
@@ -70,6 +74,7 @@ describe("SettingsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStorageFetch.mockResolvedValue(storageUsageResponse(0, 50 * MB));
+    mockContentFetch.mockResolvedValue(storageUsageResponse(0, 25 * MB));
   });
 
   it("renders the settings page with API keys heading", async () => {
@@ -278,6 +283,53 @@ describe("SettingsPage", () => {
       expect(screen.getByText("Rate limited")).toBeInTheDocument();
     });
   });
+  describe("Notes section", () => {
+    function contentSection(): HTMLElement {
+      return screen.getByTestId("content-usage-section");
+    }
+
+    async function renderWithContent(contentResponse: unknown) {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+      mockContentFetch.mockResolvedValueOnce(contentResponse);
+      render(<SettingsPage />);
+      await waitFor(() => {
+        expect(within(contentSection()).queryByText("Notes: loading…")).not.toBeInTheDocument();
+      });
+    }
+
+    it("sits between the Storage section and the Delete account section", async () => {
+      await renderWithContent(storageUsageResponse(0, 25 * MB));
+
+      const section = contentSection();
+      expect(section).toHaveTextContent("Notes");
+      expect(section.previousElementSibling).toBe(storageSection());
+      expect(section.nextElementSibling).toBe(screen.getByTestId("delete-account-section"));
+      expect(mockContentFetch).toHaveBeenCalledWith(CONTENT_USAGE_URL, undefined);
+    });
+
+    it("shows used and quota megabytes with a bar", async () => {
+      await renderWithContent(storageUsageResponse(Math.round(1.2 * MB), 25 * MB));
+
+      const section = within(contentSection());
+      expect(section.getByText("Notes: 1.2 MB of 25 MB used")).toBeInTheDocument();
+      expect(section.getByRole("progressbar", { name: "Notes space used" })).toBeInTheDocument();
+    });
+
+    it("shows only the used amount and no bar when unlimited", async () => {
+      await renderWithContent(storageUsageResponse(3 * MB, null));
+
+      const section = within(contentSection());
+      expect(section.getByText("Notes: 3 MB used")).toBeInTheDocument();
+      expect(section.queryByRole("progressbar")).not.toBeInTheDocument();
+    });
+
+    it("says usage is unavailable when the request fails", async () => {
+      await renderWithContent({ ok: false, json: () => Promise.resolve({}) });
+
+      expect(within(contentSection()).getByText("Notes usage unavailable")).toBeInTheDocument();
+    });
+  });
+
   describe("Storage section", () => {
     it("sits between the Connect to Claude card and the Delete account section", async () => {
       await renderWithStorage(storageUsageResponse(0, 50 * MB));
@@ -285,7 +337,7 @@ describe("SettingsPage", () => {
       const section = storageSection();
       expect(section).toHaveTextContent("Storage");
       expect(section.className).toContain("mt-6");
-      expect(section.nextElementSibling).toBe(screen.getByTestId("delete-account-section"));
+      expect(section.nextElementSibling).toBe(screen.getByTestId("content-usage-section"));
       expect(section.previousElementSibling).toHaveTextContent("Connect to Claude");
       expect(mockStorageFetch).toHaveBeenCalledTimes(1);
       expect(mockStorageFetch).toHaveBeenCalledWith(STORAGE_USAGE_URL, undefined);

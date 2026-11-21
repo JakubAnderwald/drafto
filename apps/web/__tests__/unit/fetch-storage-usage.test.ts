@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CONTENT_USAGE_URL,
   STORAGE_USAGE_URL,
+  fetchContentUsage,
   fetchStorageUsage,
   parseStorageUsage,
 } from "@/lib/storage/fetch-storage-usage";
@@ -58,5 +60,27 @@ describe("fetchStorageUsage", () => {
 
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
     await expect(fetchStorageUsage()).resolves.toBeNull();
+  });
+});
+
+describe("fetchContentUsage", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads GET /api/content-usage", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ usedBytes: 3, quotaBytes: null }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchContentUsage()).resolves.toEqual({ usedBytes: 3, quotaBytes: null });
+    expect(fetchMock).toHaveBeenCalledWith(CONTENT_USAGE_URL);
+  });
+
+  it("returns null when the request fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    await expect(fetchContentUsage()).resolves.toBeNull();
   });
 });

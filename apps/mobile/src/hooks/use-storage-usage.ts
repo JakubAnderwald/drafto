@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { StorageUsage } from "@drafto/shared";
 
+import { fetchContentUsage } from "@/lib/data/content-usage";
 import { fetchStorageUsage } from "@/lib/data/storage-usage";
 
 export interface UseStorageUsageResult {
@@ -17,6 +18,21 @@ export interface UseStorageUsageResult {
  * arrives, and a reading that can't be fetched (offline) clears it.
  */
 export function useStorageUsage(refreshKey?: unknown): UseStorageUsageResult {
+  return useUsageReading(fetchStorageUsage, refreshKey);
+}
+
+/**
+ * The signed-in user's note content usage and quota (ADR 0090), read the same way
+ * as `useStorageUsage`.
+ */
+export function useContentUsage(refreshKey?: unknown): UseStorageUsageResult {
+  return useUsageReading(fetchContentUsage, refreshKey);
+}
+
+function useUsageReading(
+  read: () => Promise<StorageUsage | null>,
+  refreshKey: unknown,
+): UseStorageUsageResult {
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const mountedRef = useRef(true);
@@ -28,11 +44,11 @@ export function useStorageUsage(refreshKey?: unknown): UseStorageUsageResult {
     requestRef.current += 1;
     const request = requestRef.current;
     setLoading(true);
-    const next = await fetchStorageUsage();
+    const next = await read();
     if (!mountedRef.current || request !== requestRef.current) return;
     setUsage(next);
     setLoading(false);
-  }, []);
+  }, [read]);
 
   useEffect(() => {
     mountedRef.current = true;

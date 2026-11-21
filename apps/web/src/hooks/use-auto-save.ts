@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { contentQuotaErrorFromResponse } from "@drafto/shared";
 import { handleAuthError } from "@/lib/handle-auth-error";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
@@ -18,6 +19,9 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   // Mirrors `pendingData`/`timerRef` as render-visible state. Consumers need to know
   // whether the editor holds unflushed local edits (refs alone never re-render).
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
+  // Why the last save failed, when it is something the user can act on: the content
+  // quota (ADR 0090). Null for other failures and after the next successful save.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingData = useRef<Record<string, unknown> | null>(null);
   const savingRef = useRef(false);
@@ -53,6 +57,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
 
             if (res.ok) {
               setSaveStatus("saved");
+              setSaveError(null);
               const updated = await res.json();
               if (updated?.updated_at) {
                 setLastSavedAt(updated.updated_at);
@@ -60,9 +65,21 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
               }
             } else {
               setSaveStatus("error");
+              const body: unknown = await res.json().catch(() => null);
+              const quotaError = contentQuotaErrorFromResponse(res.status, body);
+              setSaveError(quotaError?.message ?? null);
+              if (quotaError) {
+                // Refused for the content quota (ADR 0090): keep the edit queued, under
+                // anything typed meanwhile, so the next edit or the unmount flush sends
+                // it again once there's room. Stop draining: an immediate retry would be
+                // refused too.
+                pendingData.current = { ...toSave, ...pendingData.current };
+                break;
+              }
             }
           } catch {
             setSaveStatus("error");
+            setSaveError(null);
           }
 
           // If data accumulated while we were saving, save it now
@@ -137,6 +154,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
 
   return {
     saveStatus,
+    saveError,
     debouncedSave,
     lastSavedAt,
     lastSavedTitle,
