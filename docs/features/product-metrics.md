@@ -1,6 +1,6 @@
 # Product metrics
 
-**Status:** shipped (steps 1 and 2 of 4) **Updated:** 2026-11-13
+**Status:** shipped (steps 1 and 2 of 4; step 3's data loader merged) **Updated:** 2026-11-21
 
 ## What it is
 
@@ -13,7 +13,7 @@ The functions work from metadata only: timestamps, character counts, client tags
 - Step 1 ([#820](https://github.com/JakubAnderwald/drafto/issues/820)), two migrations: `note_text_chars(jsonb)`, then the exclusion table, three helpers and the six metric functions.
 - Step 2 ([#821](https://github.com/JakubAnderwald/drafto/issues/821)), two more migrations. The first adds [activity days](#activity-days-usage_daily) (`usage_daily`, written through `record_activity` and filled in by the [nightly rollup](#nightly-rollup-rollup_usage_daily)), `metrics_active_users`, `metrics_retention` and the per-user helper `metrics_cohort_activation`, and re-creates `metrics_activation` over that helper. The second schedules the rollup with pg_cron. Every client records activity days: web, iOS, Android, macOS and MCP ([ADR-0088](../adr/0088-activity-days-instead-of-event-analytics.md)).
 - `scripts/user-stats.mjs` (`pnpm users:stats`) calls the eight metric functions read-only and prints one table per metric, or JSON.
-- The `/admin/stats` page ([#822](https://github.com/JakubAnderwald/drafto/issues/822)) hasn't merged yet. It wires in `metrics_active_users` and `metrics_retention` when it does.
+- Step 3 ([#822](https://github.com/JakubAnderwald/drafto/issues/822)) ships in two parts. The first is the web app's [data loader](#web-data-loader-appswebsrclibmetrics) (`apps/web/src/lib/metrics/`), which reads all eight functions, `metrics_active_users` and `metrics_retention` included. The `/admin/stats` page that renders it comes in the second PR.
 
 ## Excluded accounts
 
@@ -182,6 +182,37 @@ pnpm users:stats -- --project prod --keys-txt <file>
 - PostgREST caps every response at the project's `max_rows` (1000 by default), stored procedures included, without saying so. Each call asks for the exact count (`Prefer: count=exact`), and a list shorter than its count fails instead of printing part of it. In practice only the emptied notes can grow that long. Rerun with a smaller `--weeks`.
 - Exit codes: 0 when every metric was read, 1 on a failure or refusal, 2 on bad arguments.
 
+## Web data loader (`apps/web/src/lib/metrics/`)
+
+`loadProductMetrics({ now?, client? })` in `load-product-metrics.ts` is the web app's one reader of the metric functions. `/admin/stats` calls it, and the Monday email (#823) will too. It is `server-only` and uses the service-role client (`createAdminClient()`), so the caller must already have checked for an admin (or, in the cron, the cron secret). It returns one `ProductMetrics` object (`types.ts`) with `generatedAt`.
+
+- **What it reads.** The weekly windows and the emptied-notes 24-hour cutoff come from the database clock. `now` only sets `generatedAt` and the start of the emptied-notes window. Without `SUPABASE_SERVICE_ROLE_KEY` the loader throws, as `/admin` does, because no metric could load.
+  - The weekly metrics cover the last 12 ISO weeks (`METRICS_WEEKS`), sorted newest first.
+  - Emptied notes are read from 14 days before `now` (`EMPTIED_NOTES_DAYS`), newest first.
+  - Calls run in parallel, each with `{ get: true, count: "exact" }`. Like the CLI, that is a read-only `GET /rest/v1/rpc/<name>`, and a list shorter than its count (PostgREST's `max_rows` cap) fails.
+- **Each metric is a `MetricResult`**, and is read on its own, so one failure doesn't blank the page:
+  - `ok`: the rows parsed.
+  - `unavailable`: PostgREST's `PGRST202`, meaning no function on that database matches the name and argument names. It goes to Sentry as a warning, because PostgREST returns the same code when a parameter was renamed.
+  - `error`: a database error (such as `42501` [below](#if-sign-ups-and-activation-fail-with-permission-denied)), a thrown call, rows that don't parse, or a list cut short. The cause goes to Sentry with `where: "product-metrics"`, and the message, which never contains a key, is shown in that metric's section.
+- **Typed without touching `packages/shared`.** The shared `Database` type doesn't list the metric functions, so one helper (`callRpc`) holds the only cast. Every result goes through the zod row schemas in `rpc-schemas.ts`, which match each function's `returns table (…)`. A value of the wrong type fails the parse rather than showing a wrong number. A key a schema doesn't list is dropped, so a column added later can't put new data, such as an email, on the page by accident.
+- **Depth counts are derived.** `metrics_depth` returns shares as percentages rounded to 0.1 points. The loader adds `count = round(pct × writers / 100)` to each one, which is exact below 1,000 writers, so the page can show "3 of 8 (37.5%)".
+- **`needs-attention.ts`** combines emptied notes with the limits at `warn` / `critical`, worst first. If either of those metrics couldn't be read, it says "nothing needs attention" for neither.
+- **`format.ts`** holds the formatting, which shows every rate with its counts ("1 of 8 (12.5%)", "0 of 0"), binary MB / GB, and "—" for null. The client column order comes from `DRAFTO_CLIENT_TAGS`, plus `untagged` for writers, the same order as the CLI's.
+
+### Hosting usage (egress, Vercel)
+
+The database can't measure egress or Vercel usage, so the step 3 spec asked whether the providers' APIs return them on the plans in use with a read-only token. The answer, checked against both providers' API docs on Nov 21, 2026:
+
+- **Supabase (Free).**
+  - The Management API has read-only **scoped personal access tokens**, GA since Oct 2026, with a Usage Analytics (Read) permission.
+  - Its usage endpoints (`GET /v1/projects/{ref}/analytics/endpoints/usage.api-counts`, `usage.api-requests-count`, `functions.combined-stats`) return only request counts and edge-function stats.
+  - No endpoint returns egress (database, storage or cached). The org Usage page in the dashboard is the only place to see it.
+- **Vercel (Hobby).**
+  - `GET /v1/billing/charges` (FOCUS-format JSONL, since Feb 2026) returns usage per service, such as fast data transfer, function invocations, active CPU and edge requests. The docs don't say whether it works on Hobby.
+  - No Vercel access token is read-only. Every scope (full account, team, project) can write within it, and the billing endpoint needs at least a team-scoped token.
+
+Neither provider has both the data and a read-only credential. A full-access token in Vercel's environment, kept there just to draw a bar, is a worse trade than a link. So the page has no token and no fetch. `hosted-usage.ts` returns two links, "See the Supabase / Vercel usage page", which the Platform limits section shows. If Vercel adds read-only tokens, or Supabase adds egress to the API, fetch the figure server-side with that token in an optional env var, cache it for at most an hour, and show it with the same 70% / 85% thresholds.
+
 ## If sign-ups and activation fail with permission denied
 
 `metrics_signups` and `metrics_activation` read `auth.users` as `service_role` (`metrics_activation` and `metrics_retention` through `metrics_cohort_activation`), so the migration grants it `select (id, created_at, raw_app_meta_data)` on that table. Where the migration's role can't make that grant, the migration doesn't fail. It warns `product metrics: service_role cannot read auth.users …` and points here. Those functions then fail with `permission denied` (`42501`), in `pnpm users:stats` and in `pnpm test:live:supabase -- --only metrics`. The other metrics still work.
@@ -217,6 +248,8 @@ Don't grant `select` on the whole table: the functions read nothing else, and th
 | Web ping                                                                                                                                                | `apps/web/src/hooks/use-activity-ping.ts`, `apps/web/src/components/layout/activity-ping.tsx`, `apps/web/src/app/(app)/layout.tsx`              |
 | MCP ping                                                                                                                                                | `apps/web/src/lib/api/record-mcp-activity.ts`, `apps/web/src/app/api/mcp/route.ts`                                                              |
 | Native ping (mirrored)                                                                                                                                  | `apps/{mobile,desktop}/src/db/activity-days.ts`, `apps/{mobile,desktop}/src/db/sync.ts`, the tag in `apps/{mobile,desktop}/src/lib/supabase.ts` |
+| Web data loader: `loadProductMetrics`, row schemas, `MetricResult`, needs attention, formatting, hosting-usage links                                    | `apps/web/src/lib/metrics/{load-product-metrics,rpc-schemas,types,needs-attention,format,hosted-usage}.ts`                                      |
+| Unit: the web loader, formatting and needs attention, with a faked client                                                                               | `apps/web/__tests__/unit/{load-product-metrics,metrics-format,metrics-needs-attention}.test.ts`                                                 |
 | CLI (`pnpm users:stats`)                                                                                                                                | `scripts/user-stats.mjs`                                                                                                                        |
 | Service-role key reader shared with `users:delete`                                                                                                      | `scripts/lib/service-keys-txt.mjs`                                                                                                              |
 | Operator-only guard for the verification lane                                                                                                           | `scripts/lib/verify-guard.mjs`                                                                                                                  |
@@ -258,9 +291,10 @@ Activity days come from every platform: web from the app shell, iOS, Android and
   - No function returns note text, titles or notebook names.
 - Files that must change together:
   - A new editor content shape → `note_text_chars` (a new migration) and its PGlite test, alongside `extract_text_from_jsonb` and `packages/shared/src/editor/extract-text.ts`.
-  - A new client tag (ADR-0023) → `ACTIVE_CLIENT_COLUMNS` in `scripts/user-stats.mjs`, which the writers table's `CLIENT_COLUMNS` extends with `untagged` (unknown tags still print, after the known ones). If it should count as an activity day too: `DRAFTO_CLIENT_TAGS`, then a new migration for the `usage_daily_client_check` constraint, `record_activity`'s tag check and the rollup's tag order, and the privacy policy's list of device kinds.
+  - A new client tag (ADR-0023) → `ACTIVE_CLIENT_COLUMNS` in `scripts/user-stats.mjs`, which the writers table's `CLIENT_COLUMNS` extends with `untagged` (unknown tags still print, after the known ones). The web loader's `format.ts` takes its columns from `DRAFTO_CLIENT_TAGS` (the script can't import it), so it follows without an edit. If it should count as an activity day too: `DRAFTO_CLIENT_TAGS`, then a new migration for the `usage_daily_client_check` constraint, `record_activity`'s tag check and the rollup's tag order, and the privacy policy's list of device kinds.
   - What `usage_daily` records, or its 13-month retention → `apps/web/src/app/privacy/page.tsx` and `apps/web/__tests__/integration/legal-pages.test.tsx` ([privacy policy](./privacy-policy.md)), and ADR-0088.
   - A changed definition → the function (in a new migration), this doc's table, the PGlite test and the live test.
+  - A changed return column (a new migration) → the function's row schema in `apps/web/src/lib/metrics/rpc-schemas.ts` and `scripts/user-stats.mjs`. Until the schema matches, the page shows that metric as an error.
 - A new or changed function reaches dev only once the migration is pushed there, so run the live test after `pnpm supabase:push`.
 
 ## Verify
