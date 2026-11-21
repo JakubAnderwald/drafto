@@ -87,10 +87,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
-  // The user the last approval check found approved. Their hourly token refresh need not
-  // re-check: approval is what lets them work, and RLS still enforces it on the server. An
-  // unapproved user is re-checked on refresh, which picks up an approval (or retries a check
-  // that failed offline) without them pressing "Check approval status".
+  // The user the last approval check found approved. Their hourly token refresh re-checks
+  // quietly (recheckApproval), without putting the approval gate back in flight, so a
+  // suspension (ADR 0094) reaches a session that is already open. An inactive user gets a
+  // full check on refresh, which picks up a reactivation (or retries a check that failed
+  // offline) without them pressing "Check again".
   const approvedUserIdRef = useRef<string | null>(null);
   // Bumped by every approval check and by every session end. Only the latest check may decide
   // approval: a slow check for an account that was signed out or replaced meanwhile (e.g. a
@@ -159,6 +160,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return approved;
     } finally {
       if (isLatest()) setIsCheckingApproval(false);
+    }
+  }, []);
+
+  /**
+   * The approved user's quiet re-check on a token refresh. Unlike checkApproval it never sets
+   * isCheckingApproval, so the open screen stays exactly where it is, and it acts only on a
+   * definite "not active" from the server: a failed query changes nothing, since RLS still
+   * guards the data. A full check that starts meanwhile, or a session end, wins.
+   */
+  const recheckApproval = useCallback(async (userId: string): Promise<void> => {
+    const check = approvalCheckRef.current;
+    let stillActive = true;
+    try {
+      const { data: profile, error } = await supabase
+        .from("profiles")
+        .select("is_approved")
+        .eq("id", userId)
+        .single();
+      stillActive = Boolean(error) || profile?.is_approved === true;
+    } catch {
+      // Offline or a transport failure: keep the user where they are.
+    }
+    if (stillActive) return;
+    if (check !== approvalCheckRef.current || approvedUserIdRef.current !== userId) return;
+    approvedUserIdRef.current = null;
+    setIsApproved(false);
+    try {
+      await setCachedApproval(userId, false);
+    } catch {
+      // Cache write failed — non-fatal
     }
   }, []);
 
@@ -366,9 +397,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsApproved(false);
         return;
       }
-      // The hourly token refresh only swaps tokens, so an approved user is not re-checked
-      // under whatever screen is open. An unapproved one still is (see approvedUserIdRef).
+      // An approved user's hourly token refresh re-checks quietly, under whatever screen is
+      // open; an inactive one gets the full check (see approvedUserIdRef).
       if (event === "TOKEN_REFRESHED" && newSession.user.id === approvedUserIdRef.current) {
+        void recheckApproval(newSession.user.id);
         return;
       }
       checkApproval(newSession.user.id);
@@ -378,7 +410,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, [checkApproval, startRecovery, abandonApprovalCheck]);
+  }, [checkApproval, recheckApproval, startRecovery, abandonApprovalCheck]);
 
   return (
     <AuthContext.Provider

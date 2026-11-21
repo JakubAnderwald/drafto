@@ -131,14 +131,16 @@ describe("Privacy policy page", () => {
     expect(controller).toMatch(/support@drafto\.eu/);
   });
 
-  it("describes Google and Apple sign-in and the manual approval of new accounts", () => {
+  it("describes Google and Apple sign-in and the review and suspension of accounts", () => {
     render(<PrivacyPolicyPage />);
 
     const collected = sectionText(/Data We Collect/);
     expect(collected).toMatch(/Sign in with Google or Apple: no password is created/);
     expect(collected).toMatch(/Google shares your email address and basic profile/);
     expect(collected).toMatch(/Apple shares your email address, which can be a private relay/);
-    expect(collected).toMatch(/new sign-ups are reviewed manually before the account is activated/);
+    expect(collected).toMatch(/Anyone can create a Drafto account, and it is active as soon as/);
+    expect(collected).toMatch(/We may suspend an account that is used for spam or abuse/);
+    expect(collected).not.toMatch(/invite-only/);
     expect(collected).toMatch(/earlier versions of its content for up to 30 days/);
     expect(collected).toMatch(/take more space than your note content quota/);
     expect(collected).toMatch(/note content quota \(25 MB by default\)/);

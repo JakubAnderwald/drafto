@@ -3,35 +3,31 @@ import { storageUsageFromRow, type StorageUsage } from "@drafto/shared";
 import { createAdminClient } from "@/lib/supabase/admin";
 import Link from "next/link";
 import { requireAdmin } from "@/lib/auth/require-admin";
-import { AdminUserList, type PendingUser } from "@/app/(app)/admin/admin-user-list";
+import { listUserEmails } from "@/lib/auth/list-user-emails";
+import { AdminUserList, type AdminAccount } from "@/app/(app)/admin/admin-user-list";
 import { AdminStorageList, type UserStorage } from "@/app/(app)/admin/admin-storage-list";
-import { AdminFlashMessage } from "@/app/(app)/admin/admin-flash-message";
 import { AdminCloseButton } from "@/app/(app)/admin/admin-close-button";
-
-interface AdminPageProps {
-  searchParams: Promise<{ approved?: string; error?: string }>;
-}
 
 const EMAIL_UNAVAILABLE = "(email unavailable)";
 
-export default async function AdminPage({ searchParams }: AdminPageProps) {
+export default async function AdminPage() {
   const { supabase } = await requireAdmin();
 
-  const [pendingResult, storageResult, contentResult] = await Promise.all([
+  const [profilesResult, storageResult, contentResult] = await Promise.all([
+    // Every account (ADR 0094): the admin's own session, through the admins-read-all policy.
     supabase
       .from("profiles")
-      .select("id, display_name, created_at")
-      .eq("is_approved", false)
-      .order("created_at", { ascending: true }),
+      .select("id, display_name, created_at, is_approved, is_admin")
+      .order("created_at", { ascending: false }),
     // The admin's own session: the RPC refuses anyone who isn't an admin.
     supabase.rpc("admin_storage_usage"),
     supabase.rpc("admin_content_usage"),
   ]);
 
-  const { data: pendingProfiles, error: pendingUsersError } = pendingResult;
-  if (pendingUsersError) throw pendingUsersError;
+  const { data: profiles, error: profilesError } = profilesResult;
+  if (profilesError) throw profilesError;
 
-  // A storage failure must not take the approval list down with it. It still reaches
+  // A storage failure must not take the account list down with it. It still reaches
   // Sentry, and the storage section says it couldn't load.
   const { data: storageRows, error: storageError } = storageResult;
   if (storageError) {
@@ -50,54 +46,40 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     if (usage) contentByUser.set(row.user_id, usage);
   }
 
-  // One auth lookup per user, shared by both lists.
-  const admin = createAdminClient();
-  const emailLookups = new Map<string, Promise<string>>();
-  function emailFor(userId: string): Promise<string> {
-    let lookup = emailLookups.get(userId);
-    if (!lookup) {
-      lookup = admin.auth.admin
-        .getUserById(userId)
-        .then(({ data: authUser }) => authUser.user?.email ?? EMAIL_UNAVAILABLE);
-      emailLookups.set(userId, lookup);
-    }
-    return lookup;
-  }
+  // One paged auth listing, shared by both lists.
+  const emails = await listUserEmails(createAdminClient());
+  const emailFor = (userId: string): string => emails.get(userId) ?? EMAIL_UNAVAILABLE;
 
-  const pendingUsers: PendingUser[] = await Promise.all(
-    (pendingProfiles ?? []).map(async (p) => ({
-      id: p.id,
-      display_name: p.display_name,
-      created_at: p.created_at,
-      email: await emailFor(p.id),
-    })),
-  );
+  const accounts: AdminAccount[] = (profiles ?? []).map((p) => ({
+    id: p.id,
+    display_name: p.display_name,
+    created_at: p.created_at,
+    is_active: p.is_approved,
+    is_admin: p.is_admin,
+    email: emailFor(p.id),
+  }));
 
   const storageUsers: UserStorage[] = storageError
     ? []
-    : await Promise.all(
-        (storageRows ?? []).flatMap((row) => {
-          const usage = storageUsageFromRow(row);
-          if (!usage) return [];
-          return [
-            emailFor(row.user_id).then((email) => ({
-              id: row.user_id,
-              email,
-              usedBytes: usage.usedBytes,
-              quotaBytes: usage.quotaBytes,
-              content: contentByUser.get(row.user_id) ?? null,
-            })),
-          ];
-        }),
-      );
-
-  const params = await searchParams;
+    : (storageRows ?? []).flatMap((row) => {
+        const usage = storageUsageFromRow(row);
+        if (!usage) return [];
+        return [
+          {
+            id: row.user_id,
+            email: emailFor(row.user_id),
+            usedBytes: usage.usedBytes,
+            quotaBytes: usage.quotaBytes,
+            content: contentByUser.get(row.user_id) ?? null,
+          },
+        ];
+      });
 
   return (
     // The app shell is a fixed-height row that clips overflow, so the panel scrolls itself.
     <div className="mx-auto h-full max-w-2xl overflow-y-auto p-8" data-testid="admin-panel">
       <div className="mb-6 flex items-center justify-between gap-4">
-        <h1 className="text-fg text-2xl font-bold">Admin — User Approval</h1>
+        <h1 className="text-fg text-2xl font-bold">Admin — Accounts</h1>
         <div className="flex items-center gap-4">
           <Link
             href="/admin/stats"
@@ -108,8 +90,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           <AdminCloseButton />
         </div>
       </div>
-      <AdminFlashMessage approved={params.approved} error={params.error} />
-      <AdminUserList initialUsers={pendingUsers} />
+      <AdminUserList initialUsers={accounts} />
       {storageError ? (
         <p className="text-error-text mt-10 text-sm" role="alert">
           Storage usage could not be loaded.

@@ -2,11 +2,10 @@ interface NewSignupAdminEmailInput {
   userEmail: string;
   userDisplayName: string | null;
   signupAt: Date;
-  approveUrl: string;
   adminUrl: string;
 }
 
-interface UserApprovedEmailInput {
+interface AccountActiveEmailInput {
   displayName: string | null;
   loginUrl: string;
 }
@@ -86,8 +85,12 @@ function renderEmailLayout(args: { title: string; bodyHtml: string }): string {
 </html>`;
 }
 
+/**
+ * The notice every admin gets for a new signup. Since ADR 0094 the account is active from
+ * the start, so the email only says who signed up and where to suspend them if needed.
+ */
 export function newSignupAdminEmail(input: NewSignupAdminEmailInput): EmailContent {
-  const { userEmail, userDisplayName, signupAt, approveUrl, adminUrl } = input;
+  const { userEmail, userDisplayName, signupAt, adminUrl } = input;
   const plainEmail = sanitizePlaintext(userEmail);
   const plainName = userDisplayName ? sanitizePlaintext(userDisplayName) : null;
   const safeEmail = escapeHtml(plainEmail);
@@ -95,7 +98,7 @@ export function newSignupAdminEmail(input: NewSignupAdminEmailInput): EmailConte
   const signupAtFormatted = signupAt.toUTCString();
 
   const bodyHtml = `
-      <p style="margin:0 0 8px;color:${EMAIL_COLORS.fgMuted};">Someone just signed up and is waiting for your approval.</p>
+      <p style="margin:0 0 8px;color:${EMAIL_COLORS.fgMuted};">Someone just signed up. Their account is already active.</p>
       <table role="presentation" style="margin:24px 0;border-collapse:collapse;width:100%;background:${EMAIL_COLORS.bgSubtle};border-radius:8px;">
         <tr>
           <td style="padding:12px 16px;color:${EMAIL_COLORS.fgMuted};font-size:14px;">Email</td>
@@ -114,14 +117,11 @@ export function newSignupAdminEmail(input: NewSignupAdminEmailInput): EmailConte
           <td style="padding:12px 16px;border-top:1px solid ${EMAIL_COLORS.border};">${signupAtFormatted}</td>
         </tr>
       </table>
-      <p style="margin:0 0 24px;">
-        <a href="${approveUrl}" style="${primaryButtonStyles}">Approve ${safeEmail}</a>
-      </p>
       <p style="margin:0 0 8px;">
-        <a href="${adminUrl}" style="${secondaryLinkStyles}">Review all pending signups</a>
+        <a href="${adminUrl}" style="${secondaryLinkStyles}">Open the admin page</a>
       </p>
       <p style="margin:32px 0 0;color:${EMAIL_COLORS.fgSubtle};font-size:12px;">
-        This one-click approval link expires in 72 hours. You must be signed in to Drafto as an admin for it to work.
+        Nothing to do unless this signup looks like spam or abuse. Then suspend it on the admin page: that locks the account out of its data until you reactivate it.
       </p>`;
 
   const html = renderEmailLayout({ title: "New Drafto signup", bodyHtml });
@@ -129,14 +129,15 @@ export function newSignupAdminEmail(input: NewSignupAdminEmailInput): EmailConte
   const text = [
     "New Drafto signup",
     "",
+    "Someone just signed up. Their account is already active.",
+    "",
     `Email: ${plainEmail}`,
     plainName ? `Name: ${plainName}` : null,
     `Signed up: ${signupAtFormatted}`,
     "",
-    `Approve this user: ${approveUrl}`,
-    `Review all pending signups: ${adminUrl}`,
+    `Admin page: ${adminUrl}`,
     "",
-    "The approve link expires in 72 hours. You must be signed in to Drafto as an admin.",
+    "Nothing to do unless this signup looks like spam or abuse. Then suspend it on the admin page.",
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -148,7 +149,11 @@ export function newSignupAdminEmail(input: NewSignupAdminEmailInput): EmailConte
   };
 }
 
-export function userApprovedEmail(input: UserApprovedEmailInput): EmailContent {
+/**
+ * Sent when an admin activates an account: a signup still pending from before open signup
+ * (ADR 0094), or a suspended account being reactivated.
+ */
+export function accountActiveEmail(input: AccountActiveEmailInput): EmailContent {
   const { displayName, loginUrl } = input;
   const plainName = displayName ? sanitizePlaintext(displayName) : null;
   const greetingName = plainName ? escapeHtml(plainName) : "there";
@@ -156,7 +161,7 @@ export function userApprovedEmail(input: UserApprovedEmailInput): EmailContent {
   const bodyHtml = `
       <p style="margin:0 0 16px;">Hi ${greetingName},</p>
       <p style="margin:0 0 16px;">
-        Your Drafto account has been approved. You can sign in now and start taking notes.
+        Your Drafto account is active. You can sign in now and pick up your notes.
       </p>
       <p style="margin:24px 0;">
         <a href="${loginUrl}" style="${primaryButtonStyles}">Open Drafto</a>
@@ -170,14 +175,14 @@ export function userApprovedEmail(input: UserApprovedEmailInput): EmailContent {
   const text = [
     `Hi ${plainName ?? "there"},`,
     "",
-    "Your Drafto account has been approved. Sign in and start taking notes:",
+    "Your Drafto account is active. Sign in and pick up your notes:",
     loginUrl,
     "",
     "Drafto runs on the web, iOS, Android, and macOS — sign in with the same account from any platform.",
   ].join("\n");
 
   return {
-    subject: "Your Drafto account is approved",
+    subject: "Your Drafto account is active",
     html,
     text,
   };

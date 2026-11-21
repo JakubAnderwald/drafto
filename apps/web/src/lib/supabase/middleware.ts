@@ -59,8 +59,7 @@ function hasSupabaseCookie(request: NextRequest): boolean {
 }
 
 // An API call made with `fetch()`. Browsers send `Sec-Fetch-Mode: navigate` only when they load a
-// page, which an `/api/*` URL is only for the emailed one-click approval link
-// (`/api/admin/approve-user/one-click`). That link keeps the redirect, so a signed-out admin
+// page, so an `/api/*` URL opened in the address bar keeps the redirect and a signed-out user
 // lands on the login page instead of a raw JSON error. `fetch()` never sends `navigate`.
 function isApiRequest(request: NextRequest): boolean {
   return (

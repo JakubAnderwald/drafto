@@ -18,6 +18,11 @@
 // UPDATE on profiles and that this check can see the hole. (The
 // storage_quota_bytes cases need #794's migration, which adds the column.)
 //
+// Since open signup (ADR 0094) a new profile starts active, so `before` suspends the
+// users that play an inactive account, and is_approved is also the admin's suspend
+// switch: the checks below cover a suspended user reactivating themselves and an
+// admin suspending someone.
+//
 // Creating users fires the dev project's new-signup webhook, if dev has one
 // configured. Every user created here is deleted in the `after` hook.
 
@@ -140,6 +145,8 @@ describe(
     let admin;
     let pendingForAdmin;
     let pendingForServiceRole;
+    let activeForAdmin;
+    let activeBystander;
 
     before(
       async () => {
@@ -147,9 +154,16 @@ describe(
         admin = await createUser("admin");
         pendingForAdmin = await createUser("pending-admin");
         pendingForServiceRole = await createUser("pending-service");
+        activeForAdmin = await createUser("active-admin");
+        activeBystander = await createUser("active-bystander");
 
         const grant = await patchProfile(admin.id, { is_admin: true, is_approved: true }, SERVICE);
         assert.equal(grant.status, 200, `make admin: ${formatResponse(grant)}`);
+        // New profiles start active (ADR 0094); these play suspended accounts.
+        for (const user of [attacker, pendingForAdmin, pendingForServiceRole]) {
+          const suspend = await patchProfile(user.id, { is_approved: false }, SERVICE);
+          assert.equal(suspend.status, 200, `suspend: ${formatResponse(suspend)}`);
+        }
       },
       { timeout: 60_000 },
     );
@@ -165,8 +179,14 @@ describe(
       { timeout: 60_000 },
     );
 
+    it("starts a new profile active (open signup, ADR 0094)", { timeout: 30_000 }, async () => {
+      const profile = await readProfile(activeBystander.id);
+      assert.equal(profile.is_approved, true);
+      assert.equal(profile.is_admin, false);
+    });
+
     it(
-      "rejects a user granting themselves is_approved or is_admin",
+      "rejects a suspended user reactivating themselves or granting themselves is_admin",
       { timeout: 30_000 },
       async () => {
         for (const fields of [
@@ -257,8 +277,24 @@ describe(
       },
     );
 
+    it("lets an admin suspend a user through their own session", { timeout: 30_000 }, async () => {
+      // Mirrors apps/web/src/app/api/admin/suspend-user/route.ts.
+      const res = await patchProfile(activeForAdmin.id, { is_approved: false }, admin.auth);
+      assert.equal(res.status, 200, formatResponse(res));
+      assert.equal(res.body.length, 1);
+      assert.equal((await readProfile(activeForAdmin.id)).is_approved, false);
+    });
+
+    it("does not let a user suspend someone else", { timeout: 30_000 }, async () => {
+      // RLS limits a user's UPDATE to their own row, so the PATCH matches nothing.
+      const res = await patchProfile(activeBystander.id, { is_approved: false }, attacker.auth);
+      assert.equal(res.status, 200, formatResponse(res));
+      assert.equal(res.body.length, 0);
+      assert.equal((await readProfile(activeBystander.id)).is_approved, true);
+    });
+
     it("lets the service role approve a user", { timeout: 30_000 }, async () => {
-      // Mirrors apps/web/src/app/api/admin/approve-user/one-click/route.ts.
+      // The admin bootstrap and operator scripts use the service role.
       const res = await patchProfile(pendingForServiceRole.id, { is_approved: true }, SERVICE);
       assert.equal(res.status, 200, formatResponse(res));
       assert.equal(res.body.length, 1);

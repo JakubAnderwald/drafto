@@ -55,7 +55,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
 
       // With email confirmation on, sign-up returns no session and no auth event fires, so
       // the navigator has nothing to react to: say what happens next. With a session, the
-      // auth state change still leads to the waiting-for-approval screen.
+      // auth state change leads into the app: a new account is active from the start (ADR 0094).
       if (!data.session) {
         setSentTo(trimmedEmail);
       }

@@ -3,8 +3,8 @@
 // project, over plain fetch to GoTrue and PostgREST: the same path a client
 // holding the public anon key and its own JWT would use.
 //
-// It creates three throwaway users, signs each in, approves A and B (as an
-// admin would; a new user starts unapproved) and leaves C waiting, and checks:
+// It creates three throwaway users, signs each in, keeps A and B active and
+// suspends C (as an admin would; since ADR 0094 a new user starts active), and checks:
 //   - record_activity records a day once (1, then 0), takes at most 31 days
 //     per call, and rejects an unknown or missing client tag with 22023,
 //     writing nothing when it rejects;
@@ -178,9 +178,10 @@ async function awayFromUtcMidnight() {
 const createdIds = [];
 
 /**
- * A throwaway user, signed in. Approved, as an admin would approve them,
- * unless <approved> is false: a new user starts unapproved, and
- * record_activity records nothing for them.
+ * A throwaway user, signed in. Active unless <approved> is false: then it is
+ * suspended, as an admin would, and record_activity records nothing for it.
+ * Set either way, so the check doesn't depend on the column's default
+ * (true since ADR 0094).
  */
 async function createUser(label, { approved = true } = {}) {
   const email = `usage-daily-live+${label}-${Date.now()}-${randomUUID().slice(0, 8)}@example.com`;
@@ -192,16 +193,18 @@ async function createUser(label, { approved = true } = {}) {
   });
   assert.ok(res.ok, `create ${label}: ${formatResponse(res)}`);
   createdIds.push(res.body.id);
-  if (approved) {
-    const approval = await call(`/rest/v1/profiles?id=eq.${res.body.id}`, {
-      method: "PATCH",
-      ...SERVICE,
-      body: { is_approved: true },
-      prefer: "return=representation",
-    });
-    assert.equal(approval.status, 200, `approve ${label}: ${formatResponse(approval)}`);
-    assert.equal(approval.body?.length, 1, `approve ${label}: ${formatResponse(approval)}`);
-  }
+  const approval = await call(`/rest/v1/profiles?id=eq.${res.body.id}`, {
+    method: "PATCH",
+    ...SERVICE,
+    body: { is_approved: approved },
+    prefer: "return=representation",
+  });
+  assert.equal(approval.status, 200, `set is_approved for ${label}: ${formatResponse(approval)}`);
+  assert.equal(
+    approval.body?.length,
+    1,
+    `set is_approved for ${label}: ${formatResponse(approval)}`,
+  );
   const session = await call("/auth/v1/token?grant_type=password", {
     method: "POST",
     ...ANON,

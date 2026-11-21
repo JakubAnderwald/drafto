@@ -23,8 +23,6 @@ export function LandingHero() {
           Log in
         </Link>
       </div>
-      {/* Sign-up is gated by admin approval (docs/features/email-and-approval.md). */}
-      <p className="text-fg-muted mt-4 text-sm">New accounts are reviewed and approved by hand.</p>
     </header>
   );
 }

@@ -1,6 +1,6 @@
 # 0019 — Email Infrastructure and Account Approval Flow
 
-- **Status**: Accepted
+- **Status**: Accepted. The approval flow (manual approval, one-click approve links, `APPROVAL_LINK_SECRET`) is superseded by [0094](./0094-open-signup-with-admin-suspend.md); the email infrastructure stands.
 - **Date**: 2026-04-20
 - **Authors**: Jakub Anderwald
 
