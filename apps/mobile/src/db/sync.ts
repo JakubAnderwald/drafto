@@ -1,3 +1,4 @@
+import { AppState } from "react-native";
 import { synchronize } from "@nozbe/watermelondb/sync";
 
 import type { Database as WMDatabase } from "@nozbe/watermelondb";
@@ -6,7 +7,8 @@ import type { SyncPullResult } from "@nozbe/watermelondb/sync";
 import { isVisibleRemoteChange } from "@drafto/shared";
 import type { Database } from "@drafto/shared";
 
-import { supabase } from "@/lib/supabase";
+import { flushActivityDays, invalidateActivityDays, markAppOpened } from "@/db/activity-days";
+import { clientTag, supabase } from "@/lib/supabase";
 
 type NotebookRow = Database["public"]["Tables"]["notebooks"]["Row"];
 type NoteRow = Database["public"]["Tables"]["notes"]["Row"];
@@ -315,6 +317,50 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
   return { remoteChangeCount };
 }
 
+/**
+ * The activity ping (ADR-0088, docs/features/offline-sync.md): sent only after
+ * a sync got through, with every day queued since the last one. Both calls
+ * never reject; the catch is a backstop so a ping can never change the sync's
+ * result. A failed ping keeps its days for the next sync. Waits for it at most
+ * ACTIVITY_PING_MAX_WAIT_MS.
+ *
+ * <stillCurrent> is asked again once today's mark has settled: sign-out can
+ * call resetSyncState while the mark is still waiting, and the flush must not
+ * then start, or it would send the signed-out user's queued days under
+ * whichever session the client holds next.
+ */
+async function pingActivity(
+  db: WMDatabase,
+  opened: Promise<void>,
+  stillCurrent: () => boolean,
+): Promise<void> {
+  const ping = opened
+    .then(() => (stillCurrent() ? flushActivityDays(db, supabase, clientTag) : undefined))
+    .catch((error: unknown) => console.warn("[Sync] Activity ping failed:", error));
+  await settleWithin(ping, ACTIVITY_PING_MAX_WAIT_MS);
+}
+
+/**
+ * How long a sync waits for its activity ping before returning. A ping that
+ * hasn't answered by then carries on in the background, and its days stay
+ * queued until the server answers, so a stalled request can't keep the caller
+ * that started the sync waiting.
+ */
+export const ACTIVITY_PING_MAX_WAIT_MS = 10_000;
+
+/** Resolves once <task> settles or <ms> have passed, whichever comes first. */
+async function settleWithin(task: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([task, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Module-level in-flight coalesce. WatermelonDB forbids concurrent
 // synchronize() calls, and sign-out's best-effort final sync can run alongside
 // the DatabaseProvider's own sync. When a sync is already running, additional
@@ -341,17 +387,38 @@ let syncGeneration = 0;
 export function resetSyncState(): void {
   syncGeneration += 1;
   inFlightSync = null;
+  // The activity ping is part of the sync: a mark or flush still running for
+  // this session must not write into the next user's queue either.
+  invalidateActivityDays();
+}
+
+/**
+ * Whether the user has Drafto in front. Only a sync started then counts as
+ * opening the app (ADR-0088), as does the app coming to the front, which
+ * `DatabaseProvider` marks itself. Reconnect and retry syncs also run while the app
+ * sits in the background, and on macOS the app keeps running after its window
+ * is closed, so counting those would mark days nobody opened Drafto.
+ */
+function isAppInFront(): boolean {
+  return AppState.currentState === "active";
 }
 
 export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
+  // A sync started while the app is in front, offline ones included, counts as
+  // opening the app today (ADR-0088). A background sync marks nothing, but its
+  // ping below still sends the days already queued. Started before the latch
+  // check and not awaited here, so coalescing and resetSyncState work as
+  // before; the ping below awaits it.
+  const opened = isAppInFront() ? markAppOpened(db) : Promise.resolve();
   if (inFlightSync) {
     return inFlightSync;
   }
   const generation = syncGeneration;
   const pending = runSync(db);
   inFlightSync = pending;
+  let result: SyncResult;
   try {
-    return await pending;
+    result = await pending;
   } finally {
     // Only clear the latch if it still points at THIS run and no reset (or
     // newer sync) superseded us — otherwise we'd null out a live sync.
@@ -359,4 +426,12 @@ export async function syncDatabase(db: WMDatabase): Promise<SyncResult> {
       inFlightSync = null;
     }
   }
+  // The latch is already free while the ping is out. A caller arriving now
+  // (sign-out's final sync, a follow-up pass for a local edit) runs its own
+  // synchronize() and pushes what changed since this push, instead of joining
+  // a sync whose push has already finished. A sync that resetSyncState
+  // superseded sends no ping: its session has ended.
+  const stillCurrent = () => syncGeneration === generation;
+  if (stillCurrent()) await pingActivity(db, opened, stillCurrent);
+  return result;
 }

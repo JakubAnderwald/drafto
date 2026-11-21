@@ -1,6 +1,6 @@
 # MCP Server
 
-**Status:** shipped **Updated:** 2026-04-21
+**Status:** shipped **Updated:** 2026-11-13
 
 ## What it is
 
@@ -24,6 +24,7 @@ The route is stateless: every POST is independent, and the transport is Streamab
 | MCP route (tool registry + transport) | `apps/web/src/app/api/mcp/route.ts`                     |
 | Tool handler implementations          | `apps/web/src/lib/api/mcp-tools.ts`                     |
 | Bearer-token authentication           | `apps/web/src/lib/api/mcp-auth.ts`                      |
+| `web-mcp` activity day                | `apps/web/src/lib/api/record-mcp-activity.ts`           |
 | API-key CRUD (list, generate)         | `apps/web/src/app/api/api-keys/route.ts`                |
 | API-key revoke                        | `apps/web/src/app/api/api-keys/[id]/route.ts`           |
 | API-key management UI (`/settings`)   | `apps/web/src/components/settings/settings-content.tsx` |
@@ -32,12 +33,14 @@ The route is stateless: every POST is independent, and the transport is Streamab
 | MCP Registry metadata                 | `server.json` (repo root)                               |
 | Auth tests                            | `apps/web/__tests__/unit/mcp-auth.test.ts`              |
 | Route tests                           | `apps/web/__tests__/unit/mcp-route.test.ts`             |
+| Activity-day tests                    | `apps/web/__tests__/unit/record-mcp-activity.test.ts`   |
 | Tool handler tests                    | `apps/web/__tests__/unit/mcp-tools.test.ts`             |
 | API-key endpoint tests                | `apps/web/__tests__/unit/api-keys.test.ts`              |
 
 ## Related ADRs
 
 - [0017 — MCP Server for Claude Cowork Integration](../adr/0017-mcp-server-for-claude-cowork.md)
+- [0088 — Activity Days Instead of Event Analytics](../adr/0088-activity-days-instead-of-event-analytics.md) (the `web-mcp` activity day)
 
 ## The eleven tools
 
@@ -72,6 +75,7 @@ Notes on the implementation:
 - **Transport:** Clients send `Authorization: Bearer <raw key>`. `authenticateMcpRequest` re-hashes the bearer, looks up the row by `key_hash`, rejects on `revoked_at IS NOT NULL`, and then requires `profiles.is_approved = true` for the owning user.
 - **RLS:** The `api_keys` table has RLS enabled with per-user select/insert/update/delete policies that also require `public.is_approved()`. The MCP route itself uses the service-role client (bypassing RLS) and enforces ownership by explicit `user_id` filtering in every handler.
 - **Side effect:** Each successful auth fires `UPDATE api_keys SET last_used_at = now()` (fire-and-forget) — surfaced as the "Last used" timestamp in `/settings`.
+- **Activity day:** Each authenticated tool call (`tools/call`, alone or in a batch) also records that the user used Drafto that UTC day through an AI assistant, so weekly active users count MCP-only users ([product metrics](./product-metrics.md#activity-days-usage_daily), [ADR-0088](../adr/0088-activity-days-instead-of-event-analytics.md)). The handshake (`initialize`, `notifications/initialized`) and `tools/list` record nothing: an assistant with the connector enabled sends them whenever a session starts, before the user asks it for anything in Drafto. After `authenticateMcpRequest` succeeds, the route checks a clone of the body with `isMcpToolCallRequest` (the transport still reads the original), and for a tool call schedules `recordMcpActivity(supabase, userId)` with Next's `after()`, so it runs once the response has been sent. It upserts `(user_id, today UTC, 'web-mcp')` into `usage_daily` with `onConflict: "user_id,day,client"` and `ignoreDuplicates`, so only the day's first tool call adds a row. The route can't use the `record_activity` RPC that the apps call: it queries as the service role, where `auth.uid()` is null. The write is best-effort: an error goes to Sentry and never changes the response. A 401 records nothing. Only the day and the client are stored, never the tool, the note or the arguments.
 - **Failure response:** Auth errors are returned as JSON-RPC 2.0 errors (`code: -32000`) with HTTP status 401.
 
 ## MCP Registry
@@ -112,7 +116,8 @@ See the "MCP Server (Claude Cowork Integration)" section of `CLAUDE.md` for the 
 **Tests that catch regressions:**
 
 - `apps/web/__tests__/unit/mcp-auth.test.ts` — bearer parsing, key hashing, revocation, unapproved user rejection.
-- `apps/web/__tests__/unit/mcp-route.test.ts` — the route rejects bad auth and wires the server + transport correctly.
+- `apps/web/__tests__/unit/mcp-route.test.ts` — the route rejects bad auth and wires the server + transport correctly; an authenticated tool call schedules the activity day after the response, while a 401, the handshake, `tools/list` and a body that isn't JSON don't, and the transport can still read the body.
+- `apps/web/__tests__/unit/record-mcp-activity.test.ts` — the `usage_daily` upsert (today's UTC day, `web-mcp`, duplicates ignored), that an error is reported to Sentry instead of thrown, and which JSON-RPC messages count as a tool call.
 - `apps/web/__tests__/unit/mcp-tools.test.ts` — handler-level tests for each of the eleven tools.
 - `apps/web/__tests__/unit/api-keys.test.ts` — `/api/api-keys` generate / list / revoke.
 - `packages/shared/src/editor/__tests__/markdown-converter.test.ts` — round-trip conversion invariants.

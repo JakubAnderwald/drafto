@@ -3,6 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { after } from "next/server";
 import { z } from "zod";
 import { authenticateMcpRequest } from "@/lib/api/mcp-auth";
+import { isMcpToolCallRequest, recordMcpActivity } from "@/lib/api/record-mcp-activity";
 import {
   listNotebooks,
   listNotes,
@@ -126,6 +127,8 @@ function createMcpServer(supabase: SupabaseClient<Database>, userId: string): Mc
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // The activity day is the day the call arrived, not the day `after` gets to run it.
+  const receivedAt = new Date();
   let supabase: SupabaseClient<Database>;
   let userId: string;
 
@@ -142,6 +145,15 @@ export async function POST(request: Request): Promise<Response> {
       }),
       { status: 401, headers: { "Content-Type": "application/json" } },
     );
+  }
+
+  // Count the day the call arrived as a `web-mcp` activity day for this user (ADR 0088), but
+  // only when it runs a tool: the handshake and `tools/list` happen whenever an assistant with
+  // the connector starts a session, whether or not the user asks it for anything in Drafto.
+  // `after` runs the write once the response has gone out, so it never delays the reply, and
+  // recordMcpActivity never throws, so it can't change it either.
+  if (await isMcpToolCallRequest(request)) {
+    after(() => recordMcpActivity(supabase, userId, receivedAt));
   }
 
   const transport = new WebStandardStreamableHTTPServerTransport({

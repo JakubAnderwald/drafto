@@ -105,6 +105,7 @@ export default function DeleteAccountInfoPage() {
             <li>All of your notes, including notes in the trash and their edit history</li>
             <li>All of your attachments and uploaded files</li>
             <li>Your API keys</li>
+            <li>The record of the days you used Drafto (your usage days)</li>
           </ul>
         </section>
 

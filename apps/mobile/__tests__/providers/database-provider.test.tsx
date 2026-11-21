@@ -1,5 +1,7 @@
 import React from "react";
-import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage } from "@drafto/shared";
+import { AppState } from "react-native";
+import type { AppStateStatus, NativeEventSubscription } from "react-native";
+import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage, utcDay } from "@drafto/shared";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
 import NetInfo from "@react-native-community/netinfo";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
@@ -32,9 +34,17 @@ const mockChangeListeners: ((changes: unknown[] | null) => void)[] = [];
 // local deletions (the adapter's deleted IDs, which queries leave out).
 const mockDirtyCounts = new Map<string, number>();
 const mockDeletedIds = new Map<string, string[]>();
+// WatermelonDB's localStorage, where markAppOpened queues activity days (ADR-0088).
+const mockLocalStorage = new Map<string, unknown>();
 
 jest.mock("@/db", () => ({
   database: {
+    localStorage: {
+      get: async (key: string) => mockLocalStorage.get(key),
+      set: async (key: string, value: unknown) => {
+        mockLocalStorage.set(key, value);
+      },
+    },
     get: jest.fn((table: string) => ({
       query: jest.fn(() => ({
         fetchCount: jest.fn(async () => mockDirtyCounts.get(table) ?? 0),
@@ -889,5 +899,95 @@ describe("DatabaseProvider attachment prefetch (ADR-0086)", () => {
     renderHook(() => useDatabase(), { wrapper });
     await flushEffects();
     expect(mockPrefetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("DatabaseProvider activity days (ADR-0088)", () => {
+  // Already a jest.fn from the react-native jest preset, shared by every test in
+  // this file, so save the preset's implementation and put it back afterwards.
+  const mockAppStateAddEventListener = AppState.addEventListener as unknown as jest.Mock;
+  let presetAppStateImpl: ReturnType<jest.Mock["getMockImplementation"]>;
+  let appStateListener: ((state: AppStateStatus) => void) | undefined;
+
+  /** The days markAppOpened has queued. */
+  function queuedDays(): unknown {
+    const state = mockLocalStorage.get("drafto_activity_days") as { days?: unknown } | undefined;
+    return state?.days ?? [];
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseAuth.mockReturnValue({ user: TEST_USER });
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0, storageFull: 0 });
+    mockEnsureLocalIdentity.mockResolvedValue("ready");
+    mockLocalStorage.clear();
+    appStateListener = undefined;
+    presetAppStateImpl = mockAppStateAddEventListener.getMockImplementation();
+    mockAppStateAddEventListener.mockImplementation(
+      (_type: string, listener: (state: AppStateStatus) => void): NativeEventSubscription => {
+        appStateListener = listener;
+        return { remove: jest.fn() } as unknown as NativeEventSubscription;
+      },
+    );
+  });
+
+  afterEach(() => {
+    mockAppStateAddEventListener.mockImplementation(
+      presetAppStateImpl ?? (() => ({ remove: jest.fn() })),
+    );
+  });
+
+  it("marks today when the app comes to the front while a sync started in the background runs", async () => {
+    // syncDatabase is mocked, so the running pass marks nothing, like a pass
+    // that started while the app was in the background. The foreground sync() joins it
+    // and never calls syncDatabase itself.
+    let finishSync: (value: { remoteChangeCount: number }) => void = () => undefined;
+    mockSyncDatabase.mockImplementationOnce(() => new Promise((resolve) => (finishSync = resolve)));
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      appStateListener?.("active");
+      await Promise.resolve();
+    });
+    // Nothing is left to push, so the pass settles without going round again.
+    await act(async () => {
+      finishSync({ remoteChangeCount: 0 });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+
+    expect(mockSyncDatabase).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(queuedDays()).toEqual([utcDay(new Date())]));
+  });
+
+  it("marks no day when the app leaves the front", async () => {
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(result.current.lastSyncedAt).not.toBeNull());
+
+    await act(async () => {
+      appStateListener?.("background");
+      appStateListener?.("inactive");
+      await Promise.resolve();
+    });
+
+    expect(mockLocalStorage.size).toBe(0);
+  });
+
+  it("marks no day while the local data may still be another user's", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockEnsureLocalIdentity.mockResolvedValue("unsafe");
+    renderHook(() => useDatabase(), { wrapper });
+    await flushEffects();
+
+    await act(async () => {
+      appStateListener?.("active");
+      await Promise.resolve();
+    });
+
+    expect(mockSyncDatabase).not.toHaveBeenCalled();
+    expect(mockLocalStorage.size).toBe(0);
+    errorSpy.mockRestore();
   });
 });
