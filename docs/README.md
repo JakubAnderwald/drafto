@@ -29,6 +29,7 @@ One brief per functional area. Each brief lists the current state, code paths on
 - [`features/seo-and-indexing.md`](./features/seo-and-indexing.md) — canonical host, the signed-out landing page at `/`, robots.txt + sitemap, www/http redirects, `.well-known` app-link files, expected Search Console state
 - [`features/mobile-desktop-apps.md`](./features/mobile-desktop-apps.md) — how iOS / Android / macOS fit together
 - [`features/factory-verification.md`](./features/factory-verification.md) — the dark factory's pre-In-Test verification stage (the Testing column): flow, lanes, the report, settings, planned device lanes
+- [`features/interactive-driving.md`](./features/interactive-driving.md) — driving a factory issue from an interactive Claude Code session (`/drive-issue`): the `driver:interactive` claim, stages and log steps, rules by mode, handing back to the factory
 - [`features/product-metrics.md`](./features/product-metrics.md) — usage metrics as service-role SQL functions, their exact definitions, excluded accounts, activity days (`usage_daily`) behind weekly active users and retention, `pnpm users:stats`
 
 ## Architecture

@@ -63,6 +63,7 @@ const verifyFns = [...script.matchAll(/^(verify_[a-z_]+)\(\) \{/gm)].map((m) => 
 // Every verify_* function plus the real helpers they lean on. Everything that
 // talks to GitHub, the board or claude is stubbed in the harness instead.
 const REAL_HELPERS = [
+  "card_opted_out",
   "support_forward_filter",
   "gate_support_forwards",
   "owner_comments_since",
@@ -1354,17 +1355,22 @@ describe("verify_sweep (real helper)", () => {
     { itemId: "I9", issueNumber: 9, labels: [] },
     { itemId: "I8", issueNumber: 8, labels: ["factory-pause"] },
     { itemId: "I7", issueNumber: 7, labels: ["support"] },
+    { itemId: "I6", issueNumber: 6, labels: ["driver:interactive"] },
     { itemId: "I3", issueNumber: 3, labels: [] },
   ]);
   const body = 'verify_sweep_card() { call "card $2"; }\nverify_sweep';
 
-  it("visits cards oldest first, honouring factory-pause and support", () => {
+  it("visits cards oldest first, honouring factory-pause, driver:interactive and support", () => {
     withBash(body, { env: { TESTING_ITEMS: items } }, (r) => {
       assert.deepEqual(
         r.calls.split("\n").filter((c) => c.startsWith("card ")),
         ["card 3", "card 9"],
       );
       assert.match(r.log, /#8: skipping \(factory-pause label set\)/);
+      assert.match(
+        r.log,
+        /#6: skipping \(driver:interactive label set — an interactive session owns it\)/,
+      );
       assert.match(r.log, /#7: skipping \(support label — nightly-support\.sh owns these\)/);
     });
   });

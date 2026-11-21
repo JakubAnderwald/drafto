@@ -542,10 +542,10 @@ done`;
     assert.match(releaseBlock, /Approved but no factory PR found; leaving for the operator/);
   });
 
-  it("honours the factory-pause kill switch", () => {
+  it("honours the per-card opt-out (factory-pause / driver:interactive)", () => {
     assert.match(
       releaseBlock,
-      /factory-pause,"\* \]\]; then\s*\n\s*log "Issue #\$ISSUE_NUM: skipping \(factory-pause/,
+      /if CARD_OPT_OUT=\$\(card_opted_out "\$ITEM_LABELS"\); then\s*\n\s*log "Issue #\$ISSUE_NUM: skipping \(\$CARD_OPT_OUT\)"; continue/,
     );
   });
 
