@@ -178,7 +178,7 @@ Tell the operator what to test and where. Ask with AskUserQuestion:
   - Approvals: handing a card from a column before In Progress to In Progress or any later column (through Done) needs `plan-approved` logged after the latest plan or replan. Handing it from a column before Approved to Approved, Released or Done needs `approved` logged after the latest revision. This applies when the current column is one of the flow columns (Backlog through Done); `--force` never waives it.
   - `--force` waives only the plan and open-PR requirements, never Planning, an unknown column or a missing approval.
   - A `migration-approved` label whose SQL changed since the session's approval blocks the handback.
-  - The CLI adds the PR marker if the PR lacks it, removes the label, then logs `handback` with what the factory does next. If that log fails, re-run the same `release` to post it.
+  - The CLI adds the PR marker if the PR lacks it, logs `handback` with what the factory does next, then removes the label. If the label can't come off, it withdraws that entry and fails; re-run `release`.
 
 - **Blocked:** for something only the operator can unblock, `log <n> --step blocked` with the reason, then `move <n> Blocked --note …`.
 - **Taking over a card the factory worked:** Stage 0 handles it. Read the factory's plan, PR, review, scenario and verify comments first. Its 🏭 entries and your 🧑‍💻 entries form one log.

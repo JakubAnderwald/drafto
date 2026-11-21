@@ -47,10 +47,12 @@ A card can switch drivers in almost any column, in either direction. A card in P
 - **Same standards.** At each stage, the skill has the session follow named sections of the factory prompts: `factory-plan-prompt.md`, `factory-prompt.md`, `factory-review-prompt.md`, `factory-watch-prompt.md`, `factory-intest-prompt.md` and `factory-verify-prompt.md`. One set of rules covers both drivers. `scripts/__tests__/drive-issue-skill-grounding.test.mjs` fails if a cited section disappears.
 - **The log.** Every comment the CLI posts reads `🧑‍💻 **Interactive session · <step>**` and ends with `<!-- drafto-factory-session:<step>[:<key>] -->`. That marker belongs to the `<!-- drafto-factory` family the factory's feedback sweeps ignore. After a handback, the factory never reads the log as you asking for a replan or a revision. Factory comments (🏭) and session comments (🧑‍💻) together form one timeline.
 - **Hand back.** `drive-issue.mjs release <n> --to <Column> --note …` does four things:
-  - checks that the column fits (the current column when `--to` is left out). `--force` skips only the plan and open-PR requirement, never an unknown column or Planning;
+  - checks that the column fits (the current column when `--to` is left out). `--force` skips only the plan and open-PR requirement, never an unknown column, Planning or a missing approval;
   - adds the PR marker if it's missing;
-  - removes the label;
-  - logs what the factory will do next.
+  - logs what the factory will do next;
+  - removes the label. If the label can't come off, it withdraws the log entry and fails, so the log never shows a handback that didn't happen.
+
+  Logging before removing the label keeps claims sound. Each claim carries a nonce, and only the earliest claim after the latest handback entry wins. Any session that sees the card unclaimed is therefore racing only claims posted after that handback.
 
 ## Stages
 
@@ -109,7 +111,7 @@ Everything in `CLAUDE.md` applies to both modes. These are the rules that differ
 
 Approvals: handing a card from a column before In Progress to In Progress or any later column (through Done) needs `plan-approved` logged after the latest plan or replan. Handing it from a column before Approved to Approved, Released or Done needs `approved` logged after the latest revision. This applies when the current column is one of the flow columns (Backlog through Done); `--force` never waives it.
 
-Planning can't be a handback target, even with `--force`: it is the factory's own transient column, so a card in Planning goes back to Ready. `--force` waives only the plan and open-PR requirements, never a missing approval. A `migration-approved` label whose SQL changed since the session's approval blocks the handback. If a release removes the label but fails to post its log, re-run it: it posts just the log.
+Planning can't be a handback target, even with `--force`: it is the factory's own transient column, so a card in Planning goes back to Ready. `--force` waives only the plan and open-PR requirements, never a missing approval. A `migration-approved` label whose SQL changed since the session's approval blocks the handback. If a card has lost its label without a handback entry (an older release), re-running `release` posts just the log.
 
 The factory keeps its SHA-keyed state on the Mac mini. On a handed-back card it re-runs whatever it hasn't seen at the current head, such as its code review, scenario and verification. That is deliberate.
 

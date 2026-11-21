@@ -59,8 +59,9 @@
 //                                       column must fit; --force skips only the
 //                                       plan / open-PR requirement. Handing a
 //                                       card past a human gate needs that
-//                                       gate's approval logged first. Re-run it
-//                                       to post a handback log that failed.
+//                                       gate's approval logged first. Logs the
+//                                       handback, then removes the label (and
+//                                       withdraws the entry if that fails).
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -543,6 +544,10 @@ export function createDriver({
     if (!status) {
       status = "Ready";
       await setColumn(issue, labels, status, { ...c, itemId });
+    } else {
+      // The board already has a column: make the label agree (a claim that
+      // moved the board but failed on the label is finished here).
+      await syncStatusLabel(issue, labels, status);
     }
     return { itemId, status, addedToBoard };
   }
@@ -621,7 +626,9 @@ export function createDriver({
     await gh(["issue", "edit", String(issue), "--repo", REPO, "--add-label", DRIVER_LABEL]);
     // Two sessions can both pass the label check above. Each claim log entry
     // carries its own nonce; the earliest claim since the last handback wins,
-    // and a later one withdraws its entry and stops.
+    // and every other one withdraws its entry and stops. release() logs the
+    // handback before it removes the label, so any claim that saw the card
+    // unclaimed was posted after that handback entry and takes part here.
     const key = nonce();
     const entry = await log(issue, {
       step: "claim",
@@ -632,10 +639,12 @@ export function createDriver({
     const comments = await issueComments(issue);
     const since = lastEntryIndex(comments, ["handback"]);
     const winner = sessionEntries(comments.slice(since + 1), "claim")[0];
-    if (winner && winner.url !== entry.url) {
+    if (!winner || winner.url !== entry.url) {
       await deleteComment(entry.url);
       throw new DriveError(
-        `lost a claim race: another session claimed #${issue} first (${winner.url}). Leave the card to it.`,
+        winner
+          ? `lost a claim race: another session claimed #${issue} first (${winner.url}). Leave the card to it.`
+          : `couldn't confirm the claim on #${issue} (a handback landed after it); run status and claim again`,
       );
     }
     const board = await ensureOnBoard(issue, data.labels, c);
@@ -786,7 +795,8 @@ export function createDriver({
     const pr = await findPr(issue, prNumber);
     if (!pr || pr.state !== "OPEN") throw new DriveError(`no open PR on ${branchFor(issue)}`);
     const { hash, files } = await migrationHash(pr);
-    await gh(["pr", "edit", String(pr.number), "--repo", REPO, "--add-label", MIGRATION_LABEL]);
+    // The record first, the label second: a label must never sit on the PR
+    // without the approval it stands for (gates and release check the record).
     const entry = await log(issue, {
       step: "migration-approved",
       key: `pr${pr.number}-${hash}-${now().toString(36)}`,
@@ -799,6 +809,7 @@ export function createDriver({
       ].join("\n"),
       force,
     });
+    await gh(["pr", "edit", String(pr.number), "--repo", REPO, "--add-label", MIGRATION_LABEL]);
     return { issue, pr: pr.number, hash, log: entry.url };
   }
 
@@ -1096,13 +1107,24 @@ export function createDriver({
     // moved the board but failed on the label is finished here.
     if (column !== c.status) await setColumn(issue, data.labels, column, c);
     else await syncStatusLabel(issue, data.labels, column);
-    // Label off first: a handback log must never claim a handback that didn't
-    // happen. If the log then fails, re-running release posts it.
-    await gh(["issue", "edit", String(issue), "--repo", REPO, "--remove-label", DRIVER_LABEL]);
+    // The handback entry first, then the label: a session that sees the card
+    // unclaimed always finds this entry before its own claim, so claim()'s
+    // election stays sound. If the label can't come off, the entry is
+    // withdrawn, so the log never shows a handback that didn't happen.
     const entry = await log(issue, {
       step: "handback",
       body: handbackBody(issue, note, column, pr, markerAdded),
     });
+    const off = await gh(
+      ["issue", "edit", String(issue), "--repo", REPO, "--remove-label", DRIVER_LABEL],
+      { allowFail: true },
+    );
+    if (off.code !== 0) {
+      await deleteComment(entry.url);
+      throw new DriveError(
+        `couldn't remove ${DRIVER_LABEL} (${(off.stderr || off.stdout).trim()}); the handback entry was withdrawn. Re-run release.`,
+      );
+    }
     return { issue, column, pr: pr?.url ?? null, markerAdded, log: entry.url };
   }
 

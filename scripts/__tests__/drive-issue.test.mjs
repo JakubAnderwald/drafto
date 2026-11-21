@@ -68,6 +68,9 @@ function world({
   threadPages = null,
   headAfter = null,
   mergeResponse = { code: 0, body: { merged: true, sha: "b".repeat(40) } },
+  afterPost = null,
+  removeLabelFails = false,
+  commentFails = false,
 } = {}) {
   const w = {
     issue: {
@@ -155,10 +158,21 @@ function world({
       );
     }
     if (a === "issue" && b === "comment") {
+      if (commentFails) return reply("", 1, "HTTP 502");
       const id = w.nextId++;
       const url = `${w.issue.url}#issuecomment-${id}`;
       w.comments.push({ id, authorAssociation: "OWNER", body: stdin, createdAt: `t${id}`, url });
+      afterPost?.(w, stdin);
       return reply(`${url}\n`);
+    }
+    if (
+      a === "issue" &&
+      b === "edit" &&
+      removeLabelFails &&
+      args.includes(DRIVER_LABEL) &&
+      args.includes("--remove-label")
+    ) {
+      return reply("", 1, "HTTP 502");
     }
     if (a === "issue" && b === "edit") {
       args.forEach((x, i) => {
@@ -606,7 +620,7 @@ describe("release", () => {
     assert.match(handback, /--release runs its merge gates/);
     const unlabelAt = w.calls.findIndex((c) => c.includes(`--remove-label ${DRIVER_LABEL}`));
     const logAt = w.calls.findLastIndex((c) => c.startsWith("gh issue comment"));
-    assert.ok(unlabelAt < logAt, "the label comes off before the handback is logged");
+    assert.ok(logAt < unlabelAt, "the handback is logged before the label comes off");
   });
 
   it("checks the current column when --to is left out", async () => {
@@ -868,5 +882,52 @@ describe("CodeRabbit round 1 (PR #888)", () => {
     );
     // Once logged, a second retry is refused.
     await assert.rejects(w.driver.release(42, { note: "again" }), /isn't claimed/);
+  });
+});
+
+describe("CodeRabbit round 2 (PR #888)", () => {
+  it("reconciles the status label on --resume when the column is already set", async () => {
+    const w = world({ labels: [DRIVER_LABEL, "status:in-test"], status: "Approved" });
+    await w.driver.claim(42, { resume: true });
+    assert.ok(w.issue.labels.includes("status:approved"));
+    assert.ok(!w.issue.labels.includes("status:in-test"));
+  });
+
+  it("withdraws a claim that a handback overtook", async () => {
+    // Our claim posts, then a release's handback entry lands after it.
+    let fired = false;
+    const w = world({
+      labels: [],
+      afterPost: (wd, body) => {
+        if (!fired && body.includes("drafto-factory-session:claim")) {
+          fired = true;
+          wd.comments.push({ ...entry("handback", "", 999), id: 999 });
+        }
+      },
+    });
+    await assert.rejects(w.driver.claim(42), /couldn't confirm the claim/);
+    assert.ok(
+      !w.comments.some((c) => c.body.includes("drafto-factory-session:claim")),
+      "entry withdrawn",
+    );
+  });
+
+  it("withdraws the handback entry when the label can't come off", async () => {
+    const w = world({ labels: [DRIVER_LABEL], status: "Ready", removeLabelFails: true });
+    await assert.rejects(w.driver.release(42, { note: "x" }), /entry was withdrawn/);
+    assert.ok(w.issue.labels.includes(DRIVER_LABEL));
+    assert.ok(!w.comments.some((c) => c.body.includes("drafto-factory-session:handback")));
+  });
+
+  it("records a migration approval before labelling, and never labels without the record", async () => {
+    const w = world({ labels: [DRIVER_LABEL], pr: openPr() });
+    await w.driver.approveMigration(42);
+    const logAt = w.calls.findIndex((c) => c.startsWith("gh issue comment"));
+    const labelAt = w.calls.findIndex((c) => c.includes("--add-label migration-approved"));
+    assert.ok(logAt !== -1 && logAt < labelAt);
+
+    const failing = world({ labels: [DRIVER_LABEL], pr: openPr(), commentFails: true });
+    await assert.rejects(failing.driver.approveMigration(42), /issue comment failed/);
+    assert.ok(!(failing.pr.labels ?? []).includes("migration-approved"));
   });
 });
