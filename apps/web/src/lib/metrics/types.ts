@@ -27,6 +27,8 @@ export interface DepthShare {
   pct: number | null;
   /** `round(pct × writers / 100)`: exact while there are fewer than 1,000 writers. */
   count: number | null;
+  /** True from 1,000 writers on, where the 0.1-point rounding can move the count. */
+  approximate: boolean;
   /** The writers the share is of. */
   of: number;
 }

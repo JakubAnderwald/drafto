@@ -77,8 +77,8 @@ describe("factory-agent --plan orphaned-Planning rescue sweep", () => {
     // transition can't make every subsequent tick re-post the same comment.
     assert.match(block, /jq -e/);
     assert.match(block, /test\("<!-- drafto-factory-retry-exhausted -->"\)/);
-    // honours the per-card kill switch.
-    assert.match(block, /factory-pause/);
+    // honours the per-card kill switch (factory-pause / driver:interactive).
+    assert.match(block, /card_opted_out "\$ITEM_LABELS"/);
   });
 
   it("C-style loop does not iterate when RESCUE_COUNT is 0", () => {

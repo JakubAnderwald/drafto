@@ -1,7 +1,8 @@
 import type { StorageUsageTone } from "@drafto/shared";
 import { cn } from "@/lib/cn";
 
-export type ProgressBarTone = StorageUsageTone;
+/** The storage tones, plus `success` for a level that is fine (e.g. a limit below 70%). */
+export type ProgressBarTone = StorageUsageTone | "success";
 
 export interface ProgressBarProps {
   /** Share complete, from 0 to 1. Values outside that range (or not finite) are clamped. */
@@ -14,6 +15,7 @@ export interface ProgressBarProps {
 
 const toneStyles: Record<ProgressBarTone, string> = {
   default: "bg-primary-500",
+  success: "bg-success",
   warning: "bg-warning",
   danger: "bg-error",
 };

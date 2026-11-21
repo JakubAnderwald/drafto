@@ -1154,7 +1154,7 @@ describe("browser-guard: screenshots", () => {
     assert.deepEqual(events, [{ copy: good, onOrigin: true }]);
   });
 
-  test("a screenshot of a page that isn't the preview's records onOrigin false (ADR-0091)", () => {
+  test("a screenshot of a page that isn't the preview's records onOrigin false (ADR-0092)", () => {
     const shot = (tabs, state = selectedState()) =>
       post(
         "computer",
@@ -1194,7 +1194,7 @@ describe("browser-guard: screenshots", () => {
     ]);
   });
 
-  test("a screenshot the Tab Context says ran on another tab records onOrigin false (ADR-0091)", () => {
+  test("a screenshot the Tab Context says ran on another tab records onOrigin false (ADR-0092)", () => {
     const OTHER_TAB = 1264169920;
     const both = [
       [OWN_TAB, "Log in — Drafto", `${PREVIEW}/login`],

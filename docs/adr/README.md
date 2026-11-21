@@ -122,4 +122,5 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0088](./0088-activity-days-instead-of-event-analytics.md)                     | Activity Days Instead of Event Analytics                                        | Accepted           | 2026-11-13 |
 | [0089](./0089-macos-native-appearance-follows-in-app-theme.md)                 | macOS Native Appearance Follows the In-App Theme                                | Accepted           | 2026-11-21 |
 | [0090](./0090-per-user-note-content-quota.md)                                  | Per-User Note Content Quota in the Database                                     | Accepted           | 2026-11-21 |
-| [0091](./0091-factory-test-run-screenshots-on-github.md)                       | Factory Test-Run Screenshots on GitHub                                          | Accepted           | 2026-11-10 |
+| [0091](./0091-interactive-issue-driving.md)                                    | Interactive Issue Driving Alongside the Factory                                 | Accepted           | 2026-11-21 |
+| [0092](./0092-factory-test-run-screenshots-on-github.md)                       | Factory Test-Run Screenshots on GitHub                                          | Accepted           | 2026-11-10 |

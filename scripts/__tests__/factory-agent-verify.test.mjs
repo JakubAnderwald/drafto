@@ -29,7 +29,7 @@ import { isTerminalLaneState } from "../lib/verify-decide.mjs";
 //   8. the revision no-op path routes through verify_target_status and keeps
 //      its literal In Test move, but only for the head shown at In Test; any
 //      other head goes through the parity gate to In Review (#759);
-//   9. the Web lane's screenshots (ADR-0091) are published only for a browser
+//   9. the Web lane's screenshots (ADR-0092) are published only for a browser
 //      lane that reported, whose dry render withheld neither its text nor the
 //      body, and only after that render; the report is then composed again
 //      with them inside the lane's <details>, and any failure posts the dry
@@ -69,6 +69,7 @@ const verifyFns = [...script.matchAll(/^(verify_[a-z_]+)\(\) \{/gm)].map((m) => 
 // Every verify_* function plus the real helpers they lean on. Everything that
 // talks to GitHub, the board or claude is stubbed in the harness instead.
 const REAL_HELPERS = [
+  "card_opted_out",
   "support_forward_filter",
   "gate_support_forwards",
   "owner_comments_since",
@@ -82,7 +83,7 @@ const REAL_HELPERS = [
   "ci_required_green",
   "browser_kind_enabled",
   "scenario_platforms",
-  // The Web lane's screenshots (verify_publish_screenshots, ADR-0091).
+  // The Web lane's screenshots (verify_publish_screenshots, ADR-0092).
   "evidence_ocr_bin",
   "browser_guard_log",
   "evidence_upload",
@@ -1392,17 +1393,22 @@ describe("verify_sweep (real helper)", () => {
     { itemId: "I9", issueNumber: 9, labels: [] },
     { itemId: "I8", issueNumber: 8, labels: ["factory-pause"] },
     { itemId: "I7", issueNumber: 7, labels: ["support"] },
+    { itemId: "I6", issueNumber: 6, labels: ["driver:interactive"] },
     { itemId: "I3", issueNumber: 3, labels: [] },
   ]);
   const body = 'verify_sweep_card() { call "card $2"; }\nverify_sweep';
 
-  it("visits cards oldest first, honouring factory-pause and support", () => {
+  it("visits cards oldest first, honouring factory-pause, driver:interactive and support", () => {
     withBash(body, { env: { TESTING_ITEMS: items } }, (r) => {
       assert.deepEqual(
         r.calls.split("\n").filter((c) => c.startsWith("card ")),
         ["card 3", "card 9"],
       );
       assert.match(r.log, /#8: skipping \(factory-pause label set\)/);
+      assert.match(
+        r.log,
+        /#6: skipping \(driver:interactive label set — an interactive session owns it\)/,
+      );
       assert.match(r.log, /#7: skipping \(support label — nightly-support\.sh owns these\)/);
     });
   });
@@ -2565,7 +2571,7 @@ describe("packages/shared/ reaches the web app, for verification only (ADR-0053,
   });
 });
 
-describe("the Web lane's screenshots in the verification report (ADR-0091, real composer)", () => {
+describe("the Web lane's screenshots in the verification report (ADR-0092, real composer)", () => {
   const RUN_ID = "verify-20261021T000000";
   const COMMIT = "c".repeat(40);
   const SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -2703,7 +2709,7 @@ describe("the Web lane's screenshots in the verification report (ADR-0091, real 
         ),
       );
       assert.match(body, /\*\*Step 1\*\* · PASS · Open \/notebooks/, "under the step that took it");
-      assert.match(body, /Web screenshots are published in this report \(ADR-0091\)/);
+      assert.match(body, /Web screenshots are published in this report \(ADR-0092\)/);
       assert.doesNotMatch(body, /weren't published/);
       assert.match(body, /\*\*Verdict: PASS\*\*/);
       assert.match(r.log, /composed with the Web lane's screenshots/);

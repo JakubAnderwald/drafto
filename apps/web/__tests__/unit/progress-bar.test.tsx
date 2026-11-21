@@ -65,4 +65,9 @@ describe("ProgressBar", () => {
 
     expect(screen.getByRole("progressbar")).toHaveClass("mt-2", "bg-bg-muted");
   });
+  it("fills with the success token for the success tone", () => {
+    render(<ProgressBar value={0.3} tone="success" label="Database" />);
+
+    expect(fill()).toHaveClass("bg-success");
+  });
 });

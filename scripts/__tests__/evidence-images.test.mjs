@@ -45,7 +45,7 @@ import {
 } from "../lib/browser-guard.mjs";
 
 // Locks in which screenshots of a factory test run may leave the Mac mini
-// (ADR-0091). The repo is public and a screenshot is pixels the report's text
+// (ADR-0092). The repo is public and a screenshot is pixels the report's text
 // secret scan never sees, so what is published rests on three things this
 // file pins down:
 //   - provenance: a browser run's images are exactly the files the guard's

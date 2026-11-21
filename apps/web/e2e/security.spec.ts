@@ -158,6 +158,12 @@ test.describe("Security: UI redirects for unauthenticated access", () => {
     const location = response.headers.get("location");
     expect(location).toContain("/login");
   });
+
+  test("unauthenticated visit to /admin/stats redirects to login", async () => {
+    const response = await fetch("http://localhost:3000/admin/stats", { redirect: "manual" });
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain("/login");
+  });
 });
 
 test.describe("Security: preview-only test sign-in", () => {
@@ -170,5 +176,17 @@ test.describe("Security: preview-only test sign-in", () => {
     });
     expect(response.status).toBe(404);
     expect(response.headers.get("location")).toBeNull();
+  });
+});
+
+test.describe("Security: admin pages for a signed-in non-admin", () => {
+  test("a non-admin visiting /admin/stats is sent to /", async ({ page }) => {
+    await page.goto("/admin/stats");
+    await page.waitForURL((url) => url.pathname === "/", { timeout: 15000 });
+    // The chromium project signs in as the non-admin E2E user (auth.setup.ts). The app shell
+    // proves this was a signed-in redirect: a signed-out visit goes to /login, and the public
+    // landing page at / has no notebooks pane.
+    await expect(page.getByTestId("notebooks-pane")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole("heading", { name: "Product metrics" })).toBeHidden();
   });
 });

@@ -1,5 +1,5 @@
 // Renders a test run's published screenshots into the Markdown of the comment
-// that reports the run (ADR-0091). Markdown only: what gets published, and
+// that reports the run (ADR-0092). Markdown only: what gets published, and
 // how, is evidence-images.mjs and evidence-upload.mjs; this module only reads
 // the upload record (upload.json) they wrote.
 //
@@ -351,12 +351,12 @@ export function publishedFooter(evidenceDir, mode = "report", { throwaway = fals
       ? "on production with a throwaway account"
       : "that used no throwaway account, so they show the account the app was signed in to";
     return (
-      `<sub>Screenshots published by the operator (ADR-0091): the Drafto window during a run ${run}. ` +
+      `<sub>Screenshots published by the operator (ADR-0092): the Drafto window during a run ${run}. ` +
       `Local copies: \`${pathText(evidenceDir)}\`.</sub>`
     );
   }
   return (
-    "<sub>Screenshots are published with this report (ADR-0091): they show the dev test " +
+    "<sub>Screenshots are published with this report (ADR-0092): they show the dev test " +
     `account on dev data. Local copies and the runner's output: \`${pathText(evidenceDir)}\`.</sub>`
   );
 }
