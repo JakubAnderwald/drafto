@@ -77,8 +77,8 @@ describe("Signup page", () => {
   });
 
   it("asks the user to check their email when sign-up returns no session", async () => {
-    // Email confirmation is on, so there is no session yet. Pushing to /waiting-for-approval
-    // only bounced the user back to /login through the middleware.
+    // Email confirmation is on, so there is no session yet: pushing into the app would only
+    // bounce the user back to /login through the middleware.
     mockSignUp.mockResolvedValueOnce({
       data: { user: { id: "user-1", identities: [{ id: "identity-1" }] }, session: null },
       error: null,
@@ -130,7 +130,7 @@ describe("Signup page", () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  it("goes to the waiting page when sign-up returns a session", async () => {
+  it("goes into the app when sign-up returns a session", async () => {
     mockSignUp.mockResolvedValueOnce({
       data: { user: { id: "user-1" }, session: { access_token: "token" } },
       error: null,
@@ -145,7 +145,8 @@ describe("Signup page", () => {
     await user.type(screen.getByLabelText("Password"), "securepass");
     await user.click(screen.getByRole("button", { name: "Sign up" }));
 
-    expect(mockPush).toHaveBeenCalledWith("/waiting-for-approval");
+    // A new account is active from the start (ADR 0094), so it goes straight to the app.
+    expect(mockPush).toHaveBeenCalledWith("/");
     expect(screen.queryByText("Check Your Email")).not.toBeInTheDocument();
   });
 

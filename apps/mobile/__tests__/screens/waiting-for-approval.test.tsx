@@ -18,15 +18,15 @@ describe("WaitingForApprovalScreen", () => {
     mockSignOut.mockResolvedValue(undefined);
   });
 
-  it("says the account is still pending when the check comes back unapproved", async () => {
+  it("says the account still isn't active when the check comes back inactive", async () => {
     // The route guard keeps this screen mounted during the check now, so the message survives.
     mockRefreshApprovalStatus.mockResolvedValue(false);
     const { getByText } = render(<WaitingForApprovalScreen />);
 
-    fireEvent.press(getByText("Check approval status"));
+    fireEvent.press(getByText("Check again"));
 
     await waitFor(() => {
-      expect(getByText("Your account is still pending approval.")).toBeTruthy();
+      expect(getByText("This account still isn't active.")).toBeTruthy();
     });
   });
 
@@ -34,12 +34,12 @@ describe("WaitingForApprovalScreen", () => {
     mockRefreshApprovalStatus.mockResolvedValue(true);
     const { getByText, queryByText } = render(<WaitingForApprovalScreen />);
 
-    fireEvent.press(getByText("Check approval status"));
+    fireEvent.press(getByText("Check again"));
 
     await waitFor(() => {
       expect(mockRefreshApprovalStatus).toHaveBeenCalledTimes(1);
     });
-    expect(queryByText("Your account is still pending approval.")).toBeNull();
+    expect(queryByText("This account still isn't active.")).toBeNull();
   });
 
   it("explains a check that failed outright", async () => {
@@ -47,10 +47,10 @@ describe("WaitingForApprovalScreen", () => {
     mockRefreshApprovalStatus.mockRejectedValue(new Error("Network request failed"));
     const { getByText } = render(<WaitingForApprovalScreen />);
 
-    fireEvent.press(getByText("Check approval status"));
+    fireEvent.press(getByText("Check again"));
 
     await waitFor(() => {
-      expect(getByText("Unable to check approval status. Please try again.")).toBeTruthy();
+      expect(getByText("Couldn't check the account. Please try again.")).toBeTruthy();
     });
   });
 });

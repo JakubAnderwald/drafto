@@ -78,7 +78,8 @@ const PROCESSORS: readonly Processor[] = [
   },
   {
     service: "Resend",
-    purpose: "Account emails: sign-up confirmation, password reset, approval, account deletion",
+    purpose:
+      "Account emails: sign-up confirmation, password reset, account status, account deletion",
     dataShared: "Your email address and the email's content",
   },
   {
@@ -150,7 +151,7 @@ export default function PrivacyPolicyPage() {
           <p>
             You create an account with an email address and password, or with Google or Apple. We
             store your <strong>email address</strong>, when you signed up, and whether your account
-            has been approved.
+            is active.
           </p>
           <ul>
             <li>
@@ -170,13 +171,16 @@ export default function PrivacyPolicyPage() {
             </li>
           </ul>
 
-          <h3>Account approval</h3>
+          <h3>Account review</h3>
           <p>
-            Drafto is invite-only: new sign-ups are reviewed manually before the account is
-            activated. When you sign up, our administrator receives an email with your email address
-            and the time you signed up, and we email you once your account is approved. A sign-up
-            that is not approved may be deleted. We may also delete an account that holds no notes,
-            for example one that was never used, and we may email you to let you know when we do.
+            Anyone can create a Drafto account, and it is active as soon as you confirm your email
+            address. When you sign up, our administrator receives an email with your email address
+            and the time you signed up, so we can spot spam and abuse. We may suspend an account
+            that is used for spam or abuse: a suspended account can&rsquo;t reach its notes until we
+            reactivate it, nothing in it is deleted, and we email you when we reactivate it. A
+            sign-up that was never activated may be deleted. We may also delete an account that
+            holds no notes, for example one that was never used, and we may email you to let you
+            know when we do.
           </p>
 
           <h3>Notes and content</h3>
@@ -340,14 +344,15 @@ export default function PrivacyPolicyPage() {
             <li>
               <strong>Provide the Service:</strong> store and sync your notes across devices, run
               your account, send essential account emails (sign-up confirmation, password reset,
-              approval status), export your notes, and give AI assistants you connect access to your
+              account status), export your notes, and give AI assistants you connect access to your
               notes.{" "}
               <span className="mt-1 block text-sm">
                 Legal basis: performance of our contract with you (Art. 6(1)(b)).
               </span>
             </li>
             <li>
-              <strong>Review new sign-ups:</strong> keep Drafto invite-only and prevent abuse.{" "}
+              <strong>Review new sign-ups:</strong> spot spam and abuse, and suspend the accounts
+              involved.{" "}
               <span className="mt-1 block text-sm">
                 Legal basis: our legitimate interests (Art. 6(1)(f)).
               </span>
@@ -558,8 +563,8 @@ export default function PrivacyPolicyPage() {
               the app on the web, iOS, Android or macOS. Deletion is immediate. Some data held
               outside your account is kept (see{" "}
               <SectionLink id="retention">{section("retention").title}</SectionLink>). See{" "}
-              <Link href="/account/delete">how to delete your account</Link>. If your account has
-              not been approved yet, email us to delete it
+              <Link href="/account/delete">how to delete your account</Link>. If your account
+              isn&rsquo;t active, email us to delete it
             </li>
             <li>
               <strong>Correct</strong> your information: edit your notes in the app, reset your

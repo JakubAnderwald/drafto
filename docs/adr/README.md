@@ -51,7 +51,7 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0016](./0016-local-fastlane-builds.md)                                        | Local Fastlane Builds                                                           | Accepted           | 2026-03-31 |
 | [0017](./0017-mcp-server-for-claude-cowork.md)                                 | MCP Server for Claude Cowork                                                    | Accepted           | 2026-04-11 |
 | [0018](./0018-oauth-google-apple.md)                                           | OAuth with Google and Apple                                                     | Accepted           | 2026-04-12 |
-| [0019](./0019-email-infrastructure-and-approval-flow.md)                       | Email Infrastructure and Account Approval Flow                                  | Accepted           | 2026-04-20 |
+| [0019](./0019-email-infrastructure-and-approval-flow.md)                       | Email Infrastructure and Account Approval Flow                                  | Partly superseded  | 2026-04-20 |
 | [0020](./0020-email-design-tokens.md)                                          | Email Design Tokens                                                             | Accepted           | 2026-04-21 |
 | [0021](./0021-shared-design-tokens.md)                                         | Shared Design Tokens in `@drafto/shared`                                        | Accepted           | 2026-04-21 |
 | [0022](./0022-note-content-history.md)                                         | Note Content History Table                                                      | Accepted           | 2026-04-25 |
@@ -125,3 +125,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0091](./0091-interactive-issue-driving.md)                                    | Interactive Issue Driving Alongside the Factory                                 | Accepted           | 2026-11-21 |
 | [0092](./0092-android-dialogs-render-in-the-activity-window.md)                | Android Dialogs Render in the Activity Window                                   | Accepted           | 2026-11-21 |
 | [0093](./0093-weekly-hosting-usage-readout.md)                                 | Weekly Hosting-Usage Readout from the Vercel and Supabase Dashboards            | Accepted           | 2026-11-21 |
+| [0094](./0094-open-signup-with-admin-suspend.md)                               | Open Signup with Admin Suspend                                                  | Accepted           | 2026-11-21 |

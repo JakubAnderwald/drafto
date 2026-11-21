@@ -31,8 +31,8 @@ const EMAILS: Record<string, string> = {
 };
 
 const mockRpc = vi.fn();
-const getUserByIdMock = vi.fn(async (id: string) => ({
-  data: { user: EMAILS[id] ? { email: EMAILS[id] } : null },
+const listUsersMock = vi.fn(async () => ({
+  data: { users: Object.entries(EMAILS).map(([id, email]) => ({ id, email })) },
   error: null,
 }));
 
@@ -42,35 +42,48 @@ vi.mock("@/lib/supabase/server", () => ({
       getUser: async () => ({ data: { user: { id: ADMIN_ID } }, error: null }),
     },
     from: () => ({
-      select: (columns: string) => ({
-        eq: () =>
-          columns === "is_admin"
-            ? { single: async () => ({ data: { is_admin: true }, error: null }) }
-            : {
-                order: async () => ({
-                  data: [
-                    {
-                      id: PENDING_ID,
-                      display_name: "Pending Person",
-                      created_at: "2026-11-01T00:00:00Z",
-                    },
-                  ],
-                  error: null,
-                }),
-              },
-      }),
+      select: (columns: string) =>
+        columns === "is_admin"
+          ? { eq: () => ({ single: async () => ({ data: { is_admin: true }, error: null }) }) }
+          : {
+              // Every account, newest first (ADR 0094).
+              order: async () => ({
+                data: [
+                  {
+                    id: PENDING_ID,
+                    display_name: "Pending Person",
+                    created_at: "2026-11-01T00:00:00Z",
+                    is_approved: false,
+                    is_admin: false,
+                  },
+                  {
+                    id: APPROVED_ID,
+                    display_name: null,
+                    created_at: "2026-10-01T00:00:00Z",
+                    is_approved: true,
+                    is_admin: false,
+                  },
+                  {
+                    id: ADMIN_ID,
+                    display_name: null,
+                    created_at: "2026-09-01T00:00:00Z",
+                    is_approved: true,
+                    is_admin: true,
+                  },
+                ],
+                error: null,
+              }),
+            },
     }),
     rpc: mockRpc,
   })),
 }));
 
 vi.mock("@/lib/supabase/admin", () => ({
-  createAdminClient: () => ({ auth: { admin: { getUserById: getUserByIdMock } } }),
+  createAdminClient: () => ({ auth: { admin: { listUsers: listUsersMock } } }),
 }));
 
 const { default: AdminPage } = await import("@/app/(app)/admin/page");
-
-const props = { searchParams: Promise.resolve({}) };
 
 const STORAGE_ROWS = [
   { user_id: ADMIN_ID, used_bytes: 0, quota_bytes: null },
@@ -99,17 +112,18 @@ describe("AdminPage storage quotas", () => {
     vi.clearAllMocks();
   });
 
-  it("lists every user's storage and notes usage next to the pending approvals", async () => {
+  it("lists every user's storage and notes usage next to the account list", async () => {
     mockRpcs({
       storage: { data: STORAGE_ROWS, error: null },
       content: { data: CONTENT_ROWS, error: null },
     });
 
-    render(await AdminPage(props));
+    render(await AdminPage());
 
     expect(mockRpc).toHaveBeenCalledWith("admin_storage_usage");
     expect(mockRpc).toHaveBeenCalledWith("admin_content_usage");
-    expect(screen.getByText("1 pending")).toBeInTheDocument();
+    expect(screen.getByText(/^1 inactive/)).toBeInTheDocument();
+    expect(screen.getByText("2 active")).toBeInTheDocument();
 
     const table = within(screen.getByTestId("admin-storage-table"));
     expect(table.getByRole("columnheader", { name: "Storage used" })).toBeInTheDocument();
@@ -126,18 +140,19 @@ describe("AdminPage storage quotas", () => {
     expect(approvedRow.getByText("Current: 25 MB")).toBeInTheDocument();
     expect(table.getByText("pending@example.com")).toBeInTheDocument();
 
-    // The pending user appears in both lists but is looked up once.
-    expect(getUserByIdMock).toHaveBeenCalledTimes(3);
+    // Both lists share one paged listing of the auth users.
+    expect(listUsersMock).toHaveBeenCalledTimes(1);
+    expect(listUsersMock).toHaveBeenCalledWith({ page: 1, perPage: 1000 });
   });
 
-  it("keeps the approval list when storage usage can't be loaded", async () => {
+  it("keeps the account list when storage usage can't be loaded", async () => {
     const failure = { message: "boom", code: "XX000" };
     mockRpcs({
       storage: { data: null, error: failure },
       content: { data: CONTENT_ROWS, error: null },
     });
 
-    render(await AdminPage(props));
+    render(await AdminPage());
 
     expect(screen.getByText("pending@example.com")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Storage usage could not be loaded.");
@@ -154,9 +169,9 @@ describe("AdminPage storage quotas", () => {
       content: { data: null, error: failure },
     });
 
-    render(await AdminPage(props));
+    render(await AdminPage());
 
-    expect(screen.getByText("1 pending")).toBeInTheDocument();
+    expect(screen.getByText(/^1 inactive/)).toBeInTheDocument();
     const table = within(screen.getByTestId("admin-storage-table"));
     const approvedRow = within(table.getByText("approved@example.com").closest("tr")!);
     expect(approvedRow.getByText("Current: 50 MB")).toBeInTheDocument();
@@ -165,5 +180,26 @@ describe("AdminPage storage quotas", () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(failure, {
       extra: { where: "admin-page:admin_content_usage" },
     });
+  });
+
+  it("puts inactive accounts and active ones in their own sections, admins without Suspend", async () => {
+    mockRpcs({
+      storage: { data: STORAGE_ROWS, error: null },
+      content: { data: CONTENT_ROWS, error: null },
+    });
+
+    render(await AdminPage());
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Admin — Accounts");
+    const inactive = within(screen.getByTestId("admin-inactive-accounts"));
+    expect(inactive.getByText("pending@example.com")).toBeInTheDocument();
+    expect(inactive.getByRole("button", { name: "Activate" })).toBeInTheDocument();
+
+    const active = within(screen.getByTestId("admin-active-accounts"));
+    const approvedRow = within(active.getByText("approved@example.com").closest("li")!);
+    expect(approvedRow.getByRole("button", { name: "Suspend" })).toBeInTheDocument();
+    const adminRow = within(active.getByText("admin@example.com").closest("li")!);
+    expect(adminRow.queryByRole("button")).not.toBeInTheDocument();
+    expect(adminRow.getByText("Admin")).toBeInTheDocument();
   });
 });

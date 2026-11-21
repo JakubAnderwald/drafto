@@ -6,7 +6,6 @@ vi.mock("@/env", () => ({
     NEXT_PUBLIC_SUPABASE_URL: "https://test.supabase.co",
     SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
     WEBHOOK_SECRET: "correct-secret",
-    APPROVAL_LINK_SECRET: "test-secret-must-be-at-least-32-chars-long!",
     APP_URL: "https://drafto.eu",
     EMAIL_ADMIN_FALLBACK: "fallback@drafto.eu",
     EMAIL_FROM: "Drafto <hello@drafto.eu>",
@@ -108,7 +107,11 @@ describe("POST /api/webhooks/new-signup", () => {
     const call = sendEmailMock.mock.calls[0][0];
     expect(call.to).toEqual(["fallback@drafto.eu"]);
     expect(call.subject).toContain("newuser@example.com");
-    expect(call.html).toContain("/api/admin/approve-user/one-click?token=");
+    // A notice, not an approval request (ADR 0094): it links to /admin and carries no token.
+    expect(call.html).toContain("https://drafto.eu/admin");
+    expect(call.html).toContain("already active");
+    expect(call.html).not.toContain("one-click");
+    expect(call.html).not.toContain("token=");
   });
 
   it("reports emailSent: false when Resend send fails", async () => {

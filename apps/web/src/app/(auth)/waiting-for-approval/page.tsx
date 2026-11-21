@@ -4,7 +4,11 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { ACCOUNT_INACTIVE_MESSAGE, ACCOUNT_INACTIVE_TITLE } from "@drafto/shared";
 
+// Where the middleware sends a signed-in account whose `profiles.is_approved` is false: a
+// signup never activated from before open signup, or an account an admin suspended (ADR 0094).
+// The route keeps its old name so the middleware and the apps' navigators stay unchanged.
 export default function WaitingForApprovalPage() {
   const router = useRouter();
   const [email, setEmail] = useState<string | null>(null);
@@ -27,21 +31,13 @@ export default function WaitingForApprovalPage() {
 
   return (
     <div className="text-center">
-      <h1 className="text-fg mb-4 text-2xl font-bold">Waiting for approval</h1>
-      <p className="text-fg-muted mb-2">
-        Thanks for signing up! Drafto is invite-only — an admin has been notified and will review
-        your account shortly.
-      </p>
-      <p className="text-fg-muted mb-6">
-        {email ? (
-          <>
-            We&rsquo;ll email <span className="text-fg font-medium">{email}</span> as soon as
-            you&rsquo;re approved. Feel free to close this tab.
-          </>
-        ) : (
-          <>We&rsquo;ll email you as soon as you&rsquo;re approved. Feel free to close this tab.</>
-        )}
-      </p>
+      <h1 className="text-fg mb-4 text-2xl font-bold">{ACCOUNT_INACTIVE_TITLE}</h1>
+      {email && (
+        <p className="text-fg mb-2 font-medium break-all" data-testid="inactive-account-email">
+          {email}
+        </p>
+      )}
+      <p className="text-fg-muted mb-6">{ACCOUNT_INACTIVE_MESSAGE}</p>
       <Button variant="secondary" onClick={handleLogout}>
         Log out
       </Button>

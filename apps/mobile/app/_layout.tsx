@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { ActivityIndicator, LogBox, Platform, View, StyleSheet } from "react-native";
 import { Stack, useSegments, useRouter } from "expo-router";
+import { ACCOUNT_INACTIVE_TITLE } from "@drafto/shared";
 
 LogBox.ignoreAllLogs();
 
@@ -191,7 +192,7 @@ function ThemedStack() {
           />
           <Stack.Screen
             name="(auth)/waiting-for-approval"
-            options={{ title: "Awaiting Approval", headerShown: false, gestureEnabled: false }}
+            options={{ title: ACCOUNT_INACTIVE_TITLE, headerShown: false, gestureEnabled: false }}
           />
           {/* The notebook screen titles itself with the notebook's name once it loads. */}
           <Stack.Screen name="notebooks/[id]" options={notebookScreenOptions} />

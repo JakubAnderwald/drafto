@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { newSignupAdminEmail, userApprovedEmail } from "@/lib/email/templates";
+import { accountActiveEmail, newSignupAdminEmail } from "@/lib/email/templates";
 
 describe("email templates", () => {
   describe("newSignupAdminEmail", () => {
@@ -7,18 +7,24 @@ describe("email templates", () => {
       userEmail: "newuser@example.com",
       userDisplayName: "Jane Doe",
       signupAt: new Date("2026-04-20T12:00:00Z"),
-      approveUrl: "https://drafto.eu/api/admin/approve-user/one-click?token=t",
       adminUrl: "https://drafto.eu/admin",
     };
 
-    it("includes user email, approve URL, and admin URL", () => {
+    it("includes the user email and the admin URL, and says the account is already active", () => {
       const out = newSignupAdminEmail(baseInput);
       expect(out.subject).toContain("newuser@example.com");
       expect(out.html).toContain("newuser@example.com");
-      expect(out.html).toContain(baseInput.approveUrl);
       expect(out.html).toContain(baseInput.adminUrl);
-      expect(out.text).toContain(baseInput.approveUrl);
       expect(out.text).toContain(baseInput.adminUrl);
+      expect(out.html).toContain("Their account is already active.");
+      expect(out.text).toContain("Their account is already active.");
+    });
+
+    it("has no approve link: signup is open (ADR 0094)", () => {
+      const out = newSignupAdminEmail(baseInput);
+      expect(out.html).not.toMatch(/approve/i);
+      expect(out.text).not.toMatch(/approve/i);
+      expect(out.html).toContain("suspend");
     });
 
     it("escapes HTML in user email and display name", () => {
@@ -65,9 +71,9 @@ describe("email templates", () => {
     });
   });
 
-  describe("userApprovedEmail", () => {
+  describe("accountActiveEmail", () => {
     it("greets user by display name when provided", () => {
-      const out = userApprovedEmail({
+      const out = accountActiveEmail({
         displayName: "Jane",
         loginUrl: "https://drafto.eu/login",
       });
@@ -77,7 +83,7 @@ describe("email templates", () => {
     });
 
     it("falls back to 'there' when display name missing", () => {
-      const out = userApprovedEmail({
+      const out = accountActiveEmail({
         displayName: null,
         loginUrl: "https://drafto.eu/login",
       });
@@ -86,7 +92,7 @@ describe("email templates", () => {
     });
 
     it("escapes HTML in display name", () => {
-      const out = userApprovedEmail({
+      const out = accountActiveEmail({
         displayName: "<b>x</b>",
         loginUrl: "https://drafto.eu/login",
       });
@@ -95,7 +101,7 @@ describe("email templates", () => {
     });
 
     it("uses Drafto design system colors (indigo primary, warm neutrals)", () => {
-      const out = userApprovedEmail({
+      const out = accountActiveEmail({
         displayName: "Jane",
         loginUrl: "https://drafto.eu/login",
       });
@@ -108,7 +114,7 @@ describe("email templates", () => {
     });
 
     it("includes a non-empty plaintext alternative", () => {
-      const out = userApprovedEmail({
+      const out = accountActiveEmail({
         displayName: "Jane",
         loginUrl: "https://drafto.eu/login",
       });
@@ -118,7 +124,7 @@ describe("email templates", () => {
     });
 
     it("renders the shared Drafto footer", () => {
-      const out = userApprovedEmail({
+      const out = accountActiveEmail({
         displayName: "Jane",
         loginUrl: "https://drafto.eu/login",
       });

@@ -49,6 +49,16 @@ export const SIGNUP_CONFIRMATION_SENT =
 // The web login page's notice for `?confirmed=1`, where that confirmation link lands.
 export const EMAIL_CONFIRMED = "Email confirmed. Log in to continue, here or in the Drafto app.";
 
+// The screen an account with `profiles.is_approved = false` sees on every platform: a signup
+// still pending from before open signup (ADR 0094), or an account an admin suspended. The
+// route keeps its old name, `waiting-for-approval`.
+export const SUPPORT_EMAIL = "support@drafto.eu";
+export const ACCOUNT_INACTIVE_TITLE = "Account not active";
+export const ACCOUNT_INACTIVE_MESSAGE = `This account isn't active, so it can't reach its notes. If you think this is a mistake, contact ${SUPPORT_EMAIL}.`;
+export const ACCOUNT_STILL_INACTIVE = "This account still isn't active.";
+export const ACCOUNT_STATUS_CHECK_FAILED = "Couldn't check the account. Please try again.";
+export const ACCOUNT_STATUS_CHECK_LABEL = "Check again";
+
 // The `x-drafto-client` tags (ADR 0023), one per client. `usage_daily.client`
 // (20261113000003_usage_daily.sql) mirrors this list in its check constraint,
 // and record_activity rejects any other tag; packages/shared's

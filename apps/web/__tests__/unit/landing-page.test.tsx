@@ -13,12 +13,12 @@ describe("Landing page", () => {
     ).toBeInTheDocument();
   });
 
-  it("leads to sign-up and login, and says new accounts need approval", () => {
+  it("leads to sign-up and login, and no longer says new accounts need approval", () => {
     render(<WelcomePage />);
 
     expect(screen.getByRole("link", { name: "Sign up" })).toHaveAttribute("href", "/signup");
     expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
-    expect(screen.getByText(/approved by hand/)).toBeInTheDocument();
+    expect(screen.queryByText(/approved by hand/)).not.toBeInTheDocument();
   });
 
   it("lists every feature", () => {

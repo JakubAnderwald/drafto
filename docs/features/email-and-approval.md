@@ -4,17 +4,24 @@
 
 ## What it is
 
-Transactional email delivered through Resend from `hello@drafto.eu`, plus an admin-notification and one-click-approve flow triggered when a new user signs up. The same Resend account powers Supabase auth emails (confirmation, password reset) so signup volume is never throttled by Supabase's built-in 2/hour mailer.
+Transactional email delivered through Resend from `hello@drafto.eu`, plus an admin notice sent when a new user signs up and an admin page that can suspend and reactivate any account. The same Resend account powers Supabase auth emails (confirmation, password reset) so signup volume is never throttled by Supabase's built-in 2/hour mailer.
 
 ## Current state
 
-Shipped in production. A Postgres `after insert on auth.users` trigger calls `/api/webhooks/new-signup`, which emails all `profiles.is_admin = true` users a "New signup" message containing a signed one-click approve link. Clicking the link hits `/api/admin/approve-user/one-click`, flips `profiles.is_approved`, and sends the new user a "You're approved" email. The approval UI at `/admin` covers the same flow interactively. It also lets an admin permanently delete a pending signup through `/api/admin/delete-user`, which refuses approved users and sends no email. For any account that holds no notes, approved or not, an operator can run `pnpm users:delete` (`scripts/delete-users.mjs`) from an interactive session, and add `--notify` to email each deleted user — see [Deleting accounts from the terminal](#deleting-accounts-from-the-terminal). Platform coverage: the email pipeline is web-only (runs on Vercel); mobile and desktop rely on the same `is_approved` gate and simply see the approval take effect on their next auth check.
+Shipped in production. Signup is open ([ADR 0094](../adr/0094-open-signup-with-admin-suspend.md), which partly supersedes [ADR 0019](../adr/0019-email-infrastructure-and-approval-flow.md)): `profiles.is_approved` defaults to `true`, so a new account is active as soon as its email is confirmed. The per-user attachment quota ([ADR 0072](../adr/0072-per-user-attachment-storage-quota.md)) and note content quota ([ADR 0090](../adr/0090-per-user-note-content-quota.md)) are what bound one account now, not approval.
+
+- **Signup notice.** A Postgres `after insert on public.profiles` trigger calls `/api/webhooks/new-signup`, which emails every `profiles.is_admin = true` user a "New Drafto signup" notice: who signed up, that the account is already active, and a link to `/admin`. It carries no approve link or token.
+- **Suspend and reactivate.** `is_approved` is now the admin's suspend switch. Every RLS policy and the attachments bucket gate on `public.is_approved()`, so a suspended account can't reach its data on any platform from its next request. The web middleware sends its next page load to the "Account not active" screen (route still `/waiting-for-approval`); mobile and desktop follow at their next approval check, which for an open session is the quiet re-check on the hourly token refresh ([auth.md](./auth.md#approval-checks-on-mobile-and-desktop)). `/admin` lists every account in two sections (emails from one paged `auth.admin.listUsers`, `apps/web/src/lib/auth/list-user-emails.ts`):
+  - **Inactive accounts**: suspended ones, and signups still pending from before open signup. **Activate** (`/api/admin/approve-user`) sets `is_approved = true` and sends the user a "Your Drafto account is active" email. It matches only an inactive row, so a second Activate succeeds with no second email; a failure shows on the row. **Delete** (`/api/admin/delete-user`) permanently deletes one that owns no notebooks, notes or API keys, and sends no email.
+  - **Active accounts**: **Suspend** (`/api/admin/suspend-user`), after a confirmation, sets `is_approved = false`. It deletes nothing and sends no email. It refuses admins and the requesting admin. Admin rows show an "Admin" badge and no buttons.
+- **Operator deletion.** For any account that holds no notes, active or not, an operator can run `pnpm users:delete` (`scripts/delete-users.mjs`) from an interactive session, and add `--notify` to email each deleted user — see [Deleting accounts from the terminal](#deleting-accounts-from-the-terminal).
+- **Platform coverage.** The email pipeline and the admin page are web-only (Vercel). Mobile and desktop rely on the same `is_approved` gate: they show the shared "Account not active" text (`ACCOUNT_INACTIVE_*` in `packages/shared/src/constants.ts`) and pick up a reactivation on their next auth check or "Check again".
 
 ## Storage quotas on the admin page
 
-Below the approval list, `/admin` has a **Storage quotas** table of every user (`admin-storage-list.tsx`), filled from the `admin_storage_usage()` RPC called through the admin's own session (it raises `42501` for anyone else). If the RPC fails, the approval list still renders, and the table is replaced by a "could not be loaded" notice, with the error sent to Sentry.
+Below the account list, `/admin` has a **Storage quotas** table of every user (`admin-storage-list.tsx`), filled from the `admin_storage_usage()` RPC called through the admin's own session (it raises `42501` for anyone else). If the RPC fails, the account list still renders, and the table is replaced by a "could not be loaded" notice, with the error sent to Sentry.
 
-- **Columns.** _User_ (email, looked up with the service-role client, as the approval list does), _Storage used_ (the sum of the user's attachment rows, trashed notes included), and _Quota_, which shows the current value and an editor: a whole number of MB, or an **Unlimited** checkbox, with a **Save** button per row. Unticking **Unlimited** fills the MB box with the row's current quota, or the 50 MB default when the current quota is Unlimited. Saving POSTs `{ userId, quotaMb }` to `/api/admin/storage-quota` (`quotaMb` is a positive integer up to 1,000,000, or `null` for Unlimited). The route updates `profiles.storage_quota_bytes` through the admin's own session, never the service role, so the privilege guard and the "Admins can update all profiles" policy both apply. Success or the error shows inline on the row.
+- **Columns.** _User_ (email, looked up with the service-role client, as the account list does), _Storage used_ (the sum of the user's attachment rows, trashed notes included), and _Quota_, which shows the current value and an editor: a whole number of MB, or an **Unlimited** checkbox, with a **Save** button per row. Unticking **Unlimited** fills the MB box with the row's current quota, or the 50 MB default when the current quota is Unlimited. Saving POSTs `{ userId, quotaMb }` to `/api/admin/storage-quota` (`quotaMb` is a positive integer up to 1,000,000, or `null` for Unlimited). The route updates `profiles.storage_quota_bytes` through the admin's own session, never the service role, so the privilege guard and the "Admins can update all profiles" policy both apply. Success or the error shows inline on the row.
 - **Enforced by the database, not the page.** A trigger on `public.attachments` and the attachments bucket's storage policies refuse an upload that would take a user over their quota, on every platform. The page only edits the number. See [ADR 0072](../adr/0072-per-user-attachment-storage-quota.md) and `supabase/migrations/20261113000001_per_user_storage_quota.sql`.
 - **Defaults.** New users get 50 MB (`DEFAULT_STORAGE_QUOTA_BYTES` in `packages/shared`). The migration set every existing admin to Unlimited (`NULL`). Promoting someone to admin later does **not** change their quota: they keep 50 MB until an admin ticks Unlimited for them here. The column is the only source of truth.
 - Users can't change their own quota: `guard_profile_privilege_columns` now guards `storage_quota_bytes` alongside `is_admin` and `is_approved`.
@@ -26,16 +33,19 @@ Below the approval list, `/admin` has a **Storage quotas** table of every user (
 | Concern                                 | Path                                                                     |
 | --------------------------------------- | ------------------------------------------------------------------------ |
 | Resend client wrapper                   | `apps/web/src/lib/email/client.ts`                                       |
-| Email templates (new signup, approved)  | `apps/web/src/lib/email/templates.ts`                                    |
+| Email templates (signup notice, active) | `apps/web/src/lib/email/templates.ts`                                    |
 | Supabase-triggered signup webhook       | `apps/web/src/app/api/webhooks/new-signup/route.ts`                      |
-| Interactive approve API                 | `apps/web/src/app/api/admin/approve-user/route.ts`                       |
-| One-click approve (signed link) API     | `apps/web/src/app/api/admin/approve-user/one-click/route.ts`             |
-| Interactive delete-pending-user API     | `apps/web/src/app/api/admin/delete-user/route.ts`                        |
+| Activate (reactivate) API               | `apps/web/src/app/api/admin/approve-user/route.ts`                       |
+| Suspend API                             | `apps/web/src/app/api/admin/suspend-user/route.ts`                       |
+| Delete-inactive-user API                | `apps/web/src/app/api/admin/delete-user/route.ts`                        |
 | Operator account deletion + email       | `scripts/delete-users.mjs`                                               |
-| Signed approval token (HMAC)            | `apps/web/src/lib/approval-tokens.ts`                                    |
 | Admin UI                                | `apps/web/src/app/(app)/admin/page.tsx`                                  |
-| Admin user list component               | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                       |
-| Admin flash message component           | `apps/web/src/app/(app)/admin/admin-flash-message.tsx`                   |
+| Admin account list (sections, state)    | `apps/web/src/app/(app)/admin/admin-user-list.tsx`                       |
+| Admin account row (buttons, dialogs)    | `apps/web/src/app/(app)/admin/admin-account-row.tsx`                     |
+| Inactive-account screen (web)           | `apps/web/src/app/(auth)/waiting-for-approval/page.tsx`                  |
+| Inactive-account screen (mobile)        | `apps/mobile/app/(auth)/waiting-for-approval.tsx`                        |
+| Inactive-account screen (desktop)       | `apps/desktop/src/screens/waiting-for-approval.tsx`                      |
+| Open-signup migration (default `true`)  | `supabase/migrations/20261121000003_open_signup_approved_by_default.sql` |
 | Admin storage quota editor              | `apps/web/src/app/(app)/admin/admin-storage-list.tsx`                    |
 | Admin set-storage-quota API             | `apps/web/src/app/api/admin/storage-quota/route.ts`                      |
 | Admin bootstrap migration (first admin) | `supabase/migrations/20260420000001_admin_bootstrap.sql`                 |
@@ -45,32 +55,35 @@ Below the approval list, `/admin` has a **Storage quotas** table of every user (
 
 ## Related ADRs
 
-- [0019 — Email Infrastructure and Approval Flow](../adr/0019-email-infrastructure-and-approval-flow.md)
+- [0019 — Email Infrastructure and Approval Flow](../adr/0019-email-infrastructure-and-approval-flow.md) (approval flow superseded by 0094)
+- [0094 — Open Signup with Admin Suspend](../adr/0094-open-signup-with-admin-suspend.md)
 - [0024 — Real-Time Support Agent](../adr/0024-realtime-support-agent.md) — inbound `support@drafto.eu` (independent pipeline, Zoho Mail rather than Resend); see [`docs/features/support-agent.md`](./support-agent.md).
 - [0055 — Trigger Guard on Profile Privilege Columns](../adr/0055-profile-privilege-column-guard.md)
 
 ## Cross-platform notes
 
-- The entire email + approval pipeline is **web-only** — it runs in Vercel API routes. Mobile and desktop never send email and never receive the admin notification.
-- What mobile/desktop do care about is the **result**: `profiles.is_approved` flipping to `true`. Their `AuthProvider` (see `apps/mobile/src/providers/auth-provider.tsx`, `apps/desktop/src/providers/auth-provider.tsx`) re-queries `profiles.is_approved` on app resume and on an explicit "refresh" action, so approval propagates without a code change on those platforms.
+- The entire email pipeline and the admin page are **web-only** — they run in Vercel API routes. Mobile and desktop never send email and never receive the admin notice.
+- What mobile/desktop do care about is the **result**: `profiles.is_approved`. Their `AuthProvider` (see `apps/mobile/src/providers/auth-provider.tsx`, `apps/desktop/src/providers/auth-provider.tsx`) re-queries it on app resume and on "Check again", so a suspension or reactivation propagates without a code change on those platforms. Older builds show the old "Awaiting Approval" copy on the same screen.
 - Shared pieces: the `profiles.is_approved` / `profiles.is_admin` columns, the RLS policies, the trigger that guards those two columns, and the admin-bootstrap migration — all defined in `supabase/migrations/` and consumed identically by every client.
 
 ## Modifying safely
 
 - **Invariants:**
   - The webhook route at `/api/webhooks/new-signup` must remain public in the middleware allowlist (`apps/web/src/lib/supabase/middleware.ts` → `PUBLIC_ROUTES` includes `/api/webhooks`). Authenticity is enforced by `WEBHOOK_SECRET`, not by Supabase session.
-  - One-click approve tokens are short-lived (72h) and signed with `APPROVAL_LINK_SECRET`. Rotating this secret invalidates every outstanding email link — coordinate with any in-flight admin actions.
-  - Only an admin or a privileged server-side role can change `profiles.is_approved`, `profiles.is_admin` or `profiles.storage_quota_bytes`. RLS alone does not enforce this: the "Users can update own profile" policy checks row ownership only. The `guard_profile_privilege_columns` trigger (`supabase/migrations/20260922000001_guard_profile_privilege_columns.sql`; `20261113000001_per_user_storage_quota.sql` redefines the function to guard `storage_quota_bytes` too) rejects a change to `is_approved`, `is_admin` or `storage_quota_bytes` from the `authenticated` / `anon` API roles with `42501` (HTTP 403) unless `public.is_admin()` is true. `service_role` and `postgres` are not gated, so both approval routes and the admin bootstrap keep working. The trigger function must stay `SECURITY INVOKER`, or `current_user` becomes the owner and the guard lets everyone through.
+  - A new profile must start active: `profiles.is_approved` defaults to `true` (`20261121000003_open_signup_approved_by_default.sql`) and `handle_new_user()` inserts only `(id)`. If either changes, signup silently goes back to waiting for an admin.
+  - Suspend must never touch an admin row: `/api/admin/suspend-user` filters on `is_admin = false` in the update itself.
+  - Only an admin or a privileged server-side role can change `profiles.is_approved`, `profiles.is_admin` or `profiles.storage_quota_bytes`. RLS alone does not enforce this: the "Users can update own profile" policy checks row ownership only. The `guard_profile_privilege_columns` trigger (`supabase/migrations/20260922000001_guard_profile_privilege_columns.sql`; `20261113000001_per_user_storage_quota.sql` redefines the function to guard `storage_quota_bytes` too) rejects a change to `is_approved`, `is_admin` or `storage_quota_bytes` from the `authenticated` / `anon` API roles with `42501` (HTTP 403) unless `public.is_admin()` is true. `service_role` and `postgres` are not gated, so the admin bootstrap keeps working; the activate and suspend routes use the admin's own session, which the guard lets through. The trigger function must stay `SECURITY INVOKER`, or `current_user` becomes the owner and the guard lets everyone through.
   - When there are zero admins in `profiles`, the webhook falls back to `EMAIL_ADMIN_FALLBACK`. Do not remove this fallback without first proving an admin exists in every environment.
 - **Tests that will catch regressions:**
-  - `apps/web/__tests__/unit/new-signup-webhook.test.ts` — HMAC verification, admin discovery, fallback behavior.
-  - `apps/web/__tests__/unit/admin-approve-user.test.ts` — interactive admin approval auth and state transitions.
-  - `apps/web/__tests__/unit/admin-delete-user.test.ts` — admin-only deletion of pending signups; approved users are refused (409) and no email is sent.
+  - `apps/web/__tests__/unit/new-signup-webhook.test.ts` — secret check, admin discovery, fallback behavior, and that the notice links to `/admin` with no token.
+  - `apps/web/__tests__/unit/admin-approve-user.test.ts` — activate: admin auth, the state change and the "account is active" email.
+  - `apps/web/__tests__/unit/admin-suspend-user.test.ts` — suspend: admin-only, body validation, refuses self and other admins (409), 404 and 500.
+  - `apps/web/__tests__/unit/admin-delete-user.test.ts` — admin-only deletion of inactive accounts that own nothing; active users are refused (409) and no email is sent.
+  - `apps/web/__tests__/integration/admin-user-list.test.tsx` — the two sections, activate / suspend / delete, their confirmations, errors and in-flight locking.
+  - `apps/web/e2e/account-suspend.admin.spec.ts` — admin E2E: a new account starts active; Suspend sends it to the inactive screen and its API calls get 403; Activate lets it back in.
   - `apps/web/__tests__/unit/admin-storage-quota.test.ts` — the set-quota route: admin-only, `userId` and `quotaMb` validation, MB → bytes, `null` → Unlimited, 404 and 500, and no service-role client.
-  - `apps/web/__tests__/integration/admin-storage-list.test.tsx` + `admin-page-storage.test.tsx` — the storage table and its editor, and the admin page loading it next to the approval list (and surviving an RPC failure).
+  - `apps/web/__tests__/integration/admin-storage-list.test.tsx` + `admin-page-storage.test.tsx` — the storage table and its editor, and the admin page loading it next to the account list (and surviving an RPC failure).
   - `apps/web/e2e/storage-quota.admin.spec.ts` — admin E2E (runs only with the admin E2E variables): a user with a 1 KB quota is refused an upload with the storage-full message, then the admin sees them in the table and sets them to Unlimited.
-  - `apps/web/__tests__/unit/approve-user-one-click.test.ts` — signed-link verification and approval flow.
-  - `apps/web/__tests__/unit/approval-tokens.test.ts` — HMAC signing, TTL, tamper detection.
   - `scripts/__tests__/profile-privilege-guard.test.mjs` — static check of every migration that defines the guard (runs in CI): the exact condition of the newest definition, the 42501 raise, `SECURITY INVOKER`, that no migration alters, drops or disables it, and migration ordering.
   - `scripts/__tests__/profile-privilege-guard.live.test.mjs` — opt-in check against the **dev** project: a user's own `PATCH` of `is_approved`, `is_admin` or `storage_quota_bytes` gets 403, a `display_name` edit still works, and an admin session and the service role can still approve. Skips unless the dev URL, anon key and service-role key are all set. Run it with `pnpm test:live:supabase -- --only profile-guard`, which sets them from the local key files and fails, rather than skips, when one is missing.
   - `apps/web/__tests__/unit/email-client.test.ts` + `email-templates.test.ts` — Resend transport and template rendering.
@@ -78,16 +91,16 @@ Below the approval list, `/admin` has a **Storage quotas** table of every user (
 - **Files that must change together:**
   - Changing the webhook payload shape: update `apps/web/src/app/api/webhooks/new-signup/route.ts` **and** `supabase/migrations/20260421000001_new_signup_webhook.sql` (the trigger builds the body). Add a new migration rather than editing the old one.
   - Adding a new transactional email: update `apps/web/src/lib/email/templates.ts`, add a sender call, and extend `email-templates.test.ts`.
-  - Rotating `APPROVAL_LINK_SECRET`, `WEBHOOK_SECRET`, or the Resend API key: follow the [Rotating secrets](#rotating-secrets) section below.
+  - Rotating `WEBHOOK_SECRET` or the Resend API key: follow the [Rotating secrets](#rotating-secrets) section below.
 
 ## Verify
 
 ```bash
-# Web unit + integration (covers webhook, approve-user, approval-tokens, email)
+# Web unit + integration (covers webhook, approve/suspend/delete-user, email)
 cd apps/web && pnpm test
 
 # Targeted unit tests for this feature
-cd apps/web && pnpm test -- new-signup-webhook admin-approve-user admin-delete-user admin-storage-quota admin-storage-list admin-page-storage approve-user-one-click approval-tokens email-client email-templates
+cd apps/web && pnpm test -- new-signup-webhook admin-approve-user admin-delete-user admin-storage-quota admin-storage-list admin-page-storage admin-suspend-user admin-user-list email-client email-templates
 
 # Guard on is_approved / is_admin: static check, then the live check against the DEV project.
 # Interactive sessions only. The runner reads the service-role key from
@@ -97,8 +110,8 @@ cd apps/web && pnpm test -- new-signup-webhook admin-approve-user admin-delete-u
 node --test scripts/__tests__/profile-privilege-guard.test.mjs
 pnpm test:live:supabase -- --only profile-guard
 
-# Web E2E (signup + approval happy path)
-set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth
+# Web E2E (signup, and the admin suspend/reactivate loop with the admin E2E variables set)
+set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -- auth account-suspend
 
 # Manual end-to-end verification steps are in "Verifying the setup end-to-end" below.
 ```
@@ -107,7 +120,7 @@ set -a && source apps/web/.env.local && set +a && cd apps/web && pnpm test:e2e -
 
 # Email setup (Resend + drafto.eu) — runbook
 
-Drafto sends all outbound email via **Resend** from `hello@drafto.eu`. The same Resend account handles Supabase auth emails (signup confirmation, password reset) _and_ Drafto's own transactional emails (admin signup notifications, user approval confirmations).
+Drafto sends all outbound email via **Resend** from `hello@drafto.eu`. The same Resend account handles Supabase auth emails (signup confirmation, password reset) _and_ Drafto's own transactional emails (admin signup notices, account-active emails).
 
 See [ADR 0019](../adr/0019-email-infrastructure-and-approval-flow.md) for the rationale.
 
@@ -127,7 +140,7 @@ pnpm users:delete -- --project prod someone@example.com other@example.com
 pnpm users:delete -- --project prod --execute --notify [--reason "<one sentence>"] someone@example.com
 ```
 
-- **Refusals.** It skips admins and any account that owns a note, trashed notes included, and checks again right before the delete in case a note synced in the meantime. The privacy policy ("Account approval") says only that we may delete an unapproved sign-up or an account that holds no notes, so widen the script and the policy together. It refuses to run at all in an unattended session (`DRAFTO_UNATTENDED=1`) or under `node --test`, and the verification lane's guard denies any command naming it.
+- **Refusals.** It skips admins and any account that owns a note, trashed notes included, and checks again right before the delete in case a note synced in the meantime. The privacy policy ("Account review") says only that we may delete a sign-up that was never activated or an account that holds no notes, so widen the script and the policy together. It refuses to run at all in an unattended session (`DRAFTO_UNATTENDED=1`) or under `node --test`, and the verification lane's guard denies any command naming it.
 - **Production.** Running it with `--execute --project prod` is a production database operation: state the project, the accounts and what they own (the plan output) and get an explicit "yes" first.
 - **Keys.** The service-role key comes from the `PROD:` / `DEV:` line of `~/drafto-secrets/supabase service keys.txt` (`--keys-txt` to override). With `--notify`, the Resend key comes from `RESEND_API_KEY` in the environment or `~/drafto-secrets/account-approval-secrets.env` (`--resend-env`). Neither is printed.
 - **Errors.** An error with one account is logged and the run moves on to the next; check that account by hand before rerunning.
@@ -193,7 +206,6 @@ Vercel → Project → Settings → Environment Variables. Add these to **Produc
 | `RESEND_API_KEY`       | `re_...`                                                                           | Same key used in Supabase SMTP.                          |
 | `EMAIL_FROM`           | `Drafto <hello@drafto.eu>`                                                         | Sender identity.                                         |
 | `EMAIL_ADMIN_FALLBACK` | `jakub@anderwald.info`                                                             | Used only when no `profiles.is_admin = true` rows exist. |
-| `APPROVAL_LINK_SECRET` | 32+ random bytes hex                                                               | `openssl rand -hex 32`. Signs one-click approve tokens.  |
 | `APP_URL`              | `https://drafto.eu` (prod) / preview URL (preview) / `http://localhost:3000` (dev) | Base for links in emails.                                |
 | `WEBHOOK_SECRET`       | matches the value entered in step 4                                                | Verifies incoming Supabase webhook calls.                |
 
@@ -211,10 +223,10 @@ pnpm supabase:link:prod && pnpm supabase:push
 ## Verifying the setup end-to-end
 
 1. Sign in at `/login` as the bootstrapped admin (`jakub@anderwald.info`). The "Admin" link should appear in the app menu.
-2. Open an incognito tab and sign up a throwaway test email at `/signup`. Land on `/waiting-for-approval`.
-3. Check your inbox — you should receive a "New Drafto signup: …" email from `Drafto <hello@drafto.eu>` within ~30 seconds.
-4. Click "Approve …" in the email. You should land on `/admin?approved=…` with a success flash. The approved user should receive a "Your Drafto account is approved" email.
-5. Back in the incognito tab, refresh — the waiting page should redirect into the app.
+2. Open an incognito tab and sign up a throwaway test email at `/signup`, confirm it, and log in. You land in the app: the account is active.
+3. Check your inbox — you should receive a "New Drafto signup: …" notice from `Drafto <hello@drafto.eu>` within ~30 seconds, saying the account is already active.
+4. On `/admin`, **Suspend** the test account. In the incognito tab, refresh: you land on "Account not active".
+5. **Activate** it again. The test address gets a "Your Drafto account is active" email, and refreshing the incognito tab goes back into the app.
 
 ---
 
@@ -229,4 +241,4 @@ pnpm supabase:link:prod && pnpm supabase:push
 
 - **Resend API key**: generate a new key in Resend, paste into Supabase Dashboard SMTP (both projects) _and_ Vercel's `RESEND_API_KEY` env var. Revoke the old key after the next deploy.
 - **`WEBHOOK_SECRET`**: update the matching Supabase Vault secret **and** Vercel env var in lockstep. In the prod Supabase SQL Editor run `select vault.update_secret((select id from vault.secrets where name = 'webhook_secret'), '<new-value>');`, then update Vercel's `WEBHOOK_SECRET`. Between the two updates, webhook calls will 401 — briefly silencing signup notifications.
-- **`APPROVAL_LINK_SECRET`**: rotating invalidates all outstanding one-click approval emails. Tell any in-flight admins to use the `/admin` page instead until new emails arrive.
+- **`APPROVAL_LINK_SECRET`**: no longer used (ADR 0094 removed the one-click approve link). Delete it from Vercel's environment variables.

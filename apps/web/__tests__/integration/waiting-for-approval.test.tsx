@@ -25,29 +25,31 @@ vi.mock("@/env", () => ({
 
 const { default: WaitingPage } = await import("@/app/(auth)/waiting-for-approval/page");
 
-describe("Waiting for approval page", () => {
+describe("Inactive account page (/waiting-for-approval)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetUser.mockResolvedValue({ data: { user: { email: "pending@example.com" } } });
   });
 
-  it("renders the waiting message and user email", async () => {
+  it("says the account isn't active, names it, and points to support", async () => {
     await act(async () => {
       render(<WaitingPage />);
     });
 
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Waiting for approval");
-    expect(screen.getByText(/admin has been notified/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account not active");
     expect(screen.getByText("pending@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/This account isn.t active/)).toHaveTextContent("support@drafto.eu");
+    expect(screen.queryByText(/invite-only|approv/i)).not.toBeInTheDocument();
   });
 
-  it("falls back to a generic line when email is unavailable", async () => {
+  it("leaves the email out when it is unavailable", async () => {
     mockGetUser.mockResolvedValue({ data: { user: null } });
     await act(async () => {
       render(<WaitingPage />);
     });
 
-    expect(screen.getByText(/email you as soon as you.+re approved/)).toBeInTheDocument();
+    expect(screen.queryByTestId("inactive-account-email")).not.toBeInTheDocument();
+    expect(screen.getByText(/This account isn.t active/)).toBeInTheDocument();
   });
 
   it("has a logout button", async () => {

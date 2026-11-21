@@ -833,18 +833,49 @@ describe("AuthProvider — approval re-checks", () => {
     return rendered;
   }
 
-  it("does not re-check an approved user on their token refresh", async () => {
+  it("re-checks an approved user quietly on their token refresh, keeping the screen", async () => {
+    // A full re-check put the approval gate back in flight, and the route guard used to swap
+    // the whole app for a spinner while it was: every hourly refresh threw the user out of
+    // the open note. The quiet re-check never sets isCheckingApproval.
     const { result } = await renderSignedIn();
     const refreshed = { ...SIGNED_IN_SESSION, access_token: "refreshed-token" };
 
-    act(() => {
+    await act(async () => {
       emitAuthEvent("TOKEN_REFRESHED", refreshed);
+      expect(result.current.isCheckingApproval).toBe(false);
     });
 
     expect(result.current.isCheckingApproval).toBe(false);
     expect(result.current.session).toBe(refreshed);
     expect(result.current.isApproved).toBe(true);
-    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+    expect(mockSupabase.from).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends a user suspended mid-session to the inactive screen on their token refresh", async () => {
+    // ADR 0094: an admin's Suspend must reach a session that is already open.
+    const { result } = await renderSignedIn();
+
+    mockProfileQuery({ is_approved: false }, null);
+    await act(async () => {
+      emitAuthEvent("TOKEN_REFRESHED", { ...SIGNED_IN_SESSION, access_token: "refreshed-token" });
+    });
+
+    expect(result.current.isApproved).toBe(false);
+    expect(result.current.isCheckingApproval).toBe(false);
+    expect(mockApprovalCache.setCachedApproval).toHaveBeenCalledWith("user-123", false);
+  });
+
+  it("keeps an approved user in when the quiet re-check fails", async () => {
+    const { result } = await renderSignedIn();
+
+    mockProfileQuery(null, { message: "network down" });
+    await act(async () => {
+      emitAuthEvent("TOKEN_REFRESHED", { ...SIGNED_IN_SESSION, access_token: "refreshed-token" });
+    });
+
+    expect(mockSupabase.from).toHaveBeenCalledTimes(2);
+    expect(result.current.isApproved).toBe(true);
+    expect(mockApprovalCache.setCachedApproval).not.toHaveBeenCalledWith("user-123", false);
   });
 
   it("still re-checks an unapproved user on their token refresh, picking up an approval", async () => {

@@ -20,39 +20,43 @@ describe("WaitingForApprovalScreen", () => {
     mockRefreshApprovalStatus.mockResolvedValue(false);
   });
 
-  it("renders waiting message", () => {
+  it("says the account isn't active and points to support", () => {
     const { getByText } = render(<WaitingForApprovalScreen />);
 
-    expect(getByText("Awaiting Approval")).toBeTruthy();
-    expect(getByText(/pending admin approval/)).toBeTruthy();
+    expect(getByText("Account not active")).toBeTruthy();
+    expect(
+      getByText(
+        /This account isn.t active, so it can.t reach its notes. If you think this is a mistake, contact support@drafto\.eu\./,
+      ),
+    ).toBeTruthy();
   });
 
-  it("shows check approval button and sign out button", () => {
+  it("shows the check-again and sign-out buttons", () => {
     const { getByText } = render(<WaitingForApprovalScreen />);
 
-    expect(getByText("Check approval status")).toBeTruthy();
+    expect(getByText("Check again")).toBeTruthy();
     expect(getByText("Sign out")).toBeTruthy();
   });
 
   it("calls refreshApprovalStatus when check button is pressed", async () => {
     const { getByText } = render(<WaitingForApprovalScreen />);
 
-    fireEvent.press(getByText("Check approval status"));
+    fireEvent.press(getByText("Check again"));
 
     await waitFor(() => {
       expect(mockRefreshApprovalStatus).toHaveBeenCalled();
     });
   });
 
-  it("shows still pending message when not approved", async () => {
+  it("says the account still isn't active when the check finds it inactive", async () => {
     mockRefreshApprovalStatus.mockResolvedValue(false);
 
     const { getByText } = render(<WaitingForApprovalScreen />);
 
-    fireEvent.press(getByText("Check approval status"));
+    fireEvent.press(getByText("Check again"));
 
     await waitFor(() => {
-      expect(getByText("Your account is still pending approval.")).toBeTruthy();
+      expect(getByText("This account still isn't active.")).toBeTruthy();
     });
   });
 
@@ -61,10 +65,10 @@ describe("WaitingForApprovalScreen", () => {
 
     const { getByText } = render(<WaitingForApprovalScreen />);
 
-    fireEvent.press(getByText("Check approval status"));
+    fireEvent.press(getByText("Check again"));
 
     await waitFor(() => {
-      expect(getByText("Unable to check approval status. Please try again.")).toBeTruthy();
+      expect(getByText("Couldn't check the account. Please try again.")).toBeTruthy();
     });
   });
 
@@ -73,14 +77,14 @@ describe("WaitingForApprovalScreen", () => {
 
     const { getByText, queryByText } = render(<WaitingForApprovalScreen />);
 
-    fireEvent.press(getByText("Check approval status"));
+    fireEvent.press(getByText("Check again"));
 
     await waitFor(() => {
       expect(mockRefreshApprovalStatus).toHaveBeenCalled();
     });
 
     // No error message should be shown when approved
-    expect(queryByText("Your account is still pending approval.")).toBeNull();
+    expect(queryByText("This account still isn't active.")).toBeNull();
   });
 
   it("calls signOut when sign out button is pressed", async () => {

@@ -42,14 +42,14 @@ export default function SignupPage() {
         return;
       }
 
-      // With email confirmation on there is no session yet, and the middleware would bounce
-      // /waiting-for-approval back to login. Say what happens next instead.
+      // With email confirmation on there is no session yet, so say what happens next instead.
       if (!data.session) {
         setSentTo(email);
         return;
       }
 
-      router.push("/waiting-for-approval");
+      // A new account is active from the start (ADR 0094), so it goes straight to the app.
+      router.push("/");
     } finally {
       setLoading(false);
     }

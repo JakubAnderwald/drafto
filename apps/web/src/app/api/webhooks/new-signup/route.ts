@@ -4,7 +4,6 @@ import { env } from "@/env";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendEmail } from "@/lib/email/client";
 import { newSignupAdminEmail } from "@/lib/email/templates";
-import { signApprovalToken } from "@/lib/approval-tokens";
 
 interface WebhookPayload {
   type: string;
@@ -81,17 +80,12 @@ export async function POST(request: NextRequest) {
     }
 
     const recipients = await resolveAdminRecipients(admin);
-    const approveToken = signApprovalToken(userId);
-    const approveUrl = `${env.APP_URL}/api/admin/approve-user/one-click?token=${encodeURIComponent(
-      approveToken,
-    )}`;
     const adminUrl = `${env.APP_URL}/admin`;
 
     const content = newSignupAdminEmail({
       userEmail: authUser.user.email,
       userDisplayName: displayName,
       signupAt: new Date(authUser.user.created_at ?? Date.now()),
-      approveUrl,
       adminUrl,
     });
 

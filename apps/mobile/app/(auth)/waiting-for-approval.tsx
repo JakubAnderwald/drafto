@@ -1,12 +1,21 @@
 import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  ACCOUNT_INACTIVE_MESSAGE,
+  ACCOUNT_INACTIVE_TITLE,
+  ACCOUNT_STATUS_CHECK_FAILED,
+  ACCOUNT_STATUS_CHECK_LABEL,
+  ACCOUNT_STILL_INACTIVE,
+} from "@drafto/shared";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
+// The screen for an account whose `profiles.is_approved` is false: a signup never activated from
+// before open signup, or an account an admin suspended (ADR 0094). The route keeps its old name.
 export default function WaitingForApprovalScreen() {
   const { signOut, refreshApprovalStatus } = useAuth();
   const { semantic } = useTheme();
@@ -25,11 +34,11 @@ export default function WaitingForApprovalScreen() {
       const approved = await refreshApprovalStatus();
       // If approved, the route guard will redirect automatically.
       if (!approved) {
-        setError("Your account is still pending approval.");
+        setError(ACCOUNT_STILL_INACTIVE);
       }
     } catch (err) {
       console.error("Approval check failed:", err);
-      setError("Unable to check approval status. Please try again.");
+      setError(ACCOUNT_STATUS_CHECK_FAILED);
     } finally {
       setChecking(false);
     }
@@ -48,12 +57,9 @@ export default function WaitingForApprovalScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: topInset + spacing["2xl"] }]}>
-      <Text style={styles.icon}>&#9203;</Text>
-      <Text style={styles.title}>Awaiting Approval</Text>
-      <Text style={styles.subtitle}>
-        Your account has been created and is pending admin approval. You will be able to access
-        Drafto once an admin approves your account.
-      </Text>
+      <Text style={styles.icon}>&#128274;</Text>
+      <Text style={styles.title}>{ACCOUNT_INACTIVE_TITLE}</Text>
+      <Text style={styles.subtitle}>{ACCOUNT_INACTIVE_MESSAGE}</Text>
 
       {error && (
         <View style={styles.errorContainer} accessibilityRole="alert">
@@ -73,7 +79,7 @@ export default function WaitingForApprovalScreen() {
         {checking ? (
           <ActivityIndicator color={semantic.onPrimary} />
         ) : (
-          <Text style={styles.buttonText}>Check approval status</Text>
+          <Text style={styles.buttonText}>{ACCOUNT_STATUS_CHECK_LABEL}</Text>
         )}
       </Pressable>
 
