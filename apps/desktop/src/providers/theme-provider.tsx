@@ -1,7 +1,16 @@
-import { createContext, useContext, useState, useEffect, useCallback, useMemo } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import { useColorScheme } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { applyAppAppearance } from "@/lib/native/app-appearance";
 import { getSemanticColors, type SemanticColors } from "@/theme/tokens";
 
 export type ThemePreference = "light" | "dark" | "system";
@@ -20,10 +29,13 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const systemScheme = useColorScheme();
   const [theme, setThemeState] = useState<ThemePreference>("system");
+  // Set once the user picks a theme, so a stored value that loads later can't undo that choice.
+  const chosenRef = useRef(false);
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then((stored) => {
+        if (chosenRef.current) return;
         if (stored === "light" || stored === "dark" || stored === "system") {
           setThemeState(stored);
         }
@@ -33,7 +45,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       });
   }, []);
 
+  // Native chrome (title bar, menus, alerts) follows the in-app theme, not only the React content.
+  useEffect(() => {
+    applyAppAppearance(theme);
+  }, [theme]);
+
   const setTheme = useCallback((newTheme: ThemePreference) => {
+    chosenRef.current = true;
     setThemeState(newTheme);
     AsyncStorage.setItem(STORAGE_KEY, newTheme);
   }, []);

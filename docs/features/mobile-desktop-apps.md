@@ -102,6 +102,16 @@ gap, tracked as a follow-up: an RN `Modal` (`DeleteAccountDialog`) re-runs
 edge-to-edge from the OS theme in its own window, which `SystemBars` does not style. iOS, web and macOS have no navigation bar. See
 [ADR-0087](../adr/0087-android-navigation-bar-follows-in-app-theme.md).
 
+**Native chrome (macOS):** `ThemeProvider` calls `applyAppAppearance(theme)`
+(`apps/desktop/src/lib/native/app-appearance.ts`) whenever the stored preference changes. It
+calls react-native-macos's `Appearance.setColorScheme`, which sets `NSApp.appearance`: Aqua for
+Light, DarkAqua for Dark, and `nil` for System, so the title bar, menus, `Alert.alert` sheets
+and scroll bars match the in-app theme, and System follows macOS again, live changes included.
+Unlike on Android, `setColorScheme` is safe here: `ThemeProvider` reads `useColorScheme()` only
+for System, and setting `nil` gives the OS scheme back to it. Until AsyncStorage returns the
+stored preference at launch, the chrome follows macOS. See
+[ADR-0089](../adr/0089-macos-native-appearance-follows-in-app-theme.md).
+
 **Backend routing (from `CLAUDE.md` "Mobile Build Environment Mapping"):**
 
 | Build              | Env file          | Supabase project | Project ref            |
