@@ -37,29 +37,36 @@ export function ActiveUsersSection({ activeUsers, retention }: ActiveUsersSectio
             { always: true },
           );
           return (
-            <MetricsTable
-              label="Active users per ISO week"
-              emptyText="No weeks."
-              columns={[
-                { header: "Week" },
-                { header: "Starts" },
-                { header: "Active users", numeric: true },
-                { header: "Writers", numeric: true },
-                ...clients.map((c) => ({ header: c, numeric: true })),
-                { header: "Status" },
-              ]}
-              rows={rows.map((r) => ({
-                key: r.week_start,
-                cells: [
-                  r.iso_week,
-                  r.week_start,
-                  r.active_users,
-                  formatCountOf(r.writers, r.active_users),
-                  ...clients.map((c) => r.by_client[c] ?? 0),
-                  r.week_complete ? "complete" : "in progress",
-                ],
-              }))}
-            />
+            <>
+              <MetricsTable
+                label="Active users per ISO week"
+                emptyText="No weeks."
+                columns={[
+                  { header: "Week" },
+                  { header: "Starts" },
+                  { header: "Active users", numeric: true },
+                  { header: "Writers", numeric: true },
+                  ...clients.map((c) => ({ header: c, numeric: true })),
+                  { header: "Status" },
+                ]}
+                rows={rows.map((r) => ({
+                  key: r.week_start,
+                  cells: [
+                    r.iso_week,
+                    r.week_start,
+                    r.active_users,
+                    formatCountOf(r.writers, r.active_users),
+                    ...clients.map((c) => r.by_client[c] ?? 0),
+                    r.week_complete ? "complete" : "in progress",
+                  ],
+                }))}
+              />
+              {rows.length > 0 ? (
+                <p className="text-fg-muted text-xs">
+                  Weeks before activity days were recorded (Nov 2026, with no backfill) show 0.
+                </p>
+              ) : null}
+            </>
           );
         }}
       </MetricResultView>
@@ -87,10 +94,14 @@ export function ActiveUsersSection({ activeUsers, retention }: ActiveUsersSectio
                 ],
               }))}
             />
-            <p className="text-fg-muted text-xs">
-              {NOT_AVAILABLE}: the window is still open, started before activity days were recorded,
-              or the cohort is too old for the 30-day history.
-            </p>
+            {rows.some(
+              (r) => r.activated === null || r.active_week1 === null || r.active_week4 === null,
+            ) ? (
+              <p className="text-fg-muted text-xs">
+                {NOT_AVAILABLE}: the window is still open, started before activity days were
+                recorded, or the cohort is too old for the 30-day history.
+              </p>
+            ) : null}
           </>
         )}
       </MetricResultView>

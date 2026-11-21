@@ -1,5 +1,11 @@
 import type { EmptiedNoteRow, PlatformLimitRow } from "@/lib/metrics/rpc-schemas";
-import type { ProductMetrics } from "@/lib/metrics/types";
+import type { MetricResult, ProductMetrics } from "@/lib/metrics/types";
+
+export interface UncheckedCheck {
+  check: "Emptied notes" | "Platform limits";
+  /** The metric's error message, or why it is unavailable. */
+  reason: string;
+}
 
 export interface NeedsAttention {
   /** Notes a single save emptied in the window. */
@@ -7,9 +13,15 @@ export interface NeedsAttention {
   /** Platform limits at `warn` or `critical`, worst first. */
   limits: PlatformLimitRow[];
   /** Checks that couldn't run, so "nothing needs attention" can't be claimed for them. */
-  unchecked: string[];
+  unchecked: UncheckedCheck[];
   /** True only when every check ran and found nothing. */
   isClear: boolean;
+}
+
+const UNAVAILABLE_REASON = "the function isn't on this database";
+
+function reasonOf(result: MetricResult<unknown>): string {
+  return result.status === "error" ? result.message : UNAVAILABLE_REASON;
 }
 
 const LEVEL_RANK: Record<PlatformLimitRow["level"], number> = { critical: 0, warn: 1, ok: 2 };
@@ -18,9 +30,11 @@ const LEVEL_RANK: Record<PlatformLimitRow["level"], number> = { critical: 0, war
 export function deriveNeedsAttention(
   metrics: Pick<ProductMetrics, "emptiedNotes" | "platformLimits">,
 ): NeedsAttention {
-  const unchecked: string[] = [];
+  const unchecked: UncheckedCheck[] = [];
   const emptiedNotes = metrics.emptiedNotes.status === "ok" ? metrics.emptiedNotes.data : [];
-  if (metrics.emptiedNotes.status !== "ok") unchecked.push("Emptied notes");
+  if (metrics.emptiedNotes.status !== "ok") {
+    unchecked.push({ check: "Emptied notes", reason: reasonOf(metrics.emptiedNotes) });
+  }
 
   const limits =
     metrics.platformLimits.status === "ok"
@@ -28,7 +42,9 @@ export function deriveNeedsAttention(
           .filter((row) => row.level !== "ok")
           .sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || b.pct - a.pct)
       : [];
-  if (metrics.platformLimits.status !== "ok") unchecked.push("Platform limits");
+  if (metrics.platformLimits.status !== "ok") {
+    unchecked.push({ check: "Platform limits", reason: reasonOf(metrics.platformLimits) });
+  }
 
   return {
     emptiedNotes,

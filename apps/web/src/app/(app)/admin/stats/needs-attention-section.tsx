@@ -61,9 +61,13 @@ export function NeedsAttentionSection({
         </ul>
       ) : null}
       {unchecked.length > 0 ? (
-        <p className="text-error-text text-sm" role="alert">
-          Couldn&apos;t check: {unchecked.join(", ")}. See the sections below.
-        </p>
+        <ul className="text-error-text space-y-1 text-sm" role="alert">
+          {unchecked.map((u) => (
+            <li key={u.check}>
+              Couldn&apos;t check {u.check.toLowerCase()}: {u.reason}
+            </li>
+          ))}
+        </ul>
       ) : null}
     </MetricsSection>
   );

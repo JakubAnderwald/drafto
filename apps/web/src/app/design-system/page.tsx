@@ -571,6 +571,15 @@ export default function DesignSystemPage() {
             </Card>
           ))}
         </div>
+        <div className="mt-6 max-w-sm">
+          <Card tone="warning">
+            <CardBody>
+              <p className="text-fg text-sm">
+                Warning tone — flags something that needs attention.
+              </p>
+            </CardBody>
+          </Card>
+        </div>
       </Section>
 
       <Section title="Skeleton">

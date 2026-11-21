@@ -30,9 +30,10 @@ export function MetricsTable({ label, columns, rows, emptyText = "No data." }: M
         <caption className="sr-only">{label}</caption>
         <thead>
           <tr className="border-border border-b">
-            {columns.map((col) => (
+            {columns.map((col, i) => (
               <th
-                key={col.header}
+                // Headers can repeat (a client tag equal to a fixed header); position is the identity.
+                key={i}
                 scope="col"
                 className={cn(
                   "text-fg-muted px-2 py-1.5 font-medium whitespace-nowrap",
@@ -49,7 +50,7 @@ export function MetricsTable({ label, columns, rows, emptyText = "No data." }: M
             <tr key={row.key} className="border-border border-b last:border-b-0">
               {row.cells.map((cell, i) => (
                 <td
-                  key={columns[i]?.header ?? i}
+                  key={i}
                   className={cn(
                     "text-fg px-2 py-1.5 whitespace-nowrap",
                     columns[i]?.numeric ? "text-right tabular-nums" : "text-left",

@@ -1,8 +1,7 @@
 import type { ReactNode } from "react";
-import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { cn } from "@/lib/cn";
+import { Card, CardBody, CardHeader, type CardTone } from "@/components/ui/card";
 
-export type MetricsSectionTone = "default" | "warning";
+export type MetricsSectionTone = CardTone;
 
 export interface MetricsSectionProps {
   /** Stable id: the heading's id is `metrics-<id>`, the test id `metrics-section-<id>`. */
@@ -25,7 +24,7 @@ export function MetricsSection({
   const headingId = `metrics-${id}`;
   return (
     <section aria-labelledby={headingId} data-testid={`metrics-section-${id}`}>
-      <Card className={cn(tone === "warning" && "bg-warning-bg")}>
+      <Card tone={tone}>
         <CardHeader className="pb-2">
           <h2 id={headingId} className="text-fg text-lg font-semibold">
             {title}
