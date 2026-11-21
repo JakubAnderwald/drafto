@@ -751,9 +751,16 @@ describe("dispatchLanes (mocked spawn — no real Fastlane)", () => {
   });
 
   it("scopes artefacts per ATTEMPT, so a retry never shares a path", () => {
-    const a1 = laneLogPath({ id: "mobile" }, { logDir: "/tmp/x", logKey: "463-abc123-a1" });
-    const a2 = laneLogPath({ id: "mobile" }, { logDir: "/tmp/x", logKey: "463-abc123-a2" });
-    assert.notEqual(a1, a2, "a retry of the SAME commit must not reuse the path");
+    // laneLogPath creates logDir, so use a fresh one: a fixed /tmp path breaks on
+    // any machine where that path happens to be a file.
+    const logDir = mkdtempSync(join(tmpdir(), "drafto-lanelog-"));
+    try {
+      const a1 = laneLogPath({ id: "mobile" }, { logDir, logKey: "463-abc123-a1" });
+      const a2 = laneLogPath({ id: "mobile" }, { logDir, logKey: "463-abc123-a2" });
+      assert.notEqual(a1, a2, "a retry of the SAME commit must not reuse the path");
+    } finally {
+      rmSync(logDir, { recursive: true, force: true });
+    }
   });
 
   it("laneShellScript captures $? immediately after the lane command", () => {
