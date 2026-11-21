@@ -19,7 +19,7 @@ export function NeedsAttentionSection({
     <MetricsSection
       id="needs-attention"
       title="Needs attention"
-      caption={`Is anything broken or running out? Notes one save emptied in the last ${emptiedNotesDays} days, and platform limits from 70%.`}
+      caption={`Is Drafto losing people's work, or close to a free-tier limit? Notes one save emptied in the last ${emptiedNotesDays} days, and platform limits from 70%.`}
       tone={isClear ? "default" : "warning"}
     >
       {isClear ? <p className="text-fg text-sm">Nothing needs attention</p> : null}

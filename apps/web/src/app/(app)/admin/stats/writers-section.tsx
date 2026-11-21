@@ -11,7 +11,9 @@ export function WritersSection({ writers }: { writers: MetricResult<WritersRow[]
     <MetricsSection
       id="writers"
       title="Writers"
-      caption="How many people write each week, and from which client? A user writing from two clients counts once in Writers and under each client."
+      caption={
+        "Where should engineering time go? Writers per week by client; a user writing from two clients counts once in Writers and under each client."
+      }
     >
       <MetricResultView result={writers}>
         {(rows) => {

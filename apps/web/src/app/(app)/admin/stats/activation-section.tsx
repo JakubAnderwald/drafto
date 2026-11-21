@@ -10,7 +10,9 @@ export function ActivationSection({ activation }: { activation: MetricResult<Act
     <MetricsSection
       id="activation"
       title="Activation"
-      caption="Do new sign-ups get to real use? First value: a 50+ character version within 14 days of sign-up. Activated: such versions on 2+ days."
+      caption={
+        "Do new users reach the point where Drafto is useful? First value: a 50+ character version within 14 days of sign-up. Activated: such versions on 2+ days."
+      }
     >
       <MetricResultView result={activation}>
         {(rows) => (

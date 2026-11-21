@@ -20,7 +20,11 @@ export default async function AdminStatsPage() {
   const needsAttention = deriveNeedsAttention(metrics);
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-8" data-testid="admin-stats">
+    // The app shell is a fixed-height row that clips overflow, so the page scrolls itself.
+    <div
+      className="mx-auto h-full max-w-4xl space-y-6 overflow-y-auto p-8"
+      data-testid="admin-stats"
+    >
       <header className="space-y-1">
         <div className="flex items-center justify-between gap-4">
           <h1 className="text-fg text-2xl font-bold">Product metrics</h1>

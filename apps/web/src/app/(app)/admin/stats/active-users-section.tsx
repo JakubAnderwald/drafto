@@ -27,7 +27,9 @@ export function ActiveUsersSection({ activeUsers, retention }: ActiveUsersSectio
     <MetricsSection
       id="active-users"
       title="Active users and retention"
-      caption="How many people open Drafto each week, and do activated users come back 7–13 and 28–34 days after signing up?"
+      caption={
+        "Is Drafto part of anyone's week, for reading or writing? And do people who start actually stay: activated users back 7–13 and 28–34 days after sign-up."
+      }
     >
       <MetricResultView result={activeUsers} unavailableText={USAGE_TRACKING_PENDING}>
         {(rows) => {

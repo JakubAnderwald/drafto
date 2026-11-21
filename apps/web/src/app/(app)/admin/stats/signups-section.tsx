@@ -10,7 +10,7 @@ export function SignupsSection({ signups }: { signups: MetricResult<SignupsRow[]
     <MetricsSection
       id="signups"
       title="Sign-ups"
-      caption="How many accounts are created each week, and with which sign-in method?"
+      caption="Is the store listing or website bringing people in?"
     >
       <MetricResultView result={signups}>
         {(rows) => {

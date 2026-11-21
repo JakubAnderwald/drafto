@@ -21,7 +21,9 @@ export function PlatformLimitsSection({ platformLimits, hostedUsage }: PlatformL
     <MetricsSection
       id="platform-limits"
       title="Platform limits"
-      caption="How close is the project to the Supabase Free plan quotas? Warning from 70%, critical from 85%."
+      caption={
+        "How close is Drafto to a free-tier limit? The free plans switch a feature off rather than bill, so: warning from 70%, critical from 85%."
+      }
     >
       <MetricResultView result={platformLimits}>
         {(rows) =>

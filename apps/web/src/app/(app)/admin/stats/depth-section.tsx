@@ -15,7 +15,9 @@ export function DepthSection({ depth }: { depth: MetricResult<DepthMetrics | nul
     <MetricsSection
       id="depth"
       title="Depth"
-      caption="How deeply do the last 30 days' writers use Drafto?"
+      caption={
+        "Are people moving real work in, and which features earn their maintenance cost? Over the last 30 days' writers."
+      }
     >
       <MetricResultView result={depth}>
         {(d) =>

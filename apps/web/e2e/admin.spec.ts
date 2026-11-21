@@ -85,5 +85,11 @@ test.describe("Admin product metrics", () => {
       timeout: 15000,
     });
     await expect(page.getByRole("heading", { level: 2 })).toHaveText(STATS_SECTIONS);
+
+    // The page scrolls inside the app shell, which clips overflow: the last section must be
+    // reachable, not cut off below the fold.
+    const last = page.getByRole("heading", { level: 2, name: STATS_SECTIONS.at(-1) });
+    await last.scrollIntoViewIfNeeded();
+    await expect(last).toBeInViewport();
   });
 });
