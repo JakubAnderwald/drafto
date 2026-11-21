@@ -429,6 +429,13 @@ cd apps/mobile && bundle exec fastlane ios promote phased_release:false    # all
 > would) — but a bare version has no description or screenshots, so create and fill
 > the version page in App Store Connect first.
 
+> **An update needs "What's New" first.** The lane sets no metadata, and Apple
+> refuses to submit an update whose version has no _What's New in This Version_
+> text: the run selects the build and then stops with `appStoreVersions … is not
+in valid state` and `You must provide a value for the attribute 'whatsNew'`.
+> Nothing has been submitted then. Fill it in on the version page (or through the
+> App Store Connect API) and re-run. A `submit:false` dry run doesn't catch it.
+
 > **`submit:false` is a dry run, not a way to stage a build.** `deliver` uses
 > `build_number` only when it submits (`Deliver::SubmitForReview#select_build` is
 > the only caller of `select_build`), so with `submit:false` the lane resolves and
@@ -581,11 +588,12 @@ options, not in the App Store Connect UI.
 
 Two rejection risks the repo cannot fix for you:
 
-- **Guideline 2.1 — the reviewer can't sign in.** New Drafto accounts land on
-  _waiting for approval_, so a reviewer who signs up sees an empty app. Create a
-  reviewer account on prod, approve it in `/admin`, seed a notebook and a few notes,
-  and put the credentials **and** that explanation in App Review Information →
-  Notes.
+- **Guideline 2.1 — the reviewer can't sign in.** A reviewer who signs up gets an
+  empty app, and since open signup ([ADR-0094](../adr/0094-open-signup-with-admin-suspend.md))
+  it is active straight away. Keep a reviewer account on prod with a notebook and a few
+  notes, and put its credentials in Sign-In Information. Keep App Review Information →
+  Notes in step with the app: they carry over to each new version, so text about an
+  earlier flow (such as the old "Awaiting Approval" screen) stays there until edited.
 - **Guideline 5.1.1(v) — no in-app account deletion.** Implemented in
   [#639](https://github.com/JakubAnderwald/drafto/pull/639), but what matters is
   that the _build you promote_ contains it. Check the version you are submitting,
