@@ -1158,7 +1158,7 @@ The log (`logs/factory/factory-agent-browser-<date>.log` for an In Test run, `lo
 - a verify run: `logs/factory/browser/issue-<n>-<sha12>-verify-<timestamp>/upload.json`, run id `verify-<timestamp>`;
 - a macOS run: `<run-dir>/upload.json`, run id `macos-<timestamp>`, with `posted.json` beside it once the comment is posted.
 
-A published record is `{ok: true, issue, sha, runId, ref, commit, images: [{n, url, local, name}], overflow: [{n, path, why}]}`. `n` is the runner's "screenshot n", and `overflow` is what was kept on the Mac mini. A refusal is `{ok: false, reason}`.
+A published record is `{ok: true, issue, sha, runId, ref, commit, images: [{n, url, local, name}], overflow: [{n, path, why}]}`. `n` is the runner's "screenshot n", and `overflow` is what was kept on the Mac mini. A refusal is `{ok: false, reason}`. A refusal for a run that already published (the switch turned off or the selftest record moved aside before a retry) keeps that record's `ref`, `commit` and `images` beside `ok: false`, so takedown still finds them. The report doesn't embed them, and a retry with the gates open reuses the commit on the ref.
 
 ### Why nothing was published
 

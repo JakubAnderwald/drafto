@@ -621,7 +621,16 @@ export function uploadRun({
     const gate = gates();
     const prior = readJson(out);
     if (gate) {
-      result = { ok: false, reason: gate };
+      // A run that already published keeps its record's ref, commit and
+      // URLs, so takedown can still find them; ok: false stops a render from
+      // embedding them while the gate is closed. A later retry with the gates
+      // open finds the ref again (priorUpload).
+      if (isRunRecord(prior, { issue, sha, runId })) {
+        const { reused: _reused, ...published } = prior;
+        result = { ...published, ok: false, reason: gate };
+      } else {
+        result = { ok: false, reason: gate };
+      }
     } else if (isRunRecord(prior, { issue, sha, runId })) {
       // Already published by an earlier attempt: nothing is pushed again.
       return { ...prior, reused: true };

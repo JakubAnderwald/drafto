@@ -33,7 +33,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { evidenceSection, localFooter } from "../lib/evidence-embed.mjs";
+import { evidenceSection, localFooter, validImages } from "../lib/evidence-embed.mjs";
 import { CAP_WHY, MAX_IMAGES, OFF_ORIGIN_WHY } from "../lib/evidence-images.mjs";
 import {
   EVIDENCE_REF_PREFIX,
@@ -830,13 +830,27 @@ describe("upload refuses, and pushes nothing, until every gate is open", () => {
     });
   }
 
-  it("refuses a run it published before once the switch is off, and says so in upload.json", async () => {
+  it("refuses a run it published before once the switch is off, and keeps what it published in upload.json", async () => {
     const fx = uploadFixture();
     assert.equal((await upload(fx)).ok, true);
+    const published = readJsonFile(fx.out);
+    assert.equal(published.ok, true);
     const pushes = fx.pushes();
     const summary = await upload(fx, {}, { env: { [SWITCH_ENV]: "0" } });
+    assert.equal(summary.ok, false);
     assert.equal(summary.reason, "off");
-    assert.deepEqual(readJsonFile(fx.out), { ok: false, reason: "off" });
+    assert.equal(summary.reused, false);
+    const { reused: _reused, ...kept } = published;
+    // The ref, commit and URLs stay for takedown; ok: false keeps a render
+    // from embedding them while the switch is off.
+    assert.deepEqual(readJsonFile(fx.out), { ...kept, ok: false, reason: "off" });
+    assert.deepEqual(validImages(readJsonFile(fx.out)), []);
+    assert.equal(fx.pushes(), pushes);
+    // Switched back on, a retry reuses the commit on the run's ref.
+    const again = await upload(fx);
+    assert.equal(again.ok, true);
+    assert.equal(again.reused, true);
+    assert.equal(again.commit, published.commit);
     assert.equal(fx.pushes(), pushes);
   });
 
