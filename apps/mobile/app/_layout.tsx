@@ -16,6 +16,7 @@ import {
   offlineScreenLayout,
 } from "@/components/navigation/offline-screen-layout";
 import { ToastProvider } from "@/components/toast";
+import { ModalOverlayHost } from "@/components/ui/modal-overlay";
 import { isAboveModal } from "@/lib/sheet-presentation";
 import { colors } from "@/theme/tokens";
 import { markStartupBegin, markStartupEnd } from "@/lib/performance";
@@ -213,9 +214,15 @@ export default function RootLayout() {
         <AuthProvider>
           <ToastProvider>
             <DatabaseProvider>
-              <RouteGuard>
-                <ThemedStack />
-              </RouteGuard>
+              {/* Where dialogs draw on Android: above the navigator, in the app's own
+                  window, so the system bars keep the in-app theme (ADR-0092). Inside
+                  every app-wide provider, so a dialog reads the same contexts as in an
+                  iOS Modal. */}
+              <ModalOverlayHost>
+                <RouteGuard>
+                  <ThemedStack />
+                </RouteGuard>
+              </ModalOverlayHost>
             </DatabaseProvider>
           </ToastProvider>
         </AuthProvider>

@@ -115,16 +115,17 @@ bash apps/mobile/e2e/run-nested-lists-e2e.sh
 
 ### Android-only
 
-| Flow                                         | Description                                                                        |
-| -------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `android-all.yaml`                           | Combined flow: password toggle + login + notebooks + notes + nav + sign-out cancel |
-| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect                            |
-| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification                                |
-| `android-only/07-auth-callback-link.yaml`    | Apple callback link is claimed, warm and cold, not routed                          |
-| `android-only/08-fab-above-nav-bar.yaml`     | Notebook "+" above the 3-button nav bar (M-01, host check)                         |
-| `android-only/09-offline-image.yaml`         | Attached images show offline, cold start included (M-02, host check)               |
-| `android-only/10-offline-banner-header.yaml` | Offline banner below the header; Back works offline (M-03, host check)             |
-| `android-only/11-dark-nav-bar.yaml`          | Nav bar follows the in-app theme, cases A/B/C (M-04, host check)                   |
+| Flow                                         | Description                                                                          |
+| -------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `android-all.yaml`                           | Combined flow: password toggle + login + notebooks + notes + nav + sign-out cancel   |
+| `android-only/05-offline-mode.yaml`          | Airplane mode, offline note creation, sync on reconnect                              |
+| `android-only/06-offline-notebook-sync.yaml` | Offline notebook + note creation, sync verification                                  |
+| `android-only/07-auth-callback-link.yaml`    | Apple callback link is claimed, warm and cold, not routed                            |
+| `android-only/08-fab-above-nav-bar.yaml`     | Notebook "+" above the 3-button nav bar (M-01, host check)                           |
+| `android-only/09-offline-image.yaml`         | Attached images show offline, cold start included (M-02, host check)                 |
+| `android-only/10-offline-banner-header.yaml` | Offline banner below the header; Back works offline (M-03, host check)               |
+| `android-only/11-dark-nav-bar.yaml`          | Nav bar follows the in-app theme, cases A/B/C (M-04, host check)                     |
+| `android-only/12-delete-dialog-nav-bar.yaml` | Nav bar keeps the in-app theme with the delete-account dialog open, cases D/E (#862) |
 
 ### iOS-only
 

@@ -1,0 +1,39 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-10668
+---
+# Flow 12: the navigation bar keeps the in-app theme while the delete-account dialog is open (#862)
+# Pass -e QA_THEME=dark|light -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=...
+#
+# The bug: the dialog was a React Native Modal, which Android shows in a window of its
+# own. React Native gives that window the OS theme's navigation-bar appearance, so with
+# the OS in Light and Drafto in Dark the 3-button bar turned light while the dialog was
+# open (ADR-0087's follow-up, ADR-0092's fix). Like flow 11, this flow only sets the
+# scene: the QA 10668 runner (`run-qa-10668-e2e.sh`) checks the focused window's `apr=`
+# flags and the bar's pixels after it, cases D (OS Light, app Dark) and E (OS Dark, app
+# Light). With the old Modal the focused window is the dialog's.
+#
+# Signs in and picks the theme through flow 11 (QA_THEME reaches it from -e), then opens
+# the dialog from Settings and leaves it open with the keyboard down: the IME would
+# change the navigation bar. Never types or confirms anything, so it deletes nothing.
+
+- runFlow: 11-dark-nav-bar.yaml
+
+# --- Open the delete-account dialog ---
+# iOS labels the tab "Settings, tab, 3 of 3"; this flow is Android-only.
+- tapOn: "Settings"
+- scrollUntilVisible:
+    element:
+      id: "delete-account-row"
+    direction: DOWN
+    timeout: 10000
+- tapOn:
+    id: "delete-account-row"
+# Wait on the dialog's input, not its title: "Delete account?" as a regex also matches
+# the row's own label behind the dialog (see 07-delete-account.yaml).
+- extendedWaitUntil:
+    visible:
+      id: "delete-account-input"
+    timeout: 10000
+- waitForAnimationToEnd
+- takeScreenshot: delete-dialog-nav-bar-${output.qaTheme}
