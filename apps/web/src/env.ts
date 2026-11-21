@@ -12,6 +12,9 @@ export const env = createEnv({
     APPROVAL_LINK_SECRET: z.string().min(32).optional(),
     APP_URL: z.string().url(),
     WEBHOOK_SECRET: z.string().min(16).optional(),
+    // Bearer secret of POST /api/cron/hosted-usage, the weekly Vercel / Supabase usage readout
+    // from the Mac mini (ADR 0091). Without it the route answers 500 and nothing is stored.
+    HOSTED_USAGE_SECRET: z.string().min(32).optional(),
     // Sign in with Apple key, used to revoke a user's Apple tokens when they delete their
     // account. Revocation runs only when all three are set. The private key is the `.p8` PEM;
     // literal "\n" escapes are accepted too (see src/lib/apple/config.ts).
@@ -48,6 +51,7 @@ export const env = createEnv({
     APPROVAL_LINK_SECRET: process.env.APPROVAL_LINK_SECRET,
     APP_URL: process.env.APP_URL,
     WEBHOOK_SECRET: process.env.WEBHOOK_SECRET,
+    HOSTED_USAGE_SECRET: process.env.HOSTED_USAGE_SECRET,
     APPLE_TEAM_ID: process.env.APPLE_TEAM_ID,
     APPLE_SIGN_IN_KEY_ID: process.env.APPLE_SIGN_IN_KEY_ID,
     APPLE_SIGN_IN_PRIVATE_KEY: process.env.APPLE_SIGN_IN_PRIVATE_KEY,

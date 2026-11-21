@@ -68,3 +68,22 @@ export function columnsFor(
   const rest = [...seen].filter((k) => !order.includes(k)).sort((a, b) => a.localeCompare(b));
   return [...order.filter((k) => always || seen.has(k)), ...rest];
 }
+
+/** A hosting-usage amount in its dashboard unit: "1.42 GB", "195,000", "2h 17m". */
+export function formatHostedAmount(value: number, unit: "GB" | "count" | "hours"): string {
+  if (!Number.isFinite(value)) return NOT_AVAILABLE;
+  if (unit === "GB") return `${decimal(value, 2)} GB`;
+  if (unit === "count") return decimal(value, 0);
+  const minutes = Math.round(value * 60);
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/** How long before `now` something happened: "today", "1 day ago", "9 days ago". */
+export function formatAge(iso: string, now: string): string {
+  const days = Math.floor((Date.parse(now) - Date.parse(iso)) / 86_400_000);
+  if (!Number.isFinite(days)) return NOT_AVAILABLE;
+  if (days <= 0) return "today";
+  return days === 1 ? "1 day ago" : `${days} days ago`;
+}

@@ -3,6 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-11-12
 - **Authors**: Jakub Anderwald (with Claude Code)
+- **Amended by**: [0091](./0091-weekly-hosting-usage-readout.md) (`metrics_hosted_usage()`, fed by a weekly dashboard readout)
 
 ## Context
 

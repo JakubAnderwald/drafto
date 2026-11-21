@@ -1,10 +1,11 @@
 import { Badge } from "@/components/ui/badge";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { formatBytes, formatPct } from "@/lib/metrics/format";
-import type { PlatformLimitRow } from "@/lib/metrics/rpc-schemas";
+import type { HostedUsageRow, PlatformLimitRow } from "@/lib/metrics/rpc-schemas";
 import type { HostedUsageLink, MetricResult } from "@/lib/metrics/types";
 import { MetricsSection } from "@/app/(app)/admin/stats/metrics-section";
 import { MetricResultView } from "@/app/(app)/admin/stats/metric-result-view";
+import { HostedUsageList } from "@/app/(app)/admin/stats/hosted-usage-list";
 import {
   LIMIT_LEVEL_BADGE,
   LIMIT_LEVEL_TONE,
@@ -13,10 +14,18 @@ import {
 
 export interface PlatformLimitsSectionProps {
   platformLimits: MetricResult<PlatformLimitRow[]>;
+  hostedReadings: MetricResult<HostedUsageRow[]>;
   hostedUsage: HostedUsageLink[];
+  /** The page's generated-at time. */
+  now: string;
 }
 
-export function PlatformLimitsSection({ platformLimits, hostedUsage }: PlatformLimitsSectionProps) {
+export function PlatformLimitsSection({
+  platformLimits,
+  hostedReadings,
+  hostedUsage,
+  now,
+}: PlatformLimitsSectionProps) {
   return (
     <MetricsSection
       id="platform-limits"
@@ -55,6 +64,9 @@ export function PlatformLimitsSection({ platformLimits, hostedUsage }: PlatformL
           )
         }
       </MetricResultView>
+      <div className="border-border border-t pt-3">
+        <HostedUsageList readings={hostedReadings} now={now} />
+      </div>
       <ul className="border-border space-y-1 border-t pt-3 text-sm">
         {hostedUsage.map((link) => (
           <li key={link.provider} className="text-fg">

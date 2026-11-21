@@ -3,6 +3,7 @@ import type {
   ActiveUsersRow,
   DepthRow,
   EmptiedNoteRow,
+  HostedUsageRow,
   PlatformLimitRow,
   RetentionRow,
   SignupsRow,
@@ -79,5 +80,8 @@ export interface ProductMetrics {
   activeUsers: MetricResult<ActiveUsersRow[]>;
   /** Newest cohort first. */
   retention: MetricResult<RetentionRow[]>;
+  /** The newest weekly dashboard reading per Vercel / Supabase resource (ADR 0091). */
+  hostedReadings: MetricResult<HostedUsageRow[]>;
+  /** Links to the providers' usage pages: the source of the readings, and the fallback. */
   hostedUsage: HostedUsageLink[];
 }

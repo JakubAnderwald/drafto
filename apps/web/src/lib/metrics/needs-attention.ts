@@ -1,8 +1,8 @@
-import type { EmptiedNoteRow, PlatformLimitRow } from "@/lib/metrics/rpc-schemas";
+import type { EmptiedNoteRow, HostedUsageRow, PlatformLimitRow } from "@/lib/metrics/rpc-schemas";
 import type { MetricResult, ProductMetrics } from "@/lib/metrics/types";
 
 export interface UncheckedCheck {
-  check: "Emptied notes" | "Platform limits";
+  check: "Emptied notes" | "Platform limits" | "Hosting usage";
   /** The metric's error message, or why it is unavailable. */
   reason: string;
 }
@@ -12,6 +12,10 @@ export interface NeedsAttention {
   emptiedNotes: EmptiedNoteRow[];
   /** Platform limits at `warn` or `critical`, worst first. */
   limits: PlatformLimitRow[];
+  /** Vercel / Supabase readings at `warn` or `critical`, worst first (ADR 0091). */
+  hostedLimits: HostedUsageRow[];
+  /** Readings more than 8 days old: the weekly readout hasn't run. */
+  staleReadings: HostedUsageRow[];
   /** Checks that couldn't run, so "nothing needs attention" can't be claimed for them. */
   unchecked: UncheckedCheck[];
   /** True only when every check ran and found nothing. */
@@ -28,7 +32,7 @@ const LEVEL_RANK: Record<PlatformLimitRow["level"], number> = { critical: 0, war
 
 /** What the page's first section, and the Monday email, flag. */
 export function deriveNeedsAttention(
-  metrics: Pick<ProductMetrics, "emptiedNotes" | "platformLimits">,
+  metrics: Pick<ProductMetrics, "emptiedNotes" | "platformLimits" | "hostedReadings">,
 ): NeedsAttention {
   const unchecked: UncheckedCheck[] = [];
   const emptiedNotes = metrics.emptiedNotes.status === "ok" ? metrics.emptiedNotes.data : [];
@@ -46,10 +50,28 @@ export function deriveNeedsAttention(
     unchecked.push({ check: "Platform limits", reason: reasonOf(metrics.platformLimits) });
   }
 
+  // A readout never set up (the function missing on this database) isn't flagged: the page
+  // links to the usage pages instead. A failing one is.
+  const readings = metrics.hostedReadings.status === "ok" ? metrics.hostedReadings.data : [];
+  if (metrics.hostedReadings.status === "error") {
+    unchecked.push({ check: "Hosting usage", reason: metrics.hostedReadings.message });
+  }
+  const hostedLimits = readings
+    .filter((row) => row.level !== "ok")
+    .sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || b.pct - a.pct);
+  const staleReadings = readings.filter((row) => row.stale);
+
   return {
     emptiedNotes,
     limits,
+    hostedLimits,
+    staleReadings,
     unchecked,
-    isClear: unchecked.length === 0 && emptiedNotes.length === 0 && limits.length === 0,
+    isClear:
+      unchecked.length === 0 &&
+      emptiedNotes.length === 0 &&
+      limits.length === 0 &&
+      hostedLimits.length === 0 &&
+      staleReadings.length === 0,
   };
 }

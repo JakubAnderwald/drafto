@@ -10,6 +10,9 @@
 // metrics_cohort_activation: every activation case below runs against that
 // definition. Its own functions are tested in usage-daily.test.mjs.
 //
+// The hosting-usage migration (20261121000001, ADR 0091) runs last: it reads
+// only its own table, and metrics_hosted_usage is tested at the end of this file.
+//
 // The stand-ins carry only the columns the functions read, with the grants the
 // real projects give the API roles (20261020000001_explicit_data_api_grants.sql,
 // and Supabase's own on storage.objects). auth.users gets no grant here, so the
@@ -34,6 +37,7 @@ const MIGRATIONS = [
   "20261112000001_note_text_chars.sql",
   "20261112000002_product_metrics.sql",
   "20261113000003_usage_daily.sql",
+  "20261121000001_hosted_usage_snapshots.sql",
 ].map((f) => path.join(REPO_ROOT, "supabase", "migrations", f));
 
 const STUB_SQL = `
@@ -460,6 +464,7 @@ describe("product metrics: excluded accounts, sign-ups, activation and writers (
       "metrics_cohort_activation(int)",
       "metrics_active_users(int)",
       "metrics_retention(int)",
+      "metrics_hosted_usage()",
     ];
     // The activity-days writers (20261113000003): SECURITY DEFINER, since
     // neither caller may write usage_daily itself. record_activity is for
@@ -542,6 +547,8 @@ describe("product metrics: excluded accounts, sign-ups, activation and writers (
             "select * from public.metrics_signups(1)",
             "select * from public.metrics_active_users(1)",
             "select * from public.metrics_retention(1)",
+            "select * from public.metrics_hosted_usage()",
+            "select * from public.hosted_usage_snapshots",
             "select public.note_text_chars('{}'::jsonb)",
             "select * from public.metrics_excluded_users",
           ]) {
@@ -878,5 +885,111 @@ describe("product metrics: metrics_platform_limits (PGlite)", () => {
     const { storage } = await limits();
     assert.equal(storage.level, "critical");
     assert.equal(storage.pct, 85);
+  });
+});
+
+describe("product metrics: metrics_hosted_usage (PGlite)", () => {
+  let db;
+
+  before(async () => {
+    db = await freshDb();
+  });
+
+  after(async () => {
+    await db?.close();
+  });
+
+  const record = (resource, used, ago = "0 days") =>
+    db.query(
+      `insert into public.hosted_usage_snapshots (resource, used, period_from, period_to, captured_at)
+       values ($1, $2, '2026-10-22', '2026-11-21', now() - $3::interval)`,
+      [resource, used, ago],
+    );
+
+  async function usage() {
+    const rows = await asServiceRole(db, "select * from public.metrics_hosted_usage()");
+    return rows.map((r) => ({
+      provider: r.provider,
+      resource: r.resource,
+      unit: r.unit,
+      used: Number(r.used),
+      limit: Number(r.limit_value),
+      pct: Number(r.pct),
+      level: r.level,
+      stale: r.stale,
+    }));
+  }
+
+  it("has no row for a resource never read", async () => {
+    assert.deepEqual(await usage(), []);
+  });
+
+  it("reads the newest reading per resource against its limit, with levels", async () => {
+    await record("vercel_active_cpu", 1, "7 days");
+    await record("vercel_active_cpu", 2.2833);
+    await record("vercel_fast_data_transfer", 1.42);
+    await record("vercel_cdn_requests", 700000);
+    await record("supabase_egress", 4.25);
+    const rows = await usage();
+    assert.deepEqual(
+      rows.map((r) => r.resource),
+      ["vercel_fast_data_transfer", "vercel_cdn_requests", "vercel_active_cpu", "supabase_egress"],
+    );
+    const byResource = Object.fromEntries(rows.map((r) => [r.resource, r]));
+    assert.deepEqual(byResource.vercel_active_cpu, {
+      provider: "vercel",
+      resource: "vercel_active_cpu",
+      unit: "hours",
+      used: 2.2833,
+      limit: 4,
+      pct: 57.1,
+      level: "ok",
+      stale: false,
+    });
+    assert.equal(byResource.vercel_fast_data_transfer.unit, "GB");
+    assert.equal(byResource.vercel_fast_data_transfer.limit, 100);
+    assert.equal(byResource.vercel_cdn_requests.level, "warn");
+    assert.equal(byResource.vercel_cdn_requests.pct, 70);
+    assert.equal(byResource.supabase_egress.level, "critical");
+    assert.equal(byResource.supabase_egress.pct, 85);
+  });
+
+  it("marks a reading older than 8 days stale", async () => {
+    await record("supabase_cached_egress", 1, "9 days");
+    const cached = (await usage()).find((r) => r.resource === "supabase_cached_egress");
+    assert.equal(cached.stale, true);
+    assert.equal(cached.pct, 20);
+  });
+
+  it("refuses an unknown resource, a negative reading and a reversed period", async () => {
+    await assert.rejects(record("vercel_builds", 1), (err) => err.code === "23514");
+    await assert.rejects(record("vercel_cdn_requests", -1), (err) => err.code === "23514");
+    await assert.rejects(
+      db.query(
+        `insert into public.hosted_usage_snapshots (resource, used, period_from, period_to)
+         values ('supabase_egress', 1, '2026-11-21', '2026-10-22')`,
+      ),
+      (err) => err.code === "23514",
+    );
+  });
+
+  it("lets only service_role read and insert the table", async () => {
+    const { rows } = await db.query(
+      `select
+         has_table_privilege('anon', 'public.hosted_usage_snapshots', 'select,insert,update,delete') as anon,
+         has_table_privilege('authenticated', 'public.hosted_usage_snapshots', 'select,insert,update,delete') as authenticated,
+         has_table_privilege('service_role', 'public.hosted_usage_snapshots', 'select') as service_select,
+         has_table_privilege('service_role', 'public.hosted_usage_snapshots', 'insert') as service_insert,
+         has_table_privilege('service_role', 'public.hosted_usage_snapshots', 'update,delete') as service_change,
+         (select relrowsecurity from pg_class where oid = 'public.hosted_usage_snapshots'::regclass) as rls`,
+    );
+    assert.deepEqual(rows[0], {
+      anon: false,
+      authenticated: false,
+      service_select: true,
+      service_insert: true,
+      service_change: false,
+      rls: true,
+    });
   });
 });

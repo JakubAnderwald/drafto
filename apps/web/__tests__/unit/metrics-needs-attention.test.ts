@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { deriveNeedsAttention } from "@/lib/metrics/needs-attention";
-import type { PlatformLimitRow } from "@/lib/metrics/rpc-schemas";
+import type { HostedUsageRow, PlatformLimitRow } from "@/lib/metrics/rpc-schemas";
+import type { ProductMetrics } from "@/lib/metrics/types";
 
 const limit = (
   resource: string,
@@ -27,8 +28,16 @@ describe("deriveNeedsAttention", () => {
     const result = deriveNeedsAttention({
       emptiedNotes: { status: "ok", data: [] },
       platformLimits: { status: "ok", data: [limit("database", 20, "ok")] },
+      hostedReadings: { status: "ok", data: [] },
     });
-    expect(result).toEqual({ emptiedNotes: [], limits: [], unchecked: [], isClear: true });
+    expect(result).toEqual({
+      emptiedNotes: [],
+      limits: [],
+      hostedLimits: [],
+      staleReadings: [],
+      unchecked: [],
+      isClear: true,
+    });
   });
 
   it("lists emptied notes and limits at warn or critical, worst first", () => {
@@ -43,6 +52,7 @@ describe("deriveNeedsAttention", () => {
           limit("y", 10, "ok"),
         ],
       },
+      hostedReadings: { status: "ok", data: [] },
     });
     expect(result.emptiedNotes).toEqual([note]);
     expect(result.limits.map((l) => l.resource)).toEqual(["storage", "x", "database"]);
@@ -53,11 +63,77 @@ describe("deriveNeedsAttention", () => {
     const result = deriveNeedsAttention({
       emptiedNotes: { status: "error", message: "boom" },
       platformLimits: { status: "unavailable" },
+      hostedReadings: { status: "unavailable" },
     });
     expect(result.unchecked).toEqual([
       { check: "Emptied notes", reason: "boom" },
       { check: "Platform limits", reason: "the function isn't on this database" },
     ]);
     expect(result.isClear).toBe(false);
+  });
+
+  describe("hosting usage (ADR 0091)", () => {
+    const reading = (
+      resource: string,
+      pct: number,
+      level: HostedUsageRow["level"],
+      stale = false,
+    ): HostedUsageRow => ({
+      provider: "vercel",
+      resource,
+      unit: "hours",
+      used: (4 * pct) / 100,
+      limit_value: 4,
+      pct,
+      level,
+      period_from: null,
+      period_to: null,
+      captured_at: "2026-11-15T19:00:00+00:00",
+      stale,
+    });
+    const base: Pick<ProductMetrics, "emptiedNotes" | "platformLimits"> = {
+      emptiedNotes: { status: "ok", data: [] },
+      platformLimits: { status: "ok", data: [] },
+    };
+
+    it("flags readings at warn or critical, worst first, and stale ones", () => {
+      const result = deriveNeedsAttention({
+        ...base,
+        hostedReadings: {
+          status: "ok",
+          data: [
+            reading("a", 72, "warn"),
+            reading("b", 90, "critical"),
+            reading("c", 10, "ok", true),
+          ],
+        },
+      });
+      expect(result.hostedLimits.map((r) => r.resource)).toEqual(["b", "a"]);
+      expect(result.staleReadings.map((r) => r.resource)).toEqual(["c"]);
+      expect(result.isClear).toBe(false);
+    });
+
+    it("is clear with fresh readings below 70%, and with no readout set up", () => {
+      expect(
+        deriveNeedsAttention({
+          ...base,
+          hostedReadings: { status: "ok", data: [reading("a", 50, "ok")] },
+        }).isClear,
+      ).toBe(true);
+      expect(
+        deriveNeedsAttention({ ...base, hostedReadings: { status: "unavailable" } }).isClear,
+      ).toBe(true);
+    });
+
+    it("lists a failing readout as unchecked", () => {
+      const result = deriveNeedsAttention({
+        ...base,
+        hostedReadings: { status: "error", message: "metrics_hosted_usage failed: timeout" },
+      });
+      expect(result.unchecked).toEqual([
+        { check: "Hosting usage", reason: "metrics_hosted_usage failed: timeout" },
+      ]);
+      expect(result.isClear).toBe(false);
+    });
   });
 });

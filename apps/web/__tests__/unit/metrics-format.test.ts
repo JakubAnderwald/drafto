@@ -8,6 +8,8 @@ import {
   formatNumber,
   formatPct,
   formatUtcTimestamp,
+  formatHostedAmount,
+  formatAge,
 } from "@/lib/metrics/format";
 import { hostedUsageLinks } from "@/lib/metrics/hosted-usage";
 
@@ -85,5 +87,21 @@ describe("metrics format", () => {
     const links = hostedUsageLinks();
     expect(links).toHaveLength(2);
     for (const link of links) expect(link.href).toMatch(/^https:\/\//);
+  });
+
+  it("formats hosting usage in its dashboard unit", () => {
+    expect(formatHostedAmount(1.42, "GB")).toBe("1.42 GB");
+    expect(formatHostedAmount(195000, "count")).toBe("195,000");
+    expect(formatHostedAmount(2.2833, "hours")).toBe("2h 17m");
+    expect(formatHostedAmount(4, "hours")).toBe("4h");
+    expect(formatHostedAmount(Number.NaN, "GB")).toBe("—");
+  });
+
+  it("says how old a reading is", () => {
+    const now = "2026-11-21T08:00:00.000Z";
+    expect(formatAge("2026-11-21T07:00:00.000Z", now)).toBe("today");
+    expect(formatAge("2026-11-20T07:00:00.000Z", now)).toBe("1 day ago");
+    expect(formatAge("2026-11-12T07:00:00.000Z", now)).toBe("9 days ago");
+    expect(formatAge("nope", now)).toBe("—");
   });
 });

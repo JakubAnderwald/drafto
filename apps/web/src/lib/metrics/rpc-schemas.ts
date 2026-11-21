@@ -97,6 +97,24 @@ export const retentionRowSchema = z.object({
   pct_week4: z.number().nullable(),
 });
 
+/**
+ * `metrics_hosted_usage()` (20261121000001_hosted_usage_snapshots.sql, ADR 0091): the newest
+ * dashboard reading per Vercel / Supabase resource against its plan limit.
+ */
+export const hostedUsageRowSchema = z.object({
+  provider: z.enum(["vercel", "supabase"]),
+  resource: z.string(),
+  unit: z.enum(["GB", "count", "hours"]),
+  used: z.number().nonnegative(),
+  limit_value: z.number().positive(),
+  pct: z.number(),
+  level: z.enum(["ok", "warn", "critical"]),
+  period_from: isoDate.nullable(),
+  period_to: isoDate.nullable(),
+  captured_at: z.string(),
+  stale: z.boolean(),
+});
+
 export type SignupsRow = z.infer<typeof signupsRowSchema>;
 export type ActivationRow = z.infer<typeof activationRowSchema>;
 export type WritersRow = z.infer<typeof writersRowSchema>;
@@ -106,3 +124,4 @@ export type PlatformLimitRow = z.infer<typeof platformLimitRowSchema>;
 export type PlatformLimitLevel = PlatformLimitRow["level"];
 export type ActiveUsersRow = z.infer<typeof activeUsersRowSchema>;
 export type RetentionRow = z.infer<typeof retentionRowSchema>;
+export type HostedUsageRow = z.infer<typeof hostedUsageRowSchema>;

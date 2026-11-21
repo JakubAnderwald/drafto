@@ -1,5 +1,11 @@
 import { Badge } from "@/components/ui/badge";
-import { formatBytes, formatPct, formatUtcTimestamp } from "@/lib/metrics/format";
+import {
+  formatBytes,
+  formatHostedAmount,
+  formatPct,
+  formatUtcTimestamp,
+} from "@/lib/metrics/format";
+import { hostedResourceLabel } from "@/lib/metrics/hosted-usage-readout";
 import type { NeedsAttention } from "@/lib/metrics/needs-attention";
 import { MetricsSection } from "@/app/(app)/admin/stats/metrics-section";
 import { MetricsTable } from "@/app/(app)/admin/stats/metrics-table";
@@ -14,7 +20,7 @@ export function NeedsAttentionSection({
   needsAttention,
   emptiedNotesDays,
 }: NeedsAttentionSectionProps) {
-  const { emptiedNotes, limits, unchecked, isClear } = needsAttention;
+  const { emptiedNotes, limits, hostedLimits, staleReadings, unchecked, isClear } = needsAttention;
   return (
     <MetricsSection
       id="needs-attention"
@@ -59,6 +65,24 @@ export function NeedsAttentionSection({
             </li>
           ))}
         </ul>
+      ) : null}
+      {hostedLimits.length > 0 ? (
+        <ul className="space-y-1 text-sm">
+          {hostedLimits.map((h) => (
+            <li key={h.resource} className="text-fg flex items-center gap-2">
+              <Badge variant={LIMIT_LEVEL_BADGE[h.level]}>{h.level}</Badge>
+              {hostedResourceLabel(h.resource)}: {formatHostedAmount(h.used, h.unit)} of{" "}
+              {formatHostedAmount(h.limit_value, h.unit)} ({formatPct(h.pct)})
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {staleReadings.length > 0 ? (
+        <p className="text-fg text-sm">
+          The weekly usage readout is stale (last read{" "}
+          {formatUtcTimestamp(staleReadings[0].captured_at)}
+          ): check the Mac mini&apos;s usage readout, and the usage pages under Platform limits.
+        </p>
       ) : null}
       {unchecked.length > 0 ? (
         <ul className="text-error-text space-y-1 text-sm" role="alert">

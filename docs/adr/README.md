@@ -123,3 +123,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0089](./0089-macos-native-appearance-follows-in-app-theme.md)                 | macOS Native Appearance Follows the In-App Theme                                | Accepted           | 2026-11-21 |
 | [0090](./0090-per-user-note-content-quota.md)                                  | Per-User Note Content Quota in the Database                                     | Accepted           | 2026-11-21 |
 | [0091](./0091-interactive-issue-driving.md)                                    | Interactive Issue Driving Alongside the Factory                                 | Accepted           | 2026-11-21 |
+| [0093](./0093-weekly-hosting-usage-readout.md)                                 | Weekly Hosting-Usage Readout from the Vercel and Supabase Dashboards            | Accepted           | 2026-11-21 |
