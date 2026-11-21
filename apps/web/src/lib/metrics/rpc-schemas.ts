@@ -4,9 +4,9 @@ import { z } from "zod";
  * Row schemas for the service-role metric functions (ADR 0075, ADR 0088), one per
  * function, matching its `returns table (…)` in `supabase/migrations/`. PostgREST
  * returns `date` as "YYYY-MM-DD", `timestamptz` as an ISO string, and `int`,
- * `bigint` and `numeric` as JSON numbers. A column a schema doesn't expect, or a
- * value of the wrong type, fails the parse, and the loader shows that metric as an
- * error instead of a wrong number.
+ * `bigint` and `numeric` as JSON numbers. A missing column or a value of the wrong
+ * type fails the parse, and the loader shows that metric as an error instead of a
+ * wrong number. A column a schema doesn't list is dropped, not an error.
  *
  * None of these rows carries an email, note text, title or notebook name, and the
  * schemas keep it that way: zod drops any key they don't list.

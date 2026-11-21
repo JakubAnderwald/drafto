@@ -24,7 +24,12 @@ export const METRICS_WEEKS = 12;
 export const EMPTIED_NOTES_DAYS = 14;
 
 const DAY_MS = 86_400_000;
-/** PostgREST: the function isn't in the schema cache, i.e. it doesn't exist there. */
+/**
+ * PostgREST: no function matches the name and argument names, so it doesn't exist
+ * on that database. PostgREST also returns this when the function exists but the
+ * arguments don't match its parameters (a renamed parameter, say), so it is still
+ * reported to Sentry, as a warning.
+ */
 const FUNCTION_NOT_FOUND = "PGRST202";
 
 type MetricFunction =
@@ -51,10 +56,10 @@ interface RpcOutcome {
 export type MetricsClient = Pick<SupabaseClient<Database>, "rpc">;
 
 /**
- * The one untyped call. The hand-written `Database` type has
- * `Functions: Record<string, never>`, so the function name and arguments are cast
- * here (as in `api/notes/search/route.ts`), and every caller parses the `unknown`
- * result with zod.
+ * The one untyped call. The shared `Database` type doesn't list the metric
+ * functions (adding them would make this web-only reader a change to the package
+ * every platform imports), so the function name and arguments are cast here (as in
+ * `api/notes/search/route.ts`), and every caller parses the `unknown` result with zod.
  *
  * `get: true` sends `GET /rest/v1/rpc/<fn>`, which PostgREST runs in a read-only
  * transaction. `count: "exact"` lets the caller notice PostgREST's silent
@@ -95,7 +100,13 @@ async function readMetric<Row, T>(
   }
   const { data, error, count } = outcome;
   if (error) {
-    if (error.code === FUNCTION_NOT_FOUND) return { status: "unavailable" };
+    if (error.code === FUNCTION_NOT_FOUND) {
+      Sentry.captureMessage(`${fn}: ${error.message}`, {
+        level: "warning",
+        extra: { where: "product-metrics", fn, code: error.code },
+      });
+      return { status: "unavailable" };
+    }
     const code = error.code ? ` (${error.code})` : "";
     return failure(fn, `${fn} failed${code}: ${error.message}`);
   }
@@ -134,6 +145,11 @@ export function toDepthMetrics(row: DepthRow): DepthMetrics {
 }
 
 export interface LoadProductMetricsOptions {
+  /**
+   * Sets `generatedAt` and the start of the emptied-notes window. The weekly windows
+   * and the emptied-notes 24-hour cutoff come from the database clock, so pass the
+   * current time (the default); this is for tests.
+   */
   now?: Date;
   /** Defaults to the service-role client. Callers must have authorized an admin first. */
   client?: MetricsClient;
@@ -143,6 +159,10 @@ export interface LoadProductMetricsOptions {
  * Reads every product metric (ADR 0075, ADR 0088) through the service role, each
  * on its own and in parallel. Server-only: the caller must have checked the user
  * is an admin (or, for the cron, the cron secret) before calling it.
+ *
+ * A metric's failure is that metric's `error`, never a throw. Building the default
+ * client does throw when `SUPABASE_SERVICE_ROLE_KEY` isn't configured, as on
+ * `/admin`: with no key no metric could load, so the page errors and Sentry gets it.
  */
 export async function loadProductMetrics({
   now = new Date(),

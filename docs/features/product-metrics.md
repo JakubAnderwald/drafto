@@ -186,15 +186,15 @@ pnpm users:stats -- --project prod --keys-txt <file>
 
 `loadProductMetrics({ now?, client? })` in `load-product-metrics.ts` is the web app's one reader of the metric functions. `/admin/stats` calls it, and the Monday email (#823) will too. It is `server-only` and uses the service-role client (`createAdminClient()`), so the caller must already have checked for an admin (or, in the cron, the cron secret). It returns one `ProductMetrics` object (`types.ts`) with `generatedAt`.
 
-- **What it reads.**
+- **What it reads.** The weekly windows and the emptied-notes 24-hour cutoff come from the database clock. `now` only sets `generatedAt` and the start of the emptied-notes window. Without `SUPABASE_SERVICE_ROLE_KEY` the loader throws, as `/admin` does, because no metric could load.
   - The weekly metrics cover the last 12 ISO weeks (`METRICS_WEEKS`), sorted newest first.
   - Emptied notes are read from 14 days before `now` (`EMPTIED_NOTES_DAYS`), newest first.
   - Calls run in parallel, each with `{ get: true, count: "exact" }`. Like the CLI, that is a read-only `GET /rest/v1/rpc/<name>`, and a list shorter than its count (PostgREST's `max_rows` cap) fails.
 - **Each metric is a `MetricResult`**, and is read on its own, so one failure doesn't blank the page:
   - `ok`: the rows parsed.
-  - `unavailable`: PostgREST's `PGRST202`, meaning the function doesn't exist on that database. This isn't reported to Sentry.
+  - `unavailable`: PostgREST's `PGRST202`, meaning no function on that database matches the name and argument names. It goes to Sentry as a warning, because PostgREST returns the same code when a parameter was renamed.
   - `error`: a database error (such as `42501` [below](#if-sign-ups-and-activation-fail-with-permission-denied)), a thrown call, rows that don't parse, or a list cut short. The cause goes to Sentry with `where: "product-metrics"`, and the message, which never contains a key, is shown in that metric's section.
-- **Typed without touching `packages/shared`.** The hand-written `Database` type has no `Functions`, so one helper (`callRpc`) holds the only cast. Every result goes through the zod row schemas in `rpc-schemas.ts`, which match each function's `returns table (…)`. A value of the wrong type fails the parse rather than showing a wrong number. A key a schema doesn't list is dropped, so a column added later can't put new data, such as an email, on the page by accident.
+- **Typed without touching `packages/shared`.** The shared `Database` type doesn't list the metric functions, so one helper (`callRpc`) holds the only cast. Every result goes through the zod row schemas in `rpc-schemas.ts`, which match each function's `returns table (…)`. A value of the wrong type fails the parse rather than showing a wrong number. A key a schema doesn't list is dropped, so a column added later can't put new data, such as an email, on the page by accident.
 - **Depth counts are derived.** `metrics_depth` returns shares as percentages rounded to 0.1 points. The loader adds `count = round(pct × writers / 100)` to each one, which is exact below 1,000 writers, so the page can show "3 of 8 (37.5%)".
 - **`needs-attention.ts`** combines emptied notes with the limits at `warn` / `critical`, worst first. If either of those metrics couldn't be read, it says "nothing needs attention" for neither.
 - **`format.ts`** holds the formatting, which shows every rate with its counts ("1 of 8 (12.5%)", "0 of 0"), binary MB / GB, and "—" for null. The client column order comes from `DRAFTO_CLIENT_TAGS`, plus `untagged` for writers, the same order as the CLI's.

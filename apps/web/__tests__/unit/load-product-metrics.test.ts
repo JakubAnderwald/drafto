@@ -152,6 +152,7 @@ async function load(overrides: Record<string, Outcome | Error> = {}) {
 
 beforeEach(() => {
   captureException.mockReset();
+  captureMessage.mockReset();
   createAdminClientMock.mockReset();
 });
 
@@ -214,7 +215,7 @@ describe("loadProductMetrics", () => {
     expect(metrics.depth).toEqual({ status: "ok", data: null });
   });
 
-  it("marks a missing function (PGRST202) unavailable without reporting it", async () => {
+  it("marks a missing function (PGRST202) unavailable, reported as a warning only", async () => {
     const missing = {
       data: null,
       error: { code: "PGRST202", message: "Could not find the function" },
@@ -224,6 +225,8 @@ describe("loadProductMetrics", () => {
     expect(metrics.retention).toEqual({ status: "unavailable" });
     expect(metrics.signups.status).toBe("ok");
     expect(captureException).not.toHaveBeenCalled();
+    expect(captureMessage).toHaveBeenCalledTimes(2);
+    expect(captureMessage.mock.calls[0][1]).toMatchObject({ level: "warning" });
   });
 
   it("keeps a failing metric to its own section and reports it", async () => {
