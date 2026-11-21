@@ -276,7 +276,12 @@ export async function postReadout({ url, secret, readings, fetchImpl = fetch }) 
     const body = (await res.text().catch(() => "")).split(secret).join("[redacted]").slice(0, 300);
     return { ok: false, status: res.status, error: `HTTP ${res.status} ${body}`.trim() };
   } catch (err) {
-    return { ok: false, status: null, error: String(err?.message ?? err) };
+    const message = String(err?.message ?? err);
+    return {
+      ok: false,
+      status: null,
+      error: message.split(secret).join("[redacted]").slice(0, 300),
+    };
   }
 }
 

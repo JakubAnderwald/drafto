@@ -281,6 +281,16 @@ describe("usage-readout: secret file and posting", () => {
     });
     assert.equal(bad.ok, false);
     assert.equal(bad.error, "HTTP 401 nope [redacted]");
+
+    const thrown = await postReadout({
+      url: "https://drafto.eu/api/cron/hosted-usage",
+      secret: SECRET,
+      readings: [],
+      fetchImpl: async () => {
+        throw new Error(`connect failed for Bearer ${SECRET}`);
+      },
+    });
+    assert.equal(thrown.error, "connect failed for Bearer [redacted]");
   });
 });
 
