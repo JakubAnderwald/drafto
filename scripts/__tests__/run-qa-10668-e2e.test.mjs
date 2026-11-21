@@ -101,10 +101,13 @@ case " \${BROKEN_FLOWS:-} " in *" $(basename "$flow") "*) echo "Unable to launch
 debug="" prev=""
 for arg in "$@"; do [ "$prev" = --debug-output ] && debug="$arg"; prev="$arg"; done
 echo "Input text \${MAESTRO_E2E_TEST_PASSWORD:-}"
+[ -z "\${MAESTRO_E2E_SIGNOUT_PASSWORD:-}" ] || echo "Input text \${MAESTRO_E2E_SIGNOUT_PASSWORD}"
 if [ -n "$debug" ]; then
   mkdir -p "$debug"
   printf '%s' "\${MAESTRO_E2E_TEST_PASSWORD:-}" |
     perl -ne 's/(["\\\\])/\\\\$1/g; print "{\\"inputText\\":\\"$_\\"}\\n"' > "$debug/commands-flow.json"
+  [ -z "\${MAESTRO_E2E_SIGNOUT_PASSWORD:-}" ] || printf '%s' "\${MAESTRO_E2E_SIGNOUT_PASSWORD}" |
+    perl -ne 's/(["\\\\])/\\\\$1/g; print "{\\"inputText\\":\\"$_\\"}\\n"' > "$debug/commands-signout.json"
 fi
 case " \${FAIL_FLOWS:-} " in *" $(basename "$flow") "*) echo "Assert that id: probe is visible FAILED"; exit 1 ;; esac
 if [ -n "\${FAIL_PHASE:-}" ] && [ "$phase" = "$FAIL_PHASE" ]; then echo "Assert that id: probe is visible FAILED"; exit 1; fi
@@ -242,6 +245,16 @@ function run(
     ...env,
   };
   delete childEnv.NET_WATCHDOG_S;
+  // A shell that sourced apps/web/.env.local, or set SIGN_OUT_CONFIRM, must not
+  // reach the runner: each test sets these itself.
+  for (const name of [
+    "SIGN_OUT_CONFIRM",
+    "E2E_SIGNOUT_EMAIL",
+    "E2E_SIGNOUT_PASSWORD",
+    "MAESTRO_E2E_SIGNOUT_PASSWORD",
+  ]) {
+    if (!(name in env)) delete childEnv[name];
+  }
   const result = spawnSync("bash", [runner, ...args, "--out", out], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -275,6 +288,114 @@ describe("run-qa-10668-e2e.sh", () => {
     assert.match(summary, /\| offline-notebook-sync \| passed \|/);
     // Flows other PRs add are skipped until they exist.
     assert.match(summary, /\| fab-above-nav-bar \| skipped \|/);
+  });
+
+  describe("SIGN_OUT_CONFIRM=1: the confirm leg's dedicated account", () => {
+    const SIGNOUT_PASSWORD = "Signout-Pass-0815";
+    function envWith(extra) {
+      const file = path.join(root, `signout-${Math.random().toString(36).slice(2)}.env`);
+      writeFileSync(
+        file,
+        `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:9\nE2E_TEST_EMAIL=e2e@example.com\nE2E_TEST_PASSWORD=${PASSWORD}\n${extra}`,
+      );
+      return file;
+    }
+    const confirmRun = (envFile) =>
+      run(["android", "--only", "11-sign-out"], {
+        runner: FAKE_RUNNER,
+        env: { QA_ENV_FILE: envFile, SIGN_OUT_CONFIRM: "1" },
+      });
+
+    it("refuses without E2E_SIGNOUT_EMAIL / E2E_SIGNOUT_PASSWORD, before any flow runs", () => {
+      const result = confirmRun(envWith(""));
+      assert.equal(result.status, 2, result.stdout + result.stderr);
+      assert.match(result.stderr, /SIGN_OUT_CONFIRM=1 needs E2E_SIGNOUT_EMAIL/);
+      assert.equal(result.logs.maestro, "", "a flow ran");
+    });
+
+    it("refuses an E2E_SIGNOUT_EMAIL that is the shared E2E user, whatever its case", () => {
+      const result = confirmRun(
+        envWith(`E2E_SIGNOUT_EMAIL=E2E@Example.com\nE2E_SIGNOUT_PASSWORD=${SIGNOUT_PASSWORD}\n`),
+      );
+      assert.equal(result.status, 2, result.stdout + result.stderr);
+      assert.match(result.stderr, /E2E_SIGNOUT_EMAIL is the shared E2E user/);
+      assert.equal(result.logs.maestro, "", "a flow ran");
+    });
+
+    it("passes the dedicated account to the confirm leg, its password only in the environment, scrubbed", () => {
+      const result = confirmRun(
+        envWith(
+          `E2E_SIGNOUT_EMAIL=signout@example.com\nE2E_SIGNOUT_PASSWORD=${SIGNOUT_PASSWORD}\n`,
+        ),
+      );
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const confirm = result.logs.maestro
+        .split("\n")
+        .find((line) => line.includes("11-sign-out-confirm.yaml"));
+      assert.ok(confirm, "the sign-out step didn't run");
+      assert.match(confirm, /-e SIGN_OUT_CONFIRM=1 -e E2E_SIGNOUT_EMAIL=signout@example\.com /);
+      assert.ok(!result.logs.maestro.includes(SIGNOUT_PASSWORD), "the password reached argv");
+      const saved = savedText(result.out);
+      assert.ok(
+        saved.includes('{"inputText":"[redacted]"}'),
+        "the debug output was kept, scrubbed",
+      );
+      // The stub types MAESTRO_E2E_SIGNOUT_PASSWORD only when the runner exported it:
+      // two scrubbed inputs in the step's log prove it was handed over, then redacted.
+      const stepLog = readFileSync(path.join(result.out, "sign-out-confirm.maestro.log"), "utf8");
+      assert.equal(stepLog.match(/Input text \[redacted\]/g)?.length, 2, stepLog);
+      assert.ok(!saved.includes(SIGNOUT_PASSWORD), "the sign-out password was saved");
+      assert.ok(!saved.includes(PASSWORD));
+      assert.ok(!result.stdout.includes(SIGNOUT_PASSWORD));
+    });
+
+    it("--before runs the step on the dedicated account without confirming, and skips it without one", () => {
+      // A build without the fix signs out at the first tap, so even the
+      // cancel-only leg would sign the shared user out everywhere.
+      const envFile = envWith(
+        `E2E_SIGNOUT_EMAIL=signout@example.com\nE2E_SIGNOUT_PASSWORD=${SIGNOUT_PASSWORD}\n`,
+      );
+      const missing = run(["android", "--before", "--only", "11-sign-out"], {
+        runner: FAKE_RUNNER,
+        env: { QA_ENV_FILE: envWith("") },
+      });
+      assert.ok(
+        !missing.logs.maestro.includes("11-sign-out-confirm.yaml"),
+        "--before ran the sign-out step on the shared user",
+      );
+      assert.match(missing.summary, /\| sign-out-confirm \| skipped \|/);
+      const result = run(["android", "--before", "--only", "11-sign-out"], {
+        runner: FAKE_RUNNER,
+        env: { QA_ENV_FILE: envFile },
+      });
+      const confirm = result.logs.maestro
+        .split("\n")
+        .find((line) => line.includes("11-sign-out-confirm.yaml"));
+      assert.ok(confirm, "the sign-out step didn't run");
+      assert.match(confirm, /-e E2E_SIGNOUT_EMAIL=signout@example\.com /);
+      assert.ok(!confirm.includes("SIGN_OUT_CONFIRM"), "--before must not confirm");
+    });
+
+    it("scrubs a sign-out password that contains the test password, longest first", () => {
+      const envFile = envWith(
+        `E2E_SIGNOUT_EMAIL=signout@example.com\nE2E_SIGNOUT_PASSWORD=${PASSWORD}-tail\n`,
+      );
+      const result = confirmRun(envFile);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const saved = savedText(result.out);
+      assert.ok(!saved.includes("-tail"), "the sign-out password's tail survived");
+    });
+
+    it("without SIGN_OUT_CONFIRM, needs no sign-out account and passes none", () => {
+      const result = run(["android", "--only", "11-sign-out"], { runner: FAKE_RUNNER });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const confirm = result.logs.maestro
+        .split("\n")
+        .find((line) => line.includes("11-sign-out-confirm.yaml"));
+      assert.ok(confirm, "the sign-out step didn't run");
+      assert.ok(!confirm.includes("E2E_SIGNOUT_EMAIL"));
+      assert.ok(!confirm.includes("SIGN_OUT_CONFIRM"));
+    });
   });
 
   it("never puts the test password in argv or a saved file", () => {
