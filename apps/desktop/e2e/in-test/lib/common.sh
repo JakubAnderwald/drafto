@@ -1,6 +1,7 @@
 #!/bin/bash
 # Logging, step bookkeeping and the report for an In-Test scenario. Expects
-# RUN_DIR, APP and SCENARIO_TITLE (see harness.sh).
+# RUN_DIR, APP and SCENARIO_TITLE (see harness.sh); BACKEND names what the run
+# talks to in the report (default production).
 
 : "${RUN_DIR:?}" "${APP:?}" "${SCENARIO_TITLE:?}"
 
@@ -65,7 +66,7 @@ write_report() {
   {
     echo "# $SCENARIO_TITLE — automated In-Test run $(basename "$RUN_DIR")"
     echo
-    echo "Build: Drafto $(app_plist CFBundleShortVersionString) ($(app_plist CFBundleVersion)), backend: production"
+    echo "Build: Drafto $(app_plist CFBundleShortVersionString) ($(app_plist CFBundleVersion)), backend: ${BACKEND:-production}"
     echo
     echo "Run: ${RUN_OUTCOME:-unknown}"
     echo
