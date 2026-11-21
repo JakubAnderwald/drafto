@@ -58,7 +58,7 @@
     }
   },
   "devDependencies": {
-    "@commitlint/cli": "^20.5.0",
+    "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.4",
     "@electric-sql/pglite": "^0.5.16",
     "husky": "^9.1.7",
