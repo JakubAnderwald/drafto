@@ -1,4 +1,4 @@
-// The weekly hosting-usage readout's bash wiring (ADR-0091): factory-agent.sh
+// The weekly hosting-usage readout's bash wiring (ADR-0093): factory-agent.sh
 // --usage-readout. The guard's read-only profile and the parser are tested in
 // browser-guard.test.mjs and usage-readout.test.mjs; this locks in that the
 // readout runs under --browser's lock, gives the guard exact pages and no

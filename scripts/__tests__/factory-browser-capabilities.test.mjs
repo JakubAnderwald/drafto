@@ -350,7 +350,7 @@ describe("factory-agent.sh wiring", () => {
 
   it("sets capabilities up only for intest and verify, before the guard config", () => {
     const fn = extract("run_browser_task");
-    // Not for plan probes, nor the read-only usage readout (ADR-0091).
+    // Not for plan probes, nor the read-only usage readout (ADR-0093).
     assert.match(fn, /if \[\[ "\$kind" != plan && "\$kind" != usage \]\]; then/);
     const caps = fn.indexOf("--capability uploads");
     assert.ok(caps > 0 && caps < fn.indexOf('node "$guard" config'));

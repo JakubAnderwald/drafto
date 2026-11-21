@@ -524,7 +524,7 @@ if ! [[ "$FACTORY_BROWSER_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
   echo "WARNING: invalid FACTORY_BROWSER_TIMEOUT_SEC='$FACTORY_BROWSER_TIMEOUT_SEC'; defaulting to 900" >&2
   FACTORY_BROWSER_TIMEOUT_SEC=900
 fi
-# The weekly hosting-usage readout (ADR-0091, `--usage-readout`, its own launchd
+# The weekly hosting-usage readout (ADR-0093, `--usage-readout`, its own launchd
 # job on Sunday evening): a read-only run of this runner on the Vercel and
 # Supabase usage dashboards. FACTORY_USAGE_READOUT=0 (or FACTORY_BROWSER=0)
 # turns it off. The two pages are the only ones the guard lets it open; the
@@ -796,7 +796,7 @@ Exactly one of --plan, --implement, --release, --watch, --browser is required.
                Runs one of the candidates --watch found, after --release:
                Testing's verify lane first (ADR-0053), then In Test's run,
                then plan-stage probes (ADR-0071, FACTORY_PLAN_PROBE=1).
-  --usage-readout  The weekly hosting-usage readout (ADR-0091): a read-only
+  --usage-readout  The weekly hosting-usage readout (ADR-0093): a read-only
                browser run on the Vercel and Supabase usage dashboards, posted
                to Drafto. Runs under --browser's lock, so never at the same
                time as a browser run. Its own launchd job, Sunday evening.
@@ -1130,7 +1130,7 @@ fi
 # ── Project board lookup ────────────────────────────────────────────────────
 # Cache the projectId in the env so child `factory-project.mjs` invocations
 # don't repeat the lookup (factory-project.mjs reads FACTORY_PROJECT_ID).
-# The usage readout (ADR-0091) never touches the board, so a GitHub hiccup here
+# The usage readout (ADR-0093) never touches the board, so a GitHub hiccup here
 # mustn't cost it its weekly slot.
 if [[ -z "${FACTORY_PROJECT_ID:-}" && "$USAGE_READOUT" -eq 0 ]]; then
   if ! PROJECT_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" find-project 2>>"$LOG_FILE"); then
@@ -5689,7 +5689,7 @@ run_browser_task() {
   local exit_code=0 prompt_file="$BROWSER_PROMPT_FILE" allow_args
   BROWSER_RESULT="error"
   BROWSER_OUT="$run_dir/runner-output.txt"
-  # The usage kind (ADR-0091) is read-only: its own short prompt, and the guard
+  # The usage kind (ADR-0093) is read-only: its own short prompt, and the guard
   # gets exact pages (--allow-url, USAGE_READOUT_URLS) instead of an origin.
   if [[ "$kind" == usage ]]; then
     prompt_file="$USAGE_PROMPT_FILE"
@@ -5832,7 +5832,7 @@ run_browser_task() {
   return 0
 }
 
-# usage_readout_run — the weekly hosting-usage readout (ADR-0091). One
+# usage_readout_run — the weekly hosting-usage readout (ADR-0093). One
 # read-only browser run on the two usage dashboards, then usage-readout.mjs
 # parses what it printed, posts it to Drafto and emails the operator on any
 # failure. Never touches the board or GitHub, and never fails the tick.

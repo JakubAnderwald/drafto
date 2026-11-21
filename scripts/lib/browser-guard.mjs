@@ -78,7 +78,7 @@
 //      the guard does not know is denied. `type` stays allowed: a denied key
 //      never ran, so focus is still on the page element it types into.
 //
-// Read-only runs (ADR-0091). A config with `allowUrls` instead of
+// Read-only runs (ADR-0093). A config with `allowUrls` instead of
 // `allowOrigins` is the `usage` kind: it reads the Vercel and Supabase usage
 // dashboards, in a profile signed in to both with full control. For such a run:
 //   - navigate must name one of the configured URLs exactly (https, the
@@ -188,7 +188,7 @@ export const RUNNER_TOOLS = Object.freeze([
 export const CAPABILITIES = Object.freeze(["uploads", "js", "inspect"]);
 const CAPABILITY_TOOL = Object.freeze({ uploads: "file_upload", js: "javascript_tool" });
 
-// A read-only run's tools (ADR-0091): look at its own tabs, never act on a page.
+// A read-only run's tools (ADR-0093): look at its own tabs, never act on a page.
 export const READONLY_TOOLS = Object.freeze([
   "list_connected_browsers",
   "select_browser",
@@ -212,7 +212,7 @@ export const READONLY_COMPUTER_ACTIONS = Object.freeze([
 // The only hosts an allowUrls entry may name: the providers' usage dashboards.
 export const READONLY_URL_HOSTS = Object.freeze(["vercel.com", "supabase.com"]);
 
-/** Whether the config is a read-only run's (allowUrls, ADR-0091). */
+/** Whether the config is a read-only run's (allowUrls, ADR-0093). */
 export function isReadOnly(config = null) {
   return Array.isArray(config?.allowUrls) && config.allowUrls.length > 0;
 }
@@ -762,7 +762,7 @@ export function parseAllowOrigin(value) {
 }
 
 /**
- * Validate one read-only page (ADR-0091): https, exactly on one of
+ * Validate one read-only page (ADR-0093): https, exactly on one of
  * READONLY_URL_HOSTS, a path other than `/`, no query, fragment, credentials
  * or percent-encoding, already in canonical form.
  */

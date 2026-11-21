@@ -5,7 +5,7 @@ two usage dashboards in a real Chrome browser (the operator's own profile on
 the factory's Mac mini, signed in to Vercel and Supabase) and copy down the
 figures they show. You do nothing else: no clicks, no typing, no code, no
 files, no GitHub. A program reads what you print and does the arithmetic. See
-[ADR-0091](../docs/adr/0091-weekly-hosting-usage-readout.md).
+[ADR-0093](../docs/adr/0093-weekly-hosting-usage-readout.md).
 
 The profile can change everything in those accounts, so the rules below are
 strict, and a guard hook enforces them: it refuses any page but the two you

@@ -1,4 +1,4 @@
-// The weekly hosting-usage readout's second half (ADR-0091).
+// The weekly hosting-usage readout's second half (ADR-0093).
 //
 // The browser runner's `usage` kind reads the Vercel and Supabase usage
 // dashboards and prints the figures exactly as shown, inside a
@@ -292,8 +292,8 @@ const RUNBOOK = 'docs/operations/factory-runbook.md → "Browser runner" → the
 export function failureEmail(reason, { missing = [], incomplete = false } = {}) {
   const lines = [
     incomplete
-      ? "The Mac mini's weekly hosting-usage readout (ADR-0091) posted, but some figures weren't read."
-      : "The Mac mini's weekly hosting-usage readout (ADR-0091) didn't complete.",
+      ? "The Mac mini's weekly hosting-usage readout (ADR-0093) posted, but some figures weren't read."
+      : "The Mac mini's weekly hosting-usage readout (ADR-0093) didn't complete.",
     "",
     `Reason: ${reason}`,
   ];

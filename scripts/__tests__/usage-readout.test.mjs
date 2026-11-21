@@ -1,4 +1,4 @@
-// The hosting-usage readout's parser and poster (ADR-0091): the runner prints
+// The hosting-usage readout's parser and poster (ADR-0093): the runner prints
 // dashboard strings, and this turns them into the route's readout.
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";

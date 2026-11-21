@@ -1967,7 +1967,7 @@ describe("browser-guard CLI: fails closed", () => {
   });
 });
 
-// ── Read-only runs (ADR-0091): the usage kind reads two dashboard pages ─────
+// ── Read-only runs (ADR-0093): the usage kind reads two dashboard pages ─────
 
 describe("browser-guard: read-only runs (allowUrls)", () => {
   const VERCEL_USAGE = "https://vercel.com/jakubanderwalds-projects/~/usage";
