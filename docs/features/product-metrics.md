@@ -1,6 +1,6 @@
 # Product metrics
 
-**Status:** shipped (steps 1 and 2 of 4; step 3's data loader merged) **Updated:** 2026-11-21
+**Status:** shipped (steps 1 to 3 of 4) **Updated:** 2026-11-21
 
 ## What it is
 
@@ -13,7 +13,7 @@ The functions work from metadata only: timestamps, character counts, client tags
 - Step 1 ([#820](https://github.com/JakubAnderwald/drafto/issues/820)), two migrations: `note_text_chars(jsonb)`, then the exclusion table, three helpers and the six metric functions.
 - Step 2 ([#821](https://github.com/JakubAnderwald/drafto/issues/821)), two more migrations. The first adds [activity days](#activity-days-usage_daily) (`usage_daily`, written through `record_activity` and filled in by the [nightly rollup](#nightly-rollup-rollup_usage_daily)), `metrics_active_users`, `metrics_retention` and the per-user helper `metrics_cohort_activation`, and re-creates `metrics_activation` over that helper. The second schedules the rollup with pg_cron. Every client records activity days: web, iOS, Android, macOS and MCP ([ADR-0088](../adr/0088-activity-days-instead-of-event-analytics.md)).
 - `scripts/user-stats.mjs` (`pnpm users:stats`) calls the eight metric functions read-only and prints one table per metric, or JSON.
-- Step 3 ([#822](https://github.com/JakubAnderwald/drafto/issues/822)) ships in two parts. The first is the web app's [data loader](#web-data-loader-appswebsrclibmetrics) (`apps/web/src/lib/metrics/`), which reads all eight functions, `metrics_active_users` and `metrics_retention` included. The `/admin/stats` page that renders it comes in the second PR.
+- Step 3 ([#822](https://github.com/JakubAnderwald/drafto/issues/822)): the [`/admin/stats` page](#the-adminstats-page), and the web [data loader](#web-data-loader-appswebsrclibmetrics) behind it (`apps/web/src/lib/metrics/`). The loader reads all eight functions, `metrics_active_users` and `metrics_retention` included.
 
 ## Excluded accounts
 
@@ -182,6 +182,24 @@ pnpm users:stats -- --project prod --keys-txt <file>
 - PostgREST caps every response at the project's `max_rows` (1000 by default), stored procedures included, without saying so. Each call asks for the exact count (`Prefer: count=exact`), and a list shorter than its count fails instead of printing part of it. In practice only the emptied notes can grow that long. Rerun with a smaller `--weeks`.
 - Exit codes: 0 when every metric was read, 1 on a failure or refusal, 2 on bad arguments.
 
+## The `/admin/stats` page
+
+`apps/web/src/app/(app)/admin/stats/page.tsx`, linked as "Product metrics" from `/admin`, shows every metric to an admin.
+
+- **Access.** It uses `/admin`'s guard, `requireAdmin()` in `apps/web/src/lib/auth/require-admin.ts`. A signed-out visitor goes to `/login` and a signed-in non-admin to `/`. Only after that does the page read the metrics, server-side through the [loader](#web-data-loader-appswebsrclibmetrics), so the service-role key never reaches the browser.
+- **Freshness.** The page is `dynamic = "force-dynamic"`, so it is recomputed on every load with no caching. The header shows the generated-at time in UTC and notes that admins and test accounts are excluded.
+- **Sections, in order.** Each section is a `Card` with a one-line "what this answers" caption. The captions are written from the [definitions](#definitions).
+  1. **Needs attention:** notes one save emptied in the last 14 days (date, client, characters before, note and user ids), then any platform limit at `warn` / `critical`. The card is tinted warning. It reads "Nothing needs attention" only when both checks ran and found nothing.
+  2. **Platform limits:** a `ProgressBar` per `metrics_platform_limits` row, with used, limit and %. The bar's tone follows the SQL's `level`: `success` below 70%, `warning` from 70%, `danger` from 85%. Below the bars are the [hosting usage](#hosting-usage-egress-vercel) links.
+  3. **Activation:** cohorts with signed up, first value and activated, each as "n of m (x%)". A purged `activated` shows as "—*" with a footnote, and an open window as "(open)".
+  4. **Writers:** weekly writers with one column per client tag. Weeks whose history is partial are flagged.
+  5. **Depth:** medians and maxima per writer, and the four shares as "n of m (x%)".
+  6. **Sign-ups:** by week and provider.
+  7. **Active users and retention:** weekly active users, with writers as "n of m", per client, then retention per cohort, with week 1 and week 4 as "n of m". If either function is missing (PGRST202), its table reads "Available after usage tracking ships".
+- **Layout and data.** Tables are newest week first, with numbers right-aligned and units in headers. They scroll sideways inside their card.
+- **Personal data.** No email, note text, title or notebook name appears. The integration test checks that the page has no email-shaped text.
+- **A failing metric** shows "Couldn't load this metric: …" in its own section, and the rest of the page renders.
+
 ## Web data loader (`apps/web/src/lib/metrics/`)
 
 `loadProductMetrics({ now?, client? })` in `load-product-metrics.ts` is the web app's one reader of the metric functions. `/admin/stats` calls it, and the Monday email (#823) will too. It is `server-only` and uses the service-role client (`createAdminClient()`), so the caller must already have checked for an admin (or, in the cron, the cron secret). It returns one `ProductMetrics` object (`types.ts`) with `generatedAt`.
@@ -248,6 +266,11 @@ Don't grant `select` on the whole table: the functions read nothing else, and th
 | Web ping                                                                                                                                                | `apps/web/src/hooks/use-activity-ping.ts`, `apps/web/src/components/layout/activity-ping.tsx`, `apps/web/src/app/(app)/layout.tsx`              |
 | MCP ping                                                                                                                                                | `apps/web/src/lib/api/record-mcp-activity.ts`, `apps/web/src/app/api/mcp/route.ts`                                                              |
 | Native ping (mirrored)                                                                                                                                  | `apps/{mobile,desktop}/src/db/activity-days.ts`, `apps/{mobile,desktop}/src/db/sync.ts`, the tag in `apps/{mobile,desktop}/src/lib/supabase.ts` |
+| `/admin/stats` page and its sections                                                                                                                    | `apps/web/src/app/(app)/admin/stats/`                                                                                                           |
+| Admin guard shared by `/admin` and `/admin/stats`                                                                                                       | `apps/web/src/lib/auth/require-admin.ts`                                                                                                        |
+| Unit: the page guard and the sections' empty, unavailable and error states                                                                              | `apps/web/__tests__/unit/{admin-stats-page-auth,admin-stats-sections}.test.ts{,x}`                                                              |
+| Integration: the page against faked metric functions                                                                                                    | `apps/web/__tests__/integration/admin-stats-page.test.tsx`                                                                                      |
+| E2E: an admin sees every section (`chromium-admin`, `main` only); signed-out and non-admin redirects                                                    | `apps/web/e2e/admin.spec.ts`, `apps/web/e2e/security.spec.ts`                                                                                   |
 | Web data loader: `loadProductMetrics`, row schemas, `MetricResult`, needs attention, formatting, hosting-usage links                                    | `apps/web/src/lib/metrics/{load-product-metrics,rpc-schemas,types,needs-attention,format,hosted-usage}.ts`                                      |
 | Unit: the web loader, formatting and needs attention, with a faked client                                                                               | `apps/web/__tests__/unit/{load-product-metrics,metrics-format,metrics-needs-attention}.test.ts`                                                 |
 | CLI (`pnpm users:stats`)                                                                                                                                | `scripts/user-stats.mjs`                                                                                                                        |
@@ -294,7 +317,7 @@ Activity days come from every platform: web from the app shell, iOS, Android and
   - A new client tag (ADR-0023) → `ACTIVE_CLIENT_COLUMNS` in `scripts/user-stats.mjs`, which the writers table's `CLIENT_COLUMNS` extends with `untagged` (unknown tags still print, after the known ones). The web loader's `format.ts` takes its columns from `DRAFTO_CLIENT_TAGS` (the script can't import it), so it follows without an edit. If it should count as an activity day too: `DRAFTO_CLIENT_TAGS`, then a new migration for the `usage_daily_client_check` constraint, `record_activity`'s tag check and the rollup's tag order, and the privacy policy's list of device kinds.
   - What `usage_daily` records, or its 13-month retention → `apps/web/src/app/privacy/page.tsx` and `apps/web/__tests__/integration/legal-pages.test.tsx` ([privacy policy](./privacy-policy.md)), and ADR-0088.
   - A changed definition → the function (in a new migration), this doc's table, the PGlite test and the live test.
-  - A changed return column (a new migration) → the function's row schema in `apps/web/src/lib/metrics/rpc-schemas.ts` and `scripts/user-stats.mjs`. Until the schema matches, the page shows that metric as an error.
+  - A changed return column (a new migration) → the function's row schema in `apps/web/src/lib/metrics/rpc-schemas.ts`, the section that shows it under `apps/web/src/app/(app)/admin/stats/`, and `scripts/user-stats.mjs`. Until the schema matches, the page shows that metric as an error.
 - A new or changed function reaches dev only once the migration is pushed there, so run the live test after `pnpm supabase:push`.
 
 ## Verify
