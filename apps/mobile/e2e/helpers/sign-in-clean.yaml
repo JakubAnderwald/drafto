@@ -19,31 +19,13 @@ appId: eu.drafto.mobile
     visible: "Log In"
     timeout: 60000
 
-- tapOn: "you@example.com"
-- inputText: ${SIGN_IN_EMAIL}
-- tapOn: "Sign in to your Drafto account"
-- tapOn: "Your password"
-- inputText: ${SIGN_IN_PASSWORD}
-- tapOn: "Sign in to your Drafto account"
-- tapOn:
-    id: "login-button"
-
-# iOS offers to save the password right after login, in a sheet drawn out of
-# process that hides the app from Maestro. Let it arrive, then restart the app:
-# the session persists and the sheet goes away with the old process.
-- runFlow:
-    when:
-      platform: iOS
+# Sign in, clear iOS's save-password sheet, reach Notebooks: retried as a whole.
+# The sheet is drawn out of process and hides the app from Maestro, so a fixed
+# wait and a restart clear it; a restart that beats a slow sign-in lands back on
+# Log In, and the next attempt signs in again. Bounded: 3 attempts.
+- retry:
+    maxRetries: 2
     commands:
-      - extendedWaitUntil:
-          visible: "never-present-just-wait"
-          timeout: 8000
-          optional: true
-      - stopApp
-      - launchApp
-      # The fixed wait can't see whether the sign-in had finished (the sheet
-      # hides the app): if the restart beat it, the app is back on Log In, so
-      # sign in once more, with no restart this time.
       - runFlow:
           when:
             visible: "Log In"
@@ -56,15 +38,16 @@ appId: eu.drafto.mobile
             - tapOn: "Sign in to your Drafto account"
             - tapOn:
                 id: "login-button"
-            # The save-password sheet can come with this sign-in instead:
-            # the same wait and restart clear it.
+      - runFlow:
+          when:
+            platform: iOS
+          commands:
             - extendedWaitUntil:
                 visible: "never-present-just-wait"
                 timeout: 8000
                 optional: true
             - stopApp
             - launchApp
-
-- extendedWaitUntil:
-    visible: "Notebooks"
-    timeout: 60000
+      - extendedWaitUntil:
+          visible: "Notebooks"
+          timeout: 30000
