@@ -127,8 +127,16 @@ function newestFirst<Row extends { week_start: string }>(rows: Row[]): Row[] {
   return [...rows].sort((a, b) => b.week_start.localeCompare(a.week_start));
 }
 
+/** Below this many writers, a share rounded to 0.1 points gives back its exact count. */
+export const EXACT_COUNT_LIMIT = 1000;
+
 function share(pct: number | null, writers: number): DepthShare {
-  return { pct, count: pct === null ? null : Math.round((pct * writers) / 100), of: writers };
+  return {
+    pct,
+    count: pct === null ? null : Math.round((pct * writers) / 100),
+    of: writers,
+    approximate: writers >= EXACT_COUNT_LIMIT,
+  };
 }
 
 /** `metrics_depth`'s row with each share's count beside its percentage. */

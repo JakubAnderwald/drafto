@@ -146,6 +146,34 @@ describe("active users and retention footnotes", () => {
   });
 });
 
+describe("depth shares", () => {
+  it("marks counts derived from 1,000+ writers as approximate", () => {
+    const share = (count: number | null) => ({ pct: 10, count, of: 1500, approximate: true });
+    render(
+      <DepthSection
+        depth={{
+          status: "ok",
+          data: {
+            writers: 1500,
+            live_notes_median: 3,
+            live_notes_max: 90,
+            notebooks_median: 1,
+            notebooks_max: 9,
+            attachment_mb_median: 0,
+            attachment_mb_max: 4,
+            withAttachment: share(150),
+            withApiKey: { pct: null, count: null, of: 1500, approximate: true },
+            withMcpWrite: share(150),
+            multiClient: share(150),
+          },
+        }}
+      />,
+    );
+    expect(screen.getAllByText("≈150 of 1500 (10%)")).toHaveLength(3);
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+});
+
 describe("limit levels", () => {
   it("maps the SQL's levels to the bar tones", () => {
     expect(LIMIT_LEVEL_TONE).toEqual({ ok: "success", warn: "warning", critical: "danger" });
