@@ -126,3 +126,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0092](./0092-android-dialogs-render-in-the-activity-window.md)                | Android Dialogs Render in the Activity Window                                   | Accepted           | 2026-11-21 |
 | [0093](./0093-weekly-hosting-usage-readout.md)                                 | Weekly Hosting-Usage Readout from the Vercel and Supabase Dashboards            | Accepted           | 2026-11-21 |
 | [0094](./0094-open-signup-with-admin-suspend.md)                               | Open Signup with Admin Suspend                                                  | Accepted           | 2026-11-21 |
+| [0095](./0095-mcp-anonymous-discovery.md)                                      | Key-less Discovery on the MCP Server                                            | Accepted           | 2026-11-21 |

@@ -3,11 +3,19 @@
   "name": "eu.drafto/mcp",
   "title": "Drafto",
   "description": "Create, read, search, and organize your Drafto notes and notebooks.",
+  "websiteUrl": "https://drafto.eu",
+  "icons": [
+    {
+      "src": "https://drafto.eu/mcp-icon.png",
+      "mimeType": "image/png",
+      "sizes": ["512x512"]
+    }
+  ],
   "repository": {
     "url": "https://github.com/JakubAnderwald/drafto",
     "source": "github"
   },
-  "version": "1.1.2",
+  "version": "1.2.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -15,8 +23,8 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "Bearer token — generate an API key at drafto.eu/settings",
-          "isRequired": true,
+          "description": "Bearer token, needed for tool calls (listing the tools works without it). Generate an API key at drafto.eu/settings.",
+          "isRequired": false,
           "isSecret": true
         }
       ]

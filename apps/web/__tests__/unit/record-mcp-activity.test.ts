@@ -8,8 +8,7 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: mockCaptureException,
 }));
 
-const { isMcpToolCall, isMcpToolCallRequest, recordMcpActivity } =
-  await import("@/lib/api/record-mcp-activity");
+const { isMcpToolCall, recordMcpActivity } = await import("@/lib/api/record-mcp-activity");
 
 function clientWithUpsert(upsert: ReturnType<typeof vi.fn>) {
   const from = vi.fn().mockReturnValue({ upsert });
@@ -33,26 +32,6 @@ describe("isMcpToolCall", () => {
     expect(isMcpToolCall(null)).toBe(false);
     expect(isMcpToolCall("tools/call")).toBe(false);
     expect(isMcpToolCall({ jsonrpc: "2.0", result: { method: "tools/call" }, id: 1 })).toBe(false);
-  });
-});
-
-describe("isMcpToolCallRequest", () => {
-  const post = (body: string) => new Request("http://localhost/api/mcp", { method: "POST", body });
-
-  it("reads a clone, leaving the body readable", async () => {
-    const body = JSON.stringify({ jsonrpc: "2.0", method: "tools/call", id: 1 });
-    const request = post(body);
-
-    await expect(isMcpToolCallRequest(request)).resolves.toBe(true);
-    await expect(request.text()).resolves.toBe(body);
-  });
-
-  it("is false for a body that isn't JSON or a body already read", async () => {
-    await expect(isMcpToolCallRequest(post("not json"))).resolves.toBe(false);
-
-    const read = post(JSON.stringify({ jsonrpc: "2.0", method: "tools/call", id: 1 }));
-    await read.text();
-    await expect(isMcpToolCallRequest(read)).resolves.toBe(false);
   });
 });
 

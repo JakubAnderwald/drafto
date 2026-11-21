@@ -22,19 +22,6 @@ export function isMcpToolCall(message: unknown): boolean {
 }
 
 /**
- * Whether <request> carries a `tools/call`. It reads a clone of the body, so the MCP
- * transport can still read the request itself. A body that isn't JSON counts as no tool
- * call: the transport answers it with a parse error.
- */
-export async function isMcpToolCallRequest(request: Request): Promise<boolean> {
-  try {
-    return isMcpToolCall(await request.clone().json());
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Records that <userId> used Drafto through the MCP server on the UTC day of <now>, as a
  * `web-mcp` activity day (ADR 0088). Only the day is recorded: never the tool or the note.
  *

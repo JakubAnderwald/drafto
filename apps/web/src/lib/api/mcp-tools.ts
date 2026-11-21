@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
 import { contentQuotaMessageFor } from "@/lib/api/content-quota";
 
-interface ToolResult {
+export interface ToolResult {
   [key: string]: unknown;
   content: { type: "text"; text: string }[];
   isError?: boolean;
@@ -15,6 +15,21 @@ function ok(text: string): ToolResult {
 
 function err(text: string): ToolResult {
   return { content: [{ type: "text", text }], isError: true };
+}
+
+/** The URL the sign-in messages point to: the settings page, where a user makes an API key. */
+export const MCP_API_KEY_URL = "https://drafto.eu/settings";
+
+/** What a key-less request that needs a key is told: the route's 401 and `signInRequired`. */
+export const MCP_SIGN_IN_MESSAGE = `Sign in required: generate an API key at ${MCP_API_KEY_URL} and send it as "Authorization: Bearer <key>".`;
+
+/**
+ * What a tool returns when it runs without an API key. The route answers a key-less
+ * `tools/call` with a 401 before any tool runs (ADR 0095), so this only guards against a
+ * route change that lets one through.
+ */
+export function signInRequired(): ToolResult {
+  return err(`Error: ${MCP_SIGN_IN_MESSAGE}`);
 }
 
 /** A failed note write: the content quota's own message (ADR 0090), or the database error. */
