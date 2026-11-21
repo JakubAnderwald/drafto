@@ -32,7 +32,7 @@ Because the clone happens on every session, cloud sessions always get the latest
 Two supporting pieces are easy to break:
 
 - **`.claude/skills/.gitkeep` is tracked on purpose.** Claude Code only watches a top-level skills directory that existed when the session started. Without the placeholder, skills the hook drops in would need a session restart to be discovered.
-- **`.gitignore` keeps `.claude/skills/*` ignored.** `/push` runs `git add -A`, so an un-ignored clone would end up committed into this repo. The one exception is `.claude/skills/drive-issue/`, a project skill tracked in the repo ([ADR-0090](../adr/0090-interactive-issue-driving.md)). The hook replaces only the `push` and `merge` directories, so it never touches it. `drive-issue` sets `disable-model-invocation: true` itself. In a cloud session it does everything but device driving.
+- **`.gitignore` keeps `.claude/skills/*` ignored.** `/push` runs `git add -A`, so an un-ignored clone would end up committed into this repo. The one exception is `.claude/skills/drive-issue/`, a project skill tracked in the repo ([ADR-0091](../adr/0091-interactive-issue-driving.md)). The hook replaces only the `push` and `merge` directories, so it never touches it. `drive-issue` sets `disable-model-invocation: true` itself. In a cloud session it does everything but device driving.
 
 ### Reachability: the skills repo is public
 

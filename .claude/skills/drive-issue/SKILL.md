@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 You drive issue `#<n>` (the skill's argument) through the same board columns, gates and tests the dark factory uses. You use what an interactive session has and the factory doesn't: the operator in the loop, this Mac's emulators, simulators and macOS apps, and its Chrome. A card can move between this mode and the factory in any column but Planning (a Planning card goes back to Ready), in either direction, once the gates it would pass are approved.
 
-The operator manual is [`docs/features/interactive-driving.md`](../../../docs/features/interactive-driving.md); the decision is [ADR-0090](../../../docs/adr/0090-interactive-issue-driving.md). Read the manual's "Rules by mode" table once per session.
+The operator manual is [`docs/features/interactive-driving.md`](../../../docs/features/interactive-driving.md); the decision is [ADR-0091](../../../docs/adr/0091-interactive-issue-driving.md). Read the manual's "Rules by mode" table once per session.
 
 ## Ground rules (read first)
 
@@ -50,7 +50,7 @@ Write bodies to files in the scratchpad and pass `--body-file`.
 
 1. `node scripts/drive-issue.mjs status <n>`. If the card is owned by the factory, the factory may still be working it. A tick reads the label when it starts, so a tick already running can still change the card. If the card is in **Planning**, **In Progress**, **In Review**, **Testing** or **Approved**, a longer run may also be live (`claim` refuses those columns without `--force`). Tell the operator, and ask them to check on the Mac mini:
    - no tick is running: `pgrep -fl factory-agent.sh`;
-   - no detached implement run holds the card: `node scripts/lib/implement-lane.mjs status --issue <n>` is empty, or they stop the run with `implement-lane.mjs kill --issue <n> --finish 1 --outcome stopped`.
+   - no detached implement run holds the card: `node scripts/lib/implement-lane.mjs status --issue <n>` is empty, or they stop the run with `implement-lane.mjs kill --issue <n> --finish 1 --outcome stopped --repo-root "$PWD"` (from the factory checkout, between ticks).
 
    Use `claim --force` only after they say so. A CodeRabbit CLI review the factory started earlier can still post threads on the PR after the claim. Answer them like any other review thread.
 

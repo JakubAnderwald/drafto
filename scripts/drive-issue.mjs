@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Drive a Drafto Factory issue from an interactive Claude Code session
-// (ADR-0090, docs/features/interactive-driving.md, the /drive-issue skill).
+// (ADR-0091, docs/features/interactive-driving.md, the /drive-issue skill).
 //
 // The factory (scripts/factory-agent.sh on the Mac mini) and an interactive
 // session can both work a card, one at a time. The `driver:interactive` label

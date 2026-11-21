@@ -738,7 +738,7 @@ fs.writeSync(1, JSON.stringify(out));
   });
 });
 
-describe("findItemForIssue / addIssueToProject (drive-issue, ADR-0090)", () => {
+describe("findItemForIssue / addIssueToProject (drive-issue, ADR-0091)", () => {
   const issueResp = (items) =>
     ghResp({
       data: { repository: { issue: { id: "ISSUE_NODE", projectItems: { nodes: items } } } },

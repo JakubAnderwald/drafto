@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// driver:interactive (ADR-0090): an interactive Claude Code session owns the
+// driver:interactive (ADR-0091): an interactive Claude Code session owns the
 // card, so every factory mode must skip it exactly as it skips factory-pause.
 // The skip lives in one helper, card_opted_out; these tests pin its behaviour
 // and that no guard checks factory-pause on its own (which would let the

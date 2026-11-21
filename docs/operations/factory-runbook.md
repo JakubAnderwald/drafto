@@ -1179,7 +1179,7 @@ A worktree that has **diverged** from the PR branch (commits on both sides), or 
 
 ## Driving a card from an interactive session
 
-A card can be driven from an interactive Claude Code session instead of the factory, and handed back in any column but Planning (a card in Planning goes back to Ready). Handing a card past a human gate needs that gate's approval logged first. Run `/drive-issue <n>` in Claude Code; it does every step below. The manual is [interactive-driving.md](../features/interactive-driving.md), the decision [ADR-0090](../adr/0090-interactive-issue-driving.md). #861 (PR #877) was the hand-driven prototype.
+A card can be driven from an interactive Claude Code session instead of the factory, and handed back in any column but Planning (a card in Planning goes back to Ready). Handing a card past a human gate needs that gate's approval logged first. Run `/drive-issue <n>` in Claude Code; it does every step below. The manual is [interactive-driving.md](../features/interactive-driving.md), the decision [ADR-0091](../adr/0091-interactive-issue-driving.md). #861 (PR #877) was the hand-driven prototype.
 
 What matters on the factory side:
 

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { DRIVER_LABEL, LOG_STEPS, PR_MARKER, SCENARIO_MARKERS } from "../drive-issue.mjs";
 import { FACTORY_PLAN_MARKER } from "../lib/factory-bundle.mjs";
 
-// The /drive-issue skill (ADR-0090) points the session at named sections of
+// The /drive-issue skill (ADR-0091) points the session at named sections of
 // the factory's prompt files instead of copying their standards, so both
 // drivers follow one set of rules. This test keeps those pointers live: every
 // `scripts/factory-*.md` § <section> the skill cites must exist as a heading

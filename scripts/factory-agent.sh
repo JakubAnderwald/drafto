@@ -61,7 +61,7 @@
 #     `state-cli.mjs factory:pause`) — exit 0 silently.
 #   - `factory-pause` label on a board item — bash filters it out before
 #     handing the queue to mode-specific work. `driver:interactive` (an
-#     interactive session owns the card, ADR-0090) is filtered the same way;
+#     interactive session owns the card, ADR-0091) is filtered the same way;
 #     see card_opted_out.
 #
 # Failure trap (exit code != 0): file a `factory-failure`-labelled GitHub
@@ -1130,7 +1130,7 @@ fi
 # card_opted_out <labels-csv> — is a card out of the factory's hands? Prints
 # the reason and returns 0 for `factory-pause` (the operator's per-card kill
 # switch) or `driver:interactive` (an interactive Claude Code session owns the
-# card, scripts/drive-issue.mjs, ADR-0090); prints nothing and returns 1
+# card, scripts/drive-issue.mjs, ADR-0091); prints nothing and returns 1
 # otherwise. Every mode that walks a column skips such a card, and a detached
 # implement run that ends meanwhile is held, not collected.
 card_opted_out() {

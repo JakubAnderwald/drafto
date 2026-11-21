@@ -35,7 +35,7 @@
 //
 //   findItemForIssue(projectId, issueNumber, {repo}) → {itemId, contentId, status} | null
 //        The issue's card on this board (itemId null when the issue isn't on
-//        it). Used by scripts/drive-issue.mjs (ADR-0090).
+//        it). Used by scripts/drive-issue.mjs (ADR-0091).
 //
 //   addIssueToProject(projectId, contentId) → itemId
 //        Put an issue on the board (idempotent on GitHub's side).

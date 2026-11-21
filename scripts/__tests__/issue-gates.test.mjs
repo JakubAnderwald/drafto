@@ -14,7 +14,7 @@ import {
 } from "../lib/issue-gates.mjs";
 
 // scripts/lib/issue-gates.mjs is the node copy of four factory-agent.sh
-// helpers, used by interactive sessions (scripts/drive-issue.mjs, ADR-0090).
+// helpers, used by interactive sessions (scripts/drive-issue.mjs, ADR-0091).
 // The factory keeps its bash originals; every case below runs through BOTH and
 // must agree, so the two modes can never apply different gates.
 

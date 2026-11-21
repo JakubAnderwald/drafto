@@ -17,7 +17,7 @@ Interactive mode has three things the factory lacks:
 
 Every material step is posted on the issue, so the issue is the log of what happened, whichever driver did the work.
 
-A card can switch drivers in almost any column, in either direction. A card in Planning is handed back to Ready. Handing a card past a human gate needs that gate's approval logged first. An interactive session leaves the artifacts the factory expects, so the factory carries on from wherever the card is handed back. See [ADR-0090](../adr/0090-interactive-issue-driving.md).
+A card can switch drivers in almost any column, in either direction. A card in Planning is handed back to Ready. Handing a card past a human gate needs that gate's approval logged first. An interactive session leaves the artifacts the factory expects, so the factory carries on from wherever the card is handed back. See [ADR-0091](../adr/0091-interactive-issue-driving.md).
 
 ## How it works
 
@@ -94,7 +94,7 @@ Everything in `CLAUDE.md` applies to both modes. These are the rules that differ
 **Taking a card from the factory.** Run `drive-issue.mjs status <n>`, then `claim <n>`. `claim` refuses a card in Planning, In Progress, In Review, Testing or Approved without `--force`, because a factory run may be live there: a plan, a detached implement, a fix pass pushing to the PR, a verification lane, or a merge. It also refuses a card another session already claimed. `--resume` picks up your own earlier claim after a session ended. Before forcing, check on the Mac mini:
 
 - **A tick already running.** The label is read when a tick starts, so a running tick can still touch the card. `pgrep -fl factory-agent.sh` shows none running.
-- **A detached implement run.** `node scripts/lib/implement-lane.mjs status --issue <n>` no longer lists the card, or you stopped the run with `node scripts/lib/implement-lane.mjs kill --issue <n> --finish 1 --outcome stopped`. Otherwise its result is held while you drive.
+- **A detached implement run.** `node scripts/lib/implement-lane.mjs status --issue <n>` no longer lists the card, or you stopped the run with `node scripts/lib/implement-lane.mjs kill --issue <n> --finish 1 --outcome stopped --repo-root "$PWD"` (from the factory checkout, between ticks). Otherwise its result is held while you drive.
 
 **Handing a card to the factory.** Commit and push everything first: unpushed commits make the factory's worktree diverge, and its implement stage then blocks the card. Then run `drive-issue.mjs release <n> --to <Column> --note "<state, what's left>"`.
 

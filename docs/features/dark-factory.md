@@ -72,7 +72,7 @@ The full set is created idempotently by `scripts/setup-factory-labels.sh`. Refer
 | `status:done`           | human / support      | Final acceptance.                                                                                                      |
 | `status:blocked`        | factory              | Hard stop — see comment on issue.                                                                                      |
 | `factory-pause`         | operator             | Global kill switch on this issue (factory ignores).                                                                    |
-| `driver:interactive`    | interactive session  | An interactive Claude Code session owns the card (`/drive-issue`); the factory skips it (ADR-0090).                    |
+| `driver:interactive`    | interactive session  | An interactive Claude Code session owns the card (`/drive-issue`); the factory skips it (ADR-0091).                    |
 | `migration-approved`    | operator             | Authorises merging the PR's migration SQL as it is when added; an SQL edit removes it.                                 |
 | `hosted-config-applied` | operator             | Its `config.toml` changes are applied to dev and prod (ADR-0065).                                                      |
 | `factory-failure`       | factory failure trap | Filed by `cleanup()` on a run error, or by the toolchain check.                                                        |

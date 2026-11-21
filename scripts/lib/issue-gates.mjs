@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Structural gates shared by the dark factory and interactive issue driving
-// (ADR-0090). The factory keeps its own bash copies in factory-agent.sh
+// (ADR-0091). The factory keeps its own bash copies in factory-agent.sh
 // (spec_missing_section, parity_violation, migration_violation,
 // status_label_for); scripts/__tests__/issue-gates.test.mjs runs both on the
 // same cases and fails if they ever disagree, so an interactive session
