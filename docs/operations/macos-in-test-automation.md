@@ -110,13 +110,13 @@ It refuses, with exit 1 and nothing published, in these cases:
 - with `--yes`, when `--run-dir` is a link to the run (such as `latest`) rather than the run's own directory;
 - while the run's `state.env` exists;
 - when `report.md` is missing or has no `Run:` line, so the run didn't finish writing it;
-- when the report matches a secret pattern;
+- when the report matches a secret pattern, or the comment's own text does (its run line, or the local path in its footer);
 - when the run was already posted (`posted.json` in the run dir has the comment's URL);
 - when publishing isn't set up: the switch is off, the selftest hasn't passed, or there's no OCR helper;
 - when there's no scenario-sha marker on the issue and no `--sha`;
 - when the issue's comments can't be read, or GitHub can't say what is already published for the run. Run it again.
 
-If publishing fails, nothing is posted. Run the command again to retry: it reuses the run's `upload.json`, or the commit already on its ref, so it never publishes twice. If the comment post fails or times out, run it again too. Before posting, `--yes` looks for the run's comment on the issue: the factory's own (OWNER) comment with the marker and the run's `Run` line. If a timed-out post did land, it records that comment in `posted.json` and doesn't post a second one. To take a posted run down, follow the runbook's "Taking a screenshot down".
+If publishing fails, nothing is posted. If the composed comment still matches a secret pattern once its screenshots are published, it isn't posted, and the error says the screenshots are already public and on which commit. Run the command again to retry: it reuses the run's `upload.json`, or the commit already on its ref, so it never publishes twice. If the comment post fails or times out, run it again too. Before posting, `--yes` looks for the run's comment on the issue: the factory's own (OWNER) comment with the marker and the run's `Run` line. If a timed-out post did land, it records that comment in `posted.json` and doesn't post a second one. To take a posted run down, follow the runbook's "Taking a screenshot down".
 
 ## Layout
 

@@ -411,6 +411,26 @@ export function postMacosRun({
     return { posted: true, url: landedUrl, upload: uploaded, reason: null, already: true };
   }
 
+  // The comment's own text, without the screenshots: the report, the run
+  // line and the footer's local path. Scanned before anything is published,
+  // so the scan of the composed comment can't first trip on it once the
+  // images are already public. (Step labels are checked with the images.)
+  const ownText = composeComment({
+    report,
+    upload: undefined,
+    results,
+    shotsDir,
+    runId,
+    throwaway,
+  });
+  const ownHits = scanLaneText(ownText.body, {});
+  if (ownHits.length) {
+    throw new Refusal(
+      `the comment's own text (the report or the run's path) matched a secret pattern ` +
+        `(${ownHits.join(", ")}); this command published and posted nothing`,
+    );
+  }
+
   const gate = uploadGate({ env, withheld: false, logDir });
   if (gate) throw new Refusal(`screenshots can't be published: ${gate}`);
 
@@ -484,8 +504,18 @@ export function postMacosRun({
   }
   const { body } = composeComment({ report, upload, results, shotsDir, runId, throwaway });
   const hits = scanLaneText(body, {});
-  if (hits.length)
-    throw new Refusal(`the composed comment matched a secret pattern (${hits.join(", ")})`);
+  if (hits.length) {
+    // The screenshots went out above: say so, a retry doesn't take them back.
+    const published = Array.isArray(upload.images) && upload.images.length > 0;
+    throw new Refusal(
+      `the composed comment matched a secret pattern (${hits.join(", ")}), so it wasn't posted` +
+        (published
+          ? `. Its ${upload.images.length} screenshot(s) are already public on commit ` +
+            `${upload.commit}: if one shouldn't be, follow the factory runbook's ` +
+            `"Taking a screenshot down"`
+          : ""),
+    );
+  }
   const tmp = nodeFs.mkdtempSync(path.join(os.tmpdir(), "factory-macos-post-"));
   try {
     const file = path.join(tmp, "comment.md");

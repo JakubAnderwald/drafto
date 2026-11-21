@@ -25,6 +25,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -660,6 +661,34 @@ describe("postMacosRun refusals", () => {
       assert.deepEqual(t.printed, []);
       assert.deepEqual(originRefs(t), []);
       assert.equal(existsSync(join(t.runDir, POSTED_FILE)), false);
+    }
+  });
+
+  it("refuses before publishing when the comment's own text matches a secret pattern", () => {
+    // The run line (its id) and the footer's local path are the factory's
+    // text, not the report's: checked before anything is published, so the
+    // composed comment's scan can't first trip on them once images are out.
+    const named = setup({ runName: "access_token" });
+    const nested = setup();
+    const parent = join(nested.root, "access_token");
+    renameSync(join(nested.root, "runs"), parent);
+    for (const [t, runDir] of [
+      [named, named.runDir],
+      [nested, join(parent, RUN_NAME)],
+    ]) {
+      for (const yes of [false, true]) {
+        assertRefuses(
+          () => t.post({ yes, runDir }),
+          /the comment's own text \(the report or the run's path\) matched a secret pattern \(oauth-token\); this command published and posted nothing/,
+        );
+      }
+      assert.deepEqual(t.gh.calls, [COMMENTS_CALL, COMMENTS_CALL]);
+      assert.deepEqual(commentCalls(t.gh), []);
+      assert.deepEqual(t.printed, []);
+      assert.deepEqual(originRefs(t), []);
+      assert.deepEqual(t.ocrCalls, []);
+      assert.equal(existsSync(join(runDir, UPLOAD_FILE)), false);
+      assert.equal(existsSync(join(runDir, POSTED_FILE)), false);
     }
   });
 
