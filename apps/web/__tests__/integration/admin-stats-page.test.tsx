@@ -46,7 +46,7 @@ describe("/admin/stats against faked metric functions", () => {
     await renderPage();
 
     expect(screen.getByRole("heading", { level: 1, name: "Product metrics" })).toBeInTheDocument();
-    expect(screen.getByText(/Admins and test accounts are excluded/)).toBeInTheDocument();
+    expect(screen.getByText(/admins and test accounts are excluded/)).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(
       SECTION_ORDER,
     );

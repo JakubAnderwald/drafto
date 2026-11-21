@@ -33,7 +33,7 @@ export default async function AdminStatsPage() {
         </div>
         <p className="text-fg-muted text-sm">
           Generated {formatUtcTimestamp(metrics.generatedAt)} · last {metrics.weeks} ISO weeks ·
-          Admins and test accounts are excluded.
+          admins and test accounts are excluded.
         </p>
       </header>
       <NeedsAttentionSection

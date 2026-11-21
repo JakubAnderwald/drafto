@@ -40,17 +40,19 @@ describe("Needs attention", () => {
               level: "critical",
             },
           ],
-          unchecked: ["Emptied notes"],
+          unchecked: [{ check: "Emptied notes", reason: "metrics_emptied_notes failed: timeout" }],
           isClear: false,
         }}
       />,
     );
     expect(screen.queryByText("Nothing needs attention")).not.toBeInTheDocument();
     expect(screen.getByText(/Storage: 900 MB of 1 GB/)).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't check: Emptied notes");
-    expect(
-      screen.getByTestId("metrics-section-needs-attention").querySelector(".bg-warning-bg"),
-    ).not.toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Couldn't check emptied notes: metrics_emptied_notes failed: timeout",
+    );
+    const card = screen.getByTestId("metrics-section-needs-attention").firstElementChild;
+    expect(card).toHaveClass("bg-warning-bg");
+    expect(card).not.toHaveClass("bg-bg-subtle");
   });
 });
 
@@ -100,6 +102,47 @@ describe("section states", () => {
     );
     expect(screen.getByText("No weeks.")).toBeInTheDocument();
     expect(screen.getByText("No cohorts.")).toBeInTheDocument();
+  });
+});
+
+describe("active users and retention footnotes", () => {
+  const week = {
+    week_start: "2026-11-16",
+    iso_week: "2026-W47",
+    active_users: 0,
+    writers: 0,
+    by_client: {},
+    week_complete: true,
+  };
+  const cohort = {
+    week_start: "2026-10-12",
+    iso_week: "2026-W42",
+    activated: 4,
+    active_week1: 3,
+    pct_week1: 75,
+    active_week4: 2,
+    pct_week4: 50,
+  };
+
+  it("explains zero weeks, and the retention dash only when a cell has one", () => {
+    const { rerender } = render(
+      <ActiveUsersSection
+        activeUsers={{ status: "ok", data: [week] }}
+        retention={{ status: "ok", data: [cohort] }}
+      />,
+    );
+    expect(screen.getByText(/Weeks before activity days were recorded/)).toBeInTheDocument();
+    expect(screen.getByText("0 of 0")).toBeInTheDocument();
+    expect(screen.getByText("2 of 4 (50%)")).toBeInTheDocument();
+    expect(screen.queryByText(/the window is still open/)).not.toBeInTheDocument();
+
+    rerender(
+      <ActiveUsersSection
+        activeUsers={{ status: "ok", data: [week] }}
+        retention={{ status: "ok", data: [{ ...cohort, active_week4: null, pct_week4: null }] }}
+      />,
+    );
+    expect(screen.getByText(/the window is still open/)).toBeInTheDocument();
   });
 });
 

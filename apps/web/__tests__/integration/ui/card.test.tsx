@@ -203,4 +203,13 @@ describe("Card composition", () => {
     expect(screen.getByText("Title")).toBeInTheDocument();
     expect(screen.getByText("Content")).toBeInTheDocument();
   });
+
+  it("uses one background class per tone", () => {
+    const { container, rerender } = render(<Card>Default</Card>);
+    expect(container.firstElementChild).toHaveClass("bg-bg-subtle");
+
+    rerender(<Card tone="warning">Warning</Card>);
+    expect(container.firstElementChild).toHaveClass("bg-warning-bg");
+    expect(container.firstElementChild).not.toHaveClass("bg-bg-subtle");
+  });
 });
