@@ -91,9 +91,11 @@ Publishing an update (e.g. after adding or changing a tool):
 Registry namespace auth is DNS-based: the `drafto.eu` TXT record holds the Ed25519 public key. The matching private key lives at `~/drafto-secrets/mcp-registry-key.pem` and is never committed. If the publisher login has expired, re-authenticate:
 
 ```bash
-PRIVATE_KEY="$(openssl pkey -in ~/drafto-secrets/mcp-registry-key.pem -noout -text | grep -A3 'priv:' | tail -n +2 | tr -d ' :\n')"
+PRIVATE_KEY="$(openssl pkey -in ~/drafto-secrets/mcp-registry-key.pem -noout -text | awk '/^priv:/{f=1;next} /^pub:/{f=0} f' | tr -d ' :\n')"
 ~/bin/mcp-publisher login dns --domain "drafto.eu" --private-key "${PRIVATE_KEY}"
 ```
+
+The `awk` takes the hex lines between `priv:` and `pub:`, which works however many lines OpenSSL wraps the key over (OpenSSL 4 uses two, older versions three). The key must come out as 64 hex characters.
 
 See the "MCP Server (Claude Cowork Integration)" section of `CLAUDE.md` for the authoritative reference.
 
