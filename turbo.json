@@ -13,6 +13,7 @@
         "APPROVAL_LINK_SECRET",
         "APP_URL",
         "WEBHOOK_SECRET",
+        "HOSTED_USAGE_SECRET",
         "APPLE_TEAM_ID",
         "APPLE_SIGN_IN_KEY_ID",
         "APPLE_SIGN_IN_PRIVATE_KEY"

@@ -12,10 +12,20 @@ import {
 } from "@/app/(app)/admin/stats/active-users-section";
 import { LIMIT_LEVEL_TONE, resourceLabel } from "@/app/(app)/admin/stats/limit-level";
 import { DEFAULT_UNAVAILABLE_TEXT } from "@/app/(app)/admin/stats/metric-result-view";
+import { HostedUsageList, NO_READOUT_TEXT } from "@/app/(app)/admin/stats/hosted-usage-list";
+import type { HostedUsageRow } from "@/lib/metrics/rpc-schemas";
 import type { NeedsAttention } from "@/lib/metrics/needs-attention";
 
-const clear: NeedsAttention = { emptiedNotes: [], limits: [], unchecked: [], isClear: true };
+const clear: NeedsAttention = {
+  emptiedNotes: [],
+  limits: [],
+  hostedLimits: [],
+  readoutStaleSince: null,
+  unchecked: [],
+  isClear: true,
+};
 const unavailable = { status: "unavailable" } as const;
+const NOW = "2026-11-21T08:00:00.000Z";
 const failed = { status: "error", message: "metrics_x failed (42501): permission denied" } as const;
 
 describe("Needs attention", () => {
@@ -40,6 +50,8 @@ describe("Needs attention", () => {
               level: "critical",
             },
           ],
+          hostedLimits: [],
+          readoutStaleSince: null,
           unchecked: [{ check: "Emptied notes", reason: "metrics_emptied_notes failed: timeout" }],
           isClear: false,
         }}
@@ -85,7 +97,14 @@ describe("section states", () => {
     ["depth", () => <DepthSection depth={{ status: "ok", data: null }} />, "No depth figures."],
     [
       "platform limits",
-      () => <PlatformLimitsSection platformLimits={{ status: "ok", data: [] }} hostedUsage={[]} />,
+      () => (
+        <PlatformLimitsSection
+          platformLimits={{ status: "ok", data: [] }}
+          hostedReadings={{ status: "ok", data: [] }}
+          hostedUsage={[]}
+          now={NOW}
+        />
+      ),
       "No limits reported.",
     ],
   ])("shows the %s empty state", (_name, ui, text) => {
@@ -183,6 +202,8 @@ describe("limit levels", () => {
   it("colours each bar by its level and links to hosted usage", () => {
     render(
       <PlatformLimitsSection
+        hostedReadings={{ status: "unavailable" }}
+        now={NOW}
         platformLimits={{
           status: "ok",
           data: [
@@ -214,5 +235,64 @@ describe("limit levels", () => {
       "href",
       "https://vercel.com/x/~/usage",
     );
+  });
+});
+
+describe("hosting usage readout", () => {
+  const row = (over: Partial<HostedUsageRow> = {}): HostedUsageRow => ({
+    provider: "vercel",
+    resource: "vercel_cdn_requests",
+    unit: "count",
+    used: 750000,
+    limit_value: 1000000,
+    pct: 75,
+    level: "warn",
+    period_from: "2026-10-22",
+    period_to: "2026-11-21",
+    captured_at: "2026-11-11T19:00:00+00:00",
+    stale: true,
+    ...over,
+  });
+
+  it("explains a readout that hasn't run, or isn't set up", () => {
+    const { rerender } = render(
+      <HostedUsageList readings={{ status: "ok", data: [] }} now={NOW} />,
+    );
+    expect(screen.getByText(NO_READOUT_TEXT)).toBeInTheDocument();
+    rerender(<HostedUsageList readings={unavailable} now={NOW} />);
+    expect(screen.getByText(NO_READOUT_TEXT)).toBeInTheDocument();
+  });
+
+  it("shows each reading against its limit, with its age, period and staleness", () => {
+    render(<HostedUsageList readings={{ status: "ok", data: [row()] }} now={NOW} />);
+    const item = screen.getByTestId("hosted-vercel_cdn_requests");
+    expect(item).toHaveTextContent("Vercel — CDN requests750,000 of 1,000,000 (75%)warnstale");
+    expect(item).toHaveTextContent(
+      "Read 2026-11-11 19:00 UTC (10 days ago) · usage 2026-10-22 to 2026-11-21",
+    );
+    expect(screen.getByRole("progressbar", { name: "Vercel — CDN requests used" })).toHaveAttribute(
+      "aria-valuenow",
+      "75",
+    );
+  });
+
+  it("lists high and stale readings under Needs attention", () => {
+    render(
+      <NeedsAttentionSection
+        emptiedNotesDays={14}
+        needsAttention={{
+          ...clear,
+          hostedLimits: [row()],
+          readoutStaleSince: "2026-11-11T19:00:00+00:00",
+          isClear: false,
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/Vercel — CDN requests: 750,000 of 1,000,000 \(75%\)/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/The weekly usage readout hasn.t run since 2026-11-11 19:00 UTC/),
+    ).toBeInTheDocument();
   });
 });

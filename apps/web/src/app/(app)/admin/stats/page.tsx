@@ -46,7 +46,9 @@ export default async function AdminStatsPage() {
       />
       <PlatformLimitsSection
         platformLimits={metrics.platformLimits}
+        hostedReadings={metrics.hostedReadings}
         hostedUsage={metrics.hostedUsage}
+        now={metrics.generatedAt}
       />
       <ActivationSection activation={metrics.activation} />
       <WritersSection writers={metrics.writers} />
