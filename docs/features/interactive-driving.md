@@ -17,7 +17,7 @@ Interactive mode has three things the factory lacks:
 
 Every material step is posted on the issue, so the issue is the log of what happened, whichever driver did the work.
 
-A card can switch drivers in almost any column, in either direction. A card in Planning is handed back to Ready. In Progress and Approved need their gate's approval logged first. An interactive session leaves the artifacts the factory expects, so the factory carries on from wherever the card is handed back. See [ADR-0090](../adr/0090-interactive-issue-driving.md).
+A card can switch drivers in almost any column, in either direction. A card in Planning is handed back to Ready. Handing a card past a human gate needs that gate's approval logged first. An interactive session leaves the artifacts the factory expects, so the factory carries on from wherever the card is handed back. See [ADR-0090](../adr/0090-interactive-issue-driving.md).
 
 ## How it works
 
@@ -96,16 +96,18 @@ Everything in `CLAUDE.md` applies to both modes. These are the rules that differ
 
 **Handing a card to the factory.** Commit and push everything first: unpushed commits make the factory's worktree diverge, and its implement stage then blocks the card. Then run `drive-issue.mjs release <n> --to <Column> --note "<state, what's left>"`.
 
-| Hand back to                        | Needs                                                                                             | The factory then                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Ready                               | —                                                                                                 | plans it (spec gate first)                                        |
-| Plan Review                         | —                                                                                                 | waits for your board drag; your comments trigger a replan         |
-| In Progress                         | the plan comment; from before In Progress, `plan-approved` logged after the latest plan or replan | implements the plan on `factory/issue-<n>`                        |
-| In Review                           | plan + open PR                                                                                    | fixes CI and threads, runs its code review, hands on              |
-| Testing                             | plan + open PR                                                                                    | runs its verification lanes                                       |
-| In Test                             | plan + open PR                                                                                    | waits for your board drag; actionable comments trigger a revision |
-| Approved                            | plan + open PR; from before Approved, `approved` logged after the latest revision                 | runs `--release`: gates, merge, betas                             |
-| Released / Done / Blocked / Backlog | —                                                                                                 | nothing                                                           |
+| Hand back to                        | Needs            | The factory then                                                  |
+| ----------------------------------- | ---------------- | ----------------------------------------------------------------- |
+| Ready                               | —                | plans it (spec gate first)                                        |
+| Plan Review                         | —                | waits for your board drag; your comments trigger a replan         |
+| In Progress                         | the plan comment | implements the plan on `factory/issue-<n>`                        |
+| In Review                           | plan + open PR   | fixes CI and threads, runs its code review, hands on              |
+| Testing                             | plan + open PR   | runs its verification lanes                                       |
+| In Test                             | plan + open PR   | waits for your board drag; actionable comments trigger a revision |
+| Approved                            | plan + open PR   | runs `--release`: gates, merge, betas                             |
+| Released / Done / Blocked / Backlog | —                | nothing                                                           |
+
+Approvals: handing a card from a column before In Progress to In Progress or any later column (through Done) needs `plan-approved` logged after the latest plan or replan. Handing it from a column before Approved to Approved, Released or Done needs `approved` logged after the latest revision. This applies when the current column is one of the flow columns (Backlog through Done); `--force` never waives it.
 
 Planning can't be a handback target, even with `--force`: it is the factory's own transient column, so a card in Planning goes back to Ready. `--force` waives only the plan and open-PR requirements, never a missing approval. A `migration-approved` label whose SQL changed since the session's approval blocks the handback. If a release removes the label but fails to post its log, re-run it: it posts just the log.
 

@@ -44,7 +44,7 @@ Three things made that fragile:
 
 ## Decision
 
-Add a second driver mode, **interactive**, that drives the same issue through the same columns, gates and standards from a Claude Code session. Let a card switch drivers at any column, in either direction.
+Add a second driver mode, **interactive**, that drives the same issue through the same columns, gates and standards from a Claude Code session. Let a card switch drivers in any column but Planning (a Planning card goes back to Ready), in either direction, once the human gates it would pass are approved.
 
 1. **Ownership label.** `driver:interactive` means a session owns the card. The factory routes every per-card skip through one helper, `card_opted_out`, which honours `factory-pause` and `driver:interactive` alike:
    - the Testing sweep, the plan rescue, Ready, Plan Review, In Progress, In Review, the In Test sweep and Approved;

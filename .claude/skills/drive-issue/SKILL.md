@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 # /drive-issue <n> — drive a factory issue interactively
 
-You drive issue `#<n>` (the skill's argument) through the same board columns, gates and tests the dark factory uses. You use what an interactive session has and the factory doesn't: the operator in the loop, this Mac's emulators, simulators and macOS apps, and its Chrome. A card can move between this mode and the factory at any column, in either direction.
+You drive issue `#<n>` (the skill's argument) through the same board columns, gates and tests the dark factory uses. You use what an interactive session has and the factory doesn't: the operator in the loop, this Mac's emulators, simulators and macOS apps, and its Chrome. A card can move between this mode and the factory in any column but Planning (a Planning card goes back to Ready), in either direction, once the gates it would pass are approved.
 
 The operator manual is [`docs/features/interactive-driving.md`](../../../docs/features/interactive-driving.md); the decision is [ADR-0090](../../../docs/adr/0090-interactive-issue-driving.md). Read the manual's "Rules by mode" table once per session.
 
@@ -169,13 +169,13 @@ Tell the operator what to test and where. Ask with AskUserQuestion:
 
 - **Hand back:** first commit and push everything, because unpushed commits make the factory's worktree diverge. Then run `release <n> --to <Column> --note "<state, what's left>"`. Without `--to`, the card stays where it is and that column is checked. The rules:
 
-  | Column                                               | Requirement                                                                                              |
-  | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-  | Planning                                             | Never a target, even with `--force`. A card in Planning goes back with `--to Ready`                      |
-  | In Progress                                          | The plan comment. Coming from before In Progress, `plan-approved` logged after the latest plan or replan |
-  | In Review, Testing, In Test                          | The plan comment and an open PR on `factory/issue-<n>`                                                   |
-  | Approved                                             | The same as In Review. Coming from before Approved, `approved` logged after the latest revision          |
-  | Backlog, Ready, Plan Review, Released, Done, Blocked | Nothing                                                                                                  |
+  | Column                                               | Requirement                                                                         |
+  | ---------------------------------------------------- | ----------------------------------------------------------------------------------- |
+  | Planning                                             | Never a target, even with `--force`. A card in Planning goes back with `--to Ready` |
+  | In Progress                                          | The plan comment                                                                    |
+  | In Review, Testing, In Test, Approved                | The plan comment and an open PR on `factory/issue-<n>`                              |
+  | Backlog, Ready, Plan Review, Released, Done, Blocked | Nothing more                                                                        |
+  - Approvals: handing a card from a column before In Progress to In Progress or any later column (through Done) needs `plan-approved` logged after the latest plan or replan. Handing it from a column before Approved to Approved, Released or Done needs `approved` logged after the latest revision. This applies when the current column is one of the flow columns (Backlog through Done); `--force` never waives it.
   - `--force` waives only the plan and open-PR requirements, never Planning, an unknown column or a missing approval.
   - A `migration-approved` label whose SQL changed since the session's approval blocks the handback.
   - The CLI adds the PR marker if the PR lacks it, removes the label, then logs `handback` with what the factory does next. If that log fails, re-run the same `release` to post it.
