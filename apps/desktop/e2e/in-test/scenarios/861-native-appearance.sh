@@ -209,11 +209,22 @@ preflight() {
     pf fail "Drafto is not running (open $APP first)"
   else
     pf ok "screen unlocked"
-    local pid exe
+    # The running process must be the installed bundle, started after that
+    # bundle was last written: a TestFlight update replaces the bundle under a
+    # still-running old process (same check as harness.sh).
+    local pid exe started written
     pid=$(drafto_pid)
     exe=$(ps -o comm= -p "$pid")
-    [[ "$exe" == "$APP/"* ]] && pf ok "the running Drafto (pid $pid) is $APP" ||
+    started=$(LC_ALL=C date -j -f "%a %b %d %T %Y" "$(LC_ALL=C ps -o lstart= -p "$pid" | sed 's/[[:space:]]*$//')" +%s 2> /dev/null)
+    written=$(stat -f %m "$APP/Contents/_MASReceipt/receipt" 2> /dev/null ||
+      stat -f %m "$APP/Contents/Info.plist" 2> /dev/null)
+    if [[ "$exe" != "$APP/"* ]]; then
       pf fail "the running Drafto (pid $pid) is $exe, not $APP"
+    elif [ -n "$started" ] && [ -n "$written" ] && [ "$started" -ge "$written" ]; then
+      pf ok "the running Drafto (pid $pid) was started from $APP after it was installed"
+    else
+      pf fail "the running Drafto started before $APP was last updated — quit and reopen it"
+    fi
     local n
     n=$(ax_dump | jq 'length' 2> /dev/null)
     [ "${n:-0}" -gt 3 ] && pf ok "accessibility tree readable ($n elements)" ||
@@ -254,6 +265,9 @@ fi
 preflight || die "preflight failed — nothing was changed"
 ORIG_OS_DARK=$(os_dark)
 ORIG_THEME=$(app_theme)
+# Cleanup restores these, so both must be known before anything changes.
+[[ "$ORIG_OS_DARK" =~ ^(true|false)$ ]] || die "could not read macOS's appearance — nothing was changed"
+[[ "$ORIG_THEME" =~ ^(Light|Dark|System)$ ]] || die "could not read View → Appearance — nothing was changed"
 {
   echo
   echo "This run changes, and restores at the end:"
@@ -359,7 +373,13 @@ else
   f=$(capture_rect alert-sheet $sheet_frame)
   l=$([ -n "$f" ] && region_luma "$f" 0.05 0.05 0.95 0.95)
   ax_native_press "$cancel_btn" || osascript -e 'tell application "System Events" to key code 53' > /dev/null
-  poll 5 on_main_screen || fail_step "the app left the main screen after Cancel"
+  # An empty dump (a failed read) must not count as closed.
+  sheet_closed() {
+    local d
+    d=$(ax_dump) && [ -n "$d" ] && ! jq -e 'any(.[]; .role == "AXSheet")' <<< "$d" > /dev/null
+  }
+  poll 5 sheet_closed || fail_step "the sign-out confirmation was still open after Cancel"
+  on_main_screen || fail_step "the app left the main screen after Cancel"
   if [ "$(shade "${l:-}")" = dark ]; then
     step_end PASS "sheet luma $l (dark); cancelled, still signed in"
   else
