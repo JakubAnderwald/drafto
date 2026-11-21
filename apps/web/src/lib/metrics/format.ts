@@ -80,9 +80,10 @@ export function formatHostedAmount(value: number, unit: "GB" | "count" | "hours"
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-/** How long before `now` something happened: "today", "1 day ago", "9 days ago". */
+/** How many UTC calendar days before `now` something happened: "today", "1 day ago", "9 days ago". */
 export function formatAge(iso: string, now: string): string {
-  const days = Math.floor((Date.parse(now) - Date.parse(iso)) / 86_400_000);
+  const day = (t: string) => Math.floor(Date.parse(t) / 86_400_000);
+  const days = day(now) - day(iso);
   if (!Number.isFinite(days)) return NOT_AVAILABLE;
   if (days <= 0) return "today";
   return days === 1 ? "1 day ago" : `${days} days ago`;

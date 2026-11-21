@@ -28,7 +28,8 @@ const RESOURCE_NAMES = Object.keys(HOSTED_USAGE_RESOURCES) as [
 /** Far above any plan in use: a bigger figure is a misread, not usage. */
 const MAX_USED: Record<HostedUsageUnit, number> = { GB: 100_000, count: 1e10, hours: 10_000 };
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+// A real calendar date (2026-02-30 fails here, not at the insert).
+const isoDate = z.iso.date();
 
 const readingSchema = z
   .object({

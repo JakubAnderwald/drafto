@@ -20,7 +20,7 @@ const clear: NeedsAttention = {
   emptiedNotes: [],
   limits: [],
   hostedLimits: [],
-  staleReadings: [],
+  readoutStaleSince: null,
   unchecked: [],
   isClear: true,
 };
@@ -51,7 +51,7 @@ describe("Needs attention", () => {
             },
           ],
           hostedLimits: [],
-          staleReadings: [],
+          readoutStaleSince: null,
           unchecked: [{ check: "Emptied notes", reason: "metrics_emptied_notes failed: timeout" }],
           isClear: false,
         }}
@@ -268,7 +268,7 @@ describe("hosting usage readout", () => {
     const item = screen.getByTestId("hosted-vercel_cdn_requests");
     expect(item).toHaveTextContent("Vercel — CDN requests750,000 of 1,000,000 (75%)warnstale");
     expect(item).toHaveTextContent(
-      "Read 2026-11-11 19:00 UTC (9 days ago) · usage 2026-10-22 to 2026-11-21",
+      "Read 2026-11-11 19:00 UTC (10 days ago) · usage 2026-10-22 to 2026-11-21",
     );
     expect(screen.getByRole("progressbar", { name: "Vercel — CDN requests used" })).toHaveAttribute(
       "aria-valuenow",
@@ -280,12 +280,19 @@ describe("hosting usage readout", () => {
     render(
       <NeedsAttentionSection
         emptiedNotesDays={14}
-        needsAttention={{ ...clear, hostedLimits: [row()], staleReadings: [row()], isClear: false }}
+        needsAttention={{
+          ...clear,
+          hostedLimits: [row()],
+          readoutStaleSince: "2026-11-11T19:00:00+00:00",
+          isClear: false,
+        }}
       />,
     );
     expect(
       screen.getByText(/Vercel — CDN requests: 750,000 of 1,000,000 \(75%\)/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/The weekly usage readout is stale/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/The weekly usage readout hasn.t run since 2026-11-11 19:00 UTC/),
+    ).toBeInTheDocument();
   });
 });

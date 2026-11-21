@@ -34,7 +34,7 @@ describe("deriveNeedsAttention", () => {
       emptiedNotes: [],
       limits: [],
       hostedLimits: [],
-      staleReadings: [],
+      readoutStaleSince: null,
       unchecked: [],
       isClear: true,
     });
@@ -96,21 +96,37 @@ describe("deriveNeedsAttention", () => {
       platformLimits: { status: "ok", data: [] },
     };
 
-    it("flags readings at warn or critical, worst first, and stale ones", () => {
+    it("flags readings at warn or critical, worst first", () => {
       const result = deriveNeedsAttention({
         ...base,
         hostedReadings: {
           status: "ok",
-          data: [
-            reading("a", 72, "warn"),
-            reading("b", 90, "critical"),
-            reading("c", 10, "ok", true),
-          ],
+          data: [reading("a", 72, "warn"), reading("b", 90, "critical"), reading("c", 10, "ok")],
         },
       });
       expect(result.hostedLimits.map((r) => r.resource)).toEqual(["b", "a"]);
-      expect(result.staleReadings.map((r) => r.resource)).toEqual(["c"]);
+      expect(result.readoutStaleSince).toBeNull();
       expect(result.isClear).toBe(false);
+    });
+
+    it("flags a readout that hasn't run, not one resource that dropped out", () => {
+      const dropped = deriveNeedsAttention({
+        ...base,
+        hostedReadings: {
+          status: "ok",
+          data: [reading("a", 10, "ok"), reading("c", 10, "ok", true)],
+        },
+      });
+      expect(dropped.readoutStaleSince).toBeNull();
+      expect(dropped.isClear).toBe(true);
+
+      const older = { ...reading("a", 10, "ok", true), captured_at: "2026-11-01T19:00:00+00:00" };
+      const allStale = deriveNeedsAttention({
+        ...base,
+        hostedReadings: { status: "ok", data: [older, reading("c", 10, "ok", true)] },
+      });
+      expect(allStale.readoutStaleSince).toBe("2026-11-15T19:00:00+00:00");
+      expect(allStale.isClear).toBe(false);
     });
 
     it("is clear with fresh readings below 70%, and with no readout set up", () => {

@@ -14,8 +14,12 @@ export interface NeedsAttention {
   limits: PlatformLimitRow[];
   /** Vercel / Supabase readings at `warn` or `critical`, worst first (ADR 0091). */
   hostedLimits: HostedUsageRow[];
-  /** Readings more than 8 days old: the weekly readout hasn't run. */
-  staleReadings: HostedUsageRow[];
+  /**
+   * When every reading is more than 8 days old, the newest one's time: the weekly readout
+   * hasn't run since. Null while any reading is fresh, or there are none. One resource gone
+   * stale while the rest are fresh (it dropped out of the dashboard) shows only as a badge.
+   */
+  readoutStaleSince: string | null;
   /** Checks that couldn't run, so "nothing needs attention" can't be claimed for them. */
   unchecked: UncheckedCheck[];
   /** True only when every check ran and found nothing. */
@@ -59,19 +63,22 @@ export function deriveNeedsAttention(
   const hostedLimits = readings
     .filter((row) => row.level !== "ok")
     .sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || b.pct - a.pct);
-  const staleReadings = readings.filter((row) => row.stale);
+  const readoutStaleSince =
+    readings.length > 0 && readings.every((row) => row.stale)
+      ? readings.reduce((newest, row) => (row.captured_at > newest ? row.captured_at : newest), "")
+      : null;
 
   return {
     emptiedNotes,
     limits,
     hostedLimits,
-    staleReadings,
+    readoutStaleSince,
     unchecked,
     isClear:
       unchecked.length === 0 &&
       emptiedNotes.length === 0 &&
       limits.length === 0 &&
       hostedLimits.length === 0 &&
-      staleReadings.length === 0,
+      readoutStaleSince === null,
   };
 }

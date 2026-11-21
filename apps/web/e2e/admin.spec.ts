@@ -86,6 +86,11 @@ test.describe("Admin product metrics", () => {
     });
     await expect(page.getByRole("heading", { level: 2 })).toHaveText(STATS_SECTIONS);
 
+    // The weekly hosting-usage readout (ADR-0091): its readings, or why there are none.
+    await expect(page.getByTestId("metrics-section-platform-limits")).toContainText(
+      /No dashboard readout yet|Vercel — |Supabase — /,
+    );
+
     // The page scrolls inside the app shell, which clips overflow: the last section must be
     // reachable, not cut off below the fold.
     const last = page.getByRole("heading", { level: 2, name: STATS_SECTIONS.at(-1) });

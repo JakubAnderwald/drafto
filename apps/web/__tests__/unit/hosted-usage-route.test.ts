@@ -129,6 +129,10 @@ describe("POST /api/cron/hosted-usage", () => {
       },
     ],
     ["an extra field", { readings: [{ resource: "supabase_egress", used: 1, note: "x" }] }],
+    [
+      "an impossible date",
+      { readings: [{ resource: "supabase_egress", used: 1, periodTo: "2026-02-30" }] },
+    ],
   ])("rejects %s with 400", async (_name, body) => {
     const res = await POST(request(body));
 

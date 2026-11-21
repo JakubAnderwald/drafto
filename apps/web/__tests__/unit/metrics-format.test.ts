@@ -100,6 +100,8 @@ describe("metrics format", () => {
   it("says how old a reading is", () => {
     const now = "2026-11-21T08:00:00.000Z";
     expect(formatAge("2026-11-21T07:00:00.000Z", now)).toBe("today");
+    // Calendar days, not 24-hour periods: Sunday evening seen on Monday morning.
+    expect(formatAge("2026-11-20T20:00:00.000Z", now)).toBe("1 day ago");
     expect(formatAge("2026-11-20T07:00:00.000Z", now)).toBe("1 day ago");
     expect(formatAge("2026-11-12T07:00:00.000Z", now)).toBe("9 days ago");
     expect(formatAge("nope", now)).toBe("—");

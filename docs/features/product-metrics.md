@@ -232,7 +232,7 @@ The database can't measure egress or Vercel usage, so the step 3 spec asked whet
 
 Neither provider has both the data and a read-only credential, and a full-access token in Vercel's environment just to draw a bar would be a worse trade. Both dashboards do show the figures, so they are read from there once a week ([ADR-0091](../adr/0091-weekly-hosting-usage-readout.md)):
 
-- **The readout.** On Sunday at 20:00 the Mac mini's browser runner opens the two usage pages read-only and posts the figures as shown. Its guard allows only those two URLs, with no clicks or typing. The details are in the factory runbook's "Browser runner".
+- **The readout.** On Sunday at 20:00 the Mac mini's browser runner opens the two usage pages read-only and posts the figures as shown. Its guard allows only those two URLs, with no clicks or typing. It ships in its own PR (the `usage` kind of the factory's browser runner, documented in the runbook's "Browser runner"). Until it runs, the page says no readout has come in yet.
 - **The route.** `POST /api/cron/hosted-usage` takes the readout with `Authorization: Bearer $HOSTED_USAGE_SECRET`, a secret that can do nothing else. It validates the body (`hosted-usage-readout.ts`: known resources, each once, plausible amounts, no extra fields) and inserts one row per reading into `hosted_usage_snapshots` as the service role.
 - **The metric.** `metrics_hosted_usage()` returns the newest reading per resource against its plan limit:
 
@@ -245,12 +245,12 @@ Neither provider has both the data and a read-only credential, and a full-access
   | `supabase_egress`             | GB        | 5         |
   | `supabase_cached_egress`      | GB        | 5         |
 
-  Readings and limits are kept in the dashboard's unit, so the percentage doesn't depend on decimal vs binary gigabytes. Levels are as in `metrics_platform_limits()`: `ok` below 70%, `warn` from 70%, `critical` from 85%. A reading more than 8 days old is `stale`.
+  Readings and limits are kept in the dashboard's unit, so the percentage doesn't depend on decimal vs binary gigabytes. Levels are as in `metrics_platform_limits()`: `ok` below 70%, `warn` from 70%, `critical` from 85%. A reading more than 8 days old is `stale`. Readings are only added: a resource that drops out of the dashboard keeps its last row and goes stale.
 
 - **The page.**
   - Platform limits shows the readings as bars, each with when it was read and the dashboard's usage period. A stale one carries a "stale" badge. With no readings yet, it says the Mac mini reads them on Sunday evening.
   - The links to both usage pages stay, as the source and the fallback.
-  - Needs attention flags a reading at `warn` or `critical`, and a stale readout. A readout that was never set up (the function missing) isn't flagged.
+  - Needs attention flags a reading at `warn` or `critical`, and a readout that hasn't run: every reading stale, shown with when the newest was read. One stale resource among fresh ones only gets its badge. A readout that was never set up (the function missing) isn't flagged.
 - **Keeping the limits current.** Plan limits change. Update the constants in `metrics_hosted_usage()` in a new migration, as for `metrics_platform_limits()`.
 
 ## If sign-ups and activation fail with permission denied

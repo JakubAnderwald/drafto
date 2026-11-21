@@ -20,7 +20,8 @@ export function NeedsAttentionSection({
   needsAttention,
   emptiedNotesDays,
 }: NeedsAttentionSectionProps) {
-  const { emptiedNotes, limits, hostedLimits, staleReadings, unchecked, isClear } = needsAttention;
+  const { emptiedNotes, limits, hostedLimits, readoutStaleSince, unchecked, isClear } =
+    needsAttention;
   return (
     <MetricsSection
       id="needs-attention"
@@ -77,11 +78,10 @@ export function NeedsAttentionSection({
           ))}
         </ul>
       ) : null}
-      {staleReadings.length > 0 ? (
+      {readoutStaleSince ? (
         <p className="text-fg text-sm">
-          The weekly usage readout is stale (last read{" "}
-          {formatUtcTimestamp(staleReadings[0].captured_at)}
-          ): check the Mac mini&apos;s usage readout, and the usage pages under Platform limits.
+          The weekly usage readout hasn&apos;t run since {formatUtcTimestamp(readoutStaleSince)}:
+          check the Mac mini&apos;s usage readout, and the usage pages under Platform limits.
         </p>
       ) : null}
       {unchecked.length > 0 ? (
