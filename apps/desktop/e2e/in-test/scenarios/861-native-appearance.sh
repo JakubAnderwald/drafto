@@ -25,7 +25,10 @@
 # chrome reads below DARK_MAX, light chrome above LIGHT_MIN.
 set -uo pipefail
 # awk's printf follows the locale: under pl_PL, "%.4f" prints 0,0037, which
-# bin/luma rejects. The region fractions need a decimal point.
+# bin/luma rejects. The region fractions need a decimal point. LC_ALL would
+# override LC_NUMERIC, so drop it; the rest of the locale (UTF-8 for the ✓
+# checkmark match) stays.
+unset LC_ALL
 export LC_NUMERIC=C
 
 SCENARIO=861-native-appearance
