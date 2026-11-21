@@ -5,6 +5,7 @@ A harness that runs a dark-factory **In Test** scenario against the installed ma
 - Code: [`apps/desktop/e2e/in-test/`](../../apps/desktop/e2e/in-test/)
 - First scenario: [`scenarios/458-sync-gating.sh`](../../apps/desktop/e2e/in-test/scenarios/458-sync-gating.sh), for #458 / PR #673. Its first green run was on 2026-10-10 against build 0.4.1 (59): 14 checks (step 0, the scenario's steps and an extra A1b check), 11 PASS, 3 WARN. The WARNs were #675, #676 and a sign-out check that now reads the local database instead of the indicator.
 - [`scenarios/677-pending-indicator.sh`](../../apps/desktop/e2e/in-test/scenarios/677-pending-indicator.sh), for #677 / PR #772. A background sampler records the indicator's `AXHelp` and `db_pending` about every 0.3 s, and each step judges that timeline (`timeline-<step>.tsv` in the run directory). On 2026-11-01 the scenario's first version passed P0–P4 on build 0.4.4 (73), and its negative control on build 72 (`ISSUE= PR=`) failed P1 and P4. The review hardening that followed (P4's Trash-based count, P0's before-sync rule, baseline checks) hasn't been run end to end yet.
+- [`scenarios/861-native-appearance.sh`](../../apps/desktop/e2e/in-test/scenarios/861-native-appearance.sh), for #861. It checks that the title bar and the sign-out sheet follow View → Appearance rather than macOS (it records the View menu's shade but doesn't judge it, since menu-bar menus follow macOS), and that System follows a live macOS switch ([ADR-0089](../adr/0089-macos-native-appearance-follows-in-app-theme.md)). It needs no account and writes nothing to production, so it doesn't source `lib/harness.sh` (see [Writing a scenario](#writing-a-scenario)). It switches macOS between Light and Dark and puts the setting back on exit. Its steps judge brightness with `bin/luma` rather than text.
 
 It is not part of the [test matrix](../architecture/testing.md), because it writes to production. Nothing runs it in CI or before a push.
 
@@ -28,7 +29,7 @@ An agent may write or adapt a scenario and run `--preflight`, which is read-only
 - **App:** the TestFlight build under test installed at `/Applications/Drafto.app` and running.
 - **Session:** the screen unlocked, because a locked console can't be driven or captured.
 
-The Swift helpers (`axq`, `ocr`) are compiled into `apps/desktop/e2e/in-test/bin/` (gitignored) on first use.
+The Swift helpers (`axq`, `ocr`, `luma`) are compiled into `apps/desktop/e2e/in-test/bin/` (gitignored) on first use.
 
 ## Getting the build from TestFlight
 
@@ -70,7 +71,7 @@ Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/`:
 | File                    | What it does                                                                                                                                 |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lib/harness.sh`        | Entry point a scenario sources: modes, run directory, preflight, the production confirmation, throwaway credentials, the cleanup `EXIT` trap |
-| `lib/ax.sh`             | Find, press, fill and read controls; window capture and OCR                                                                                  |
+| `lib/ax.sh`             | Find, press, fill and read controls; window capture and OCR; `build_helpers` compiles the Swift helpers                                      |
 | `lib/app.sh`            | Drafto screens and flows: `on_main_screen`, `log_in`, `sign_out_via_menu`, `confirm_sign_out`, `settle`, `poll_synced`, …                    |
 | `lib/db.sh`             | Read-only queries on the app's WatermelonDB                                                                                                  |
 | `lib/prod.sh`           | REST as the throwaway user; admin SQL through the Supabase Management API                                                                    |
@@ -78,6 +79,7 @@ Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/`:
 | `lib/common.sh`         | Logging, steps (`step_begin` / `step_end` / `fail_step`), screenshots, the report                                                            |
 | `lib/axq.swift`         | Accessibility tree dump, `AXFocused`, window id, key window                                                                                  |
 | `lib/ocr.swift`         | Vision text recognition on a PNG, optionally locating one string                                                                             |
+| `lib/luma.swift`        | Mean brightness of a region of a PNG, for checks on colour (dark or light chrome)                                                            |
 | `scenarios/<issue>-…sh` | One file per In-Test scenario                                                                                                                |
 
 ## Writing a scenario
@@ -89,6 +91,7 @@ Copy `458-sync-gating.sh`. Set `SCENARIO`, `SCENARIO_TITLE`, `QA_TAG`, `ISSUE`, 
 - **Record WARN for a known, unrelated bug** (cite the issue) and FAIL for a regression in the change under test. Keep checking what the change is responsible for even when a step's UI expectation can't be met. The #458 A2 step still asserts "no pull while unapproved".
 - **Take baselines before the action that could break.** For example, the "never pulls while unapproved" baseline is recorded after sign-out, before sign-up.
 - **Scope every production write** to the throwaway account's exact e-mail or user id. Never use a pattern or an unqualified `DELETE` ([production data safety](./migrations.md)).
+- **A scenario that needs no account can skip `lib/harness.sh`.** The harness always creates a production throwaway account. `861-native-appearance.sh` sources only `common.sh`, `ax.sh` and `app.sh` and supplies its own preflight, confirmation and `EXIT` trap. It restores what it changed, the app theme and macOS's appearance, in that trap.
 
 ## Driving the app: what works on RN macOS 0.81
 
