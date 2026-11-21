@@ -1,7 +1,9 @@
 #!/bin/bash
-# In-Test scenario for #861: the macOS app's native chrome (title bar, menus,
-# NSAlert sheets) follows the in-app theme (View → Appearance), and System
-# follows macOS again, live changes included. Guide:
+# In-Test scenario for #861: the macOS app's native chrome (title bar, NSAlert
+# sheets) follows the in-app theme (View → Appearance), and System follows
+# macOS again, live changes included. Menu-bar menus follow macOS whatever the
+# app sets (ADR-0089), so the View menu's shade is recorded as evidence but
+# never decides a step. Guide:
 # docs/operations/macos-in-test-automation.md
 #
 #   bash scenarios/861-native-appearance.sh --preflight     read-only checks
@@ -309,16 +311,13 @@ log "Run — $SCENARIO_TITLE — OS dark mode $ORIG_OS_DARK, app theme $ORIG_THE
 ensure_front
 sleep 1
 
-# window_step <titlebar> <content> — judge the window and the View menu.
+# window_step <titlebar> <content> — judge the window; record the View menu's
+# shade without judging it (menu-bar menus follow macOS, see ADR-0089).
 window_step() {
   local tb=$1 ct=$2 menu
   if expect_window "$tb" "$ct"; then
     menu=$(view_menu_shade)
-    if [ "${menu%% *}" = "$tb" ]; then
-      step_end PASS "title bar $tb, content $ct, View menu $tb (lumas: $(cut -d' ' -f3- <<< "$WIN"), menu ${menu#* })"
-    else
-      step_end FAIL "title bar $tb, content $ct, but the View menu is ${menu%% *} (luma ${menu#* })"
-    fi
+    step_end PASS "title bar $tb, content $ct (lumas: $(cut -d' ' -f3- <<< "$WIN")); View menu, not judged: ${menu%% *} (luma ${menu#* })"
   else
     step_end FAIL "expected title bar $tb + content $ct within ${SETTLE_S} s; got '${WIN:-no capture}' (title bar, content, lumas)"
   fi

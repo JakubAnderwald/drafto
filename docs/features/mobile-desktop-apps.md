@@ -105,8 +105,10 @@ edge-to-edge from the OS theme in its own window, which `SystemBars` does not st
 **Native chrome (macOS):** `ThemeProvider` calls `applyAppAppearance(theme)`
 (`apps/desktop/src/lib/native/app-appearance.ts`) whenever the stored preference changes. It
 calls react-native-macos's `Appearance.setColorScheme`, which sets `NSApp.appearance`: Aqua for
-Light, DarkAqua for Dark, and `nil` for System, so the title bar, menus, `Alert.alert` sheets
+Light, DarkAqua for Dark, and `nil` for System, so the title bar, `Alert.alert` sheets
 and scroll bars match the in-app theme, and System follows macOS again, live changes included.
+Menu-bar menus (File, View, …) are the exception: they keep following macOS, because AppKit
+ignores both `NSApp.appearance` and `NSMenu.appearance` for them (checked on macOS 27.0.1).
 Unlike on Android, `setColorScheme` is safe here: `ThemeProvider` reads `useColorScheme()` only
 for System, and setting `nil` gives the OS scheme back to it. Until AsyncStorage returns the
 stored preference at launch, the chrome follows macOS. See

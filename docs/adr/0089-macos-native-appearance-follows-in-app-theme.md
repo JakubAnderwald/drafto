@@ -28,7 +28,8 @@ On macOS, the Android objection doesn't hold:
 
 ## Consequences
 
-- **Positive**: The title bar, menus, alert sheets and scroll bars match the theme you chose. System behaves as before, including live OS switches. The change is small and in JS, with nothing for the Xcode project.
+- **Positive**: The title bar, alert sheets and scroll bars match the theme you chose. System behaves as before, including live OS switches. The change is small and in JS, with nothing for the Xcode project.
+- **Negative**: Menu-bar menus (File, Edit, View, …) still follow macOS. On build 96 under macOS 27.0.1, with Drafto on Dark and macOS on Light, the View menu showed black text on a light material, and the reverse with the themes swapped. A minimal AppKit app on the same Mac showed the same: its menu-bar menu stayed light under a forced DarkAqua, whether set through `NSApp.appearance` alone or also through `NSMenu.appearance` on the main menu and its submenus. AppKit draws these menus with the system menu bar's appearance, and no public API changes that. #861's acceptance criterion for menus can't be met.
 - **Negative**: At launch the chrome follows macOS until AsyncStorage returns the stored preference, a fraction of a second. The React content already behaves the same way.
 - **Negative**: When switching back to System, the JS `setColorScheme("unspecified")` reads `getColorScheme()` synchronously, before the main-queue change has landed, so for about one frame `useColorScheme()` can still report the previously forced scheme. The native `appearanceChanged` event corrects it right away.
 - **Neutral**: CI doesn't build macOS. The checks are unit tests for the mapping and the provider, plus the In-Test scenario `apps/desktop/e2e/in-test/scenarios/861-native-appearance.sh`. That scenario measures the title bar, the View menu, the content and the sign-out sheet from window captures, with the new `bin/luma` helper. Web and mobile are unchanged; Android's system bars are covered by ADR-0087.
@@ -37,4 +38,5 @@ On macOS, the Android objection doesn't hold:
 
 - **A native module that writes `NSApp.appearance`** (for example in `DraftoMenuManager.updateMenuState`, which already receives the theme): duplicates what `RCTAppearance` does, and mixes the menu's checkmarks with app appearance in one module. Rejected.
 - **A native module that stores the preference in `NSUserDefaults` and applies it in `AppDelegate` before JS starts**: it would remove the launch window during which the chrome follows macOS. It needs new native code, Xcode project changes, and a second copy of the preference kept in sync with AsyncStorage, all for a gap of a fraction of a second that the React content shares. Rejected for now; worth revisiting if the launch flash is reported.
-- **Setting `window.appearance` on the main window only**: leaves menus and app-level panels on the OS appearance. Rejected.
+- **Setting `window.appearance` on the main window only**: leaves alert sheets' parent panels and other app-level windows on the OS appearance. Rejected.
+- **Setting `NSMenu.appearance` on the main menu and its submenus** (in `DraftoMenuManager`): tried in a minimal AppKit app on macOS 27.0.1, and the menu-bar menus stayed on the system appearance. Not adopted.
