@@ -12,12 +12,22 @@ tags:
 # the back key) keeps the user signed in on Settings.
 # Before the fix one tap signed out and wiped the device at once, so the wait
 # for the dialog below times out on 1.4.7.
-# Depends on: 01-login (user is logged in)
+# Depends on: 01-login (user is logged in), unless -e E2E_SIGNOUT_EMAIL is
+# given: then it signs in as that account itself (below).
 #
 # Optional env:
-#   -e SIGN_OUT_CONFIRM=1  also confirm and assert the Log In screen. That ends
-#     every session of the shared dev E2E user (sign-out is global), so run it
-#     last and alone, and run 01-login again afterwards.
+#   -e SIGN_OUT_CONFIRM=1  also confirm and assert the Log In screen. Sign-out is
+#     global (it ends every session of the account), so it needs a dedicated
+#     dev account and refuses without one: never the shared E2E user, whose
+#     session web CI's Playwright run uses.
+#   -e E2E_SIGNOUT_EMAIL=… with -e E2E_SIGNOUT_PASSWORD=… (or, from
+#     run-qa-10668-e2e.sh, MAESTRO_E2E_SIGNOUT_PASSWORD in the environment):
+#     the flow switches the device to that account first and runs both legs
+#     on it. Required with SIGN_OUT_CONFIRM=1, and for a build without the fix
+#     (it signs out at the first tap). See apps/mobile/e2e/README.md. The
+#     device ends on that account, or signed out, so run 01-login again before
+#     other flows. Don't run the confirm leg on two devices at once: they share
+#     the account, and one's sign-out ends the other's session.
 #
 # Selectors:
 # - Maestro text selectors are regexes: "Sign out?" would also match the
@@ -29,6 +39,37 @@ tags:
 #   button behind it, so the confirm tap is anchored right of the alert's Cancel.
 #
 # No RUN_ID needed — this flow creates no user data.
+
+# --- SIGN_OUT_CONFIRM=1 needs the dedicated account: checked before any tap ---
+# A build without the fix signs out at the first tap, so this can't wait for
+# the confirm leg.
+- runFlow:
+    when:
+      true: ${typeof SIGN_OUT_CONFIRM !== 'undefined' && SIGN_OUT_CONFIRM == '1'}
+    commands:
+      - assertTrue:
+          condition: ${typeof E2E_SIGNOUT_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL.trim() !== ''}
+          label: "SIGN_OUT_CONFIRM=1 needs -e E2E_SIGNOUT_EMAIL: the confirm leg signs out a dedicated dev account, never the shared E2E user"
+
+# --- On the dedicated sign-out account, when one is given ---
+# With -e E2E_SIGNOUT_EMAIL (run-qa-10668-e2e.sh passes it for SIGN_OUT_CONFIRM=1
+# and for --before), the whole flow runs on that account: a clean start drops
+# the shared E2E user's local session without signing it out anywhere, then
+# signs in as the dedicated one. That covers --before too, where a build
+# without the fix signs out at the first tap with no dialog.
+- runFlow:
+    when:
+      true: ${typeof E2E_SIGNOUT_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL.trim() !== ''}
+    commands:
+      # Trimmed and lower-cased as the login screen trims it: " qa@x " is qa@x.
+      - assertTrue:
+          condition: ${typeof E2E_TEST_EMAIL !== 'undefined' && E2E_SIGNOUT_EMAIL.trim().toLowerCase() !== E2E_TEST_EMAIL.trim().toLowerCase() && (typeof E2E_SIGNOUT_PASSWORD !== 'undefined' || typeof MAESTRO_E2E_SIGNOUT_PASSWORD !== 'undefined')}
+          label: "E2E_SIGNOUT_EMAIL needs -e E2E_TEST_EMAIL (and must differ from it) and a password: -e E2E_SIGNOUT_PASSWORD or MAESTRO_E2E_SIGNOUT_PASSWORD"
+      - runFlow:
+          file: helpers/sign-in-clean.yaml
+          env:
+            SIGN_IN_EMAIL: ${E2E_SIGNOUT_EMAIL}
+            SIGN_IN_PASSWORD: "${typeof E2E_SIGNOUT_PASSWORD !== 'undefined' ? E2E_SIGNOUT_PASSWORD : MAESTRO_E2E_SIGNOUT_PASSWORD}"
 
 - launchApp
 
@@ -115,6 +156,8 @@ tags:
     when:
       true: ${typeof SIGN_OUT_CONFIRM !== 'undefined' && SIGN_OUT_CONFIRM == '1'}
     commands:
+      # The flow switched to the dedicated account at its start (above), after
+      # checking SIGN_OUT_CONFIRM=1 had one.
       - tapOn:
           id: "sign-out-button"
       - extendedWaitUntil:

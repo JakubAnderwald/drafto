@@ -80,8 +80,17 @@ set -euo pipefail
 #                       android-only/11-dark-nav-bar: the in-app theme to pick
 #                       in Settings before ending on the Notebooks tab.
 #   SIGN_OUT_CONFIRM=1  11-sign-out-confirm: also run the confirm leg. Only
-#                       when SIGN_OUT_CONFIRM=1 is in this runner's environment:
-#                       it signs the shared dev E2E user out everywhere.
+#                       when SIGN_OUT_CONFIRM=1 is in this runner's environment.
+#                       Mobile sign-out is global, so the leg signs in as a
+#                       dedicated dev account first (E2E_SIGNOUT_EMAIL /
+#                       E2E_SIGNOUT_PASSWORD in the env file, required then)
+#                       and signs that one out, never the shared E2E user whose
+#                       session web CI's Playwright run uses.
+#   E2E_SIGNOUT_EMAIL   with SIGN_OUT_CONFIRM=1, or --before when the env file
+#                       has the account (otherwise --before skips the step), as
+#                       an -e argument to that step, which then runs on it;
+#                       MAESTRO_E2E_SIGNOUT_PASSWORD in the environment, never
+#                       argv, like MAESTRO_E2E_TEST_PASSWORD.
 # Each layout flow ends with the app on the screen its host check reads.
 
 PLATFORM=android
@@ -163,10 +172,10 @@ command -v node > /dev/null || {
   echo "ERROR: node is required for the host checks" >&2
   exit 2
 }
-# redact_out scrubs the test password with perl; without it, Maestro's logs
-# would keep the password, so refuse to start.
+# redact_out scrubs the test passwords with perl; without it, Maestro's logs
+# would keep them, so refuse to start.
 command -v perl > /dev/null || {
-  echo "ERROR: perl is required to scrub the test password from the saved logs" >&2
+  echo "ERROR: perl is required to scrub the test passwords from the saved logs" >&2
   exit 2
 }
 
@@ -204,6 +213,37 @@ esac
 export E2E_TEST_PASSWORD
 export MAESTRO_E2E_TEST_PASSWORD="$E2E_TEST_PASSWORD"
 
+# --- The sign-out account: SIGN_OUT_CONFIRM=1, or --before ---
+# 11-sign-out-confirm signs its account out on every device when it confirms
+# (the app's sign-out is global), and so does a build without the fix at the
+# first tap. On the shared E2E user that ends the session web CI's Playwright
+# run shares, mid-run (it failed #877's E2E on 2026-11-21), so in both cases
+# the flow runs on a dedicated dev account. SIGN_OUT_CONFIRM=1 refuses without
+# one; --before without one skips that step (below).
+SIGNOUT_ACCOUNT=0
+if [ "${SIGN_OUT_CONFIRM:-0}" = 1 ]; then
+  for var in E2E_SIGNOUT_EMAIL E2E_SIGNOUT_PASSWORD; do
+    [ -n "${!var:-}" ] || {
+      echo "ERROR: SIGN_OUT_CONFIRM=1 needs $var in $ENV_FILE: a dedicated, approved dev account, never the shared E2E user (apps/mobile/e2e/README.md)" >&2
+      exit 2
+    }
+  done
+  SIGNOUT_ACCOUNT=1
+elif [ "$BEFORE" = 1 ] && [ -n "${E2E_SIGNOUT_EMAIL:-}" ] && [ -n "${E2E_SIGNOUT_PASSWORD:-}" ]; then
+  SIGNOUT_ACCOUNT=1
+fi
+if [ "$SIGNOUT_ACCOUNT" = 1 ]; then
+  # Trimmed and lower-cased, as the app's login trims the email: a stray space
+  # would otherwise let the shared user through.
+  norm_email() { printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'; }
+  if [ "$(norm_email "$E2E_SIGNOUT_EMAIL")" = "$(norm_email "$E2E_TEST_EMAIL")" ]; then
+    echo "ERROR: E2E_SIGNOUT_EMAIL is the shared E2E user; the sign-out step would sign it out everywhere" >&2
+    exit 2
+  fi
+  export E2E_SIGNOUT_PASSWORD
+  export MAESTRO_E2E_SIGNOUT_PASSWORD="$E2E_SIGNOUT_PASSWORD"
+fi
+
 RUN_ID="${RUN_ID:-$(date +%s)}"
 MODE_LABEL=$([ "$BEFORE" = 1 ] && echo before || echo after)
 OUT="${OUT:-${TMPDIR:-/tmp}/drafto-qa-10668-$PLATFORM-$MODE_LABEL-$RUN_ID}"
@@ -214,17 +254,27 @@ RESULTS="$OUT/results.tsv"
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$OUT/run.log"; }
 
-# Maestro logs each typed text, the password included (its --debug-output,
-# which run_flow points under $OUT, keeps the commands it ran): scrub it from
-# every file under $OUT that contains it, whatever its name. The commands JSON
-# holds it JSON-escaped (a `"` as `\"`, a `\` as `\\`), so both forms go.
-# grep and perl read the value from a pipe and the environment, never argv.
+# Maestro logs each typed text, the passwords included (its --debug-output,
+# which run_flow points under $OUT, keeps the commands it ran): scrub them from
+# every file under $OUT that contains one, whatever its name. The commands JSON
+# holds them JSON-escaped (a `"` as `\"`, a `\` as `\\`), so both forms go.
+# grep and perl read each value from a pipe and the environment, never argv:
+# only the variable's name is passed (REDACT_VAR). The longer value goes first,
+# so one that contains the other can't leave its tail behind.
 redact_out() {
-  {
-    printf '%s\n' "$E2E_TEST_PASSWORD" | perl -ne 'chomp; print "$_\n"; s/(["\\])/\\$1/g; print "$_\n"' |
-      LC_ALL=C grep -r -l -F --null -f - "$OUT" 2> /dev/null || true
-  } |
-    xargs -0 -r perl -pi -e 'BEGIN { $p = $ENV{E2E_TEST_PASSWORD}; ($j = $p) =~ s/(["\\])/\\$1/g } s/\Q$j\E/[redacted]/g; s/\Q$p\E/[redacted]/g' 2> /dev/null || true
+  local var order signout="${E2E_SIGNOUT_PASSWORD:-}"
+  order="E2E_TEST_PASSWORD E2E_SIGNOUT_PASSWORD"
+  [ "${#signout}" -le "${#E2E_TEST_PASSWORD}" ] || order="E2E_SIGNOUT_PASSWORD E2E_TEST_PASSWORD"
+  for var in $order; do
+    [ -n "${!var:-}" ] || continue
+    # The JSON form is JSON::PP's (core perl): quotes, backslashes and control
+    # characters escaped the way Maestro's commands JSON has them.
+    {
+      REDACT_VAR="$var" perl -MJSON::PP -e '$p = $ENV{$ENV{REDACT_VAR}}; print "$p\n", substr(JSON::PP->new->allow_nonref->encode($p), 1, -1), "\n"' |
+        LC_ALL=C grep -r -l -F --null -f - "$OUT" 2> /dev/null || true
+    } |
+      REDACT_VAR="$var" xargs -0 -r perl -MJSON::PP -pi -e 'BEGIN { $p = $ENV{$ENV{REDACT_VAR}}; $j = substr(JSON::PP->new->allow_nonref->encode($p), 1, -1) } s/\Q$j\E/[redacted]/g; s/\Q$p\E/[redacted]/g' 2> /dev/null || true
+  done
 }
 
 # record <step> <row> <pass|fail|error|skip> <expect-before: fail|any> <detail>
@@ -713,11 +763,18 @@ while IFS= read -r flow; do
   flow_step "extra-$(basename "$flow" .yaml)" "$flow" any
 done < <(cd "$E2E_DIR" && grep -lE '^[[:space:]]*-[[:space:]]*qa-10668[[:space:]]*$|^tags:.*qa-10668' ./*.yaml "$PLATFORM-only"/*.yaml 2> /dev/null | sed 's|^\./||' | sort)
 
-# --- S-02: sign-out confirm, last (the confirm leg signs the E2E user out) ---
-if [ "${SIGN_OUT_CONFIRM:-0}" = 1 ]; then
-  flow_step sign-out-confirm 11-sign-out-confirm.yaml fail -e SIGN_OUT_CONFIRM=1
+# --- S-02: sign-out confirm, last (the confirm leg leaves the device signed out) ---
+SIGN_OUT_ENV=()
+[ "${SIGN_OUT_CONFIRM:-0}" = 1 ] && SIGN_OUT_ENV+=(-e SIGN_OUT_CONFIRM=1)
+[ "$SIGNOUT_ACCOUNT" = 1 ] && SIGN_OUT_ENV+=(-e E2E_SIGNOUT_EMAIL="$E2E_SIGNOUT_EMAIL")
+if [ "$BEFORE" = 1 ] && [ "$SIGNOUT_ACCOUNT" = 0 ]; then
+  # A build without the fix signs out at the first tap: on the shared user
+  # that is a global sign-out, so never run it there.
+  if want sign-out-confirm 11-sign-out-confirm.yaml; then
+    record sign-out-confirm flow skip fail "--before needs E2E_SIGNOUT_EMAIL / E2E_SIGNOUT_PASSWORD in $ENV_FILE: a build without the fix signs out at the first tap, which on the shared E2E user ends every session"
+  fi
 else
-  flow_step sign-out-confirm 11-sign-out-confirm.yaml fail
+  flow_step sign-out-confirm 11-sign-out-confirm.yaml fail ${SIGN_OUT_ENV[@]+"${SIGN_OUT_ENV[@]}"}
 fi
 
 # --- Summary ---
