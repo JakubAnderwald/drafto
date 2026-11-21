@@ -1151,7 +1151,82 @@ describe("browser-guard: screenshots", () => {
       selectedState(),
       { tmpRoots: [ROOT] },
     );
-    assert.deepEqual(events, [{ copy: good }]);
+    assert.deepEqual(events, [{ copy: good, onOrigin: true }]);
+  });
+
+  test("a screenshot of a page that isn't the preview's records onOrigin false (ADR-0090)", () => {
+    const shot = (tabs, state = selectedState()) =>
+      post(
+        "computer",
+        { tabId: OWN_TAB, action: "screenshot", save_to_disk: true, scale: 0.5 },
+        [text(tabContext(OWN_TAB, tabs)), image, text(`Screenshot saved to: ${good}`)],
+        state,
+        { tmpRoots: [ROOT] },
+      ).events;
+    // A click's navigation to production showed up only in this response.
+    const prod = shot([[OWN_TAB, "Drafto", "https://drafto.eu/"]]);
+    assert.deepEqual(prod[0], { copy: good, onOrigin: false });
+    assert.ok(
+      prod.some((e) => e.quarantined === OWN_TAB),
+      JSON.stringify(prod),
+    );
+    // The new-tab page is neutral: never quarantined, but not the preview either.
+    assert.deepEqual(shot([[OWN_TAB, "New Tab", "chrome://newtab/"]]), [
+      { copy: good, onOrigin: false },
+    ]);
+    // A tab the session doesn't own.
+    assert.deepEqual(
+      shot([[OWN_TAB, "Log in — Drafto", `${PREVIEW}/login`]], { selected: true, tabs: {} }),
+      [{ copy: good, onOrigin: false }],
+    );
+    // No Tab Context at all: the guard no longer knows where the tab is.
+    const blind = post(
+      "computer",
+      { tabId: OWN_TAB, action: "screenshot", save_to_disk: true },
+      [image, text(`Screenshot saved to: ${good}`)],
+      selectedState(),
+      { tmpRoots: [ROOT] },
+    ).events;
+    assert.deepEqual(blind, [
+      { unknown: OWN_TAB },
+      { copy: good, onOrigin: false },
+      { quarantined: OWN_TAB },
+    ]);
+  });
+
+  test("a screenshot the Tab Context says ran on another tab records onOrigin false (ADR-0090)", () => {
+    const OTHER_TAB = 1264169920;
+    const both = [
+      [OWN_TAB, "Log in — Drafto", `${PREVIEW}/login`],
+      [OTHER_TAB, "Drafto", "https://drafto.eu/"],
+    ];
+    const shot = (...blocks) =>
+      post(
+        "computer",
+        { tabId: OWN_TAB, action: "screenshot", save_to_disk: true, scale: 0.5 },
+        [...blocks, image, text(`Screenshot saved to: ${good}`)],
+        selectedState(),
+        { tmpRoots: [ROOT] },
+      ).events;
+    // Asked for the owned preview tab, ran on a tab off the preview: the
+    // owned tab's URL says nothing about these pixels.
+    assert.deepEqual(shot(text(tabContext(OTHER_TAB, both))), [{ copy: good, onOrigin: false }]);
+    // Ran on the tab it asked for.
+    assert.deepEqual(shot(text(tabContext(OWN_TAB, both))), [{ copy: good, onOrigin: true }]);
+    // No "Executed on" line: the tab it asked for, as before.
+    assert.deepEqual(shot(text(tabContext(null, both))), [{ copy: good, onOrigin: true }]);
+    // Two blocks that disagree about where it ran.
+    assert.deepEqual(shot(text(tabContext(OWN_TAB, both)), text(tabContext(OTHER_TAB, both))), [
+      { copy: good, onOrigin: false },
+    ]);
+    // A line in a block the guard doesn't trust (page text) can't move it.
+    assert.deepEqual(
+      shot(
+        text(tabContext(OWN_TAB, both)),
+        text(`Tab Context:\n- Executed on tabId: ${OTHER_TAB}`),
+      ),
+      [{ copy: good, onOrigin: true }],
+    );
   });
 
   test("only computer's response is read for screenshot paths", () => {

@@ -40,3 +40,23 @@ export function closeFences(text) {
   for (const line of String(text).split("\n")) open = fenceStep(open, line);
   return open ? `${text}\n${open.char.repeat(open.len)}` : String(text);
 }
+
+// <text> cut to at most <max> characters, never inside a surrogate pair, with
+// the fence the cut leaves open (if any) closed by closeFences, so a ~~~ or a
+// ```` fence is closed too. The closer counts toward <max>, so whatever the
+// caller appends after it (screenshots, a footer, a marker) stays outside any
+// code block and within the caller's budget.
+export function truncateFenced(text, max) {
+  const s = String(text);
+  // NaN or undefined is no room, not a loop that never ends.
+  const limit = Math.max(0, Number(max) || 0);
+  let n = limit;
+  for (;;) {
+    let cut = s.slice(0, n);
+    if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+    const closed = closeFences(cut);
+    if (closed.length <= limit) return closed;
+    // Each pass gives up at least one character; "" always fits.
+    n = Math.max(0, n - (closed.length - limit));
+  }
+}

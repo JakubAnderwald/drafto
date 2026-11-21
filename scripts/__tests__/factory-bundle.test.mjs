@@ -32,6 +32,8 @@ import {
   selectLatestScenarioComment,
   storedScenarioReader,
 } from "../lib/factory-bundle.mjs";
+import { isEvidenceImageUrl, renderEvidence, validImages } from "../lib/evidence-embed.mjs";
+import { imagePath, rawUrl } from "../lib/evidence-upload.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(HERE, "..", "lib", "factory-bundle.mjs");
@@ -325,6 +327,51 @@ pic: https://raw.githubusercontent.com/o/r/main/diagram.png`;
     assert.deepEqual(extractScreenshots("just text, no images"), []);
     assert.deepEqual(extractScreenshots(""), []);
     assert.deepEqual(extractScreenshots(null), []);
+  });
+
+  // A factory report embedding 20 published screenshots, rendered by the real
+  // uploader's URL helpers and evidence-embed's renderer, so a change to the
+  // published layout fails here instead of silently filling the slots again.
+  function factoryReport(n = 20) {
+    const commit = "c".repeat(40);
+    const sha = "a".repeat(40);
+    const upload = {
+      ok: true,
+      commit,
+      images: Array.from({ length: n }, (_, i) => ({
+        n: i + 1,
+        url: rawUrl(commit, imagePath(797, sha, "intest-20261118T010000", i + 1, "png")),
+      })),
+    };
+    const images = validImages(upload);
+    assert.equal(images.length, n, "the fixture's URLs must be ones a report renders");
+    return ["<!-- drafto-factory-browser-report -->", ...renderEvidence({ other: images })].join(
+      "\n",
+    );
+  }
+
+  it("skips the factory's published screenshots so a reporter's later one still makes the list", () => {
+    const reporterShot = "https://github.com/user-attachments/assets/1111-reporter";
+    const comments = [
+      { body: factoryReport() },
+      // A quote-reply copies the report's <img> tags; those are skipped too.
+      { body: `> ${factoryReport(3).split("\n").join("\n> ")}\n\nStill broken:` },
+      { body: `<img alt="after fix" src="${reporterShot}" />` },
+    ];
+    const shots = extractScreenshots("spec with no images", comments);
+    assert.deepEqual(
+      shots.map((s) => s.url),
+      [reporterShot],
+    );
+  });
+
+  it("only skips the published-evidence layout, not other raw images of this repo", () => {
+    const repoImage = "https://raw.githubusercontent.com/JakubAnderwald/drafto/main/docs/shot.png";
+    assert.equal(isEvidenceImageUrl(repoImage), false);
+    assert.deepEqual(
+      extractScreenshots(`![diagram](${repoImage})`).map((s) => s.url),
+      [repoImage],
+    );
   });
 });
 
