@@ -726,9 +726,21 @@ describe("localFooter / publishedFooter", () => {
     assert.ok(web.startsWith("<sub>") && web.endsWith("</sub>"));
     assert.ok(web.includes("ADR-0090") && web.includes("dev test account"));
     assert.ok(web.includes(`\`${DIR}\``));
-    const mac = publishedFooter(DIR, "macos");
+    const mac = publishedFooter(DIR, "macos", { throwaway: true });
     assert.ok(mac.includes("published by the operator") && mac.includes("production"));
+    assert.ok(mac.includes("with a throwaway account"));
     assert.ok(mac.includes(`\`${DIR}\``));
+  });
+
+  it("never claims a throwaway account for a macOS run that didn't use one", () => {
+    // The default: a run with no account (861's) shows the signed-in account.
+    for (const mac of [publishedFooter(DIR, "macos"), publishedFooter(DIR, "macos", {})]) {
+      assert.ok(mac.startsWith("<sub>") && mac.endsWith("</sub>"));
+      assert.ok(mac.includes("published by the operator"));
+      assert.ok(mac.includes("no throwaway account") && mac.includes("signed in to"));
+      assert.ok(!mac.includes("with a throwaway account"));
+      assert.ok(mac.includes(`\`${DIR}\``));
+    }
   });
 });
 
@@ -943,6 +955,14 @@ describe("evidenceSection", () => {
     const text = ev.block.join("\n");
     assert.equal(ev.embedded, 4);
     assert.equal(ev.footer, publishedFooter(DIR, "macos"));
+    const thrown = evidenceSection({
+      upload: rec,
+      evidenceDir: DIR,
+      mode: "macos",
+      results: [{ step: "open", name: "Open Drafto", status: "PASS" }],
+      throwaway: true,
+    });
+    assert.equal(thrown.footer, publishedFooter(DIR, "macos", { throwaway: true }));
     assert.ok(text.includes("**Step open** · PASS · Open Drafto\n\n" + imgTag(1)));
     assert.ok(
       text.includes(

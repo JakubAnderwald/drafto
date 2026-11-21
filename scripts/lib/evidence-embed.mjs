@@ -340,12 +340,18 @@ export function localFooter(evidenceDir, reason = null) {
   return `<sub>Screenshots stay on the Mac mini (this repo is public): \`${pathText(evidenceDir)}\`.${why}</sub>`;
 }
 
-// <mode> "macos": a harness run is on production, posted by the operator.
-export function publishedFooter(evidenceDir, mode = "report") {
+// <mode> "macos": a run posted by the operator. <throwaway>: the run used the
+// harness's throwaway production account; otherwise (a scenario that needs
+// no account, such as 861's) the window showed whichever account the app was
+// signed in to, so the footer never claims a throwaway one.
+export function publishedFooter(evidenceDir, mode = "report", { throwaway = false } = {}) {
   if (mode === "macos") {
+    const run = throwaway
+      ? "on production with a throwaway account"
+      : "that used no throwaway account, so they show the account the app was signed in to";
     return (
-      "<sub>Screenshots published by the operator (ADR-0090): the Drafto window during a run " +
-      `on production with a throwaway account. Local copies: \`${pathText(evidenceDir)}\`.</sub>`
+      `<sub>Screenshots published by the operator (ADR-0090): the Drafto window during a run ${run}. ` +
+      `Local copies: \`${pathText(evidenceDir)}\`.</sub>`
     );
   }
   return (
@@ -365,6 +371,8 @@ export function publishedFooter(evidenceDir, mode = "report") {
  * @param {string} o.evidenceDir
  * @param {"report"|"macos"} [o.mode]
  * @param {object[]} [o.results] macOS results.jsonl rows (mode "macos")
+ * @param {boolean} [o.throwaway] mode "macos": the run used a throwaway account
+ *   (publishedFooter's wording); false when unknown
  * @param {(lines:string[]) => boolean} [o.isSafe] a final check on the block;
  *   false drops the step labels' text and hides each kept file's line that
  *   trips it, and a block that still trips it is not posted ("unsafe")
@@ -377,6 +385,7 @@ export function evidenceSection({
   evidenceDir,
   mode = "report",
   results = [],
+  throwaway = false,
   isSafe = () => true,
 }) {
   if (withheld) {
@@ -426,7 +435,7 @@ export function evidenceSection({
   }
   return {
     block,
-    footer: publishedFooter(evidenceDir, mode),
+    footer: publishedFooter(evidenceDir, mode, { throwaway }),
     embedded: images.length,
     reason: null,
   };

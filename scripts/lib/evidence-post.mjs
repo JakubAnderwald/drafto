@@ -5,7 +5,11 @@
 // Why it is manual: the harness is started by a person in Terminal, against
 // PRODUCTION, with a throwaway account. Its shots capture only the Drafto
 // window, but a run starts by signing the operator's own account out, so an
-// early shot can show the operator's own notes. So this command first lists
+// early shot can show the operator's own notes. A scenario that needs no
+// account (861's, BACKEND=none) skips the harness and signs nothing out, so
+// every shot shows whichever account the app is signed in to, likely the
+// operator's: usedThrowawayAccount tells the two apart, and the listing and
+// the comment's footer say which it was. So this command first lists
 // exactly what it would publish and stops; only `--yes` publishes. It also
 // refuses while the run's `state.env` exists (the throwaway account is still
 // live: run the scenario's `--cleanup-only` first), when `report.md` has no
@@ -65,6 +69,11 @@ const HEADER = "🏭 **macOS run — the In-Test harness on this Mac mini**";
 const SHA_RE = /^[0-9a-f]{40}$/;
 const ISSUE_RE = /^[1-9][0-9]{0,6}$/;
 const SCENARIO_SHA_RE = /drafto-factory-scenario-sha:([0-9a-f]{40})/g;
+// common.sh's write_report header line (BACKEND defaults to production).
+const BACKEND_RE = /^Build: .*, backend: ([A-Za-z0-9_-]+)[ \t]*$/m;
+// harness.sh's log line once it has made the run's throwaway credentials:
+// `HH:MM:SS Run <tag> — <title> — throwaway account <email>`.
+const THROWAWAY_LOG_RE = /^\d\d:\d\d:\d\d Run .* — throwaway account \S+@\S+[ \t]*$/m;
 const DEFAULT_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 class Refusal extends Error {}
@@ -211,6 +220,37 @@ export function readReport(runDir, { fs = nodeFs } = {}) {
   return text;
 }
 
+/**
+ * Whether the run used the harness's throwaway production account: report.md
+ * says `backend: production` and log.txt has harness.sh's throwaway-account
+ * line. Both are needed, because common.sh's BACKEND defaults to production,
+ * so a scenario that skips lib/harness.sh and forgets BACKEND=none still
+ * reads as production. Anything unclear counts as no throwaway account: the
+ * listing then warns that every shot shows the signed-in account.
+ */
+export function usedThrowawayAccount(runDir, report, { fs = nodeFs } = {}) {
+  if (BACKEND_RE.exec(String(report ?? ""))?.[1] !== "production") return false;
+  let log;
+  try {
+    log = fs.readFileSync(path.join(runDir, "log.txt"), "utf8");
+  } catch {
+    return false;
+  }
+  return THROWAWAY_LOG_RE.test(log);
+}
+
+// The listing's warning, before the report: which account the shots can show.
+function printAccountWarning(print, throwaway) {
+  if (throwaway) {
+    print("Look at each file first: an early shot can show your own account's notes");
+    print("(a run starts by signing it out). The report as it would be posted:");
+    return;
+  }
+  print("Look at each file first: this run used no throwaway account, so every shot");
+  print("shows the account the app was signed in to, likely yours. The report as it");
+  print("would be posted:");
+}
+
 // ── the comment ─────────────────────────────────────────────────────────────
 
 // The report as it goes into the comment: its `# …` title as bold, defanged,
@@ -227,14 +267,17 @@ function reportText(report) {
 /**
  * The comment for one run: the report, its screenshots, the footer and the
  * marker. Within COMMENT_MAX_CHARS: the report text is cut first.
+ * <throwaway>: the run used a throwaway account (usedThrowawayAccount), so
+ * the footer may say so.
  */
-export function composeComment({ report, upload, results, shotsDir, runId }) {
+export function composeComment({ report, upload, results, shotsDir, runId, throwaway = false }) {
   const ev = evidenceSection({
     upload,
     withheld: false,
     evidenceDir: shotsDir,
     mode: "macos",
     results,
+    throwaway,
     isSafe: (lines) => scanLaneText(lines.join("\n"), {}).length === 0,
   });
   const head = [HEADER, "", runLine(runId), ""];
@@ -325,6 +368,7 @@ export function postMacosRun({
     throw new Refusal(`this run was already posted${prior?.url ? `: ${prior.url}` : ""}`);
   }
   const report = readReport(runDir);
+  const throwaway = usedThrowawayAccount(runDir, report);
   const results = readResults(path.join(runDir, "results.jsonl"));
   const shotsDir = path.join(runDir, "shots");
   const runId = `macos-${path.basename(runDir).replace(/[^0-9A-Za-z_-]/g, "")}`.slice(0, 54);
@@ -406,8 +450,7 @@ export function postMacosRun({
     for (const o of selection.overflow) print(`  keep     ${o.path} (${o.why})`);
     if (!selection.upload.length) print("  (no screenshot to publish)");
     print("");
-    print("Look at each file first: an early shot can show your own account's notes");
-    print("(a run starts by signing it out). The report as it would be posted:");
+    printAccountWarning(print, throwaway);
     print("");
     print(reportText(report));
     print("");
@@ -439,7 +482,7 @@ export function postMacosRun({
       `publishing the screenshots failed (${upload.reason ?? "error"}); nothing was posted: run again to retry`,
     );
   }
-  const { body } = composeComment({ report, upload, results, shotsDir, runId });
+  const { body } = composeComment({ report, upload, results, shotsDir, runId, throwaway });
   const hits = scanLaneText(body, {});
   if (hits.length)
     throw new Refusal(`the composed comment matched a secret pattern (${hits.join(", ")})`);

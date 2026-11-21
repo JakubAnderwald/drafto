@@ -46,6 +46,7 @@ import {
   readResults,
   recordedSha,
   scenarioShaFrom,
+  usedThrowawayAccount,
 } from "../lib/evidence-post.mjs";
 import {
   SELFTEST_FILE,
@@ -136,8 +137,20 @@ function git(cwd, args, { input, env } = {}) {
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
+// log.txt as harness.sh starts it once the run has throwaway credentials
+// (common.sh's log(): `HH:MM:SS <message>`), then a step line.
+const HARNESS_LOG =
+  `05:19:40 Run 458-1762750790 — ${TITLE} — throwaway account ` +
+  "jakub+draftoe2e-458-1762750790@anderwald.info\n" +
+  "05:19:50 ── Step 1: Sign in\n";
+// log.txt of a scenario that skips lib/harness.sh (861's): no account line.
+const NO_ACCOUNT_LOG = "05:19:50 ── Step P1: Title bar follows Dark\n";
+
 /** report.md as common.sh's write_report() writes it. */
-function harnessReport(steps = STEPS, { run = "Run: all steps ran (exit 0)" } = {}) {
+function harnessReport(
+  steps = STEPS,
+  { run = "Run: all steps ran (exit 0)", backend = "production" } = {},
+) {
   const counts = {};
   for (const s of steps) counts[s.status] = (counts[s.status] ?? 0) + 1;
   const totals = Object.keys(counts)
@@ -147,7 +160,7 @@ function harnessReport(steps = STEPS, { run = "Run: all steps ran (exit 0)" } = 
   return [
     `# ${TITLE} — automated In-Test run ${RUN_NAME}`,
     "",
-    "Build: Drafto 1.4.0 (212), backend: production",
+    `Build: Drafto 1.4.0 (212), backend: ${backend}`,
     "",
     ...(run ? [run, ""] : []),
     "| Step | Check | Result | Time | Evidence |",
@@ -182,6 +195,7 @@ function makeFixture({
   results = resultsJsonl(),
   shots = DEFAULT_SHOTS,
   runName = RUN_NAME,
+  log = HARNESS_LOG,
 } = {}) {
   const root = tempDir("evidence-post-");
   const origin = join(root, "origin.git");
@@ -209,7 +223,7 @@ function makeFixture({
   // The harness's own images at the run dir root: never part of the evidence.
   writeFileSync(join(runDir, "preflight-window.png"), SELFTEST_PNG);
   writeFileSync(join(runDir, "tmp-ocr.png"), SELFTEST_PNG);
-  writeFileSync(join(runDir, "log.txt"), "05:19:50 ── Step 1: Sign in\n");
+  if (log !== null) writeFileSync(join(runDir, "log.txt"), log);
 
   const runGit = (args, opts = {}) => git(work, args, opts);
   return { root, origin, work, logDir, runDir, runGit };
@@ -388,7 +402,7 @@ function assertComment(body, commit, { runDir, sha = SHA } = {}) {
   // The macOS footer: production, published by the operator; never "dev data".
   const footer = lines.findIndex((l) => l.startsWith("<sub>") && l.includes("ADR-0090"));
   assert.notEqual(footer, -1, "no footer");
-  assert.match(lines[footer], /production/);
+  assert.match(lines[footer], /on production with a throwaway account/);
   assert.doesNotMatch(lines[footer], /dev data/);
   if (runDir) assert.ok(lines[footer].includes(join(runDir, "shots")), lines[footer]);
 
@@ -799,6 +813,31 @@ describe("postMacosRun without --yes", () => {
     assert.ok(t.printed.includes("  (no screenshot to publish)"));
   });
 
+  it("warns that every shot shows the signed-in account when the run used no account", () => {
+    // 861's scenario: BACKEND=none, no lib/harness.sh, so no throwaway account
+    // and nothing signed out first.
+    const t = setup({ report: harnessReport(STEPS, { backend: "none" }), log: NO_ACCOUNT_LOG });
+    assert.deepEqual(t.post(), { listed: true, publish: 4, keep: 0 });
+    const out = t.printed.join("\n");
+    assert.match(
+      out,
+      /Look at each file first: this run used no throwaway account, so every shot\nshows the account the app was signed in to, likely yours\./,
+    );
+    assert.doesNotMatch(out, /early shot|starts by signing it out/);
+  });
+
+  it("gives the same warning for a production report whose log shows no throwaway account", () => {
+    // common.sh's BACKEND defaults to production: a scenario that skipped
+    // lib/harness.sh and forgot BACKEND=none still reads as production.
+    for (const log of [NO_ACCOUNT_LOG, null]) {
+      const t = setup({ log });
+      t.post();
+      const out = t.printed.join("\n");
+      assert.match(out, /this run used no throwaway account/, String(log));
+      assert.doesNotMatch(out, /early shot/, String(log));
+    }
+  });
+
   it("uses the OCR helper at <log-dir>/bin/ocr by default, and --ocr when given", () => {
     const t = setup();
     const bin = join(t.logDir, "bin");
@@ -1144,6 +1183,18 @@ describe("posting with --yes", () => {
     assert.equal(pushes, 1, "the retry pushed again");
     assert.deepEqual(srcs(gh2.posts[0].body), srcs(t.gh.posts[0].body));
     assert.equal(existsSync(join(t.runDir, POSTED_FILE)), true);
+  });
+
+  it("never says a run with no account used a throwaway one, in the posted footer", () => {
+    const t = setup({ report: harnessReport(STEPS, { backend: "none" }), log: NO_ACCOUNT_LOG });
+    assert.equal(t.post({ yes: true }).posted, true);
+    assertEvidenceCommit(t);
+    const lines = t.gh.posts[0].body.split("\n");
+    const footer = lines.find((l) => l.startsWith("<sub>") && l.includes("ADR-0090"));
+    assert.ok(footer, "no footer");
+    assert.match(footer, /a run that used no throwaway account, so they show the account the app/);
+    assert.doesNotMatch(footer, /with a throwaway account/);
+    assert.ok(lines.includes("Build: Drafto 1.4.0 (212), backend: none"));
   });
 
   it("posts a run with no screenshots without pushing, saying none were saved", () => {
@@ -1528,6 +1579,35 @@ describe("a retry after an earlier --yes", () => {
 });
 
 // ── the comment ─────────────────────────────────────────────────────────────
+
+describe("usedThrowawayAccount", () => {
+  const runWith = (log) => {
+    const dir = tempDir("evidence-post-account-");
+    if (log !== null) writeFileSync(join(dir, "log.txt"), log);
+    return dir;
+  };
+
+  it("is true only for a production report whose log has harness.sh's account line", () => {
+    assert.equal(usedThrowawayAccount(runWith(HARNESS_LOG), harnessReport()), true);
+  });
+
+  it("is false for any other backend, whatever the log says", () => {
+    for (const backend of ["none", "dev", "Production"]) {
+      const report = harnessReport(STEPS, { backend });
+      assert.equal(usedThrowawayAccount(runWith(HARNESS_LOG), report), false, backend);
+    }
+  });
+
+  it("is false without the account line, without a log, or without the Build line", () => {
+    assert.equal(usedThrowawayAccount(runWith(NO_ACCOUNT_LOG), harnessReport()), false);
+    assert.equal(usedThrowawayAccount(runWith(null), harnessReport()), false);
+    const noBuild = harnessReport().replace(/^Build: .*\n/m, "");
+    assert.equal(usedThrowawayAccount(runWith(HARNESS_LOG), noBuild), false);
+    // The account line must be a log line, not text quoted inside another one.
+    const quoted = `05:19:41 note: "Run x — y — throwaway account a@b.c" in a detail\n`;
+    assert.equal(usedThrowawayAccount(runWith(quoted), harnessReport()), false);
+  });
+});
 
 describe("composeComment", () => {
   const C = "abcdef0123456789abcdef0123456789abcdef01";
