@@ -22,6 +22,9 @@
 # and reads the mean brightness (luma, 0…1) of a region with bin/luma. Dark
 # chrome reads below DARK_MAX, light chrome above LIGHT_MIN.
 set -uo pipefail
+# awk's printf follows the locale: under pl_PL, "%.4f" prints 0,0037, which
+# bin/luma rejects. The region fractions need a decimal point.
+export LC_NUMERIC=C
 
 SCENARIO=861-native-appearance
 SCENARIO_TITLE="#861 desktop native appearance"
