@@ -1,9 +1,8 @@
 import * as Sentry from "@sentry/nextjs";
 import { storageUsageFromRow } from "@drafto/shared";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isSignedOutAuthError } from "@/lib/supabase/auth-errors";
-import { redirect } from "next/navigation";
+import Link from "next/link";
+import { requireAdmin } from "@/lib/auth/require-admin";
 import { AdminUserList, type PendingUser } from "@/app/(app)/admin/admin-user-list";
 import { AdminStorageList, type UserStorage } from "@/app/(app)/admin/admin-storage-list";
 import { AdminFlashMessage } from "@/app/(app)/admin/admin-flash-message";
@@ -16,26 +15,7 @@ interface AdminPageProps {
 const EMAIL_UNAVAILABLE = "(email unavailable)";
 
 export default async function AdminPage({ searchParams }: AdminPageProps) {
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-
-  // A missing or rejected session sends the visitor to sign in. Anything else, including
-  // Auth API server errors, is rethrown so it reaches Sentry.
-  if (userError && !isSignedOutAuthError(userError)) throw userError;
-  if (!user) redirect("/login");
-
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", user.id)
-    .single();
-
-  if (profileError) throw profileError;
-  if (!profile?.is_admin) redirect("/");
+  const { supabase } = await requireAdmin();
 
   const [pendingResult, storageResult] = await Promise.all([
     supabase
@@ -103,7 +83,15 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     <div className="mx-auto max-w-2xl p-8" data-testid="admin-panel">
       <div className="mb-6 flex items-center justify-between gap-4">
         <h1 className="text-fg text-2xl font-bold">Admin — User Approval</h1>
-        <AdminCloseButton />
+        <div className="flex items-center gap-4">
+          <Link
+            href="/admin/stats"
+            className="text-primary-600 hover:text-primary-700 text-sm font-medium underline-offset-4 hover:underline"
+          >
+            Product metrics
+          </Link>
+          <AdminCloseButton />
+        </div>
       </div>
       <AdminFlashMessage approved={params.approved} error={params.error} />
       <AdminUserList initialUsers={pendingUsers} />
