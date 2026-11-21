@@ -81,6 +81,37 @@ describe("readJsonRpcBody", () => {
     await expect(req.text()).resolves.toBe(body);
   });
 
+  it("reads a body up to the limit", async () => {
+    const body = JSON.stringify(request("tools/list"));
+
+    await expect(readJsonRpcBody(post(body), body.length)).resolves.toEqual(request("tools/list"));
+  });
+
+  it("is undefined for a body over the limit, declared or streamed", async () => {
+    const body = JSON.stringify(request("tools/list"));
+    const declared = new Request("http://localhost/api/mcp", {
+      method: "POST",
+      headers: { "Content-Length": String(body.length) },
+      body,
+    });
+    // A stream has no Content-Length, so the limit is enforced while reading.
+    const encoded = new TextEncoder().encode(body);
+    const streamed = new Request("http://localhost/api/mcp", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoded.slice(0, 10));
+          controller.enqueue(encoded.slice(10));
+          controller.close();
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+
+    await expect(readJsonRpcBody(declared, body.length - 1)).resolves.toBeUndefined();
+    await expect(readJsonRpcBody(streamed, body.length - 1)).resolves.toBeUndefined();
+  });
+
   it("is undefined for a body that isn't JSON or a body already read", async () => {
     await expect(readJsonRpcBody(post("not json"))).resolves.toBeUndefined();
 

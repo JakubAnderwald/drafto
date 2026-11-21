@@ -78,6 +78,7 @@ const { authenticateMcpRequest } = await import("@/lib/api/mcp-auth");
 const { POST, GET, DELETE } = await import("@/app/api/mcp/route");
 const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
 const { MCP_SIGN_IN_MESSAGE } = await import("@/lib/api/mcp-tools");
+const { KEYLESS_MAX_BODY_BYTES } = await import("@/lib/api/mcp-public-methods");
 
 describe("POST /api/mcp", () => {
   beforeEach(() => {
@@ -432,24 +433,32 @@ describe("POST /api/mcp without a key (ADR 0095)", () => {
     );
   });
 
+  // The transport answers a request with 200 and a notification alone with 202 (the
+  // integration test checks the real SDK); the route returns whatever the transport answered.
   it.each([
-    ["initialize", { jsonrpc: "2.0", method: "initialize", id: 1 }],
-    ["notifications/initialized", { jsonrpc: "2.0", method: "notifications/initialized" }],
-    ["ping", { jsonrpc: "2.0", method: "ping", id: 1 }],
-    ["tools/list", { jsonrpc: "2.0", method: "tools/list", id: 1 }],
+    ["initialize", { jsonrpc: "2.0", method: "initialize", id: 1 }, 200],
+    ["notifications/initialized", { jsonrpc: "2.0", method: "notifications/initialized" }, 202],
+    ["ping", { jsonrpc: "2.0", method: "ping", id: 1 }, 200],
+    ["tools/list", { jsonrpc: "2.0", method: "tools/list", id: 1 }, 200],
     [
       "a batch of public methods",
       [
         { jsonrpc: "2.0", method: "notifications/initialized" },
         { jsonrpc: "2.0", method: "tools/list", id: 2 },
       ],
+      200,
     ],
-  ])("serves %s without authenticating or recording a day", async (_name, body) => {
+  ])("serves %s without authenticating or recording a day", async (_name, body, status) => {
+    mockHandleRequest.mockResolvedValueOnce(
+      new Response(status === 202 ? null : JSON.stringify({ jsonrpc: "2.0", result: {} }), {
+        status,
+      }),
+    );
     const request = keylessRequest(body);
 
     const response = await POST(request);
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(status);
     expect(authenticateMcpRequest).not.toHaveBeenCalled();
     expect(mockHandleRequest).toHaveBeenCalledWith(request);
     expect(mockAfter).not.toHaveBeenCalled();
@@ -515,6 +524,20 @@ describe("POST /api/mcp without a key (ADR 0095)", () => {
 
     expect(response.status).toBe(401);
     expect(clone).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for a key-less body over the size cap, without handing it to the transport", async () => {
+    const padded = {
+      jsonrpc: "2.0",
+      method: "tools/list",
+      id: 1,
+      params: { pad: "x".repeat(KEYLESS_MAX_BODY_BYTES) },
+    };
+
+    const response = await POST(keylessRequest(padded));
+
+    expect(response.status).toBe(401);
+    expect(mockHandleRequest).not.toHaveBeenCalled();
   });
 
   it("returns 401 for a public method sent with a bad key", async () => {

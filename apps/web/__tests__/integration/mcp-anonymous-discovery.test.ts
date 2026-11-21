@@ -102,6 +102,13 @@ describe("POST /api/mcp without an API key (ADR 0095)", () => {
     expect(mockAfter).not.toHaveBeenCalled();
   });
 
+  it("accepts the initialized notification with a 202 and no body", async () => {
+    const response = await POST(keyless({ jsonrpc: "2.0", method: "notifications/initialized" }));
+
+    expect(response.status).toBe(202);
+    expect(authSpy).not.toHaveBeenCalled();
+  });
+
   it("answers ping", async () => {
     const response = await POST(keyless({ jsonrpc: "2.0", id: 3, method: "ping" }));
 

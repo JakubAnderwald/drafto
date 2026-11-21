@@ -22,14 +22,51 @@ export function hasApiKey(authHeader: string | null): boolean {
 }
 
 /**
- * The JSON body of an MCP request, read from a clone so the transport can still read the
- * request itself, or `undefined` when the body isn't JSON (or was already read). The route
- * reads it once to decide whether the request needs a key and whether it is a tool call; an
- * unparseable body needs a key, and the transport answers it with a parse error.
+ * The most a key-less request body may hold, in bytes. A discovery message is a few hundred
+ * bytes, so anything bigger is refused before it is buffered: anyone can send a key-less
+ * request, and it is read before any authentication.
  */
-export async function readJsonRpcBody(request: Request): Promise<unknown> {
+export const KEYLESS_MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * The JSON body of an MCP request, read from a clone so the transport can still read the
+ * request itself, or `undefined` when the body isn't JSON, was already read, or holds more
+ * than <maxBytes>. A body over the limit is refused by its `Content-Length` when it declares
+ * one, and otherwise as soon as the bytes read pass the limit, so at most <maxBytes> (plus
+ * one chunk) are buffered. The route reads it once to decide whether the request needs a key
+ * and whether it is a tool call; an unreadable body needs a key, and the transport answers it
+ * with a parse error.
+ */
+export async function readJsonRpcBody(
+  request: Request,
+  maxBytes: number = Number.POSITIVE_INFINITY,
+): Promise<unknown> {
+  if (Number(request.headers.get("content-length")) > maxBytes) return undefined;
   try {
-    return await request.clone().json();
+    const stream = request.clone().body;
+    if (!stream) return undefined;
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        // Not awaited: cancelling one branch of a cloned (tee'd) body settles only once the
+        // other branch is cancelled too, and the route never reads that one for a 401.
+        reader.cancel().catch(() => undefined);
+        return undefined;
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return undefined;
   }

@@ -17,6 +17,7 @@ The MCP Registry lists Drafto as `eu.drafto/mcp`, and directories built on the r
 
 - **A key is sent:** authenticate it before reading the body. A wrong, revoked or unapproved key gets a 401 whatever the method, so a bad key fails loudly at the handshake rather than at the first tool call, and a junk key costs no body parse.
 - **No key, and every message in the body is on the allowlist** (a single request or a non-empty batch): serve it with `auth = null`. `authenticateMcpRequest` never runs, so no service-role client is made and no database call happens.
+- **No key:** the body is read with a 64 KiB cap (`KEYLESS_MAX_BODY_BYTES`), since anyone can send one before any check; a body over it counts as not public. A discovery message is a few hundred bytes.
 - **No key and anything else** (`tools/call`, a batch holding one, another method, or a body that isn't JSON): 401, with a message that says where to get a key (`MCP_SIGN_IN_MESSAGE`).
 
 `createMcpServer(auth)` registers the same eleven tools in both cases, so `tools/list` shows the same tools with or without a key. Each handler runs through `withAuth`, which returns a sign-in error (`signInRequired()` in `mcp-tools.ts`) without auth. The route's gate stops a key-less tool call first; `withAuth` is a backstop in case a later route change lets one through.

@@ -4,7 +4,12 @@ import { after } from "next/server";
 import { z } from "zod";
 import { authenticateMcpRequest } from "@/lib/api/mcp-auth";
 import type { McpAuthResult } from "@/lib/api/mcp-auth";
-import { hasApiKey, isPublicMcpMessage, readJsonRpcBody } from "@/lib/api/mcp-public-methods";
+import {
+  KEYLESS_MAX_BODY_BYTES,
+  hasApiKey,
+  isPublicMcpMessage,
+  readJsonRpcBody,
+} from "@/lib/api/mcp-public-methods";
 import { isMcpToolCall, recordMcpActivity } from "@/lib/api/record-mcp-activity";
 import {
   listNotebooks,
@@ -187,7 +192,9 @@ export async function POST(request: Request): Promise<Response> {
   // Without a key, the handshake, `ping` and `tools/list` are answered anyway, so a client or
   // a directory can see what Drafto offers before the user has a key (ADR 0095). Anything else
   // gets a 401 that says where to get one.
-  const body = await readJsonRpcBody(request);
+  // A key-less body is capped, since anyone can send one; a body over the cap reads as
+  // undefined, which isn't public, so it gets the 401.
+  const body = await readJsonRpcBody(request, auth ? undefined : KEYLESS_MAX_BODY_BYTES);
   if (!auth && !isPublicMcpMessage(body)) {
     return unauthorized(MCP_SIGN_IN_MESSAGE);
   }
