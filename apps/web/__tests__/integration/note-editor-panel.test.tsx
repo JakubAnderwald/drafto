@@ -33,9 +33,11 @@ vi.mock("@blocknote/mantine/style.css", () => ({}));
 const mockDebouncedSave = vi.fn();
 const mockCancelPendingSave = vi.fn();
 let mockSaveStatus = "idle";
+let mockSaveError: string | null = null;
 vi.mock("@/hooks/use-auto-save", () => ({
   useAutoSave: () => ({
     saveStatus: mockSaveStatus,
+    saveError: mockSaveError,
     debouncedSave: mockDebouncedSave,
     lastSavedAt: null,
     hasPendingChanges: false,
@@ -369,6 +371,34 @@ describe("NoteEditorPanel", () => {
       expect(badge).toHaveTextContent("Saved");
       expect(badge).toHaveAttribute("role", "status");
     });
+  });
+
+  it("shows the notes-full message in a banner when the content quota refused the save", async () => {
+    mockSaveStatus = "error";
+    mockSaveError = "Notes full: you've used 25 MB of your 25 MB for notes.";
+    const noteId = nextNoteId();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ...mockNote, id: noteId }),
+    });
+
+    try {
+      await act(async () => {
+        render(
+          <Suspense fallback={<Skeleton height="2rem" />}>
+            <NoteEditorPanel noteId={noteId} />
+          </Suspense>,
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("note-sync-banner")).toHaveTextContent(
+          "Notes full: you've used 25 MB of your 25 MB for notes.",
+        );
+      });
+    } finally {
+      mockSaveError = null;
+    }
   });
 
   it("shows 'Error' badge with alert role when save status is error", async () => {

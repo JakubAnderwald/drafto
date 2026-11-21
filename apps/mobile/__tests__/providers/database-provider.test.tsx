@@ -1,7 +1,13 @@
 import React from "react";
 import { AppState } from "react-native";
 import type { AppStateStatus, NativeEventSubscription } from "react-native";
-import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage, utcDay } from "@drafto/shared";
+import {
+  DEFAULT_CONTENT_QUOTA_BYTES,
+  DEFAULT_STORAGE_QUOTA_BYTES,
+  contentFullMessage,
+  storageFullMessage,
+  utcDay,
+} from "@drafto/shared";
 import { hasUnsyncedChanges } from "@nozbe/watermelondb/sync";
 import NetInfo from "@react-native-community/netinfo";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
@@ -841,6 +847,92 @@ describe("DatabaseProvider storage-full toast (issue #794)", () => {
     await waitFor(() => expect(result.current.isSyncing).toBe(false));
 
     expect(mockFetchStorageUsage).not.toHaveBeenCalled();
+    expect(mockShowToast).not.toHaveBeenCalled();
+  });
+});
+
+describe("DatabaseProvider notes refused for the content quota (ADR 0090)", () => {
+  const SYNCED = { remoteChangeCount: 0, contentQuotaRefused: 0, contentUsage: null };
+  const FULL = { usedBytes: DEFAULT_CONTENT_QUOTA_BYTES, quotaBytes: DEFAULT_CONTENT_QUOTA_BYTES };
+  const REFUSED = { remoteChangeCount: 0, contentQuotaRefused: 2, contentUsage: FULL };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseAuth.mockReturnValue({ user: TEST_USER });
+    mockSyncDatabase.mockResolvedValue(SYNCED);
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0, storageFull: 0 });
+    mockEnsureLocalIdentity.mockResolvedValue("ready");
+    mockFetchStorageUsage.mockResolvedValue(null);
+  });
+
+  it("says notes are full once, and keeps it in the sync status until they fit", async () => {
+    mockSyncDatabase.mockResolvedValue(REFUSED);
+    const message = contentFullMessage(FULL.usedBytes, FULL.quotaBytes);
+
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() => expect(result.current.isContentFull).toBe(true));
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+    expect(result.current.lastSyncError).toBe(message);
+    expect(result.current.lastSyncedAt).not.toBeNull();
+    expect(mockShowToast).toHaveBeenCalledWith(message, "warning");
+
+    // Another sync that still can't push them stays quiet.
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(mockShowToast).toHaveBeenCalledTimes(1);
+    expect(result.current.isContentFull).toBe(true);
+
+    // Once they go out, the status clears.
+    mockSyncDatabase.mockResolvedValue(SYNCED);
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.isContentFull).toBe(false);
+    expect(result.current.lastSyncError).toBeNull();
+  });
+
+  it("still explains without the usage", async () => {
+    mockSyncDatabase.mockResolvedValue({ ...REFUSED, contentUsage: null });
+
+    renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith(contentFullMessage(null, null), "warning"),
+    );
+  });
+
+  it("an unrelated failure after a refusal reads as a sync failure, not notes full", async () => {
+    mockSyncDatabase.mockResolvedValue(REFUSED);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(result.current.isContentFull).toBe(true));
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+
+    // A later pass fails for another reason (a 500, RLS…).
+    mockSyncDatabase.mockRejectedValue(new Error("Push notes (create) failed: server error"));
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.isContentFull).toBe(false);
+    expect(result.current.lastSyncError).toBe("Push notes (create) failed: server error");
+
+    // The next refusal tells the user again.
+    mockSyncDatabase.mockResolvedValue(REFUSED);
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.isContentFull).toBe(true);
+    expect(mockShowToast).toHaveBeenCalledTimes(2);
+  });
+
+  it("stays quiet when nothing was refused", async () => {
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+
+    expect(result.current.isContentFull).toBe(false);
     expect(mockShowToast).not.toHaveBeenCalled();
   });
 });

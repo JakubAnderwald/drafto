@@ -210,4 +210,41 @@ describe("POST /api/import/ticktick", () => {
     await POST(req);
     expect(mockErrorResponse).toHaveBeenCalledWith("No items provided", 400);
   });
+  it("keeps importing past content quota refusals and reports the message once", async () => {
+    const quotaError = {
+      error: {
+        code: "P0001",
+        message: "content_quota_exceeded",
+        details: "used_bytes=26214400 quota_bytes=26214400 note_bytes=10",
+      },
+    };
+    noteInsert
+      .mockResolvedValueOnce({ error: null })
+      .mockResolvedValueOnce(quotaError)
+      .mockResolvedValueOnce(quotaError)
+      .mockResolvedValueOnce({ error: null });
+
+    const body: TickTickImportBatchRequest = {
+      notebookId: "nb-1",
+      notebookName: "Work",
+      items: ["A", "B", "C", "D"].map((title) => buildItem({ title })),
+    };
+    const req = new NextRequest("http://localhost/api/import/ticktick", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    await POST(req);
+
+    // A smaller later item can still fit, so every item is tried.
+    expect(noteInsert).toHaveBeenCalledTimes(4);
+    const result = mockSuccessResponse.mock.calls[0][0];
+    expect(result).toMatchObject({
+      notebookId: "nb-1",
+      notesImported: 2,
+      notesFailed: 2,
+      contentQuotaExceeded: true,
+    });
+    expect(result.errors).toEqual([expect.stringMatching(/^Notes full: you've used 25 MB/)]);
+    expect(result.contentQuotaMessage).toBe(result.errors[0]);
+  });
 });

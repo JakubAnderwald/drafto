@@ -2,10 +2,10 @@ import { AppState } from "react-native";
 import { synchronize } from "@nozbe/watermelondb/sync";
 
 import type { Database as WMDatabase } from "@nozbe/watermelondb";
-import type { SyncPullResult } from "@nozbe/watermelondb/sync";
+import type { SyncPullResult, SyncPushResult } from "@nozbe/watermelondb/sync";
 
-import { isVisibleRemoteChange } from "@drafto/shared";
-import type { Database } from "@drafto/shared";
+import { contentUsageFromError, isContentQuotaError, isVisibleRemoteChange } from "@drafto/shared";
+import type { Database, StorageUsage } from "@drafto/shared";
 
 import { flushActivityDays, invalidateActivityDays, markAppOpened } from "@/db/activity-days";
 import { clientTag, supabase } from "@/lib/supabase";
@@ -168,7 +168,30 @@ async function pushNotebookChanges(changes: SyncTableChanges) {
   }
 }
 
-async function pushNoteChanges(changes: SyncTableChanges) {
+/**
+ * Notes the server refused for the content quota (ADR 0090) during one push. They
+ * go back to WatermelonDB as `experimentalRejectedIds`, so they stay unsynced on
+ * this device (the user's text is never lost) and go out again on a later sync.
+ */
+export interface ContentQuotaRefusals {
+  /** Local ids of the refused notes. */
+  noteIds: string[];
+  /** Server ids of refused new notes: their attachments can't be pushed yet. */
+  createdNoteIds: Set<string>;
+  /** The usage the latest refusal reported, when it carried one. */
+  usage: StorageUsage | null;
+}
+
+function noRefusals(): ContentQuotaRefusals {
+  return { noteIds: [], createdNoteIds: new Set(), usage: null };
+}
+
+function recordRefusal(refusals: ContentQuotaRefusals, localId: string, error: unknown): void {
+  refusals.noteIds.push(localId);
+  refusals.usage = contentUsageFromError(error) ?? refusals.usage;
+}
+
+async function pushNoteChanges(changes: SyncTableChanges, refusals: ContentQuotaRefusals) {
   if (changes.created.length > 0) {
     const rows = changes.created.map((r) => ({
       id: r.remote_id as string,
@@ -180,7 +203,22 @@ async function pushNoteChanges(changes: SyncTableChanges) {
       trashed_at: r.trashed_at ? toISO(r.trashed_at as number) : null,
     }));
     const { error } = await supabase.from("notes").upsert(rows);
-    if (error) throw new Error(`Push notes (create) failed: ${error.message}`);
+    if (error) {
+      if (!isContentQuotaError(error)) {
+        throw new Error(`Push notes (create) failed: ${error.message}`);
+      }
+      // One refused note fails the whole batch, so push them one at a time:
+      // every note that still fits syncs, and only the refused ones wait.
+      for (const [index, row] of rows.entries()) {
+        const { error: rowError } = await supabase.from("notes").upsert(row);
+        if (!rowError) continue;
+        if (!isContentQuotaError(rowError)) {
+          throw new Error(`Push notes (create) failed: ${rowError.message}`);
+        }
+        recordRefusal(refusals, changes.created[index].id as string, rowError);
+        refusals.createdNoteIds.add(row.id);
+      }
+    }
   }
 
   if (changes.updated.length > 0) {
@@ -196,7 +234,14 @@ async function pushNoteChanges(changes: SyncTableChanges) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", r.remote_id as string);
-      if (error) throw new Error(`Push note update failed: ${error.message}`);
+      if (error) {
+        // A refused edit stays unsynced; the other notes still go out.
+        if (isContentQuotaError(error)) {
+          recordRefusal(refusals, r.id as string, error);
+          continue;
+        }
+        throw new Error(`Push note update failed: ${error.message}`);
+      }
     }
   }
 
@@ -206,11 +251,25 @@ async function pushNoteChanges(changes: SyncTableChanges) {
   }
 }
 
-async function pushAttachmentChanges(changes: SyncTableChanges) {
+/**
+ * Pushes attachment changes and returns the local ids of the attachments it held
+ * back: those of a new note the content quota refused, whose row the server
+ * doesn't have yet. They stay unsynced and go out with their note.
+ */
+async function pushAttachmentChanges(
+  changes: SyncTableChanges,
+  refusedNoteIds: Set<string>,
+): Promise<string[]> {
+  const heldBack: string[] = [];
   if (changes.created.length > 0) {
     // Only push attachments that have been uploaded (not pending)
     const uploadedRows = changes.created
       .filter((r) => r.upload_status === "uploaded")
+      .filter((r) => {
+        if (!refusedNoteIds.has(r.note_id as string)) return true;
+        heldBack.push(r.id as string);
+        return false;
+      })
       .map((r) => ({
         id: r.remote_id as string,
         note_id: r.note_id as string,
@@ -239,17 +298,29 @@ async function pushAttachmentChanges(changes: SyncTableChanges) {
     const { error } = await supabase.from("attachments").delete().in("id", changes.deleted);
     if (error) throw new Error(`Push attachments (delete) failed: ${error.message}`);
   }
+  return heldBack;
 }
 
-async function pushChanges({ changes }: { changes: Record<string, SyncTableChanges> }) {
-  const notebookChanges = changes["notebooks"] as SyncTableChanges;
-  const noteChanges = changes["notes"] as SyncTableChanges;
-  const attachmentChanges = changes["attachments"] as SyncTableChanges;
+type PushChanges = (params: {
+  changes: Record<string, SyncTableChanges>;
+}) => Promise<SyncPushResult | undefined>;
 
-  // Push in order: notebooks first (notes depend on them), then notes, then attachments
-  await pushNotebookChanges(notebookChanges);
-  await pushNoteChanges(noteChanges);
-  await pushAttachmentChanges(attachmentChanges);
+/** A pushChanges that records this push's content quota refusals in <refusals>. */
+function createPushChanges(refusals: ContentQuotaRefusals): PushChanges {
+  return async ({ changes }) => {
+    const notebookChanges = changes["notebooks"] as SyncTableChanges;
+    const noteChanges = changes["notes"] as SyncTableChanges;
+    const attachmentChanges = changes["attachments"] as SyncTableChanges;
+
+    // Push in order: notebooks first (notes depend on them), then notes, then attachments
+    await pushNotebookChanges(notebookChanges);
+    await pushNoteChanges(noteChanges, refusals);
+    const heldBack = await pushAttachmentChanges(attachmentChanges, refusals.createdNoteIds);
+
+    if (refusals.noteIds.length === 0 && heldBack.length === 0) return undefined;
+    // WatermelonDB leaves these unsynced instead of marking them synced.
+    return { experimentalRejectedIds: { notes: refusals.noteIds, attachments: heldBack } };
+  };
 }
 
 export class SyncNetworkError extends Error {
@@ -286,16 +357,24 @@ export interface SyncResult {
    * of this device's own push.
    */
   remoteChangeCount: number;
+  /**
+   * Notes this push left unsynced because the server refused them for the
+   * content quota (ADR 0090). They go out again on a later sync.
+   */
+  contentQuotaRefused: number;
+  /** The usage the server reported with a refusal, when it carried one. */
+  contentUsage: StorageUsage | null;
 }
 
 async function runSync(db: WMDatabase): Promise<SyncResult> {
   let remoteChangeCount = 0;
+  const refusals = noRefusals();
 
   try {
     await synchronize({
       database: db,
       pullChanges,
-      pushChanges,
+      pushChanges: createPushChanges(refusals),
       migrationsEnabledAtVersion: 1,
       // Pulls send every record as `updated`; see splitChanges.
       sendCreatedAsUpdated: true,
@@ -314,7 +393,11 @@ async function runSync(db: WMDatabase): Promise<SyncResult> {
     throw error;
   }
 
-  return { remoteChangeCount };
+  return {
+    remoteChangeCount,
+    contentQuotaRefused: refusals.noteIds.length,
+    contentUsage: refusals.usage,
+  };
 }
 
 /**

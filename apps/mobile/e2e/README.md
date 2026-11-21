@@ -159,8 +159,16 @@ The main navigation difference between platforms:
 - `android-only/07-auth-callback-link.yaml` also clears state and runs signed out, so run it on its own
   too (`maestro test apps/mobile/e2e/android-only/07-auth-callback-link.yaml --platform android`)
 - `11-sign-out-confirm.yaml` only cancels by default, and `ios-all.yaml` and `android-all.yaml` run it
-  (Cancel only) at their end. Its `-e SIGN_OUT_CONFIRM=1` leg signs the shared E2E user out of every
-  session, so run it last and alone. `09-password-visibility.yaml` runs signed out, so both combined
+  (Cancel only) at their end. Its `-e SIGN_OUT_CONFIRM=1` leg confirms the sign-out, which the app
+  makes global (every session of the account ends). So that leg first switches the device to a
+  **dedicated dev account** with `helpers/sign-in-clean.yaml` (a clean start, which drops the local
+  session without signing the shared user out anywhere) and signs that account out, never the shared
+  E2E user whose session web CI's Playwright run uses. Pass `-e E2E_SIGNOUT_EMAIL` and
+  `-e E2E_SIGNOUT_PASSWORD` from `apps/web/.env.local`; `run-qa-10668-e2e.sh` does this when
+  `SIGN_OUT_CONFIRM=1` is set (and for `--before`, where a build without the fix signs out at the first
+  tap) and refuses without them. The device ends signed out, so run `01-login.yaml` before other flows.
+  Don't run the confirm leg on two devices at once: they share the dedicated account, and one's sign-out
+  ends the other's session. `09-password-visibility.yaml` runs signed out, so both combined
   flows run it first
 - Flow 07 only ever **cancels** the account-deletion dialog — it must never tap an enabled
   confirm, because the flows share one real E2E account. It is also inlined at the end of

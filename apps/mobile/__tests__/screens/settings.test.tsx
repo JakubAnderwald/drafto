@@ -1,10 +1,12 @@
 import React from "react";
 import { Alert, type AlertButton } from "react-native";
 import {
+  DEFAULT_CONTENT_QUOTA_BYTES,
   DEFAULT_STORAGE_QUOTA_BYTES,
   SIGN_OUT_SYNCED_MESSAGE,
   SIGN_OUT_UNKNOWN_MESSAGE,
   describeAccountDeletionFailure,
+  formatContentUsage,
   formatStorageUsage,
 } from "@drafto/shared";
 
@@ -44,6 +46,11 @@ jest.mock("@/lib/data/storage-usage", () => ({
   fetchStorageUsage: () => mockFetchStorageUsage(),
 }));
 
+const mockFetchContentUsage = jest.fn();
+jest.mock("@/lib/data/content-usage", () => ({
+  fetchContentUsage: () => mockFetchContentUsage(),
+}));
+
 const mockUseNetworkStatus = jest.fn();
 jest.mock("@/hooks/use-network-status", () => ({
   useNetworkStatus: () => mockUseNetworkStatus(),
@@ -73,6 +80,7 @@ describe("SettingsScreen", () => {
     mockSync.mockResolvedValue({ uploaded: 0, failed: 0, storageFull: 0 });
     mockCountUnsyncedChanges.mockResolvedValue(0);
     mockFetchStorageUsage.mockResolvedValue(null);
+    mockFetchContentUsage.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -133,6 +141,52 @@ describe("SettingsScreen", () => {
 
       expect(await findByText("Storage usage is unavailable right now.")).toBeTruthy();
       expect(queryByTestId("storage-usage-bar")).toBeNull();
+    });
+  });
+
+  describe("note content usage (ADR 0090)", () => {
+    it("shows the notes line below the storage line", async () => {
+      mockFetchStorageUsage.mockResolvedValue({
+        usedBytes: 0,
+        quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      });
+      mockFetchContentUsage.mockResolvedValue({
+        usedBytes: 1024 * 1024,
+        quotaBytes: DEFAULT_CONTENT_QUOTA_BYTES,
+      });
+
+      const { findByText } = render(<SettingsScreen />);
+
+      expect(
+        await findByText(formatContentUsage(1024 * 1024, DEFAULT_CONTENT_QUOTA_BYTES)),
+      ).toBeTruthy();
+    });
+
+    it("shows the notes line even when storage can't be read", async () => {
+      mockFetchContentUsage.mockResolvedValue({
+        usedBytes: DEFAULT_CONTENT_QUOTA_BYTES,
+        quotaBytes: DEFAULT_CONTENT_QUOTA_BYTES,
+      });
+
+      const { findByTestId, getByText } = render(<SettingsScreen />);
+
+      const line = await findByTestId("content-usage");
+      expect(line).toHaveTextContent(
+        formatContentUsage(DEFAULT_CONTENT_QUOTA_BYTES, DEFAULT_CONTENT_QUOTA_BYTES),
+      );
+      expect(getByText("Storage usage is unavailable right now.")).toBeTruthy();
+    });
+
+    it("shows no notes line when it can't be read", async () => {
+      mockFetchStorageUsage.mockResolvedValue({
+        usedBytes: 0,
+        quotaBytes: DEFAULT_STORAGE_QUOTA_BYTES,
+      });
+
+      const { findByText, queryByTestId } = render(<SettingsScreen />);
+
+      expect(await findByText(formatStorageUsage(0, DEFAULT_STORAGE_QUOTA_BYTES))).toBeTruthy();
+      expect(queryByTestId("content-usage")).toBeNull();
     });
   });
 

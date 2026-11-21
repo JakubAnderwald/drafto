@@ -12,7 +12,9 @@ import {
   BUCKET_NAME,
   MAX_FILE_SIZE,
   MAX_FILE_SIZE_MB,
+  ContentQuotaError,
   StorageQuotaError,
+  contentQuotaErrorFromResponse,
   storageQuotaErrorFromResponse,
   toAttachmentUrl,
 } from "@drafto/shared";
@@ -58,11 +60,18 @@ interface SkippedAttachment {
   reason: string;
 }
 
+/** A quota refusal that stops the import: attachment storage, or note content (ADR 0090). */
+type QuotaStop = StorageQuotaError | ContentQuotaError;
+
+function isQuotaStop(err: unknown): err is QuotaStop {
+  return err instanceof StorageQuotaError || err instanceof ContentQuotaError;
+}
+
 interface RunResult {
   processed: number;
   failed: FailedNote[];
-  /** Set when the storage quota stopped the run; the notes after it were not attempted. */
-  storageFull: StorageQuotaError | null;
+  /** Set when a quota stopped the run; the notes after it were not attempted. */
+  storageFull: QuotaStop | null;
 }
 
 const REMAINING_NOT_IMPORTED = "The remaining notes weren't imported.";
@@ -78,9 +87,10 @@ class NoteImportError extends Error {
   constructor(
     message: string,
     readonly noteId?: string,
-    // Set when the note hit the storage quota and its finalize then failed too: the
-    // note goes on the retry list (its text was never written) and the import stops.
-    readonly storageFull: StorageQuotaError | null = null,
+    // Set when the note hit a quota (storage on an attachment, or content on its
+    // finalize) and its text was never written: the note goes on the retry list and
+    // the import stops.
+    readonly storageFull: QuotaStop | null = null,
     readonly uploaded?: UploadedRefs,
   ) {
     super(message);
@@ -216,7 +226,11 @@ async function importSingleNote(
     }
     if (!noteRes.ok) {
       const body = await noteRes.json().catch(() => null);
-      throw new NoteImportError(body?.error || `Failed to create note (${noteRes.status})`);
+      // No row was created, so there is nothing to retry: the run just stops.
+      throw (
+        contentQuotaErrorFromResponse(noteRes.status, body) ??
+        new NoteImportError(body?.error || `Failed to create note (${noteRes.status})`)
+      );
     }
     const result: ImportNoteResult = await noteRes.json();
     ctx.notebookId = result.notebookId; // reuse for every subsequent note
@@ -265,10 +279,11 @@ async function importSingleNote(
   }
   if (!finalizeRes.ok) {
     const body = await finalizeRes.json().catch(() => null);
+    const contentFull = contentQuotaErrorFromResponse(finalizeRes.status, body);
     throw new NoteImportError(
-      body?.error || `Failed to finalize note (${finalizeRes.status})`,
+      contentFull?.message ?? (body?.error || `Failed to finalize note (${finalizeRes.status})`),
       noteId,
-      storageFull,
+      contentFull ?? storageFull,
       uploaded,
     );
   }
@@ -291,8 +306,9 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
   const [failedNotes, setFailedNotes] = useState<FailedNote[]>([]);
   const [skippedAttachments, setSkippedAttachments] = useState<SkippedAttachment[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
-  // The storage quota stopped the last run; its message stays up until the user closes.
+  // A quota stopped the last run; its message stays up until the user closes.
   const [stoppedByQuota, setStoppedByQuota] = useState(false);
+  const [quotaBadge, setQuotaBadge] = useState("Storage full");
   // Persisted across the run and any retry so the count and notebook survive
   // re-renders without forcing runImport to re-create on every imported note.
   const notebookIdRef = useRef<string | undefined>(undefined);
@@ -323,7 +339,7 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
       const skipped: SkippedAttachment[] = [];
       const failed: FailedNote[] = [];
       let processed = 0;
-      let storageFull: StorageQuotaError | null = null;
+      let storageFull: QuotaStop | null = null;
 
       const ctx: ImportContext = {
         notebookId: notebookIdRef.current,
@@ -341,7 +357,7 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
           setImportedCount(importedCountRef.current);
         } catch (err) {
           if (err instanceof AuthAbortError) throw err;
-          if (err instanceof StorageQuotaError) {
+          if (isQuotaStop(err)) {
             storageFull = err; // ends the loop below
           } else {
             const resume = err instanceof NoteImportError ? err : undefined;
@@ -377,6 +393,9 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
       if (result.storageFull) {
         // onComplete closes the dialog, so it waits for the user's Close (handleClose).
         setStoppedByQuota(true);
+        setQuotaBadge(
+          result.storageFull instanceof ContentQuotaError ? "Notes full" : "Storage full",
+        );
         setErrorMessage(`${result.storageFull.message} ${REMAINING_NOT_IMPORTED}`);
         return;
       }
@@ -537,7 +556,7 @@ export function ImportEvernoteDialog({ onClose, onComplete }: ImportEvernoteDial
               {status === "done" && failedNotes.length > 0 && (
                 <Badge variant="warning">{failedNotes.length} failed</Badge>
               )}
-              {status === "done" && stoppedByQuota && <Badge variant="error">Storage full</Badge>}
+              {status === "done" && stoppedByQuota && <Badge variant="error">{quotaBadge}</Badge>}
               {status === "done" && !stoppedByQuota && failedNotes.length === 0 && (
                 <Badge variant="success">Complete</Badge>
               )}

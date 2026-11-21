@@ -1,0 +1,53 @@
+appId: eu.drafto.mobile
+---
+# Subflow: a clean start, signed in as SIGN_IN_EMAIL / SIGN_IN_PASSWORD, on the
+# Notebooks tab. Pass both through runFlow's `env:`.
+# Used through runFlow (11-sign-out-confirm's confirm leg); not a flow of its own.
+#
+# The clean start (clearKeychain too: iOS keeps SecureStore in the Keychain,
+# which clearState leaves alone) drops the session the device had without
+# calling the server, so whoever was signed in stays signed in everywhere else.
+# That is how a flow changes accounts without a sign-out, which the app makes
+# global. The steps are 10-swipe-hint.yaml's sign-in.
+
+- clearKeychain
+- stopApp
+- clearState
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
+
+# Sign in, clear iOS's save-password sheet, reach Notebooks: retried as a whole.
+# The sheet is drawn out of process and hides the app from Maestro, so a fixed
+# wait and a restart clear it; a restart that beats a slow sign-in lands back on
+# Log In, and the next attempt signs in again. Bounded: 3 attempts.
+- retry:
+    maxRetries: 2
+    commands:
+      - runFlow:
+          when:
+            visible: "Log In"
+          commands:
+            - tapOn: "you@example.com"
+            - inputText: ${SIGN_IN_EMAIL}
+            - tapOn: "Sign in to your Drafto account"
+            - tapOn: "Your password"
+            - inputText: ${SIGN_IN_PASSWORD}
+            - tapOn: "Sign in to your Drafto account"
+            - tapOn:
+                id: "login-button"
+      - runFlow:
+          when:
+            platform: iOS
+          commands:
+            - extendedWaitUntil:
+                visible: "never-present-just-wait"
+                timeout: 8000
+                optional: true
+            - stopApp
+            - launchApp
+      - extendedWaitUntil:
+          visible: "Notebooks"
+          timeout: 30000

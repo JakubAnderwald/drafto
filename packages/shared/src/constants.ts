@@ -17,6 +17,15 @@ export const STORAGE_QUOTA_EXCEEDED_CODE = "storage_quota_exceeded";
 // The `error` text of the web API's quota 413 (its `code` tells it apart from the
 // per-file FILE_TOO_LARGE_MESSAGE 413).
 export const STORAGE_QUOTA_EXCEEDED_MESSAGE = "Storage quota exceeded";
+// Per-user note content quota (ADR 0090). The database default of
+// profiles.content_quota_bytes; NULL there means unlimited (admins). Keep in step with
+// supabase/migrations/20261121000001_per_user_content_quota.sql.
+export const DEFAULT_CONTENT_QUOTA_BYTES = 26214400; // 25MB in bytes
+// The message the notes quota trigger raises, and the `code` of the web API's content
+// quota 413. Every platform recognises a refused save by it (isContentQuotaError).
+export const CONTENT_QUOTA_EXCEEDED_CODE = "content_quota_exceeded";
+// The `error` text of the web API's content quota 413.
+export const CONTENT_QUOTA_EXCEEDED_MESSAGE = "Note content quota exceeded";
 // Usage above this share of the quota shows the warning tone; at or over 1, danger.
 export const STORAGE_WARNING_RATIO = 0.9;
 export const DEBOUNCE_MS = 500;

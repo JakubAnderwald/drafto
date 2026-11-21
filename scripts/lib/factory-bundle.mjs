@@ -199,7 +199,7 @@ function altFromImgTag(tag) {
 // instead of invisible. Some specs ("see screenshots") carry their entire
 // signal in images the planner would otherwise never see.
 //
-// The factory's own published test-run screenshots (ADR-0090) are skipped
+// The factory's own published test-run screenshots (ADR-0091) are skipped
 // wherever they appear, a quote-reply included. One report can embed 20, so
 // without this the first report on an issue would take every slot and a
 // reporter's later screenshot would never reach the bundle.

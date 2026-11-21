@@ -128,6 +128,158 @@ describe("useAutoSave", () => {
     expect(result.current.lastSavedTitle).toBeNull();
   });
 
+  it("exposes the notes-full message when the content quota refuses a save, and clears it on the next success", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 413,
+      json: () =>
+        Promise.resolve({
+          error: "Note content quota exceeded",
+          code: "content_quota_exceeded",
+          usedBytes: 26214400,
+          quotaBytes: 26214400,
+        }),
+    });
+
+    const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+
+    act(() => {
+      result.current.debouncedSave({ content: [] });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(result.current.saveStatus).toBe("error");
+    expect(result.current.saveError).toBe(
+      "Notes full: you've used 25 MB of your 25 MB for notes. Delete notes you no longer need and empty the trash to free space.",
+    );
+
+    act(() => {
+      result.current.debouncedSave({ content: [] });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(result.current.saveStatus).toBe("saved");
+    expect(result.current.saveError).toBeNull();
+  });
+
+  describe("content quota refusals", () => {
+    const quotaRefusal = {
+      ok: false,
+      status: 413,
+      json: () =>
+        Promise.resolve({
+          error: "Note content quota exceeded",
+          code: "content_quota_exceeded",
+          usedBytes: 26214400,
+          quotaBytes: 26214400,
+        }),
+    };
+
+    async function saveAndFlush(
+      result: { current: ReturnType<typeof useAutoSave> },
+      data: Record<string, unknown>,
+    ) {
+      act(() => {
+        result.current.debouncedSave(data);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+    }
+
+    it("keeps the refused edit pending and sends it again with the next edit", async () => {
+      mockFetch.mockResolvedValueOnce(quotaRefusal);
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+
+      await saveAndFlush(result, { content: ["big"] });
+      expect(result.current.saveStatus).toBe("error");
+      expect(result.current.hasPendingChanges).toBe(true);
+
+      await saveAndFlush(result, { title: "T" });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body as string)).toEqual({
+        content: ["big"],
+        title: "T",
+      });
+      expect(result.current.saveStatus).toBe("saved");
+      expect(result.current.hasPendingChanges).toBe(false);
+    });
+
+    it("lets a newer edit win over the refused one for the same field", async () => {
+      mockFetch.mockResolvedValueOnce(quotaRefusal);
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+
+      await saveAndFlush(result, { content: ["big"] });
+      await saveAndFlush(result, { content: ["smaller"] });
+
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body as string)).toEqual({
+        content: ["smaller"],
+      });
+    });
+
+    it("doesn't retry the refused edit in a loop", async () => {
+      mockFetch.mockResolvedValue(quotaRefusal);
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+
+      await saveAndFlush(result, { content: ["big"] });
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("flushes the refused edit on unmount", async () => {
+      mockFetch.mockResolvedValueOnce(quotaRefusal);
+      const { result, unmount } = renderHook(() =>
+        useAutoSave({ noteId: "note-1", debounceMs: 100 }),
+      );
+
+      await saveAndFlush(result, { content: ["big"] });
+      unmount();
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body as string)).toEqual({
+        content: ["big"],
+      });
+    });
+
+    it("clears the notes-full message when a later save fails for another reason", async () => {
+      mockFetch.mockResolvedValueOnce(quotaRefusal).mockRejectedValueOnce(new Error("offline"));
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+
+      await saveAndFlush(result, { content: ["big"] });
+      expect(result.current.saveError).toMatch(/^Notes full/);
+
+      await saveAndFlush(result, { title: "T" });
+      expect(result.current.saveStatus).toBe("error");
+      expect(result.current.saveError).toBeNull();
+    });
+  });
+
+  it("leaves saveError null for a failure that isn't the content quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: () => Promise.resolve({ error: "File too large" }),
+    });
+
+    const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+    act(() => {
+      result.current.debouncedSave({ title: "Test" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(result.current.saveStatus).toBe("error");
+    expect(result.current.saveError).toBeNull();
+  });
+
   it("does not save when noteId is null", async () => {
     const { result } = renderHook(() => useAutoSave({ noteId: null, debounceMs: 100 }));
 

@@ -1,6 +1,7 @@
 import { blockNoteToMarkdown, markdownToBlockNote, contentToBlocknote } from "@drafto/shared";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
+import { contentQuotaMessageFor } from "@/lib/api/content-quota";
 
 interface ToolResult {
   [key: string]: unknown;
@@ -14,6 +15,11 @@ function ok(text: string): ToolResult {
 
 function err(text: string): ToolResult {
   return { content: [{ type: "text", text }], isError: true };
+}
+
+/** A failed note write: the content quota's own message (ADR 0090), or the database error. */
+function writeErr(error: { message: string }): ToolResult {
+  return err(`Error: ${contentQuotaMessageFor(error) ?? error.message}`);
 }
 
 export async function listNotebooks(
@@ -146,7 +152,7 @@ export async function createNote(
     .select("id, title")
     .single();
 
-  if (error) return err(`Error: ${error.message}`);
+  if (error) return writeErr(error);
   return ok(JSON.stringify(note, null, 2));
 }
 
@@ -172,7 +178,7 @@ export async function updateNote(
     .select("id, title, updated_at")
     .single();
 
-  if (error) return err(`Error: ${error.message}`);
+  if (error) return writeErr(error);
   return ok(JSON.stringify(data, null, 2));
 }
 

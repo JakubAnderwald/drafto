@@ -57,7 +57,7 @@ describe("browser runner prompt — browser rules", () => {
   });
 
   it("knows its screenshots may be published, so never takes one of a secret", () => {
-    // ADR-0090: the factory may post the screenshots on the public issue
+    // ADR-0091: the factory may post the screenshots on the public issue
     // after the run, so the rule the guard can't see is what is on screen.
     assert.match(flat, /\*\*Screenshots may be published with your report\.\*\*/);
     assert.match(flat, /never take one while the page shows a secret/);

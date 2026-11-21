@@ -429,6 +429,19 @@ describe("run-dev-live-tests CLI --dry-run", () => {
     });
   });
 
+  it("--only content-quota plans the note content quota live test with both keys", () => {
+    withFixture((fx) => {
+      const r = runCli(fx, ["--only", "content-quota", "--dry-run"]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(
+        r.stdout,
+        /\[content-quota\] node --test scripts\/__tests__\/content-quota\.live\.test\.mjs\n {6}sets NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, DRAFTO_LIVE_REQUIRED\n/,
+      );
+      assert.doesNotMatch(r.stdout, /\[profile-guard\]|\[storage-quota\]|\[usage-daily\]/);
+      assertNoValues(r.all);
+    });
+  });
+
   it("--only usage-daily needs .env.local for the anon key", () => {
     withFixture(
       (fx) => {

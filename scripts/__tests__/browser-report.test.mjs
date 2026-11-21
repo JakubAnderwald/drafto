@@ -40,7 +40,7 @@ import { fenceStep } from "../lib/markdown-fence.mjs";
 // Guards the only path from the browser runner's stdout to a public GitHub
 // comment: the runner drives the Mac mini's signed-in Chrome, so its output is
 // parsed strictly, scanned for secrets and defanged before bash posts it.
-// Since ADR-0090 the comment can also embed the run's published screenshots
+// Since ADR-0091 the comment can also embed the run's published screenshots
 // (an upload record from evidence-upload.mjs): these lock in that they sit
 // under the step that took them, survive truncation, never show for a
 // withheld report or the plan kind, and that whenever nothing is embedded the
@@ -92,7 +92,7 @@ function upload({ ns = [1, 2, 3], overflow = [], images } = {}) {
 const imgTag = (n) => `<img src="${imageUrl(n)}" width="480" alt="Screenshot ${n}">`;
 const imgCount = (body) => (body.match(/<img /g) ?? []).length;
 const PUBLISHED_FOOTER =
-  "<sub>Screenshots are published with this report (ADR-0090): they show the dev test " +
+  "<sub>Screenshots are published with this report (ADR-0091): they show the dev test " +
   "account on dev data. Local copies and the runner's output: `/ev/run-1`.</sub>";
 const localFooter = (why = "") =>
   `<sub>Screenshots stay on the Mac mini (this repo is public): \`/ev/run-1\`.${
@@ -591,7 +591,7 @@ describe("renderVerifySection", () => {
   });
 });
 
-describe("screenshots in the report (ADR-0090)", () => {
+describe("screenshots in the report (ADR-0091)", () => {
   const base = {
     issue: "42",
     sha: SHA,
@@ -975,7 +975,7 @@ describe("browser-report CLI", () => {
   });
 
   // evidence's footer path is the temp dir: match the footers by their wording.
-  const PUBLISHED = /<sub>Screenshots are published with this report \(ADR-0090\)/;
+  const PUBLISHED = /<sub>Screenshots are published with this report \(ADR-0091\)/;
   const STAY = /<sub>Screenshots stay on the Mac mini \(this repo is public\): `[^`]+`\./;
 
   it("render --images-json embeds the uploaded screenshots and counts them", () => {

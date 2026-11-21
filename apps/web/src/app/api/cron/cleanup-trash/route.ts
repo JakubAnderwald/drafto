@@ -4,6 +4,7 @@ import type { NextRequest } from "next/server";
 import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { removeOrphanedAttachments } from "@/lib/storage/remove-orphaned-attachments";
+import { reportStorageOverruns } from "@/lib/storage/report-storage-overruns";
 import { env } from "@/env";
 
 /** The purge plus up to 10 listing-and-remove rounds of 1,000 files. */
@@ -12,7 +13,8 @@ export const maxDuration = 60;
 /**
  * Purges notes trashed more than 30 days ago, then removes every attachment file
  * whose note is gone: the purged notes' files, and those left by mobile and
- * desktop permanent deletes, which delete rows only. pg_cron also runs the purge
+ * desktop permanent deletes, which delete rows only. Then reports to Sentry any user
+ * whose stored attachments exceed their quota (ADR 0072's signed-URL gap). pg_cron also runs the purge
  * daily at 03:00 UTC; it can't remove files, which only the Storage API does.
  *
  * Callers: Vercel Cron (GET, daily, `apps/web/vercel.json`), which sends
@@ -35,6 +37,8 @@ async function runCleanup() {
   }
 
   const removedFiles = await removeOrphanedAttachments(admin);
+  // After the sweep, so only objects under notes the user still has are left to count.
+  await reportStorageOverruns(admin);
   return successResponse({ deleted: data ?? 0, removedFiles });
 }
 

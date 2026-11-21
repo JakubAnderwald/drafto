@@ -72,36 +72,58 @@ const { default: AdminPage } = await import("@/app/(app)/admin/page");
 
 const props = { searchParams: Promise.resolve({}) };
 
+const STORAGE_ROWS = [
+  { user_id: ADMIN_ID, used_bytes: 0, quota_bytes: null },
+  { user_id: PENDING_ID, used_bytes: 1048576, quota_bytes: 52428800 },
+  // Bigints can arrive as numeric strings.
+  { user_id: APPROVED_ID, used_bytes: "5242880", quota_bytes: "52428800" },
+];
+
+const CONTENT_ROWS = [
+  { user_id: ADMIN_ID, used_bytes: 0, quota_bytes: null },
+  { user_id: PENDING_ID, used_bytes: 0, quota_bytes: 26214400 },
+  { user_id: APPROVED_ID, used_bytes: "3145728", quota_bytes: "26214400" },
+];
+
+type RpcResult = { data: unknown; error: unknown };
+
+/** Answers each admin RPC by name. */
+function mockRpcs(results: { storage: RpcResult; content: RpcResult }) {
+  mockRpc.mockImplementation(async (name: string) =>
+    name === "admin_storage_usage" ? results.storage : results.content,
+  );
+}
+
 describe("AdminPage storage quotas", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("lists every user's storage next to the pending approvals", async () => {
-    mockRpc.mockResolvedValue({
-      data: [
-        { user_id: ADMIN_ID, used_bytes: 0, quota_bytes: null },
-        { user_id: PENDING_ID, used_bytes: 1048576, quota_bytes: 52428800 },
-        // Bigints can arrive as numeric strings.
-        { user_id: APPROVED_ID, used_bytes: "5242880", quota_bytes: "52428800" },
-      ],
-      error: null,
+  it("lists every user's storage and notes usage next to the pending approvals", async () => {
+    mockRpcs({
+      storage: { data: STORAGE_ROWS, error: null },
+      content: { data: CONTENT_ROWS, error: null },
     });
 
     render(await AdminPage(props));
 
     expect(mockRpc).toHaveBeenCalledWith("admin_storage_usage");
+    expect(mockRpc).toHaveBeenCalledWith("admin_content_usage");
     expect(screen.getByText("1 pending")).toBeInTheDocument();
 
     const table = within(screen.getByTestId("admin-storage-table"));
     expect(table.getByRole("columnheader", { name: "Storage used" })).toBeInTheDocument();
     expect(table.getByRole("columnheader", { name: "Quota" })).toBeInTheDocument();
+    expect(table.getByRole("columnheader", { name: "Notes used" })).toBeInTheDocument();
+    expect(table.getByRole("columnheader", { name: "Notes quota" })).toBeInTheDocument();
 
     const adminRow = within(table.getByText("admin@example.com").closest("tr")!);
-    expect(adminRow.getByText("Current: Unlimited")).toBeInTheDocument();
+    expect(adminRow.getAllByText("Current: Unlimited")).toHaveLength(2);
     const approvedRow = within(table.getByText("approved@example.com").closest("tr")!);
     expect(approvedRow.getByText("5 MB")).toBeInTheDocument();
     expect(approvedRow.getByText("Current: 50 MB")).toBeInTheDocument();
+    expect(approvedRow.getByText("3 MB")).toBeInTheDocument();
+    expect(approvedRow.getByText("Current: 25 MB")).toBeInTheDocument();
     expect(table.getByText("pending@example.com")).toBeInTheDocument();
 
     // The pending user appears in both lists but is looked up once.
@@ -110,7 +132,10 @@ describe("AdminPage storage quotas", () => {
 
   it("keeps the approval list when storage usage can't be loaded", async () => {
     const failure = { message: "boom", code: "XX000" };
-    mockRpc.mockResolvedValue({ data: null, error: failure });
+    mockRpcs({
+      storage: { data: null, error: failure },
+      content: { data: CONTENT_ROWS, error: null },
+    });
 
     render(await AdminPage(props));
 
@@ -119,6 +144,26 @@ describe("AdminPage storage quotas", () => {
     expect(screen.queryByTestId("admin-storage-table")).not.toBeInTheDocument();
     expect(captureExceptionMock).toHaveBeenCalledWith(failure, {
       extra: { where: "admin-page:admin_storage_usage" },
+    });
+  });
+
+  it("keeps storage quotas when notes usage can't be loaded", async () => {
+    const failure = { message: "boom", code: "XX000" };
+    mockRpcs({
+      storage: { data: STORAGE_ROWS, error: null },
+      content: { data: null, error: failure },
+    });
+
+    render(await AdminPage(props));
+
+    expect(screen.getByText("1 pending")).toBeInTheDocument();
+    const table = within(screen.getByTestId("admin-storage-table"));
+    const approvedRow = within(table.getByText("approved@example.com").closest("tr")!);
+    expect(approvedRow.getByText("Current: 50 MB")).toBeInTheDocument();
+    expect(approvedRow.getByText("Unavailable")).toBeInTheDocument();
+    expect(table.queryByLabelText(/^Notes quota in MB for/)).not.toBeInTheDocument();
+    expect(captureExceptionMock).toHaveBeenCalledWith(failure, {
+      extra: { where: "admin-page:admin_content_usage" },
     });
   });
 });

@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import * as Sentry from "@sentry/nextjs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   STORAGE_QUOTA_EXCEEDED_CODE,
   STORAGE_QUOTA_EXCEEDED_MESSAGE,
-  storageUsageFromRow,
   type StorageUsage,
 } from "@drafto/shared";
 import type { Database } from "@/lib/supabase/database.types";
+import { readMyUsage } from "@/lib/api/usage-rpc";
 
 /**
  * The calling user's attachment usage and quota (issue #794), read through the
@@ -15,28 +14,8 @@ import type { Database } from "@/lib/supabase/database.types";
  * missing reading means: the upload pre-check lets the upload through (the
  * attachments trigger still enforces the quota), the usage endpoint answers 500.
  */
-export async function getStorageUsage(
-  supabase: SupabaseClient<Database>,
-): Promise<StorageUsage | null> {
-  let data: unknown;
-  try {
-    const result = await supabase.rpc("get_my_storage_usage");
-    if (result.error) {
-      console.error("[storage-quota] Failed to read storage usage:", result.error.message);
-      Sentry.captureException(result.error, { extra: { where: "storage-quota:get-usage" } });
-      return null;
-    }
-    data = result.data;
-  } catch (err) {
-    console.error("[storage-quota] Failed to read storage usage:", err);
-    Sentry.captureException(err, { extra: { where: "storage-quota:get-usage" } });
-    return null;
-  }
-  const usage = storageUsageFromRow(data);
-  if (!usage) {
-    console.error("[storage-quota] get_my_storage_usage returned no usable row");
-  }
-  return usage;
+export function getStorageUsage(supabase: SupabaseClient<Database>): Promise<StorageUsage | null> {
+  return readMyUsage(supabase, "get_my_storage_usage", "storage-quota", "storage usage");
 }
 
 /**

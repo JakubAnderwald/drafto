@@ -1,12 +1,13 @@
 import type { StorageUsage } from "@drafto/shared";
 
 /**
- * Browser-side read of the signed-in user's attachment usage (issue #794), for the
- * settings page. The mobile and desktop apps have their own `fetchStorageUsage`,
- * which calls the `get_my_storage_usage` RPC directly.
+ * Browser-side reads of the signed-in user's attachment usage (issue #794) and note
+ * content usage (ADR 0090), for the settings page. The mobile and desktop apps call
+ * the `get_my_storage_usage` / `get_my_content_usage` RPCs directly.
  */
 
 export const STORAGE_USAGE_URL = "/api/storage-usage";
+export const CONTENT_USAGE_URL = "/api/content-usage";
 
 function isByteCount(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -22,14 +23,23 @@ export function parseStorageUsage(body: unknown): StorageUsage | null {
   return { usedBytes, quotaBytes };
 }
 
-/** The user's usage from `GET /api/storage-usage`, or null when it can't be read. */
-export async function fetchStorageUsage(): Promise<StorageUsage | null> {
+async function fetchUsage(url: string): Promise<StorageUsage | null> {
   try {
-    const res = await fetch(STORAGE_USAGE_URL);
+    const res = await fetch(url);
     if (!res.ok) return null;
     return parseStorageUsage(await res.json());
   } catch {
     // Offline or a body that isn't JSON: the caller shows usage as unavailable.
     return null;
   }
+}
+
+/** The user's usage from `GET /api/storage-usage`, or null when it can't be read. */
+export function fetchStorageUsage(): Promise<StorageUsage | null> {
+  return fetchUsage(STORAGE_USAGE_URL);
+}
+
+/** The user's note content usage from `GET /api/content-usage`, or null when it can't be read. */
+export function fetchContentUsage(): Promise<StorageUsage | null> {
+  return fetchUsage(CONTENT_USAGE_URL);
 }

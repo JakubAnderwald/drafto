@@ -7,7 +7,12 @@ import { renderHook, act, waitFor } from "@testing-library/react-native";
 
 import { syncDatabase, SyncNetworkError } from "@/db/sync";
 import { Alert } from "react-native";
-import { storageFullMessage, utcDay } from "@drafto/shared";
+import {
+  DEFAULT_CONTENT_QUOTA_BYTES,
+  contentFullMessage,
+  storageFullMessage,
+  utcDay,
+} from "@drafto/shared";
 
 import {
   processPendingUploads,
@@ -17,6 +22,7 @@ import {
 } from "@/lib/data";
 import type { UploadResult } from "@/lib/data";
 import { resetStorageFullAlert, STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
+import { CONTENT_FULL_ALERT_TITLE } from "@/lib/content-full-alert";
 import { useAuth } from "@/providers/auth-provider";
 import {
   AUTO_SYNC_DEBOUNCE_MS,
@@ -1095,6 +1101,84 @@ describe("DatabaseProvider storage-full alert (issue #794)", () => {
     });
     await flushEffects();
 
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
+describe("DatabaseProvider notes refused for the content quota (ADR 0090)", () => {
+  const SYNCED = { remoteChangeCount: 0, contentQuotaRefused: 0, contentUsage: null };
+  const FULL = { usedBytes: DEFAULT_CONTENT_QUOTA_BYTES, quotaBytes: DEFAULT_CONTENT_QUOTA_BYTES };
+  const REFUSED = { remoteChangeCount: 0, contentQuotaRefused: 1, contentUsage: FULL };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockUseAuth.mockReturnValue({ user: TEST_USER, isApproved: true });
+    mockSyncDatabase.mockResolvedValue(SYNCED);
+    mockProcessPendingUploads.mockResolvedValue(NO_UPLOADS);
+    mockCleanupOrphanedFiles.mockResolvedValue(undefined);
+    mockEnsureLocalIdentity.mockResolvedValue("ready");
+    mockFetchStorageUsage.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("alerts once that notes are full, and keeps it in the sync status until they fit", async () => {
+    mockSyncDatabase.mockResolvedValue(REFUSED);
+    const message = contentFullMessage(FULL.usedBytes, FULL.quotaBytes);
+
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() => expect(result.current.isContentFull).toBe(true));
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+    expect(result.current.lastSyncError).toBe(message);
+    expect(Alert.alert).toHaveBeenCalledWith(CONTENT_FULL_ALERT_TITLE, message);
+
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+
+    mockSyncDatabase.mockResolvedValue(SYNCED);
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.isContentFull).toBe(false);
+    expect(result.current.lastSyncError).toBeNull();
+  });
+
+  it("an unrelated failure after a refusal reads as a sync failure, not notes full", async () => {
+    mockSyncDatabase.mockResolvedValue(REFUSED);
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+    await waitFor(() => expect(result.current.isContentFull).toBe(true));
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+
+    // A later pass fails for another reason (a 500, RLS…).
+    mockSyncDatabase.mockRejectedValue(new Error("Push notes (create) failed: server error"));
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.isContentFull).toBe(false);
+    expect(result.current.lastSyncError).toBe("Push notes (create) failed: server error");
+
+    // The next refusal tells the user again.
+    mockSyncDatabase.mockResolvedValue(REFUSED);
+    await act(async () => {
+      await result.current.sync();
+    });
+    expect(result.current.isContentFull).toBe(true);
+    expect(Alert.alert).toHaveBeenCalledTimes(2);
+  });
+
+  it("stays quiet when nothing was refused", async () => {
+    const { result } = renderHook(() => useDatabase(), { wrapper });
+
+    await waitFor(() => expect(mockSyncDatabase).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.isSyncing).toBe(false));
+
+    expect(result.current.isContentFull).toBe(false);
     expect(Alert.alert).not.toHaveBeenCalled();
   });
 });

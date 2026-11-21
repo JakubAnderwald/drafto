@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
+import { contentQuotaResponseFor } from "@/lib/api/content-quota";
 import {
   contentToBlocknote,
   resolveBlockNoteImageUrls,
@@ -132,7 +133,8 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     .single();
 
   if (error) {
-    return errorResponse("Failed to update note", 404);
+    // The notes trigger refuses a write that grows the user's content past their quota.
+    return contentQuotaResponseFor(error) ?? errorResponse("Failed to update note", 404);
   }
 
   return successResponse(note);

@@ -1,6 +1,6 @@
 # Email and approval
 
-**Status:** shipped **Updated:** 2026-11-08
+**Status:** shipped **Updated:** 2026-11-21
 
 ## What it is
 
@@ -18,6 +18,8 @@ Below the approval list, `/admin` has a **Storage quotas** table of every user (
 - **Enforced by the database, not the page.** A trigger on `public.attachments` and the attachments bucket's storage policies refuse an upload that would take a user over their quota, on every platform. The page only edits the number. See [ADR 0072](../adr/0072-per-user-attachment-storage-quota.md) and `supabase/migrations/20261113000001_per_user_storage_quota.sql`.
 - **Defaults.** New users get 50 MB (`DEFAULT_STORAGE_QUOTA_BYTES` in `packages/shared`). The migration set every existing admin to Unlimited (`NULL`). Promoting someone to admin later does **not** change their quota: they keep 50 MB until an admin ticks Unlimited for them here. The column is the only source of truth.
 - Users can't change their own quota: `guard_profile_privilege_columns` now guards `storage_quota_bytes` alongside `is_admin` and `is_approved`.
+- **Note content quota** ([ADR-0090](../adr/0090-per-user-note-content-quota.md)). The same table has _Notes used_ and _Notes quota_ columns, filled from `admin_content_usage()`, with the same MB-or-Unlimited editor. It saves through `/api/admin/storage-quota` with `contentQuotaMb`; the route accepts `quotaMb`, `contentQuotaMb` or both. The default is 25 MB, admins are Unlimited, and the guard covers `content_quota_bytes` too. If `admin_content_usage()` fails, those cells read "Unavailable" and the rest of the page still renders.
+- **Storage overruns.** The daily `/api/cron/cleanup-trash` calls `storage_quota_overruns()` and sends one Sentry warning that lists users whose stored attachment objects exceed their storage quota plus 50 MB (ADR-0072's signed-URL gap), so an admin can act on them.
 
 ## Code paths
 

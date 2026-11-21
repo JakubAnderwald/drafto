@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef } from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { formatStorageUsage, storageUsageRatio, storageUsageTone } from "@drafto/shared";
-import type { StorageUsageTone } from "@drafto/shared";
+import {
+  formatContentUsage,
+  formatStorageUsage,
+  storageUsageRatio,
+  storageUsageTone,
+} from "@drafto/shared";
+import type { StorageUsage, StorageUsageTone } from "@drafto/shared";
 
-import { useStorageUsage } from "@/hooks/use-storage-usage";
+import { useContentUsage, useStorageUsage } from "@/hooks/use-storage-usage";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -15,25 +20,56 @@ const FILL_COLORS: Record<StorageUsageTone, string> = {
   danger: colors.error,
 };
 
+type Styles = ReturnType<typeof createStyles>;
+
+/**
+ * "Notes: 1.2 MB of 25 MB used" (ADR 0090), red at the quota like the storage line.
+ * Nothing until a reading arrives, or when none can be made.
+ */
+function ContentUsageLine({ usage, styles }: { usage: StorageUsage | null; styles: Styles }) {
+  if (!usage) return null;
+  const tone = storageUsageTone(usage);
+  return (
+    <Text
+      testID="content-usage"
+      style={[styles.label, tone === "danger" && styles.labelDanger]}
+      numberOfLines={1}
+    >
+      {formatContentUsage(usage.usedBytes, usage.quotaBytes)}
+    </Text>
+  );
+}
+
 /**
  * The sidebar footer's storage line (issue #794): "Storage: 12.4 MB of 50 MB used" and a
  * thin bar, which turns warning above 90% and danger at the quota. No bar when the quota
- * is unlimited; nothing at all until a reading arrives, or when none can be made.
+ * is unlimited; nothing at all until a reading arrives, or when none can be made. The note
+ * content line (ADR 0090) sits below it.
  */
 export function StorageUsageMeter() {
   const { usage, refresh } = useStorageUsage();
+  const { usage: contentUsage, refresh: refreshContent } = useContentUsage();
   const { isSyncing } = useDatabase();
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
 
-  // Uploads and deletions reach the server during a sync, so re-read once one finishes.
+  // Uploads, edits and deletions reach the server during a sync, so re-read once one finishes.
   const wasSyncingRef = useRef(isSyncing);
   useEffect(() => {
-    if (wasSyncingRef.current && !isSyncing) void refresh();
+    if (wasSyncingRef.current && !isSyncing) {
+      void refresh();
+      void refreshContent();
+    }
     wasSyncingRef.current = isSyncing;
-  }, [isSyncing, refresh]);
+  }, [isSyncing, refresh, refreshContent]);
 
-  if (!usage) return null;
+  if (!usage) {
+    return contentUsage ? (
+      <View testID="storage-usage" style={styles.container}>
+        <ContentUsageLine usage={contentUsage} styles={styles} />
+      </View>
+    ) : null;
+  }
 
   const label = formatStorageUsage(usage.usedBytes, usage.quotaBytes);
   const ratio = storageUsageRatio(usage);
@@ -59,6 +95,7 @@ export function StorageUsageMeter() {
           />
         </View>
       ) : null}
+      <ContentUsageLine usage={contentUsage} styles={styles} />
     </View>
   );
 }

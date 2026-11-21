@@ -102,6 +102,8 @@ A debug build of a branch runs against the **dev** Supabase project, through the
     -e RUN_ID="$(date +%s)" apps/mobile/e2e/<flow>.yaml
   ```
 
+- `11-sign-out-confirm.yaml`'s confirm leg (`-e SIGN_OUT_CONFIRM=1`) signs out a dedicated dev account, `E2E_SIGNOUT_EMAIL` / `E2E_SIGNOUT_PASSWORD` in the same env file, never the shared E2E user. The app's sign-out is global, and on the shared user it ended the session a concurrent web E2E run was using (#877's CI on 2026-11-21). See `apps/mobile/e2e/README.md`.
+
 - **An emulator loads its JavaScript from `10.0.2.2:8081`, not `localhost`.** On a stock emulator React Native asks for the host machine's port 8081 at the emulator's alias for it, `10.0.2.2` (`AndroidInfoHelpers.kt`), and `adb reverse` only redirects the emulator's own `localhost`. So in a worktree, where the main checkout's Metro may already hold 8081:
   - Simplest: stop the other Metro and start this worktree's on 8081 (`cd apps/mobile && npx expo start`).
   - To keep both, start Metro on another port with `pnpm start --port 8082`, then, in a second terminal, point the app at `localhost` and redirect it: `adb root && adb shell setprop metro.host localhost && adb reverse tcp:8081 tcp:8082`, then restart the app (`adb shell am force-stop eu.drafto.mobile`, then launch it again). React Native reads `metro.host` once per app process, so an app that was already running keeps loading from `10.0.2.2:8081`, the main checkout's Metro. The Google APIs emulator images allow `adb root`; the property lasts until the emulator reboots. Metro stays in the foreground, so chaining it with `&&` never runs the rest.

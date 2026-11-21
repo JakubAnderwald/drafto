@@ -289,6 +289,75 @@ describe("updateNote", () => {
   });
 });
 
+describe("note writes refused for the content quota", () => {
+  const QUOTA_ERROR = {
+    code: "P0001",
+    message: "content_quota_exceeded",
+    details: "used_bytes=26214400 quota_bytes=26214400 note_bytes=10",
+  };
+
+  it("createNote returns the shared notes-full message", async () => {
+    const supabase = createMockSupabase(
+      vi.fn((table: string) =>
+        table === "notebooks"
+          ? chainOk({ id: "nb-1" })
+          : {
+              insert: () => ({
+                select: () => ({
+                  single: () => Promise.resolve({ data: null, error: QUOTA_ERROR }),
+                }),
+              }),
+            },
+      ),
+    );
+
+    const result = await createNote(supabase, "user-1", "nb-1", "Hello", "# Content");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      "Error: Notes full: you've used 25 MB of your 25 MB for notes. Delete notes you no longer need and empty the trash to free space.",
+    );
+  });
+
+  it("updateNote returns the shared notes-full message", async () => {
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        update: () => ({
+          eq: () => ({
+            eq: () => ({
+              select: () => ({
+                single: () => Promise.resolve({ data: null, error: QUOTA_ERROR }),
+              }),
+            }),
+          }),
+        }),
+      })),
+    );
+
+    const result = await updateNote(supabase, "user-1", "note-1", undefined, "# More");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/^Error: Notes full:/);
+  });
+
+  it("updateNote keeps the database message for any other failure", async () => {
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        update: () => ({
+          eq: () => ({
+            eq: () => ({
+              select: () => ({
+                single: () => Promise.resolve({ data: null, error: { message: "boom" } }),
+              }),
+            }),
+          }),
+        }),
+      })),
+    );
+
+    const result = await updateNote(supabase, "user-1", "note-1", "Title");
+    expect(result.content[0].text).toBe("Error: boom");
+  });
+});
+
 describe("moveNote", () => {
   it("moves note successfully", async () => {
     const moved = { id: "note-1", title: "Test", notebook_id: "nb-2" };
