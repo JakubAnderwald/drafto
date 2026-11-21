@@ -4,10 +4,18 @@ import { forwardRef, type HTMLAttributes } from "react";
 import { cn } from "@/lib/cn";
 
 export type CardShadow = "sm" | "md" | "lg";
+/** The card's background: the default surface, or tinted to flag something that needs attention. */
+export type CardTone = "default" | "warning";
 
 export interface CardProps extends HTMLAttributes<HTMLDivElement> {
   shadow?: CardShadow;
+  tone?: CardTone;
 }
+
+const toneStyles: Record<CardTone, string> = {
+  default: "bg-bg-subtle",
+  warning: "bg-warning-bg",
+};
 
 const shadowStyles: Record<CardShadow, string> = {
   sm: "shadow-sm",
@@ -16,14 +24,15 @@ const shadowStyles: Record<CardShadow, string> = {
 };
 
 export const Card = forwardRef<HTMLDivElement, CardProps>(function Card(
-  { shadow = "sm", className, children, ...props },
+  { shadow = "sm", tone = "default", className, children, ...props },
   ref,
 ) {
   return (
     <div
       ref={ref}
       className={cn(
-        "bg-bg-subtle rounded-lg transition-shadow duration-[var(--transition-normal)]",
+        "rounded-lg transition-shadow duration-[var(--transition-normal)]",
+        toneStyles[tone],
         shadowStyles[shadow],
         className,
       )}

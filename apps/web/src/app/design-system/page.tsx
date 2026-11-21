@@ -542,6 +542,7 @@ export default function DesignSystemPage() {
           {(
             [
               { tone: "default", value: 0.4, caption: "Default tone — 40%" },
+              { tone: "success", value: 0.3, caption: "Success tone — 30%" },
               { tone: "warning", value: 0.95, caption: "Warning tone — 95%" },
               { tone: "danger", value: 1, caption: "Danger tone — 100%" },
             ] as const
@@ -569,6 +570,15 @@ export default function DesignSystemPage() {
               </CardFooter>
             </Card>
           ))}
+        </div>
+        <div className="mt-6 max-w-sm">
+          <Card tone="warning">
+            <CardBody>
+              <p className="text-fg text-sm">
+                Warning tone — flags something that needs attention.
+              </p>
+            </CardBody>
+          </Card>
         </div>
       </Section>
 
