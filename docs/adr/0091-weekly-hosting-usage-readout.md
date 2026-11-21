@@ -27,7 +27,7 @@ So a person can read the figures, and a program can't fetch them.
 
 Once a week, Sunday at 20:00 on the Mac mini, a read-only Claude in Chrome session reads both usage dashboards and posts the figures to Drafto. Drafto stores them and shows them next to the other limits, with the same thresholds.
 
-1. **Storage** (`20261121000001_hosted_usage_snapshots.sql`).
+1. **Storage** (`20261121000002_hosted_usage_snapshots.sql`).
    - `public.hosted_usage_snapshots` holds one row per reading: resource, amount, the dashboard's usage period, and when it was read. RLS is on with no policies, and only `service_role` may select or insert.
    - `metrics_hosted_usage()` returns the newest reading per resource against its plan limit, with `pct` and a `level`: `ok` below 70%, `warn` from 70%, `critical` from 85%, as in `metrics_platform_limits()`. It also marks a reading older than 8 days `stale`.
    - Readings and limits are kept in the dashboard's own unit (GB, a count, CPU-hours), so the percentage doesn't depend on decimal vs binary gigabytes.

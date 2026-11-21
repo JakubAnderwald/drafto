@@ -10,7 +10,7 @@
 // metrics_cohort_activation: every activation case below runs against that
 // definition. Its own functions are tested in usage-daily.test.mjs.
 //
-// The hosting-usage migration (20261121000001, ADR 0091) runs last: it reads
+// The hosting-usage migration (20261121000002, ADR 0091) runs last: it reads
 // only its own table, and metrics_hosted_usage is tested at the end of this file.
 //
 // The stand-ins carry only the columns the functions read, with the grants the
@@ -37,7 +37,7 @@ const MIGRATIONS = [
   "20261112000001_note_text_chars.sql",
   "20261112000002_product_metrics.sql",
   "20261113000003_usage_daily.sql",
-  "20261121000001_hosted_usage_snapshots.sql",
+  "20261121000002_hosted_usage_snapshots.sql",
 ].map((f) => path.join(REPO_ROOT, "supabase", "migrations", f));
 
 const STUB_SQL = `

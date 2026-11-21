@@ -237,7 +237,7 @@ function functionCalls(since) {
     metrics_emptied_notes: { p_since: since },
     metrics_depth: {},
     metrics_platform_limits: {},
-    // 20261121000001_hosted_usage_snapshots.sql (ADR 0091).
+    // 20261121000002_hosted_usage_snapshots.sql (ADR 0091).
     metrics_hosted_usage: {},
   };
 }
