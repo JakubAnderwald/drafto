@@ -268,7 +268,9 @@ export function buildWeeklyReport(
         weeks,
         NOT_TRACKED_YET,
       ),
-      weeklyLine("Weekly writers", metrics.activeUsers, (r) => r.writers, weeks, NOT_TRACKED_YET),
+      // From note history (metrics_writers), as the page's Writers section: activity days
+      // only started in Nov 2026, so metrics_active_users' writers read 0 for earlier weeks.
+      weeklyLine("Weekly writers", metrics.writers, (r) => r.writers, weeks, NOT_TRACKED_YET),
       weeklyLine("Sign-ups", metrics.signups, (r) => r.signups, weeks, NOT_TRACKED_YET),
       activationLine(metrics.activation),
     ],

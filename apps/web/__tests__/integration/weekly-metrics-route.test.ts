@@ -105,7 +105,8 @@ describe("GET /api/cron/weekly-metrics against faked Supabase and Resend", () =>
     expect(text).toContain("- Supabase — Egress: 4.25 GB of 5 GB (85%), critical");
     expect(text).toContain("- Storage: 768 MB of 1 GB (75%), warn");
     expect(text).toContain("- Weekly active users: 6 (week before: —)");
-    expect(text).toContain("- Weekly writers: 4 (week before: —)");
+    // metrics_writers (note history), as the page's Writers section shows it.
+    expect(text).toContain("- Weekly writers: 5 (week before: —)");
     expect(text).toContain("- Sign-ups: 3 (week before: 1)");
     expect(text).toContain("- Activation, cohort 2026-W37: — (week before: —)");
     expect(text).toContain("- Database: 100 MB of 500 MB (20%), ok");

@@ -114,6 +114,14 @@ describe("buildWeeklyReport", () => {
           },
         ],
       },
+      writers: {
+        status: "ok",
+        data: [
+          { ...week("2026-11-23", "2026-W48"), writers: 2, by_client: {}, history_complete: true },
+          { ...week("2026-11-16", "2026-W47"), writers: 5, by_client: {}, history_complete: true },
+          { ...week("2026-11-09", "2026-W46"), writers: 3, by_client: {}, history_complete: true },
+        ],
+      },
       signups: {
         status: "ok",
         data: [
@@ -125,7 +133,8 @@ describe("buildWeeklyReport", () => {
     });
     expect(report.headlines.slice(0, 3)).toEqual([
       { kind: "value", label: "Weekly active users", current: "6", previous: "5" },
-      { kind: "value", label: "Weekly writers", current: "4", previous: "2" },
+      // Writers come from metrics_writers (note history), not activity days' writers (4, 2).
+      { kind: "value", label: "Weekly writers", current: "5", previous: "3" },
       { kind: "value", label: "Sign-ups", current: "3", previous: "1" },
     ]);
   });
@@ -145,17 +154,26 @@ describe("buildWeeklyReport", () => {
     });
   });
 
-  it("says active users and writers are not tracked yet before #821", () => {
-    const report = build({ activeUsers: { status: "unavailable" } });
+  it("says active users are not tracked yet before #821, and still shows writers", () => {
+    const report = build({
+      activeUsers: { status: "unavailable" },
+      writers: {
+        status: "ok",
+        data: [
+          { ...week("2026-11-16", "2026-W47"), writers: 5, by_client: {}, history_complete: true },
+        ],
+      },
+    });
     expect(report.headlines[0]).toEqual({
       kind: "text",
       label: "Weekly active users",
       text: NOT_TRACKED_YET,
     });
     expect(report.headlines[1]).toEqual({
-      kind: "text",
+      kind: "value",
       label: "Weekly writers",
-      text: NOT_TRACKED_YET,
+      current: "5",
+      previous: "—",
     });
   });
 
