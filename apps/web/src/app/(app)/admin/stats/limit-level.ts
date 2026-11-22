@@ -14,8 +14,3 @@ export const LIMIT_LEVEL_BADGE: Record<PlatformLimitLevel, BadgeVariant> = {
   warn: "warning",
   critical: "error",
 };
-
-/** "database" → "Database". */
-export function resourceLabel(resource: string): string {
-  return resource.charAt(0).toUpperCase() + resource.slice(1);
-}

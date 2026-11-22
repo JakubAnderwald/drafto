@@ -58,6 +58,25 @@ describe("email client", () => {
     });
   });
 
+  it("passes replyTo through when given", async () => {
+    vi.doMock("@/env", () => ({
+      env: { RESEND_API_KEY: "re_test", EMAIL_FROM: "Drafto <hello@drafto.eu>" },
+    }));
+    resendSendMock.mockResolvedValue({ data: { id: "email-456" }, error: null });
+
+    const { sendEmail } = await import("@/lib/email/client");
+    await sendEmail({
+      to: "admin@example.com",
+      subject: "hi",
+      html: "<p>x</p>",
+      text: "x",
+      replyTo: "support@drafto.eu",
+    });
+    expect(resendSendMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "admin@example.com", replyTo: "support@drafto.eu" }),
+    );
+  });
+
   it("captures error and returns null when Resend returns an error", async () => {
     vi.doMock("@/env", () => ({
       env: { RESEND_API_KEY: "re_test", EMAIL_FROM: "Drafto <hello@drafto.eu>" },

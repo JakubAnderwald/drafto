@@ -1,3 +1,5 @@
+import { EMAIL_COLORS, escapeHtml, renderEmailLayout, type EmailContent } from "@/lib/email/layout";
+
 interface NewSignupAdminEmailInput {
   userEmail: string;
   userDisplayName: string | null;
@@ -10,47 +12,9 @@ interface AccountActiveEmailInput {
   loginUrl: string;
 }
 
-interface EmailContent {
-  subject: string;
-  html: string;
-  text: string;
-}
-
-// Inline palette for transactional emails. Values mirror the tokens defined in
-// apps/web/src/app/globals.css (warm neutrals + primary indigo). HTML email
-// clients strip <style> tags and cannot resolve CSS variables, so these must
-// be kept in sync with globals.css manually. See ADR 0020.
-const EMAIL_COLORS = {
-  primary: "#3525cd", // --color-primary-600
-  fg: "#1f1b17", // --color-neutral-900
-  fgMuted: "#6b6360", // --color-neutral-500
-  fgSubtle: "#9c9590", // --color-neutral-400
-  bg: "#fff8f5", // --color-neutral-50
-  bgSubtle: "#fcf2eb", // --color-neutral-100
-  border: "#eae1da", // --color-neutral-300
-} as const;
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function sanitizePlaintext(value: string): string {
   return value.replace(/[\r\n]+/g, " ").trim();
 }
-
-const baseStyles = `
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  color: ${EMAIL_COLORS.fg};
-  line-height: 1.5;
-  max-width: 560px;
-  margin: 0 auto;
-  padding: 32px 24px;
-`;
 
 const primaryButtonStyles = `
   display: inline-block;
@@ -69,21 +33,6 @@ const secondaryLinkStyles = `
   text-decoration: underline;
   font-size: 14px;
 `;
-
-function renderEmailLayout(args: { title: string; bodyHtml: string }): string {
-  const { title, bodyHtml } = args;
-  return `<!doctype html>
-<html>
-  <body style="margin:0;padding:0;background:${EMAIL_COLORS.bg};">
-    <div style="${baseStyles}">
-      <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:${EMAIL_COLORS.fg};">${title}</h1>
-      ${bodyHtml}
-      <hr style="margin:32px 0 16px;border:0;border-top:1px solid ${EMAIL_COLORS.border};" />
-      <p style="margin:0;font-size:12px;color:${EMAIL_COLORS.fgSubtle};">Drafto · <a href="https://drafto.eu" style="color:${EMAIL_COLORS.fgMuted};">drafto.eu</a></p>
-    </div>
-  </body>
-</html>`;
-}
 
 /**
  * The notice every admin gets for a new signup. Since ADR 0094 the account is active from

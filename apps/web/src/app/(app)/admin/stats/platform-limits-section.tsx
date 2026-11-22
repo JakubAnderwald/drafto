@@ -1,16 +1,12 @@
 import { Badge } from "@/components/ui/badge";
 import { ProgressBar } from "@/components/ui/progress-bar";
-import { formatBytes, formatPct } from "@/lib/metrics/format";
+import { formatBytes, formatPct, resourceLabel } from "@/lib/metrics/format";
 import type { HostedUsageRow, PlatformLimitRow } from "@/lib/metrics/rpc-schemas";
 import type { HostedUsageLink, MetricResult } from "@/lib/metrics/types";
 import { MetricsSection } from "@/app/(app)/admin/stats/metrics-section";
 import { MetricResultView } from "@/app/(app)/admin/stats/metric-result-view";
 import { HostedUsageList } from "@/app/(app)/admin/stats/hosted-usage-list";
-import {
-  LIMIT_LEVEL_BADGE,
-  LIMIT_LEVEL_TONE,
-  resourceLabel,
-} from "@/app/(app)/admin/stats/limit-level";
+import { LIMIT_LEVEL_BADGE, LIMIT_LEVEL_TONE } from "@/app/(app)/admin/stats/limit-level";
 
 export interface PlatformLimitsSectionProps {
   platformLimits: MetricResult<PlatformLimitRow[]>;

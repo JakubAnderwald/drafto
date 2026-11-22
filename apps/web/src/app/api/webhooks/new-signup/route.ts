@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import { env } from "@/env";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { listAdminEmails } from "@/lib/auth/list-admin-emails";
 import { sendEmail } from "@/lib/email/client";
 import { newSignupAdminEmail } from "@/lib/email/templates";
 
@@ -12,33 +13,11 @@ interface WebhookPayload {
   record: { id: string; is_approved?: boolean; display_name?: string | null } | null;
 }
 
+/** Every admin, or the fallback address when there are none (or they can't be listed). */
 async function resolveAdminRecipients(
   admin: ReturnType<typeof createAdminClient>,
 ): Promise<string[]> {
-  const { data: adminProfiles, error } = await admin
-    .from("profiles")
-    .select("id")
-    .eq("is_admin", true);
-
-  if (error) {
-    Sentry.captureException(error, { extra: { where: "resolveAdminRecipients:profiles" } });
-  }
-
-  const ids = adminProfiles?.map((p) => p.id) ?? [];
-  if (ids.length === 0) return [env.EMAIL_ADMIN_FALLBACK];
-
-  const emails: string[] = [];
-  for (const id of ids) {
-    const { data: adminUser, error: userError } = await admin.auth.admin.getUserById(id);
-    if (userError) {
-      Sentry.captureException(userError, {
-        extra: { where: "resolveAdminRecipients:authUser", id },
-      });
-      continue;
-    }
-    if (adminUser.user?.email) emails.push(adminUser.user.email);
-  }
-
+  const { emails } = await listAdminEmails(admin);
   return emails.length > 0 ? emails : [env.EMAIL_ADMIN_FALLBACK];
 }
 

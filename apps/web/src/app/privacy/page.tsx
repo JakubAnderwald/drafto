@@ -79,8 +79,9 @@ const PROCESSORS: readonly Processor[] = [
   {
     service: "Resend",
     purpose:
-      "Account emails: sign-up confirmation, password reset, account status, account deletion",
-    dataShared: "Your email address and the email's content",
+      "Account emails (sign-up confirmation, password reset, account status, account deletion), and a weekly usage report to Drafto's administrators",
+    dataShared:
+      "Your email address and the email's content. The weekly report holds only totals, plus the ID of any note a single save emptied: never your email address, name or note content",
   },
   {
     service: "Google",
@@ -118,7 +119,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;21,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;22,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps

@@ -1,10 +1,10 @@
-import { timingSafeEqual } from "node:crypto";
 import * as Sentry from "@sentry/nextjs";
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUser, errorResponse, successResponse } from "@/lib/api/utils";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { removeOrphanedAttachments } from "@/lib/storage/remove-orphaned-attachments";
 import { reportStorageOverruns } from "@/lib/storage/report-storage-overruns";
+import { hasCronSecret } from "@/lib/cron/has-cron-secret";
 import { env } from "@/env";
 
 /** The purge plus up to 10 listing-and-remove rounds of 1,000 files. */
@@ -40,15 +40,6 @@ async function runCleanup() {
   // After the sweep, so only objects under notes the user still has are left to count.
   await reportStorageOverruns(admin);
   return successResponse({ deleted: data ?? 0, removedFiles });
-}
-
-/** Constant-time: the route is public, so anyone can try tokens against it. */
-function hasCronSecret(request: NextRequest): boolean {
-  const cronSecret = env.CRON_SECRET;
-  if (!cronSecret) return false;
-  const actual = Buffer.from(request.headers.get("authorization") ?? "");
-  const expected = Buffer.from(`Bearer ${cronSecret}`);
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 /** Vercel Cron: the cron secret only. */

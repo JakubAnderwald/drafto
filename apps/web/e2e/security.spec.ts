@@ -120,6 +120,21 @@ test.describe("Security: admin route protection", () => {
     });
     await expectUnauthorizedJson(response);
   });
+
+  test("unauthenticated call cannot trigger the weekly-metrics email", async () => {
+    const response = await fetch("http://localhost:3000/api/cron/weekly-metrics", {
+      redirect: "manual",
+    });
+    await expectUnauthorizedJson(response);
+  });
+
+  test("a wrong cron secret cannot trigger the weekly-metrics email", async () => {
+    const response = await fetch("http://localhost:3000/api/cron/weekly-metrics", {
+      headers: { Authorization: "Bearer not-the-cron-secret" },
+      redirect: "manual",
+    });
+    await expectUnauthorizedJson(response);
+  });
 });
 
 test.describe("Security: upload constraints", () => {

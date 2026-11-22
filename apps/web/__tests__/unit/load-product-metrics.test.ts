@@ -210,6 +210,19 @@ describe("loadProductMetrics", () => {
     }
   });
 
+  it("lists emptied notes from emptiedSince when given", async () => {
+    const client = fakeClient();
+    const metrics = await loadProductMetrics({
+      now: NOW,
+      client: client as never,
+      emptiedSince: new Date("2026-11-14T08:00:00.000Z"),
+    });
+    const since = "2026-11-14T08:00:00.000Z";
+    expect(metrics.emptiedSince).toBe(since);
+    const calls = client.rpc.mock.calls as unknown as [string, Record<string, unknown>][];
+    expect(calls.find((c) => c[0] === "metrics_emptied_notes")?.[1]).toEqual({ p_since: since });
+  });
+
   it("returns typed rows, newest week first, with generatedAt", async () => {
     const { metrics } = await load();
     expect(metrics.generatedAt).toBe(NOW.toISOString());

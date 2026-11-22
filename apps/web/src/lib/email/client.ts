@@ -15,6 +15,8 @@ export interface SendEmailInput {
   subject: string;
   html: string;
   text: string;
+  /** Where replies go, e.g. `support@drafto.eu`. Omitted: replies go to `EMAIL_FROM`. */
+  replyTo?: string;
 }
 
 export async function sendEmail(input: SendEmailInput): Promise<{ id: string } | null> {
@@ -31,6 +33,7 @@ export async function sendEmail(input: SendEmailInput): Promise<{ id: string } |
       subject: input.subject,
       html: input.html,
       text: input.text,
+      ...(input.replyTo ? { replyTo: input.replyTo } : {}),
     });
 
     if (error) {

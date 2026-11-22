@@ -163,6 +163,8 @@ export interface LoadProductMetricsOptions {
   now?: Date;
   /** Defaults to the service-role client. Callers must have authorized an admin first. */
   client?: MetricsClient;
+  /** Emptied notes are listed from here on. Defaults to `EMPTIED_NOTES_DAYS` before `now`. */
+  emptiedSince?: Date;
 }
 
 /**
@@ -177,9 +179,12 @@ export interface LoadProductMetricsOptions {
 export async function loadProductMetrics({
   now = new Date(),
   client = createAdminClient(),
+  emptiedSince: emptiedSinceDate,
 }: LoadProductMetricsOptions = {}): Promise<ProductMetrics> {
   const weeks = { p_weeks: METRICS_WEEKS };
-  const emptiedSince = new Date(now.getTime() - EMPTIED_NOTES_DAYS * DAY_MS).toISOString();
+  const emptiedSince = (
+    emptiedSinceDate ?? new Date(now.getTime() - EMPTIED_NOTES_DAYS * DAY_MS)
+  ).toISOString();
 
   const [
     signups,

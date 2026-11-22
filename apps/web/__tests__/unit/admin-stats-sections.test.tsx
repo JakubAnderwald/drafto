@@ -10,7 +10,8 @@ import {
   ActiveUsersSection,
   USAGE_TRACKING_PENDING,
 } from "@/app/(app)/admin/stats/active-users-section";
-import { LIMIT_LEVEL_TONE, resourceLabel } from "@/app/(app)/admin/stats/limit-level";
+import { LIMIT_LEVEL_TONE } from "@/app/(app)/admin/stats/limit-level";
+import { resourceLabel } from "@/lib/metrics/format";
 import { DEFAULT_UNAVAILABLE_TEXT } from "@/app/(app)/admin/stats/metric-result-view";
 import { HostedUsageList, NO_READOUT_TEXT } from "@/app/(app)/admin/stats/hosted-usage-list";
 import type { HostedUsageRow } from "@/lib/metrics/rpc-schemas";
