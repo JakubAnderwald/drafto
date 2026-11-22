@@ -56,6 +56,23 @@ describe("browser runner prompt — browser rules", () => {
     assert.match(flat, /stop with `browser=auth-expired`/);
   });
 
+  it("knows its screenshots may be published, so never takes one of a secret", () => {
+    // ADR-0096: the factory may post the screenshots on the public issue
+    // after the run, so the rule the guard can't see is what is on screen.
+    assert.match(flat, /\*\*Screenshots may be published with your report\.\*\*/);
+    assert.match(flat, /never take one while the page shows a secret/);
+    assert.doesNotMatch(flat, /Screenshots stay on disk/, "the old rule 7 is gone");
+  });
+
+  it("files every screenshot and numbers them the way the report renderer reads them", () => {
+    // An upload's image n is the runner's screenshot n (evidence-images.mjs's
+    // browserManifest), and evidence-embed.mjs puts it under the row that
+    // mentions "screenshot n": a screenshot that isn't saved shifts the numbers.
+    assert.match(flat, /Always pass `save_to_disk: true`/);
+    assert.match(flat, /Number them in the order you take them/);
+    assert.match(flat, /"screenshot 1", "screenshot 2", …/);
+  });
+
   it("stops as unavailable when the browser isn't drawing, instead of skipping every step", () => {
     // #794's verify run, 2026-11-13: every screenshot timed out ("renderer may
     // be frozen or unresponsive") and clicks did nothing, while page reads and

@@ -101,6 +101,7 @@
 import { readFileSync } from "node:fs";
 
 import { readAccountFile } from "./browser-report.mjs";
+import { isEvidenceImageUrl } from "./evidence-embed.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { fenceStep } from "./markdown-fence.mjs";
 import { parseIssueFooter } from "./parse-issue-footer.mjs";
@@ -197,6 +198,11 @@ function altFromImgTag(tag) {
 // treat as inert data — is what makes a screenshot-driven spec inspectable
 // instead of invisible. Some specs ("see screenshots") carry their entire
 // signal in images the planner would otherwise never see.
+//
+// The factory's own published test-run screenshots (ADR-0096) are skipped
+// wherever they appear, a quote-reply included. One report can embed 20, so
+// without this the first report on an issue would take every slot and a
+// reporter's later screenshot would never reach the bundle.
 export function extractScreenshots(body, comments = []) {
   const sources = [typeof body === "string" ? body : ""];
   for (const c of Array.isArray(comments) ? comments : []) {
@@ -207,7 +213,7 @@ export function extractScreenshots(body, comments = []) {
   const push = (rawUrl, alt) => {
     if (out.length >= MAX_SCREENSHOTS) return;
     const url = stripUrlTrailers(rawUrl);
-    if (!isAllowedScreenshotUrl(url) || seen.has(url)) return;
+    if (!isAllowedScreenshotUrl(url) || isEvidenceImageUrl(url) || seen.has(url)) return;
     seen.add(url);
     out.push({ url, alt: typeof alt === "string" ? alt.trim() : "" });
   };

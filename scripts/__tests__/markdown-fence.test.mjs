@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { FENCE_LINE, closeFences, fenceStep } from "../lib/markdown-fence.mjs";
+import { FENCE_LINE, closeFences, fenceStep, truncateFenced } from "../lib/markdown-fence.mjs";
 
 // The factory's scenario parsers and the verification report must agree with
 // GitHub (CommonMark) on where a fenced code block ends.
@@ -85,5 +85,52 @@ describe("closeFences", () => {
     assert.equal(closeFences("\t~~~\nx"), "\t~~~\nx");
     // ...and an indented "closer" doesn't close a real fence.
     assert.equal(closeFences("```\nx\n    ```"), "```\nx\n    ```\n```");
+  });
+});
+
+describe("truncateFenced", () => {
+  const openAfter = (text) => text.split("\n").reduce(fenceStep, null);
+
+  it("cuts plain text to the limit", () => {
+    assert.equal(truncateFenced("abcdef", 4), "abcd");
+    assert.equal(truncateFenced("abc", 10), "abc");
+    assert.equal(truncateFenced("abc", 0), "");
+    assert.equal(truncateFenced("abc", -5), "");
+  });
+
+  it("closes the fence the cut leaves open with its own marker, within the limit", () => {
+    assert.equal(truncateFenced("a\n~~~\nxxxxxxxx", 12), "a\n~~~\nxx\n~~~");
+    assert.equal(truncateFenced("````md\n```js\nxxxxxxxxxx", 20), "````md\n```js\nxx\n````");
+    assert.equal(truncateFenced("```\nxxxxxxxxxx", 10), "```\nxx\n```");
+  });
+
+  it("never splits a surrogate pair", () => {
+    assert.equal(truncateFenced("ab😀cd", 3), "ab");
+    assert.equal(truncateFenced("ab😀cd", 4), "ab😀");
+  });
+
+  it("at every cut point, stays within the limit and leaves no fence open", () => {
+    const text = [
+      "intro",
+      "~~~",
+      "```js",
+      "x",
+      "~~~",
+      "````md",
+      "```",
+      "y 😀",
+      "````",
+      "  ```bash",
+      "z",
+      "",
+    ].join("\n");
+    for (let max = 0; max <= text.length + 2; max++) {
+      const cut = truncateFenced(text, max);
+      assert.ok(cut.length <= max, `max ${max}: ${cut.length}`);
+      assert.equal(openAfter(cut), null, `max ${max}: ${JSON.stringify(cut)}`);
+      assert.doesNotMatch(cut, /[\uD800-\uDBFF]$/, `max ${max}`);
+    }
+    // Room for the whole text: nothing is cut but the closer the text needs.
+    assert.equal(truncateFenced(text, text.length + 6), closeFences(text));
   });
 });
