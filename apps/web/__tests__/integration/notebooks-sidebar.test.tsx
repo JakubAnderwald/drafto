@@ -289,6 +289,18 @@ describe("NotebooksSidebar", () => {
     });
   });
 
+  it("shows the delete button without hover on a touch-only pointer", async () => {
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
+    });
+
+    // jsdom applies no CSS, so this checks the class; the Playwright Tablet
+    // project (e2e/responsive.spec.ts) checks the computed opacity.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Delete Work")).toHaveClass("[@media(hover:none)]:opacity-100");
+    });
+  });
+
   it("deletes a notebook after confirmation", async () => {
     routeFetch();
     const onSelect = vi.fn();
