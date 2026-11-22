@@ -418,27 +418,34 @@ export function AppShell({
     [runRemoval],
   );
 
-  const handleRestoreNote = useCallback(async (noteId: string) => {
-    try {
-      const res = await fetch(`/api/notes/${noteId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ is_trashed: false }),
-      });
+  const handleRestoreNote = useCallback(
+    async (noteId: string) => {
+      try {
+        const res = await fetch(`/api/notes/${noteId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_trashed: false }),
+        });
 
-      if (handleAuthError(res)) return;
-      if (!res.ok) {
-        const err = new Error(`Failed to restore note: ${res.status}`);
-        console.error(err);
+        if (handleAuthError(res)) return;
+        if (!res.ok) {
+          const err = new Error(`Failed to restore note: ${res.status}`);
+          console.error(err);
+          setRefreshTrigger((prev) => prev + 1);
+          throw err;
+        }
+        // The restored note is back in its notebook, so any list cached before the
+        // restore is stale. Only the lists: a restore never changes the open note, and
+        // refetching it would re-suspend an editor opened while the PATCH was in flight.
+        refreshLists();
+      } catch (err) {
+        console.error("Failed to restore note:", err);
         setRefreshTrigger((prev) => prev + 1);
         throw err;
       }
-    } catch (err) {
-      console.error("Failed to restore note:", err);
-      setRefreshTrigger((prev) => prev + 1);
-      throw err;
-    }
-  }, []);
+    },
+    [refreshLists],
+  );
 
   const handlePermanentDelete = useCallback(async (noteId: string) => {
     try {
