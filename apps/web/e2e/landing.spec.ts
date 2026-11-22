@@ -84,3 +84,43 @@ test.describe("Landing page (signed out)", () => {
     expect(new URL(response.headers()["location"], response.url()).pathname).toBe("/");
   });
 });
+
+test.describe("Landing page store badges on a phone (signed out)", () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  // 375px fits both badges on one line; 320px (the narrowest common phone) wraps them.
+  for (const width of [375, 320]) {
+    test(`stay centred and inside a ${width}px-wide screen`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 700 });
+      await page.goto("/");
+      const badges = page.getByRole("list", { name: "Get the app" }).getByRole("listitem");
+      await expect(badges).toHaveCount(2);
+
+      for (const badge of await badges.all()) {
+        await expect(badge).toBeVisible();
+        const box = await badge.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+        expect(box!.height).toBe(40);
+      }
+      // No horizontal scrolling.
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+
+      // Each line of badges is centred: its left and right margins match.
+      const boxes = await Promise.all((await badges.all()).map((badge) => badge.boundingBox()));
+      const lines = new Map<number, { left: number; right: number }>();
+      for (const box of boxes) {
+        const line = lines.get(box!.y) ?? { left: Infinity, right: -Infinity };
+        lines.set(box!.y, {
+          left: Math.min(line.left, box!.x),
+          right: Math.max(line.right, box!.x + box!.width),
+        });
+      }
+      for (const { left, right } of lines.values()) {
+        expect(Math.abs(left - (width - right))).toBeLessThanOrEqual(1);
+      }
+      expect(lines.size).toBe(width === 320 ? 2 : 1);
+    });
+  }
+});
