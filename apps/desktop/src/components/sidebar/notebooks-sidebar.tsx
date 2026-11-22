@@ -14,6 +14,7 @@ import type { AppleRevocationGrant } from "@drafto/shared";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
+import { useRowDeleteAction } from "@/hooks/use-row-delete-action";
 import { useSafeSignOut } from "@/hooks/use-safe-sign-out";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -384,9 +385,17 @@ function NotebookRow({
   styles,
 }: NotebookRowProps) {
   const [hovered, setHovered] = useState(false);
+  // The × below is hover-only; the row itself takes the Delete key and VoiceOver's action.
+  // Off while renaming: a ⌫ typed in the field bubbles up to the row.
+  const deleteAction = useRowDeleteAction({
+    label: "Delete notebook",
+    onDelete,
+    enabled: !isEditing,
+  });
 
   return (
     <Pressable
+      {...deleteAction}
       style={[
         styles.item,
         hovered && !isSelected && styles.itemHover,

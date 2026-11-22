@@ -377,6 +377,37 @@ fi
 
 # ──────────────────────────────────────────────
 echo ""
+echo "TEST 5b: Delete a note from the keyboard (#864)"
+# ──────────────────────────────────────────────
+# The row's × is hover-only; the focused row takes ⌫ itself. A click may leave focus
+# elsewhere (the editor), and a ⌫ there would edit the note, so press it only once
+# the row reports AXFocused: after the click, or after asking for focus directly.
+UNTITLED_BEFORE=$(count_rows_by_desc "Untitled")
+if [ "$UNTITLED_BEFORE" -gt 0 ] && click_row_by_desc "Untitled"; then
+  sleep 0.5
+  ROW_FOCUSED=$(row_focused_by_desc "Untitled")
+  if [ "$ROW_FOCUSED" != "true" ]; then
+    echo "  ℹ  Keyboard delete: the click didn't focus the row; setting AXFocused"
+    ROW_FOCUSED=$(row_focused_by_desc "Untitled" set)
+  fi
+  if [ "$ROW_FOCUSED" = "true" ]; then
+    cliclick kp:delete
+    wait_for_ui
+    UNTITLED_AFTER=$(count_rows_by_desc "Untitled")
+    if [ "$UNTITLED_AFTER" -lt "$UNTITLED_BEFORE" ]; then
+      pass "⌫ on the focused note row moves it to Trash ($UNTITLED_BEFORE -> $UNTITLED_AFTER)"
+    else
+      fail "Keyboard delete" "Untitled rows unchanged ($UNTITLED_BEFORE) after ⌫ on the focused row"
+    fi
+  else
+    fail "Keyboard delete" "Could not give the note row keyboard focus; ⌫ not pressed"
+  fi
+else
+  echo "  ℹ  Keyboard delete: no Untitled note row to delete (Test 5 may have failed)"
+fi
+
+# ──────────────────────────────────────────────
+echo ""
 echo "TEST 6: Search functionality"
 # ──────────────────────────────────────────────
 PRE_SEARCH_COUNT=$(get_element_count)

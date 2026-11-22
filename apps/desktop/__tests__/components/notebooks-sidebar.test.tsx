@@ -920,3 +920,83 @@ describe("NotebooksSidebar — storage usage (issue #794)", () => {
     expect(utils.getByTestId("sidebar-user-section")).toBeTruthy();
   });
 });
+
+describe("NotebooksSidebar — delete without a mouse (#864)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockNotebooks.length = 0;
+    mockLoading = false;
+    mockNoteFetch.mockResolvedValue([]);
+    mockGet.mockImplementation((table: string) => {
+      if (table === "notes") return { query: mockNotesQuery };
+      if (table === "attachments")
+        return { query: () => ({ fetch: jest.fn().mockResolvedValue([]) }) };
+      return {};
+    });
+    jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  });
+
+  it("exposes a named Delete notebook action on the row for VoiceOver", () => {
+    mockNotebooks.push({ id: "nb-1", name: "Work Notes", markAsDeleted: jest.fn() });
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    expect(utils.getByLabelText("Work Notes").props.accessibilityActions).toEqual([
+      { name: "Delete notebook", label: "Delete notebook" },
+    ]);
+  });
+
+  it("runs the guarded delete when VoiceOver runs the action", async () => {
+    mockNotebooks.push({ id: "nb-1", name: "Empty NB", markAsDeleted: jest.fn() });
+    mockNoteFetchCount.mockResolvedValue(0);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent(utils.getByLabelText("Empty NB"), "accessibilityAction", {
+      nativeEvent: { actionName: "Delete notebook" },
+    });
+
+    await waitFor(() =>
+      expect(Alert.alert).toHaveBeenCalledWith(
+        "Delete Notebook",
+        expect.stringContaining("permanently deleted"),
+        expect.any(Array),
+      ),
+    );
+    // Nothing is deleted until the user confirms.
+    expect(mockNotebooks[0].markAsDeleted).not.toHaveBeenCalled();
+  });
+
+  it("runs the same guard on the Delete key, so a notebook with notes is kept", async () => {
+    mockNotebooks.push({ id: "nb-1", name: "Work Notes", markAsDeleted: jest.fn() });
+    mockNoteFetchCount.mockResolvedValue(3);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent(utils.getByLabelText("Work Notes"), "keyDown", {
+      nativeEvent: { key: "Backspace" },
+    });
+
+    await waitFor(() =>
+      expect(Alert.alert).toHaveBeenCalledWith(
+        "Cannot Delete Notebook",
+        "Cannot delete notebook with notes. Move or delete notes first.",
+      ),
+    );
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("never deletes on a ⌫ typed while renaming the notebook", async () => {
+    mockNotebooks.push({ id: "nb-1", name: "Work Notes", markAsDeleted: jest.fn() });
+    mockNoteFetchCount.mockResolvedValue(0);
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent(utils.getByLabelText("Work Notes"), "longPress");
+    const input = utils.getByDisplayValue("Work Notes");
+    // The rename field's key press bubbles up to the row's onKeyDown.
+    fireEvent(input, "keyDown", { nativeEvent: { key: "Backspace" } });
+
+    await act(async () => {});
+    expect(Alert.alert).not.toHaveBeenCalled();
+    expect(mockNotesQuery).not.toHaveBeenCalled();
+    // VoiceOver's action is withdrawn while the field is open, too.
+    expect(utils.getByLabelText("Work Notes").props.accessibilityActions).toEqual([]);
+  });
+});

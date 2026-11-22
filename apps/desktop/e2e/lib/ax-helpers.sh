@@ -185,6 +185,89 @@ scroll_row_center() {
   " 2>/dev/null || true
 }
 
+# Print how many scroll-area rows are described exactly $1 (0 if none).
+count_rows_by_desc() {
+  local desc=$1
+  osascript -e "
+  tell application \"System Events\"
+    tell process \"Drafto\"
+      set n to 0
+      repeat with sa in (scroll areas of window 1)
+        try
+          repeat with el in (UI elements of sa)
+            try
+              if description of el is \"$desc\" then set n to n + 1
+            end try
+          end repeat
+        end try
+      end repeat
+      return n
+    end tell
+  end tell
+  " 2>/dev/null || echo 0
+}
+
+# Click the first scroll-area row described exactly $1 (not a substring, so the
+# editor's title field never matches) at its centre. Returns 1 if there is none.
+click_row_by_desc() {
+  local desc=$1 pos
+  pos=$(osascript -e "
+  tell application \"System Events\"
+    tell process \"Drafto\"
+      repeat with sa in (scroll areas of window 1)
+        try
+          repeat with el in (UI elements of sa)
+            try
+              if description of el is \"$desc\" then
+                set p to position of el
+                set s to size of el
+                set cx to (item 1 of p) + (item 1 of s) / 2
+                set cy to (item 2 of p) + (item 2 of s) / 2
+                return (cx as integer as text) & \",\" & (cy as integer as text)
+              end if
+            end try
+          end repeat
+        end try
+      end repeat
+      return \"\"
+    end tell
+  end tell
+  " 2>/dev/null || true)
+  [ -n "$pos" ] || return 1
+  cliclick "c:$pos"
+}
+
+# Print true or false: whether the first scroll-area row described exactly $1 has
+# keyboard focus (AXFocused), or nothing if there is no such row. With "set" as $2,
+# first ask for focus (sets AXFocused), for when a click left it elsewhere.
+row_focused_by_desc() {
+  local desc=$1 set_focus=${2:-}
+  osascript -e "
+  tell application \"System Events\"
+    tell process \"Drafto\"
+      repeat with sa in (scroll areas of window 1)
+        try
+          repeat with el in (UI elements of sa)
+            try
+              if description of el is \"$desc\" then
+                if \"$set_focus\" is \"set\" then
+                  try
+                    set focused of el to true
+                  end try
+                  delay 0.3
+                end if
+                return (focused of el) as text
+              end if
+            end try
+          end repeat
+        end try
+      end repeat
+      return \"\"
+    end tell
+  end tell
+  " 2>/dev/null || true
+}
+
 # Find and click an element by its accessibility description (substring match),
 # including rows in view inside a scroll area
 click_element_by_desc() {
