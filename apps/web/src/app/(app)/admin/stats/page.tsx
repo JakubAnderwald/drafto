@@ -30,7 +30,7 @@ export default async function AdminStatsPage() {
           <h1 className="text-fg text-2xl font-bold">Product metrics</h1>
           <Link
             href="/admin"
-            className="text-primary-600 hover:text-primary-700 text-sm font-medium underline-offset-4 hover:underline"
+            className="ui-link text-sm font-medium underline-offset-4 hover:underline"
           >
             Back to admin
           </Link>

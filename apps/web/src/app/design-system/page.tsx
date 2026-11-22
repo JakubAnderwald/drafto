@@ -315,7 +315,7 @@ export default function DesignSystemPage() {
       <Section title="Document Prose">
         <div className="max-w-2xl">
           <p className="text-fg-muted mb-4 font-mono text-xs">
-            TableOfContents · .doc-prose · NumberedSection · Card callout · .doc-link
+            TableOfContents · .doc-prose · NumberedSection · Card callout · .doc-link · .ui-link
           </p>
           <TableOfContents entries={DOCUMENT_OUTLINE} />
           <div className="doc-prose mt-10">
@@ -369,6 +369,13 @@ export default function DesignSystemPage() {
               .doc-link
             </a>
             .
+          </p>
+          <p className="text-fg-muted mt-2 text-sm">
+            For a link that sets its own underline (the auth and admin pages), use{" "}
+            <a href="#sample-text" className="ui-link hover:underline">
+              .ui-link
+            </a>
+            : colour only, lighter in dark mode.
           </p>
         </div>
       </Section>

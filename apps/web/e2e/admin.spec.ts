@@ -78,7 +78,9 @@ test.describe("Admin product metrics", () => {
 
   test("the admin panel links to /admin/stats, which shows every section", async ({ page }) => {
     await openAdminPanel(page);
-    await page.getByRole("link", { name: "Product metrics" }).click();
+    const metricsLink = page.getByRole("link", { name: "Product metrics" });
+    await expect(metricsLink).toHaveClass(/\bui-link\b/);
+    await metricsLink.click();
 
     await page.waitForURL((url) => url.pathname === "/admin/stats", { timeout: 15000 });
     await expect(page.getByRole("heading", { level: 1, name: "Product metrics" })).toBeVisible({

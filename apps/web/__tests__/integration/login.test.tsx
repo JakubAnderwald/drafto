@@ -173,6 +173,18 @@ describe("Login page", () => {
     );
   });
 
+  it("gives its links the dark-aware ui-link colour (#910)", async () => {
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    for (const name of ["Sign up", "Forgot your password?"]) {
+      const link = screen.getByRole("link", { name });
+      expect(link).toHaveClass("ui-link", "hover:underline");
+      expect(link).not.toHaveClass("text-primary-600");
+    }
+  });
+
   it("calls signInWithPassword and navigates on success", async () => {
     mockSignIn.mockResolvedValueOnce({ error: null });
     const user = userEvent.setup();

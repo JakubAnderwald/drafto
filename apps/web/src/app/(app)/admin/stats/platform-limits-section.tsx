@@ -71,7 +71,7 @@ export function PlatformLimitsSection({
               href={link.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-primary-600 hover:text-primary-700 underline underline-offset-4"
+              className="ui-link underline underline-offset-4"
             >
               See the {link.provider} usage page
             </a>

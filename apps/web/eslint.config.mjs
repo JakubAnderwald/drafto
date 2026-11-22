@@ -53,6 +53,22 @@ const designSystemRestrictedSyntax = [
     message:
       "Use design system shadow/radius tokens (shadow-sm, shadow-md, rounded-md, rounded-lg) instead of arbitrary values. See docs/features/design-system.md.",
   },
+  {
+    // A bare `text-primary-600` stays deep indigo in dark mode (the scale colours don't follow
+    // the theme). Flag it unless the same string also sets a `dark:text-*` colour. The lookbehind
+    // skips variant-prefixed uses (`hover:text-primary-600`); the lookahead is anchored at the
+    // start, so it checks the whole string.
+    selector:
+      "JSXAttribute[name.name='className'] Literal[value=/^(?![\\s\\S]*\\bdark:text-)[\\s\\S]*(?<![\\w:-])text-primary-600(?![\\w-])/]",
+    message:
+      "text-primary-600 is unreadable on the dark surfaces. Use the `ui-link` class for a link (or `doc-link` for one that always underlines), or pair it with a dark:text-* colour. See docs/features/design-system.md.",
+  },
+  {
+    selector:
+      "JSXAttribute[name.name='className'] TemplateElement[value.raw=/^(?![\\s\\S]*\\bdark:text-)[\\s\\S]*(?<![\\w:-])text-primary-600(?![\\w-])/]",
+    message:
+      "text-primary-600 is unreadable on the dark surfaces. Use the `ui-link` class for a link (or `doc-link` for one that always underlines), or pair it with a dark:text-* colour. See docs/features/design-system.md.",
+  },
 ];
 
 const eslintConfig = defineConfig([
