@@ -69,6 +69,11 @@ export function columnsFor(
   return [...order.filter((k) => always || seen.has(k)), ...rest];
 }
 
+/** A `metrics_platform_limits` resource as a label: "database" → "Database". */
+export function resourceLabel(resource: string): string {
+  return resource.charAt(0).toUpperCase() + resource.slice(1);
+}
+
 /** A hosting-usage amount in its dashboard unit: "1.42 GB", "195,000", "2h 17m". */
 export function formatHostedAmount(value: number, unit: "GB" | "count" | "hours"): string {
   if (!Number.isFinite(value)) return NOT_AVAILABLE;

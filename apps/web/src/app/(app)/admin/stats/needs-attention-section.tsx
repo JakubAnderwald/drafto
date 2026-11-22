@@ -4,12 +4,13 @@ import {
   formatHostedAmount,
   formatPct,
   formatUtcTimestamp,
+  resourceLabel,
 } from "@/lib/metrics/format";
 import { hostedResourceLabel } from "@/lib/metrics/hosted-usage-readout";
 import type { NeedsAttention } from "@/lib/metrics/needs-attention";
 import { MetricsSection } from "@/app/(app)/admin/stats/metrics-section";
 import { MetricsTable } from "@/app/(app)/admin/stats/metrics-table";
-import { LIMIT_LEVEL_BADGE, resourceLabel } from "@/app/(app)/admin/stats/limit-level";
+import { LIMIT_LEVEL_BADGE } from "@/app/(app)/admin/stats/limit-level";
 
 export interface NeedsAttentionSectionProps {
   needsAttention: NeedsAttention;
