@@ -102,3 +102,129 @@ describe("/drive-issue skill grounding", () => {
     assert.match(skill, /^disable-model-invocation: true$/m);
   });
 });
+
+// Stage 2 step 6 runs the free CodeRabbit CLI review on its own when the PR bot
+// skipped the head (issue #911). These pins keep the step on the tool's real
+// surface: its subcommands, flags, reason strings and per-card cap.
+describe("/drive-issue CodeRabbit gap-fill step", () => {
+  const cliSrc = read("scripts/lib/coderabbit-cli.mjs");
+  const stateSrc = read("scripts/lib/factory-state.mjs");
+  const reviewSrc = read("scripts/lib/coderabbit-review.mjs");
+  // Built by concatenation: coderabbit-no-use-credits.test.mjs fails on any
+  // file under scripts/ that spells the paid flag out.
+  const PAID_FLAG = "--use-" + "credits";
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // Every shell invocation of the tool in the skill: the line naming it plus
+  // any `\` continuation lines.
+  function invocations(sub) {
+    const lines = skill.split("\n");
+    const out = [];
+    lines.forEach((line, i) => {
+      if (!line.includes(`coderabbit-cli.mjs ${sub} `)) return;
+      let text = line;
+      for (let j = i; lines[j].trimEnd().endsWith("\\") && j + 1 < lines.length; j++) {
+        text += `\n${lines[j + 1]}`;
+      }
+      out.push(text);
+    });
+    return out;
+  }
+
+  // The flags USAGE lists for one subcommand.
+  function usageFlags(sub) {
+    const usage = /const USAGE =([\s\S]*?);/.exec(cliSrc)?.[1] ?? "";
+    const segment = new RegExp(`"${sub} ([^|"]*)`).exec(usage)?.[1] ?? "";
+    return new Set(segment.match(/--[a-z-]+/g) ?? []);
+  }
+
+  it("cites the tool's real coverage and review subcommands", () => {
+    for (const sub of ["coverage", "review"]) {
+      assert.ok(skill.includes(`coderabbit-cli.mjs ${sub} --pr`), `skill should run \`${sub}\``);
+      assert.ok(cliSrc.includes(`case "${sub}":`), `coderabbit-cli.mjs has no \`${sub}\``);
+    }
+  });
+
+  it("passes only flags the tool's USAGE lists", () => {
+    for (const sub of ["coverage", "review"]) {
+      const known = usageFlags(sub);
+      assert.ok(known.has("--pr"), `USAGE should list ${sub} --pr`);
+      const calls = invocations(sub);
+      assert.ok(calls.length > 0, `the skill should invoke ${sub}`);
+      for (const call of calls) {
+        for (const flag of call.match(/--[a-z-]+/g) ?? []) {
+          assert.ok(known.has(flag), `\`${sub}\` has no ${flag} flag: ${call}`);
+        }
+      }
+    }
+    assert.ok(
+      invocations("review").some((c) => c.includes("--state-file")),
+      "the review run should share the lane's ledger via --state-file",
+    );
+  });
+
+  it("never runs the review with the paid flag, and says so", () => {
+    for (const call of invocations("review")) {
+      assert.ok(!call.includes(PAID_FLAG), `paid flag in: ${call}`);
+    }
+    assert.match(skill, new RegExp(`[Nn]ever pass \`${esc(PAID_FLAG)}\``));
+  });
+
+  it("names only reasons and coverage kinds the tool emits", () => {
+    // Reason / coverage tokens, backticked or quoted, in the skill's tables.
+    const tokens = new Set(
+      [...skill.matchAll(/[`"]((?:cli|bot)-[a-z_-]+|reviewed|head-moved|post-failed)[`"]/g)].map(
+        (m) => m[1],
+      ),
+    );
+    for (const must of ["reviewed", "bot-covered", "bot-in-progress", "cli-already-ran"]) {
+      assert.ok(tokens.has(must), `the skill's outcome table should name \`${must}\``);
+    }
+    for (const must of ["cli-budget", "cli-rate_limited", "cli-partial", "cli-empty"]) {
+      assert.ok(tokens.has(must), `the skill's outcome table should name \`${must}\``);
+    }
+
+    const emitted = (token) => {
+      // A literal the tool returns, alone or with a detail after it.
+      if (new RegExp(`["\`]${esc(token)}(?=["\`: (])`).test(cliSrc)) return true;
+      const rest = /^cli-(.+)$/.exec(token)?.[1];
+      if (!rest) return false;
+      // `cli-${reservation.reason}`: the ledger refused the manual run.
+      if (
+        cliSrc.includes("`cli-${reservation.reason}") &&
+        new RegExp(`reason: "${esc(rest)}"`).test(stateSrc)
+      ) {
+        return true;
+      }
+      // `cli-${outcome}: …`: the vendor run's classified outcome.
+      return (
+        cliSrc.includes("`cli-${outcome}: ") &&
+        new RegExp(`outcome: "${esc(rest)}"`).test(reviewSrc)
+      );
+    };
+    for (const token of tokens) {
+      assert.ok(emitted(token), `coderabbit-cli.mjs never reports \`${token}\``);
+    }
+  });
+
+  it("caps itself at the lane's per-card default", () => {
+    const lane = /FACTORY_CR_CLI_MAX_RUNS_PER_CARD, ([0-9]+)\)/.exec(cliSrc)?.[1];
+    assert.ok(lane, "coderabbit-cli.mjs should default FACTORY_CR_CLI_MAX_RUNS_PER_CARD");
+    assert.match(skill, new RegExp(`at most ${lane} CLI reviews per In Review stint`));
+  });
+
+  it("runs the review without asking the operator", () => {
+    assert.ok(!skill.includes("offer the operator the free CLI review"));
+    assert.match(skill, /Don't ask the operator first/);
+  });
+
+  it("describes the step in the manual", () => {
+    const inReview = manual.split("\n").find((l) => /^\| In Review\s+\|/.test(l)) ?? "";
+    assert.match(inReview, /CodeRabbit CLI review/);
+    assert.match(inReview, /without asking/);
+    assert.doesNotMatch(inReview, /\boffers?\b/);
+    const rule = manual.split("\n").find((l) => /^\| CodeRabbit gap-fill\s+\|/.test(l)) ?? "";
+    assert.match(rule, /coderabbit-cli\.mjs review/);
+    assert.match(rule, /never a block/);
+  });
+});

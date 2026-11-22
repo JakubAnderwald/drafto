@@ -21,7 +21,7 @@ The operator manual is [`docs/features/interactive-driving.md`](../../../docs/fe
 5. **Production is opt-in, every time.** Desktop E2E, prod data, `supabase db push` to prod and public-store releases each need the operator's explicit yes in this session first. State the target and what it changes. A macOS In-Test scenario that writes to production is never started by the session, even with a yes: the operator starts it ([`macos-in-test-automation.md`](../../../docs/operations/macos-in-test-automation.md#who-starts-a-run)). The session may write the scenario and run `--preflight`. Betas (TestFlight, Play internal) are pre-authorized.
 6. **Browser:** use this Mac's own Chrome under the rules in `~/.claude/CLAUDE.md` (on the MacBook Air, `list_connected_browsers`, then `select_browser` the local device). Never use the Mac mini's Chrome profile from here.
 7. **Cloud session** (`CLAUDE_CODE_REMOTE=true`): there are no devices or Chrome. Do everything except device driving, and say in the verify report which platforms you couldn't drive and why.
-8. **Never write the factory's state** (`state-cli.mjs` writes, `logs/factory-state.json`). Reading it on the Mac mini is fine.
+8. **Never write the factory's state** (`state-cli.mjs` writes, `logs/factory-state.json`). Reading it on the Mac mini is fine. The only sanctioned write is the one `coderabbit-cli.mjs review --state-file` makes itself in stage 2 step 6: the tool reserves and frees the CodeRabbit lane's slot through its own writer, so a session review and a factory review never run at once. Never edit the file by hand.
 9. Run independent work in parallel (CLAUDE.md "Parallel Tool Execution"): test suites, per-platform verification and beta lanes go in background subagents.
 
 ## The CLI
@@ -105,7 +105,62 @@ Summarise the plan in the terminal: approach, size, platforms, risks, anything y
 
    `log <n> --step pr-opened`, then `move <n> "In Review" --note "PR #<p>"`.
 
-6. **CI and threads.** Run `/push` until CI is green and every review thread is answered and resolved. Follow `scripts/factory-watch-prompt.md` § **Decision flow** for how to fix: keep changes minimal and in scope, and reply on every thread. If CodeRabbit skipped the head commit, offer the operator the free CLI review: `node scripts/lib/coderabbit-cli.mjs review --pr <p> --repo-root .`, never with `--use-credits`. Then `log <n> --step ci-green --key <sha12>`.
+6. **CI, threads and CodeRabbit coverage.** Run `/push` until CI is green and every review thread is answered and resolved. Follow `scripts/factory-watch-prompt.md` § **Decision flow** for how to fix: keep changes minimal and in scope, and reply on every thread.
+
+   Then make sure something reviewed the head. On the free OSS tier the CodeRabbit bot often skips a head (rate-limited, auto-paused, or otherwise not reviewed), and a head nobody reviewed has no threads, so it looks like a clean one. When the bot skipped it, run the free CodeRabbit CLI review yourself, as the factory's `--watch` lane does (ADR-0036). Don't ask the operator first, and never pass `--use-credits`.
+   - **Check coverage** with the tool, not by reading the bot's comments: a bot review's `commit_id` says nothing about what it reviewed.
+
+     ```bash
+     node scripts/lib/coderabbit-cli.mjs coverage --pr <p>; echo "exit=$?"
+     ```
+
+     It prints `covered`, `bot`, `cli`, `retryable` and `reason` for the head. It exits 0 when the head is covered, 2 when it ran fine and nothing covers the head, and 1 when it couldn't answer.
+
+     | Result                            | Then                                                                              |
+     | --------------------------------- | --------------------------------------------------------------------------------- |
+     | `exit=0`                          | Covered. On the first check, log nothing extra. After a review or a wait, log it. |
+     | `exit=2` with `"retryable": true` | The bot is reviewing the head right now: **wait for the bot** (below).            |
+     | `exit=2` otherwise                | **Run the CLI review** (below).                                                   |
+     | any other exit                    | Outcome "coverage unknown" with the error. **Log the outcome** (below) and go on. |
+
+   - **Run the CLI review.** It takes 7–30+ minutes, so start it with the Bash tool's `run_in_background: true` and wait for the completion notification; don't poll. Tell the operator in one line that it is running. That is information, not a question. If they say "skip" on their own, stop the task and take the outcome "skipped by the operator"; `review` frees its slot itself when it is stopped. Pass the factory's state file when it exists (on the Mac mini), so the run shares the lane's single slot and its 3/hour allowance and never runs alongside a factory review of another card. Elsewhere the file is absent, and the vendor's own limit is the only guard.
+
+     ```bash
+     STATE="${DRAFTO_FACTORY_STATE_FILE:-/Volumes/DraftoFactory/drafto-factory/logs/factory-state.json}"
+     node scripts/lib/coderabbit-cli.mjs review --pr <p> --repo-root . --timeout-min 30 \
+       $( [[ -f "$STATE" ]] && printf -- '--state-file %s' "$STATE" )
+     ```
+
+     It prints one JSON line: `{ran, reason, outcome, coverage, posted: {inline, …}}`. Match the rows in order, on `reason` and `coverage`, never on `ran`: a rate limit, a timeout or a failed post all come back with `ran: true`. A `reason` can carry a detail after its name, such as `cli-budget (next slot …)`, so match its start.
+
+     | Result                                                                                                                                                                                | Outcome                                         | Then                                                                                                                                          |
+     | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+     | `coverage: "cli-partial"`                                                                                                                                                             | reviewed in part                                | Some findings never became threads. Answer and resolve the threads it opened, and handle each finding its summary comment lists the same way. |
+     | `reason: "reviewed"` and `posted.inline > 0`                                                                                                                                          | reviewed, N threads                             | Answer and resolve each thread per `scripts/factory-watch-prompt.md` § **Decision flow**, pushing fixes with `/push`.                         |
+     | `reason: "reviewed"` and `coverage` is `cli` or `cli-empty`                                                                                                                           | reviewed, no threads (`cli-empty`: no findings) | Nothing to answer. Findings below thread severity are in its summary comment.                                                                 |
+     | `bot-covered`, or `cli-already-ran` with `coverage: "cli"`                                                                                                                            | covered (by the bot, or an earlier CLI run)     | Nothing to answer.                                                                                                                            |
+     | `bot-in-progress`                                                                                                                                                                     | —                                               | The bot started meanwhile: **wait for the bot**.                                                                                              |
+     | `cli-budget`, `cli-rate_limited`, `cli-action_required`                                                                                                                               | allowance spent (`<reason>`)                    | Go on.                                                                                                                                        |
+     | anything else: `cli-busy`, `cli-paused`, `cli-unavailable`, `cli-start-failed`, `cli-timeout`, `cli-error`, `cli-transient`, `cli-auth`, `head-moved`, `post-failed`, a non-zero exit | failed (`<reason>`)                             | Go on.                                                                                                                                        |
+
+     A fix you push for its threads, or a head that moved during the run, leaves a new head the bot may skip again: check coverage again on it. Run at most 2 CLI reviews per In Review stint, the lane's own per-card default (`FACTORY_CR_CLI_MAX_RUNS_PER_CARD`). Past that, take the outcome "not reviewed (per-card cap)".
+
+   - **Wait for the bot.** A review it is running covers the head, and the threads it opens must be answered like any other. Run this loop with `run_in_background: true`, tell the operator in one line that you're waiting, and wait for the notification:
+
+     ```bash
+     for i in $(seq 1 20); do
+       OUT=$(node scripts/lib/coderabbit-cli.mjs coverage --pr <p> 2>&1); RC=$?
+       [[ $RC -ne 2 ]] || ! printf '%s' "$OUT" | grep -q '"retryable":true' && break
+       sleep 60
+     done
+     printf '%s\nexit=%s\n' "$OUT" "$RC"
+     ```
+
+     `exit=0`: the bot finished; answer and resolve its threads, and take the outcome "covered by the bot". Still `retryable` after 20 minutes: take the outcome "bot still reviewing after 20 min". Anything else (the bot hit its limit meanwhile): back to the coverage table, and take the row for this result.
+
+   - **Log the outcome** of every review or wait, per head, before `ci-green`, and say the same line in the terminal: `log <n> --step note --key cr-<sha12> --body-file <f>`, with "CodeRabbit CLI on `<sha12>`: reviewed, N threads / reviewed, no threads / allowance spent (`<reason>`) / failed (`<reason>`) / covered by the bot". An allowance that is spent, a run that failed or coverage the tool couldn't read never blocks the card and never becomes a question for the operator: log it and go on.
+
+   Then `log <n> --step ci-green --key <sha12>`.
 
 ## Stage 3 — verify (Testing → In Test)
 
