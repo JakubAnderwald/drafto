@@ -379,31 +379,42 @@ fi
 echo ""
 echo "TEST 5b: Delete a note from the keyboard (#864)"
 # ──────────────────────────────────────────────
-# The row's × is hover-only; the focused row takes ⌫ itself. A click may leave focus
-# elsewhere (the editor), and a ⌫ there would edit the note, so press it only once
-# the row reports AXFocused: after the click, or after asking for focus directly.
-UNTITLED_BEFORE=$(count_rows_by_desc "Untitled")
-if [ "$UNTITLED_BEFORE" -gt 0 ] && click_row_by_desc "Untitled"; then
-  sleep 0.5
-  ROW_FOCUSED=$(row_focused_by_desc "Untitled")
-  if [ "$ROW_FOCUSED" != "true" ]; then
-    echo "  ℹ  Keyboard delete: the click didn't focus the row; setting AXFocused"
-    ROW_FOCUSED=$(row_focused_by_desc "Untitled" set)
-  fi
-  if [ "$ROW_FOCUSED" = "true" ]; then
-    cliclick kp:delete
-    wait_for_ui
-    UNTITLED_AFTER=$(count_rows_by_desc "Untitled")
-    if [ "$UNTITLED_AFTER" -lt "$UNTITLED_BEFORE" ]; then
-      pass "⌫ on the focused note row moves it to Trash ($UNTITLED_BEFORE -> $UNTITLED_AFTER)"
-    else
-      fail "Keyboard delete" "Untitled rows unchanged ($UNTITLED_BEFORE) after ⌫ on the focused row"
-    fi
-  else
-    fail "Keyboard delete" "Could not give the note row keyboard focus; ⌫ not pressed"
-  fi
+# The row's × is hover-only; the focused row takes ⌫ itself. Everything here looks
+# only inside the note list (the scroll area under "New note"), so a notebook named
+# Untitled never matches. A click may leave focus elsewhere (the editor), and a ⌫
+# there would edit the note, so press it only once the row reports AXFocused: after
+# the click, or after asking for focus directly.
+NOTE_AREA=$(scroll_area_under "New note")
+if ! UNTITLED_BEFORE=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
+  fail "Keyboard delete" "Could not read the note list's rows (scroll area '$NOTE_AREA')"
+elif [ "$UNTITLED_BEFORE" -eq 0 ]; then
+  fail "Keyboard delete" "No Untitled row in the note list to delete (did Test 5 create one?)"
 else
-  echo "  ℹ  Keyboard delete: no Untitled note row to delete (Test 5 may have failed)"
+  ROW_POS=$(scroll_row_center "$NOTE_AREA" "Untitled")
+  if [ -z "$ROW_POS" ]; then
+    fail "Keyboard delete" "The Untitled note row is not in view to click"
+  else
+    cliclick "c:$ROW_POS"
+    sleep 0.5
+    ROW_FOCUSED=$(row_focused_in_area "$NOTE_AREA" "Untitled")
+    if [ "$ROW_FOCUSED" != "true" ]; then
+      echo "  ℹ  Keyboard delete: the click didn't focus the row; setting AXFocused"
+      ROW_FOCUSED=$(row_focused_in_area "$NOTE_AREA" "Untitled" set)
+    fi
+    if [ "$ROW_FOCUSED" != "true" ]; then
+      fail "Keyboard delete" "Could not give the note row keyboard focus; ⌫ not pressed"
+    else
+      cliclick kp:delete
+      wait_for_ui
+      if ! UNTITLED_AFTER=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
+        fail "Keyboard delete" "Could not read the note list's rows after ⌫"
+      elif [ "$UNTITLED_AFTER" -lt "$UNTITLED_BEFORE" ]; then
+        pass "⌫ on the focused note row moves it to Trash ($UNTITLED_BEFORE -> $UNTITLED_AFTER)"
+      else
+        fail "Keyboard delete" "Untitled rows unchanged ($UNTITLED_BEFORE) after ⌫ on the focused row"
+      fi
+    fi
+  fi
 fi
 
 # ──────────────────────────────────────────────

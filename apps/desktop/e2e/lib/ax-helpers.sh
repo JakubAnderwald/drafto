@@ -185,81 +185,49 @@ scroll_row_center() {
   " 2>/dev/null || true
 }
 
-# Print how many scroll-area rows are described exactly $1 (0 if none).
-count_rows_by_desc() {
-  local desc=$1
-  osascript -e "
+# Print how many rows of scroll area $1 (an index from scroll_area_under) are
+# described exactly $2. Returns 1, printing nothing, when the count can't be read
+# (no such area, or System Events failed), so a failure never reads as 0.
+count_rows_in_area() {
+  local area=$1 desc=$2 n
+  [ "$area" -gt 0 ] 2>/dev/null || return 1
+  n=$(osascript -e "
   tell application \"System Events\"
     tell process \"Drafto\"
       set n to 0
-      repeat with sa in (scroll areas of window 1)
+      repeat with el in (UI elements of scroll area $area of window 1)
         try
-          repeat with el in (UI elements of sa)
-            try
-              if description of el is \"$desc\" then set n to n + 1
-            end try
-          end repeat
+          if description of el is \"$desc\" then set n to n + 1
         end try
       end repeat
       return n
     end tell
   end tell
-  " 2>/dev/null || echo 0
+  " 2>/dev/null) || return 1
+  case $n in '' | *[!0-9]*) return 1 ;; esac
+  echo "$n"
 }
 
-# Click the first scroll-area row described exactly $1 (not a substring, so the
-# editor's title field never matches) at its centre. Returns 1 if there is none.
-click_row_by_desc() {
-  local desc=$1 pos
-  pos=$(osascript -e "
-  tell application \"System Events\"
-    tell process \"Drafto\"
-      repeat with sa in (scroll areas of window 1)
-        try
-          repeat with el in (UI elements of sa)
-            try
-              if description of el is \"$desc\" then
-                set p to position of el
-                set s to size of el
-                set cx to (item 1 of p) + (item 1 of s) / 2
-                set cy to (item 2 of p) + (item 2 of s) / 2
-                return (cx as integer as text) & \",\" & (cy as integer as text)
-              end if
-            end try
-          end repeat
-        end try
-      end repeat
-      return \"\"
-    end tell
-  end tell
-  " 2>/dev/null || true)
-  [ -n "$pos" ] || return 1
-  cliclick "c:$pos"
-}
-
-# Print true or false: whether the first scroll-area row described exactly $1 has
-# keyboard focus (AXFocused), or nothing if there is no such row. With "set" as $2,
-# first ask for focus (sets AXFocused), for when a click left it elsewhere.
-row_focused_by_desc() {
-  local desc=$1 set_focus=${2:-}
+# Print true or false: whether the first row of scroll area $1 described exactly
+# $2 has keyboard focus (AXFocused), or nothing if there is no such row. With "set"
+# as $3, first ask for focus (sets AXFocused), for when a click left it elsewhere.
+row_focused_in_area() {
+  local area=$1 desc=$2 set_focus=${3:-}
+  [ "$area" -gt 0 ] 2>/dev/null || return 0
   osascript -e "
   tell application \"System Events\"
     tell process \"Drafto\"
-      repeat with sa in (scroll areas of window 1)
+      repeat with el in (UI elements of scroll area $area of window 1)
         try
-          repeat with el in (UI elements of sa)
-            try
-              if description of el is \"$desc\" then
-                if \"$set_focus\" is \"set\" then
-                  try
-                    set focused of el to true
-                  end try
-                  delay 0.3
-                end if
-                return (focused of el) as text
-              end if
-            end try
-          end repeat
+          if description of el is \"$desc\" then
+            if \"$set_focus\" is \"set\" then
+              try
+                set focused of el to true
+              end try
+              delay 0.3
+            end if
+            return (focused of el) as text
+          end if
         end try
       end repeat
       return \"\"
