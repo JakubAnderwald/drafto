@@ -67,6 +67,6 @@ export const config = {
   // The skipped paths get `next.config.ts`'s static security headers but no CSP. Of them, only
   // the OAuth probes' 404 is a page with scripts, and with no CSP those scripts run unblocked.
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/health$|api/mcp(?:/|$)|register$|authorize$|token$|robots\\.txt$|sitemap\\.xml$|\\.well-known/(?:apple-app-site-association$|assetlinks\\.json$|mcptry-verify\\.txt$|oauth-|openid-configuration$)|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/health$|api/mcp(?:/|$)|register$|authorize$|token$|robots[.]txt$|sitemap[.]xml$|[.]well-known/(?:apple-app-site-association$|assetlinks[.]json$|mcptry-verify[.]txt$|oauth-|openid-configuration$)|.*[.](?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
