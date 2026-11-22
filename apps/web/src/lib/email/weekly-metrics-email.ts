@@ -48,7 +48,7 @@ function table(columns: Column[], rows: string[][]): string {
           .join("")}</tr>`,
     )
     .join("");
-  return `<table role="presentation" style="width:100%;border-collapse:collapse;margin:0 0 8px;"><tr>${head}</tr>${body}</table>`;
+  return `<table style="width:100%;border-collapse:collapse;margin:0 0 8px;"><tr>${head}</tr>${body}</table>`;
 }
 
 function levelCell(line: LimitLine): string {
@@ -81,7 +81,9 @@ function needsAttentionHtml(report: WeeklyReport): string {
   const parts: string[] = [];
   if (na.emptiedNotes.length > 0) {
     parts.push(
-      paragraph(`Notes a single save emptied in the last ${na.emptiedNotesDays} days:`),
+      paragraph(
+        `Notes a single save emptied since ${na.emptiedSince}, still empty 24 hours later:`,
+      ),
       table(
         [
           { header: "Emptied (UTC)" },
@@ -158,7 +160,7 @@ function needsAttentionText(report: WeeklyReport): string[] {
     "NEEDS ATTENTION",
     ...(na.emptiedNotes.length > 0
       ? [
-          `Notes a single save emptied in the last ${na.emptiedNotesDays} days:`,
+          `Notes a single save emptied since ${na.emptiedSince}, still empty 24 hours later:`,
           ...na.emptiedNotes.map(
             (n) =>
               `- ${n.emptiedAt}, ${n.client}, ${n.charsBefore} characters before, note ${n.noteId}`,

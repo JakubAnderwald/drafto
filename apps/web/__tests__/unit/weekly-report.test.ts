@@ -4,6 +4,7 @@ import {
   isoWeekLabel,
   isoWeekStart,
   NOT_TRACKED_YET,
+  weeklyEmptiedSince,
   weeklySubject,
 } from "@/lib/metrics/weekly-report";
 import { hostedResourceLabel } from "@/lib/metrics/hosted-usage-readout";
@@ -32,6 +33,29 @@ describe("isoWeekLabel / isoWeekStart", () => {
   ])("%s is %s, starting %s", (iso, label, start) => {
     expect(isoWeekLabel(new Date(iso))).toBe(label);
     expect(isoWeekStart(new Date(iso)).toISOString().slice(0, 10)).toBe(start);
+  });
+});
+
+describe("weeklyEmptiedSince", () => {
+  it("starts on the Sunday 8 days before this ISO week's Monday", () => {
+    expect(weeklyEmptiedSince(MONDAY).toISOString()).toBe("2026-11-15T00:00:00.000Z");
+    expect(weeklyEmptiedSince(new Date("2026-11-26T15:00:00Z")).toISOString()).toBe(
+      "2026-11-15T00:00:00.000Z",
+    );
+  });
+
+  // metrics_emptied_notes lists a save once it is 24 hours old, so each run covers
+  // [since, run - 24h]. Consecutive Monday runs must leave no gap, however late each runs.
+  it.each([
+    ["both on time", "2026-11-23T06:00:00Z", "2026-11-30T06:00:00Z"],
+    ["the first on time, the next 59 minutes late", "2026-11-23T06:00:00Z", "2026-11-30T06:59:00Z"],
+    ["the first 59 minutes late, the next on time", "2026-11-23T06:59:00Z", "2026-11-30T06:00:00Z"],
+  ])("leaves no gap between consecutive runs: %s", (_label, first, next) => {
+    const firstCoversUntil = new Date(first).getTime() - 24 * 3_600_000;
+    const nextStartsAt = weeklyEmptiedSince(new Date(next)).getTime();
+    expect(nextStartsAt).toBeLessThanOrEqual(firstCoversUntil);
+    // ...and starts after the first run's own window began, so nothing is reported forever.
+    expect(nextStartsAt).toBeGreaterThan(weeklyEmptiedSince(new Date(first)).getTime());
   });
 });
 
@@ -201,7 +225,7 @@ describe("buildWeeklyReport", () => {
       moreEmptiedNotes: 0,
       limits: [],
       notes: [],
-      emptiedNotesDays: 7,
+      emptiedSince: "2026-11-07 08:00 UTC",
     });
     expect(report.limits.lines).toEqual([
       { label: "Database", level: "ok", detail: "0 MB of 0 MB", pct: "10%", stale: false },

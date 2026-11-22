@@ -6,7 +6,7 @@ import { hasCronSecret, isVercelCronCaller } from "@/lib/cron/has-cron-secret";
 import { sendEmail } from "@/lib/email/client";
 import { weeklyMetricsEmail } from "@/lib/email/weekly-metrics-email";
 import { loadProductMetrics } from "@/lib/metrics/load-product-metrics";
-import { buildWeeklyReport, WEEKLY_EMPTIED_NOTES_DAYS } from "@/lib/metrics/weekly-report";
+import { buildWeeklyReport, weeklyEmptiedSince } from "@/lib/metrics/weekly-report";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { env } from "@/env";
 
@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
   const metrics = await loadProductMetrics({
     now,
     client: admin,
-    emptiedNotesDays: WEEKLY_EMPTIED_NOTES_DAYS,
+    emptiedSince: weeklyEmptiedSince(now),
   });
   const generatedAt = metrics.generatedAt;
 

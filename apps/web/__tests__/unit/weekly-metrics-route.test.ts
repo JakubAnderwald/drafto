@@ -112,7 +112,7 @@ describe("GET /api/cron/weekly-metrics: sending", () => {
     expect(mockLoad).toHaveBeenCalledWith({
       now: expect.any(Date),
       client: adminClient,
-      emptiedNotesDays: 7,
+      emptiedSince: expect.any(Date),
     });
     expect(mockListAdminEmails).toHaveBeenCalledWith(adminClient);
     expect(mockSendEmail).toHaveBeenCalledTimes(2);

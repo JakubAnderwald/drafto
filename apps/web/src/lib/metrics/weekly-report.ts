@@ -27,9 +27,6 @@ import type { MetricResult, ProductMetrics } from "@/lib/metrics/types";
  * notes are identified by note id only.
  */
 
-/** Emptied notes in the email: the last 7 days (the page shows 14). */
-export const WEEKLY_EMPTIED_NOTES_DAYS = 7;
-
 /** Shown for a weekly metric whose function isn't on the database yet (before #821). */
 export const NOT_TRACKED_YET = "not tracked yet";
 
@@ -39,6 +36,17 @@ export const MAX_EMPTIED_NOTES_LISTED = 20;
 const DAY_MS = 86_400_000;
 
 const LEVEL_RANK: Record<PlatformLimitLevel, number> = { critical: 0, warn: 1, ok: 2 };
+
+/**
+ * Where the email's emptied notes start: Sunday 00:00 UTC, 8 days before this ISO week's
+ * Monday. `metrics_emptied_notes` lists a save only once it is 24 hours old, so a Monday
+ * run sees saves up to Sunday 06:00 (plus the cron's lateness). Starting the next run's
+ * window at that Sunday's 00:00 leaves no gap between consecutive emails, whenever on
+ * Monday each one runs; a note emptied in the hours of overlap can appear in both.
+ */
+export function weeklyEmptiedSince(now: Date): Date {
+  return new Date(isoWeekStart(now).getTime() - 8 * DAY_MS);
+}
 
 export interface EmptiedNoteLine {
   /** "2026-11-18 10:00 UTC". */
@@ -74,7 +82,8 @@ export interface WeeklyReport {
   generatedAt: string;
   needsAttention: {
     isClear: boolean;
-    emptiedNotesDays: number;
+    /** "2026-11-15 00:00 UTC": the start of the emptied-notes window. */
+    emptiedSince: string;
     /** The newest `MAX_EMPTIED_NOTES_LISTED` emptied notes. */
     emptiedNotes: EmptiedNoteLine[];
     /** Emptied notes in the window beyond those listed. */
@@ -193,13 +202,11 @@ export interface BuildWeeklyReportOptions {
   now: Date;
   /** The link at the end: `${APP_URL}/admin/stats`. */
   statsUrl: string;
-  /** The window the metrics' emptied notes were read for. */
-  emptiedNotesDays?: number;
 }
 
 export function buildWeeklyReport(
   metrics: ProductMetrics,
-  { now, statsUrl, emptiedNotesDays = WEEKLY_EMPTIED_NOTES_DAYS }: BuildWeeklyReportOptions,
+  { now, statsUrl }: BuildWeeklyReportOptions,
 ): WeeklyReport {
   const thisWeekStart = isoWeekStart(now);
   const reported = new Date(thisWeekStart.getTime() - 7 * DAY_MS);
@@ -242,7 +249,7 @@ export function buildWeeklyReport(
     generatedAt: metrics.generatedAt,
     needsAttention: {
       isClear: attention.isClear,
-      emptiedNotesDays,
+      emptiedSince: formatUtcTimestamp(metrics.emptiedSince),
       emptiedNotes: attention.emptiedNotes.slice(0, MAX_EMPTIED_NOTES_LISTED).map((n) => ({
         emptiedAt: formatUtcTimestamp(n.emptied_at),
         client: n.client,

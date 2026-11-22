@@ -210,12 +210,12 @@ describe("loadProductMetrics", () => {
     }
   });
 
-  it("lists emptied notes from emptiedNotesDays back when given", async () => {
+  it("lists emptied notes from emptiedSince when given", async () => {
     const client = fakeClient();
     const metrics = await loadProductMetrics({
       now: NOW,
       client: client as never,
-      emptiedNotesDays: 7,
+      emptiedSince: new Date("2026-11-14T08:00:00.000Z"),
     });
     const since = "2026-11-14T08:00:00.000Z";
     expect(metrics.emptiedSince).toBe(since);

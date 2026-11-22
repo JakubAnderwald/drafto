@@ -216,11 +216,12 @@ Every Monday at 06:00 UTC, each admin gets a summary of the ISO week that just e
   - With no admins, the route logs it and sends nothing.
   - If the admins can't be listed (the profiles query fails, or not one admin's email can be read), it returns 500.
   - Each admin gets one email, sent to them alone, so no admin sees another's address.
+  - An admin whose auth user can't be read is reported to Sentry and left out, and the others still get the email. So a 200 doesn't prove every admin got it: `recipients` counts only the admins found.
 - **Sending.** Through Resend with `sendEmail()` (`apps/web/src/lib/email/client.ts`), from `EMAIL_FROM` (`Drafto <hello@drafto.eu>` by default), with reply-to `support@drafto.eu`. A failed send returns 502 with the counts, and is reported to Sentry.
 - **What it says.** `buildWeeklyReport()` (`apps/web/src/lib/metrics/weekly-report.ts`) turns the loader's metrics into the report. `weeklyMetricsEmail()` (`apps/web/src/lib/email/weekly-metrics-email.ts`) lays it out as HTML with a text alternative. Nothing is stored between runs: "this week" and "week before" are the two newest complete ISO weeks in each function's own weekly series. In order:
   1. **Subject:** `Drafto weekly metrics — <ISO week>`, with ` — needs attention` appended when the next section isn't clear.
   2. **Needs attention,** on a light warning background:
-     - notes one save emptied in the last 7 days (date, client, characters before, note id; never the user id), the newest 20 listed and the rest counted with a link to `/admin/stats`;
+     - notes one save emptied (date, client, characters before, note id; never the user id), the newest 20 listed and the rest counted with a link to `/admin/stats`. The window starts on the Sunday at 00:00 UTC, 8 days before the run's ISO-week Monday (`weeklyEmptiedSince()`). `metrics_emptied_notes` lists a save only once it is 24 hours old, so a Monday run sees saves up to Sunday 06:00 (later if the cron runs late). Starting each window at the previous Sunday 00:00 leaves no gap between consecutive emails, however late on Monday either runs. A note emptied in the overlap, Sunday 00:00 until the previous run's cutoff, can appear in two emails;
      - then every limit at `warn` (70%) or `critical` (85%), from `metrics_platform_limits()` and the hosted-usage readout alike (Supabase log ingestion included), worst first;
      - then a stale readout and any check that couldn't run.
 
@@ -236,7 +237,7 @@ Every Monday at 06:00 UTC, each admin gets a summary of the ISO week that just e
   4. **Platform limits:** every resource as a percentage of its limit. That covers each `metrics_platform_limits()` row, and each hosted-usage reading from `metrics_hosted_usage()` as `/admin/stats` shows them: Vercel fast data transfer, CDN requests, function invocations and active CPU, and Supabase egress, cached egress and log ingestion. A stale reading (over 8 days old) is marked.
   5. **Link** to `${APP_URL}/admin/stats`.
 - **Format.** Plain HTML in the shared transactional layout (`apps/web/src/lib/email/layout.ts`), at most 560px wide, with short tables and right-aligned numbers. No images, web fonts or tracking pixels. The colours are the design system's light status tokens (`--warning-bg`, `--warning-text`, `--error-text`, `--success-text`) as inline values, kept in step with `globals.css` by hand.
-- **Personal data.** None in the email: no note text, titles, notebook names, user ids or emails. Emptied notes appear by note id only. The tests check that the body has no email-shaped text. No privacy-policy change was needed: admins get aggregates of existing data through Resend, which the policy already lists.
+- **Personal data.** The email holds no note text, titles, notebook names, user ids or emails, and the tests check that the body has no email-shaped text. It is still not anonymous: an emptied note appears by its note id, which an admin can look up in the database to reach its owner, so that id is pseudonymous personal data. Because it passes through Resend, the privacy policy's Resend row lists the weekly admin report and says what it holds: totals plus those note ids.
 - **Triggering it by hand.** It sends a real email to every admin, on any deployment that has `RESEND_API_KEY` set.
 
   ```bash
@@ -250,11 +251,11 @@ Every Monday at 06:00 UTC, each admin gets a summary of the ISO week that just e
 
 ## Web data loader (`apps/web/src/lib/metrics/`)
 
-`loadProductMetrics({ now?, client?, emptiedNotesDays? })` in `load-product-metrics.ts` is the web app's one reader of the metric functions. `/admin/stats` and the [Monday email](#the-monday-email) call it. It is `server-only` and uses the service-role client (`createAdminClient()`), so the caller must already have checked for an admin (or, in the cron, the cron secret). It returns one `ProductMetrics` object (`types.ts`) with `generatedAt`.
+`loadProductMetrics({ now?, client?, emptiedSince? })` in `load-product-metrics.ts` is the web app's one reader of the metric functions. `/admin/stats` and the [Monday email](#the-monday-email) call it. It is `server-only` and uses the service-role client (`createAdminClient()`), so the caller must already have checked for an admin (or, in the cron, the cron secret). It returns one `ProductMetrics` object (`types.ts`) with `generatedAt`.
 
 - **What it reads.** The weekly windows and the emptied-notes 24-hour cutoff come from the database clock. `now` only sets `generatedAt` and the start of the emptied-notes window. Without `SUPABASE_SERVICE_ROLE_KEY` the loader throws, as `/admin` does, because no metric could load.
   - The weekly metrics cover the last 12 ISO weeks (`METRICS_WEEKS`), sorted newest first.
-  - Emptied notes are read from 14 days before `now` (`EMPTIED_NOTES_DAYS`), newest first. The Monday email passes `emptiedNotesDays: 7`.
+  - Emptied notes are read from 14 days before `now` (`EMPTIED_NOTES_DAYS`), newest first. The Monday email passes its own `emptiedSince` (see [The Monday email](#the-monday-email)).
   - Calls run in parallel, each with `{ get: true, count: "exact" }`. Like the CLI, that is a read-only `GET /rest/v1/rpc/<name>`, and a list shorter than its count (PostgREST's `max_rows` cap) fails.
 - **Each metric is a `MetricResult`**, and is read on its own, so one failure doesn't blank the page:
   - `ok`: the rows parsed.

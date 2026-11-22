@@ -11,7 +11,7 @@ function report(overrides: Partial<WeeklyReport> = {}): WeeklyReport {
     generatedAt: "2026-11-23T06:00:00.000Z",
     needsAttention: {
       isClear: true,
-      emptiedNotesDays: 7,
+      emptiedSince: "2026-11-15 00:00 UTC",
       emptiedNotes: [],
       moreEmptiedNotes: 0,
       limits: [],
@@ -48,7 +48,7 @@ function report(overrides: Partial<WeeklyReport> = {}): WeeklyReport {
 
 const ATTENTION: WeeklyReport["needsAttention"] = {
   isClear: false,
-  emptiedNotesDays: 7,
+  emptiedSince: "2026-11-15 00:00 UTC",
   emptiedNotes: [
     {
       emptiedAt: "2026-11-18 10:00 UTC",
@@ -90,7 +90,9 @@ describe("weeklyMetricsEmail", () => {
   it("shows emptied notes, limits and notes on a warning background when not clear", () => {
     const { html, text } = weeklyMetricsEmail(report({ needsAttention: ATTENTION }));
     expect(html).toContain("background:#fff4e0");
-    expect(html).toContain("Notes a single save emptied in the last 7 days:");
+    expect(html).toContain(
+      "Notes a single save emptied since 2026-11-15 00:00 UTC, still empty 24 hours later:",
+    );
     expect(html).toContain("11111111-1111-4111-8111-111111111111");
     expect(html).toContain("768 MB of 1 GB");
     expect(html).toContain("Couldn&#39;t check platform limits: boom");
