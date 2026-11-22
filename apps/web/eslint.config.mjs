@@ -12,6 +12,17 @@ import prettier from "eslint-config-prettier";
 // To suppress for a legitimate exception (e.g. `bg-black/40` on a modal
 // backdrop), add a `// eslint-disable-next-line no-restricted-syntax` comment
 // on the line above with a short explanation.
+
+// The dark-link guard below (#910). A bare `text-primary-600`: the lookbehind skips
+// variant-prefixed uses (`hover:text-primary-600`), the lookahead other shades (`-6000`).
+const BARE_PRIMARY_600 = "(?<![\\w:-])text-primary-600(?![\\w-])";
+// A `dark:text-*` colour. The lookahead leaves out the `text-*` utilities that aren't colours
+// (size, alignment, wrapping, overflow, shadow), so `dark:text-sm` doesn't count as a partner.
+const DARK_TEXT_COLOUR =
+  "\\bdark:text-(?!(?:xs|sm|base|lg|[0-9]?xl|left|center|right|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip|shadow)\\b)";
+const DARK_LINK_MESSAGE =
+  "text-primary-600 is unreadable on the dark surfaces. Use the `ui-link` class for a link (or `doc-link` for one that always underlines), or pair it with a dark:text-* colour. See docs/features/design-system.md.";
+
 const designSystemRestrictedSyntax = [
   {
     // Raw Tailwind grey scales must be replaced with semantic tokens.
@@ -55,19 +66,16 @@ const designSystemRestrictedSyntax = [
   },
   {
     // A bare `text-primary-600` stays deep indigo in dark mode (the scale colours don't follow
-    // the theme). Flag it unless the same string also sets a `dark:text-*` colour. The lookbehind
-    // skips variant-prefixed uses (`hover:text-primary-600`); the lookahead is anchored at the
-    // start, so it checks the whole string.
-    selector:
-      "JSXAttribute[name.name='className'] Literal[value=/^(?![\\s\\S]*\\bdark:text-)[\\s\\S]*(?<![\\w:-])text-primary-600(?![\\w-])/]",
-    message:
-      "text-primary-600 is unreadable on the dark surfaces. Use the `ui-link` class for a link (or `doc-link` for one that always underlines), or pair it with a dark:text-* colour. See docs/features/design-system.md.",
+    // the theme). Flag it unless the same string also sets a `dark:text-*` colour. The negative
+    // lookahead is anchored at the start, so it checks the whole string.
+    selector: `JSXAttribute[name.name='className'] Literal[value=/^(?![\\s\\S]*${DARK_TEXT_COLOUR})[\\s\\S]*${BARE_PRIMARY_600}/]`,
+    message: DARK_LINK_MESSAGE,
   },
   {
-    selector:
-      "JSXAttribute[name.name='className'] TemplateElement[value.raw=/^(?![\\s\\S]*\\bdark:text-)[\\s\\S]*(?<![\\w:-])text-primary-600(?![\\w-])/]",
-    message:
-      "text-primary-600 is unreadable on the dark surfaces. Use the `ui-link` class for a link (or `doc-link` for one that always underlines), or pair it with a dark:text-* colour. See docs/features/design-system.md.",
+    // Same rule for a template literal, read as a whole: the `dark:` partner may sit in another
+    // static chunk of the same template (`text-primary-600 ${x} dark:text-primary-300`).
+    selector: `JSXAttribute[name.name='className'] TemplateLiteral:has(> TemplateElement[value.raw=/${BARE_PRIMARY_600}/]):not(:has(> TemplateElement[value.raw=/${DARK_TEXT_COLOUR}/]))`,
+    message: DARK_LINK_MESSAGE,
   },
 ];
 

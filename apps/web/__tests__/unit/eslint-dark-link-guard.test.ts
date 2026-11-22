@@ -52,6 +52,26 @@ describe("dark-mode link lint guard", () => {
     expect(await guardHits(`<a className="text-primary-600 dark:text-primary-300">x</a>`)).toBe(0);
   }, 60_000);
 
+  it("doesn't count a dark: utility that isn't a colour as a partner", async () => {
+    expect(await guardHits(`<a className="text-primary-600 dark:text-sm">x</a>`)).toBe(1);
+    expect(await guardHits(`<a className="text-primary-600 dark:text-2xl">x</a>`)).toBe(1);
+    expect(await guardHits(`<a className="text-primary-600 dark:text-center">x</a>`)).toBe(1);
+    expect(await guardHits(`<a className="text-primary-600 dark:text-fg">x</a>`)).toBe(0);
+  }, 60_000);
+
+  it("reads a template literal as a whole", async () => {
+    expect(
+      await guardHits(
+        "<a className={`text-primary-600 ${on ? 'font-bold' : ''} dark:text-primary-300`}>x</a>",
+      ),
+    ).toBe(0);
+    expect(
+      await guardHits(
+        "<a className={`text-primary-600 ${on ? 'font-bold' : ''} dark:text-sm`}>x</a>",
+      ),
+    ).toBe(1);
+  }, 60_000);
+
   it("allows the ui-link class", async () => {
     expect(await guardHits(`<a className="ui-link hover:underline">x</a>`)).toBe(0);
   }, 60_000);
