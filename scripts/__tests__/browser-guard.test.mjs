@@ -1147,7 +1147,7 @@ describe("browser-guard: screenshots", () => {
   test("a computer screenshot yields a copy event", () => {
     const { events } = post(
       "computer",
-      { tabId: OWN_TAB, action: "screenshot", save_to_disk: true, scale: 0.5 },
+      { tabId: OWN_TAB, action: "screenshot", save_to_disk: true, scale: 1 },
       [
         text(SPIKE_TAB_CONTEXT),
         image,
@@ -1164,7 +1164,7 @@ describe("browser-guard: screenshots", () => {
     const shot = (tabs, state = selectedState()) =>
       post(
         "computer",
-        { tabId: OWN_TAB, action: "screenshot", save_to_disk: true, scale: 0.5 },
+        { tabId: OWN_TAB, action: "screenshot", save_to_disk: true, scale: 1 },
         [text(tabContext(OWN_TAB, tabs)), image, text(`Screenshot saved to: ${good}`)],
         state,
         { tmpRoots: [ROOT] },
@@ -1209,7 +1209,7 @@ describe("browser-guard: screenshots", () => {
     const shot = (...blocks) =>
       post(
         "computer",
-        { tabId: OWN_TAB, action: "screenshot", save_to_disk: true, scale: 0.5 },
+        { tabId: OWN_TAB, action: "screenshot", save_to_disk: true, scale: 1 },
         [...blocks, image, text(`Screenshot saved to: ${good}`)],
         selectedState(),
         { tmpRoots: [ROOT] },

@@ -4,6 +4,8 @@
 - **Date**: 2026-11-10
 - **Authors**: Jakub Anderwald, Claude
 
+> **Update 2026-11-22 (resolution)**: The first published screenshots (#900) were 541×560, because the runner's prompt (rule 7) still asked for `scale: 0.5`, a token saving from when screenshots only fed the model. Rule 7 now asks for `scale: 1`, the extension's full image budget (1081×1120 on the Mac mini's window), plus a `zoom` close-up when a step's result is a small detail. Comments still show images 480 px wide.
+
 ## Context
 
 The browser runner ([ADR-0051](./0051-factory-browser-runner.md)) takes a screenshot at each step's expected result, and its report refers to them as "screenshot 1", "screenshot 2", and so on. The In Test report then says "Screenshots stay on the Mac mini (this repo is public)" and gives a local path. The verification report ([ADR-0053](./0053-pre-in-test-verification-stage.md)) does the same for its Web lane: "Local evidence stays on the Mac mini". ADR-0051 recorded this as a consequence: "Screenshots stay on the Mac mini. The repo is public, so they are never attached to GitHub."

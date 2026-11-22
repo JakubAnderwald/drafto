@@ -73,6 +73,15 @@ describe("browser runner prompt — browser rules", () => {
     assert.match(flat, /"screenshot 1", "screenshot 2", …/);
   });
 
+  it("takes its published screenshots at full resolution", () => {
+    // #900's first published screenshots were 541×560: rule 7 asked for
+    // scale 0.5, from when screenshots only fed the model. Published, they
+    // need the extension's full size (1081×1120 on the Mac mini's window).
+    assert.match(flat, /`computer` `screenshot`, `save_to_disk: true`, `scale: 1`/);
+    assert.match(flat, /also take a `zoom` of that region with `save_to_disk: true`, `scale: 1`/);
+    assert.doesNotMatch(flat, /scale: 0\.\d/, "no reduced-scale screenshot is asked for");
+  });
+
   it("stops as unavailable when the browser isn't drawing, instead of skipping every step", () => {
     // #794's verify run, 2026-11-13: every screenshot timed out ("renderer may
     // be frozen or unresponsive") and clicks did nothing, while page reads and
