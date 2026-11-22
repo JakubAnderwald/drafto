@@ -296,7 +296,9 @@ export function NotebooksSidebar({
                   {...(selectedNotebookId === notebook.id && {
                     "data-testid": "notebook-item-active",
                   })}
-                  className={`group flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] ${
+                  // On a touch-only pointer the row is exactly as tall as the delete button's
+                  // 44 px tap target, which ends at the row's right edge (#899).
+                  className={`group flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors duration-[var(--transition-fast)] [@media(hover:none)]:py-0 [@media(hover:none)]:pr-0 ${
                     selectedNotebookId === notebook.id
                       ? "bg-sidebar-active text-sidebar-active-text font-medium"
                       : "text-fg hover:bg-sidebar-hover"
@@ -309,7 +311,9 @@ export function NotebooksSidebar({
                       e.stopPropagation();
                       requestDelete(notebook.id);
                     }}
-                    className="text-fg-subtle hover:text-error rounded p-0.5 opacity-0 transition-all duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                    // A 44 px tap target on a touch-only pointer, with the icon centred in it;
+                    // shrink-0 keeps a long notebook name from narrowing it (#899).
+                    className="text-fg-subtle hover:text-error rounded p-0.5 opacity-0 transition-all duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:inline-flex [@media(hover:none)]:h-11 [@media(hover:none)]:w-11 [@media(hover:none)]:shrink-0 [@media(hover:none)]:items-center [@media(hover:none)]:justify-center [@media(hover:none)]:opacity-100"
                     aria-label={`Delete ${notebook.name}`}
                   >
                     <svg

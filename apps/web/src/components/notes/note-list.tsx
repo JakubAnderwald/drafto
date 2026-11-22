@@ -199,8 +199,9 @@ export function NoteList({
                   {...(selectedNoteId === note.id && { "data-testid": "note-item-active" })}
                   className={`w-full rounded-md py-2 text-left transition-colors duration-[var(--transition-fast)] ${
                     // Reserve the actions button's width on every pointer, not only on hover,
-                    // so the title truncates before the ⋮ and never moves when it appears.
-                    hasActions ? "pr-10 pl-3" : "px-3"
+                    // so the title truncates before the ⋮ and never moves when it appears. A
+                    // touch-only pointer reserves the ⋮'s larger 44 px tap target (#899).
+                    hasActions ? "pr-10 pl-3 [@media(hover:none)]:pr-12" : "px-3"
                   } ${
                     selectedNoteId === note.id
                       ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-[3px] font-medium"
@@ -235,7 +236,9 @@ export function NoteList({
                       e.stopPropagation();
                       setMenuOpenForNote(menuOpenForNote === note.id ? null : note.id);
                     }}
-                    className="absolute top-2 right-2 opacity-0 transition-opacity duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                    // On a touch-only pointer the button grows to a 44 px tap target, anchored
+                    // to the row's corner so the icon's centre stays where it is (#899).
+                    className="absolute top-2 right-2 opacity-0 transition-opacity duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:top-0 [@media(hover:none)]:right-0 [@media(hover:none)]:h-11 [@media(hover:none)]:w-11 [@media(hover:none)]:opacity-100"
                     aria-label={`Actions for ${displayNoteTitle(note.title)}`}
                   >
                     <svg
@@ -260,7 +263,9 @@ export function NoteList({
                   open={menuOpenForNote === note.id}
                   onClose={() => setMenuOpenForNote(null)}
                   align="right"
-                  className="top-8"
+                  // On a touch-only pointer the menu opens below the 44 px ⋮, so a second tap
+                  // on the ⋮ to close it can't land on a menu item (#899).
+                  className="top-8 [@media(hover:none)]:top-11"
                 >
                   {onDeleteNote && (
                     <DropdownMenuItem

@@ -293,4 +293,161 @@ test.describe("touch row actions", () => {
     await expect(deleteNotebook).toBeVisible({ timeout: 10000 });
     await expect(deleteNotebook).toHaveCSS("opacity", "1");
   });
+
+  // #899: a finger needs a 44×44 px tap target. The icons stay small; the buttons grow.
+  // Other workers sign in as the same user and add rows to the same lists, so each test
+  // reads every box it compares in one evaluate, when the rows can't move in between.
+
+  type Box = { x: number; y: number; width: number; height: number };
+
+  function expectTapTarget(box: Box) {
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  }
+
+  function intersects(a: Box, b: Box): boolean {
+    return (
+      a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+    );
+  }
+
+  test("note-row actions have a 44 px tap target clear of the next row and the title", async ({
+    page,
+  }) => {
+    await settleOnPanel(page);
+    const notesHeading = page.getByRole("heading", { name: "Notes" });
+    if (isPhone(page) && !(await notesHeading.isVisible())) {
+      await page.locator("aside nav li").first().click();
+    }
+    await expect(notesHeading).toBeVisible({ timeout: 5000 });
+
+    const noteList = page.locator("section").filter({ has: notesHeading });
+    const rows = noteList.locator("li").filter({ has: page.getByLabel(/^Actions for /) });
+
+    // Two notes of this test's own, so the list has two neighbouring rows (the fixture
+    // deletes them).
+    for (let i = 0; i < 2; i++) {
+      const created = page.waitForResponse(
+        (res) =>
+          res.request().method() === "POST" &&
+          /^\/api\/notebooks\/[^/]+\/notes$/.test(new URL(res.url()).pathname),
+      );
+      await page.getByRole("button", { name: "New note", exact: true }).click();
+      await created;
+      if (isPhone(page)) {
+        // The phone opens the editor once the note is created; go back to the list.
+        const backToNotes = page.getByLabel("Back to notes");
+        await expect(backToNotes).toBeVisible({ timeout: 10000 });
+        await backToNotes.click();
+        await expect(notesHeading).toBeVisible({ timeout: 5000 });
+      }
+    }
+    await expect(rows.nth(1)).toBeVisible({ timeout: 10000 });
+    await expect(rows.nth(0).getByLabel(/^Actions for /)).toHaveCSS("opacity", "1");
+
+    // The create refetches the list, which shows a skeleton meanwhile, so retry until
+    // the rows are back.
+    await expect(async () => {
+      const measured = await rows.evaluateAll((lis) =>
+        lis.slice(0, 2).map((li) => {
+          const rectOf = (el: Element | null) => {
+            if (!el) throw new Error("Missing part of a note row");
+            const { x, y, width, height } = el.getBoundingClientRect();
+            return { x, y, width, height };
+          };
+          return {
+            row: rectOf(li),
+            title: rectOf(li.querySelector("button p")),
+            actions: rectOf(li.querySelector('[aria-label^="Actions for "]')),
+          };
+        }),
+      );
+      expect(measured).toHaveLength(2);
+      const [first, second] = measured;
+
+      expectTapTarget(first.actions);
+      expectTapTarget(second.actions);
+      // Neighbouring rows' targets don't overlap …
+      expect(intersects(first.actions, second.actions)).toBe(false);
+      // … each target stays inside its own row …
+      expect(first.actions.y).toBeGreaterThanOrEqual(first.row.y);
+      expect(first.actions.y + first.actions.height).toBeLessThanOrEqual(
+        first.row.y + first.row.height,
+      );
+      // … and the title truncates before it.
+      expect(first.title.x + first.title.width).toBeLessThanOrEqual(first.actions.x);
+    }).toPass({ timeout: 10000 });
+
+    // The whole target takes the tap, not just the icon at its centre.
+    const actions = rows.nth(0).getByLabel(/^Actions for /);
+    await actions.tap({ position: { x: 4, y: 4 } });
+    await expect(page.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+
+    // The menu opens below the target, so a second tap on the ⋮ can't hit a menu item.
+    const [actionsBox, menuBox] = await Promise.all([
+      actions.boundingBox(),
+      page.getByRole("menu").boundingBox(),
+    ]);
+    if (!actionsBox || !menuBox) throw new Error("Missing a bounding box");
+    expect(menuBox.y).toBeGreaterThanOrEqual(actionsBox.y + actionsBox.height);
+  });
+
+  test("notebook delete has a 44 px tap target, even beside a long name", async ({ page }) => {
+    await settleOnPanel(page);
+    if (!isPhone(page)) {
+      await openSidebar(page);
+    } else {
+      const backToNotebooks = page.getByLabel("Back to notebooks");
+      if (await backToNotebooks.isVisible()) await backToNotebooks.click();
+    }
+
+    // A notebook of this test's own, with a name long enough to be truncated, so the
+    // delete button would shrink if it could (the fixture records it for teardown).
+    const name = `Touch Target NB With A Name Long Enough To Truncate In The Sidebar ${Date.now()}`;
+    await page.getByRole("button", { name: "New notebook", exact: true }).click();
+    const createInput = page.getByPlaceholder("Notebook name");
+    await expect(createInput).toBeVisible();
+    await createInput.fill(name);
+    await createInput.press("Enter");
+
+    // Creating a notebook selects it, which leaves the notebook list: go back to it.
+    if (isPhone(page)) {
+      const backToNotebooks = page.getByLabel("Back to notebooks");
+      await expect(backToNotebooks).toBeVisible({ timeout: 10000 });
+      await backToNotebooks.click();
+    } else {
+      await expect(page.getByTestId("sidebar-backdrop")).not.toBeVisible({ timeout: 5000 });
+      await openSidebar(page);
+    }
+
+    const label = `Delete ${name}`;
+    const deleteLong = page.locator("aside nav").getByLabel(label, { exact: true });
+    await expect(deleteLong).toBeVisible({ timeout: 10000 });
+    await expect(deleteLong).toHaveCSS("opacity", "1");
+
+    // This row's target, and its neighbour's: the row below, or above for the last row.
+    const { target, neighbour, nameTruncated } = await page
+      .locator("aside nav")
+      .getByLabel(/^Delete /)
+      .evaluateAll((buttons, ownLabel) => {
+        const rectOf = (el: Element | undefined) => {
+          if (!el) throw new Error("Missing a notebook row's delete button");
+          const { x, y, width, height } = el.getBoundingClientRect();
+          return { x, y, width, height };
+        };
+        const index = buttons.findIndex((el) => el.getAttribute("aria-label") === ownLabel);
+        const own = buttons[index];
+        const nameSpan = own?.previousElementSibling;
+        return {
+          target: rectOf(own),
+          neighbour: rectOf(buttons[index + 1] ?? buttons[index - 1]),
+          nameTruncated: !!nameSpan && nameSpan.scrollWidth > nameSpan.clientWidth,
+        };
+      }, label);
+
+    expect(nameTruncated).toBe(true);
+    expectTapTarget(target);
+    expectTapTarget(neighbour);
+    expect(intersects(target, neighbour)).toBe(false);
+  });
 });

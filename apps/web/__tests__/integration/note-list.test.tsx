@@ -472,6 +472,15 @@ describe("NoteList", () => {
     // that a long title stays clear of the ⋮ while a row is hovered or focused.
     const TOUCH_VISIBLE = "[@media(hover:none)]:opacity-100";
     const ACTIONS_PADDING = ["pl-3", "pr-10"];
+    // #899: on a touch-only pointer the ⋮ is a 44 px tap target in the row's corner, and
+    // the row reserves 48 px for it.
+    const TOUCH_TARGET = [
+      "[@media(hover:none)]:top-0",
+      "[@media(hover:none)]:right-0",
+      "[@media(hover:none)]:h-11",
+      "[@media(hover:none)]:w-11",
+    ];
+    const TOUCH_PADDING = "[@media(hover:none)]:pr-12";
 
     async function renderList(props: Partial<ComponentProps<typeof NoteList>>) {
       await act(async () => {
@@ -505,15 +514,34 @@ describe("NoteList", () => {
       expect(screen.getByLabelText("Actions for First Note")).toHaveClass(TOUCH_VISIBLE);
     });
 
+    it("gives the actions button a 44 px tap target on a touch-only pointer, keeping the small one otherwise", async () => {
+      await renderList({ onDeleteNote: vi.fn() });
+
+      const actions = screen.getByLabelText("Actions for First Note");
+      expect(actions).toHaveClass(...TOUCH_TARGET);
+      // A hover-capable pointer keeps the 28 px button in its old place.
+      expect(actions).toHaveClass("absolute", "top-2", "right-2", "h-7", "w-7");
+      // The icon stays small; only the button's box grows.
+      expect(actions.querySelector("svg")).toHaveClass("h-4", "w-4");
+
+      // The menu opens below the larger target on touch, and where it was otherwise.
+      await userEvent.setup().click(actions);
+      expect(screen.getByRole("menu")).toHaveClass("top-8", "[@media(hover:none)]:top-11");
+    });
+
     it("reserves the actions button's width on every pointer, whether or not the row is hovered", async () => {
       await renderList({ onDeleteNote: vi.fn() });
 
       const button = rowButton("First Note");
       expect(button).toHaveClass(...ACTIONS_PADDING);
-      // The padding must not depend on the pointer, hover or focus, or the title would
-      // run under the ⋮ on a mouse or move when the ⋮ appears.
+      // The padding must not depend on hover or focus, or the title would move when the
+      // ⋮ appears.
       expect(button).not.toHaveClass("px-3");
-      expect(button.className).not.toMatch(/(?:hover|focus|group-[\w-]+|\[@media[^\]]*\]):pr-/);
+      expect(button.className).not.toMatch(/(?:hover|focus|group-[\w-]+):pr-/);
+      // The only pointer-dependent padding is the touch-only one for the larger tap
+      // target: it's fixed for the device, so the title can't move on it either.
+      const mediaPadding = button.className.match(/\[@media[^\]]*\]:pr-\S+/g) ?? [];
+      expect(mediaPadding).toEqual([TOUCH_PADDING]);
     });
 
     it("reserves the width when the only action is a move to another notebook", async () => {
@@ -526,7 +554,7 @@ describe("NoteList", () => {
       });
 
       expect(screen.getByLabelText("Actions for First Note")).toBeInTheDocument();
-      expect(rowButton("First Note")).toHaveClass(...ACTIONS_PADDING);
+      expect(rowButton("First Note")).toHaveClass(...ACTIONS_PADDING, TOUCH_PADDING);
     });
 
     it("leaves the title its full width when a row has no actions", async () => {
@@ -536,6 +564,7 @@ describe("NoteList", () => {
       const button = rowButton("First Note");
       expect(button).toHaveClass("px-3");
       expect(button).not.toHaveClass("pr-10");
+      expect(button).not.toHaveClass(TOUCH_PADDING);
     });
   });
 

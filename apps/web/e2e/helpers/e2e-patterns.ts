@@ -34,6 +34,7 @@ const E2E_NAME_PREFIXES = [
   "Content quota NB",
   "Content quota",
   "Long Title Overlap Check With Enough Words To Run Well Past The Note List Column",
+  "Touch Target NB With A Name Long Enough To Truncate In The Sidebar",
   // Maestro flows (apps/mobile/e2e), which sign in as the same account. They rename NB2
   // to NB2R and SECOND to RENAMED; the old names stay for flows that fail before that.
   "NB",

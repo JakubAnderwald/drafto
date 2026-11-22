@@ -443,6 +443,10 @@ test.describe("Note editing flow", () => {
     // Hovered with a mouse.
     await row.hover();
     await expectTitleClearOfActions();
+    // #899: the 44 px tap target is for touch-only pointers; a mouse keeps the 28 px ⋮.
+    const actionsBox = await actions.boundingBox();
+    expect(actionsBox?.width).toBeCloseTo(28, 0);
+    expect(actionsBox?.height).toBeCloseTo(28, 0);
 
     // Focused from the keyboard, with the pointer away again.
     await page.mouse.move(0, 0);
