@@ -24,9 +24,11 @@ vi.mock("@/lib/posthog/provider", () => ({
 }));
 
 const { default: RootLayout } = await import("@/app/layout");
+const { buildThemeBootstrapScript } = await import("@/lib/theme/theme-chrome");
 
-// The script exactly as it shipped before the CSP: only the nonce is new.
-const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem("theme");var d=t==="dark"||(t!=="light"&&matchMedia("(prefers-color-scheme:dark)").matches);if(d)document.documentElement.classList.add("dark")}catch(e){}})()`;
+// The bootstrap script verbatim (its behaviour is covered in theme-chrome.test.ts): React must
+// not escape or rewrite it, or it no longer runs as written.
+const THEME_SCRIPT = buildThemeBootstrapScript();
 
 async function renderLayout(): Promise<string> {
   return renderToStaticMarkup(await RootLayout({ children: <main>page</main> }));
@@ -67,6 +69,11 @@ describe("RootLayout theme script", () => {
 
     expect(script.attributes).not.toContain("nonce");
     expect(script.body).toBe(THEME_SCRIPT);
+  });
+
+  it("leaves the theme-color meta to the script", async () => {
+    // A server-rendered one would no longer match at hydration once the script set it (#865).
+    expect(await renderLayout()).not.toMatch(/<meta[^>]*theme-color/);
   });
 
   it("still renders the page inside the body", async () => {

@@ -3,7 +3,7 @@ import { env } from "@/env";
 import type { Database } from "@/lib/supabase/database.types";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-interface McpAuthResult {
+export interface McpAuthResult {
   userId: string;
   supabase: SupabaseClient<Database>;
 }

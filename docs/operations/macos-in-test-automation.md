@@ -69,7 +69,7 @@ Each run writes to `~/Library/Logs/drafto-in-test/<scenario>/<timestamp>/`:
 
 ## Posting a run on the issue
 
-A finished run's report and screenshots can be posted on the card's issue, with each step's shots under it ([ADR-0095](../adr/0095-factory-test-run-screenshots-on-github.md)). It's an operator command. The factory never runs it, because the shots are of production.
+A finished run's report and screenshots can be posted on the card's issue, with each step's shots under it ([ADR-0096](../adr/0096-factory-test-run-screenshots-on-github.md)). It's an operator command. The factory never runs it, because the shots are of production.
 
 1. **Finish the run first.** The command refuses while the run's `state.env` exists, because the throwaway account may still be live. If the run stopped early, clean it up:
    - `--cleanup-only` cleans up the run `latest` points to, which may not be this one. So first check that `readlink ~/Library/Logs/drafto-in-test/<scenario>/latest` prints this run's `<timestamp>` directory.

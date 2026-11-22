@@ -218,3 +218,79 @@ test.describe("tablet sidebar", () => {
     await expect(page.getByText("Select a note")).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Touch-only pointers — row actions can't rely on hover (#863)
+// ---------------------------------------------------------------------------
+
+test.describe("touch row actions", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    const hoverNone = await page.evaluate(() => matchMedia("(hover: none)").matches);
+    test.skip(!hoverNone, "Touch-only pointer test (@media (hover: none))");
+  });
+
+  const isPhone = (page: import("@playwright/test").Page) =>
+    (page.viewportSize()?.width ?? 0) < 640;
+
+  /**
+   * Phones open on whichever panel auto-selection leaves them on (both headings are in
+   * the DOM, one hidden). Tablets open on the note list once a notebook is auto-selected.
+   */
+  async function settleOnPanel(page: import("@playwright/test").Page) {
+    const notesHeading = page.getByRole("heading", { name: "Notes" });
+    if (!isPhone(page)) {
+      await expect(notesHeading).toBeVisible({ timeout: 10000 });
+      return;
+    }
+    const notebooksHeading = page.getByRole("heading", { name: "Notebooks" });
+    await expect(notesHeading.or(notebooksHeading).filter({ visible: true }).first()).toBeVisible({
+      timeout: 10000,
+    });
+  }
+
+  // Playwright's toBeVisible ignores opacity, so these read the computed opacity.
+
+  test("note-row actions are shown without hover and open on tap", async ({ page }) => {
+    await settleOnPanel(page);
+    const notesHeading = page.getByRole("heading", { name: "Notes" });
+    if (isPhone(page) && !(await notesHeading.isVisible())) {
+      await page.locator("aside nav li").first().click();
+    }
+    await expect(notesHeading).toBeVisible({ timeout: 5000 });
+
+    // A note of this test's own, so the list has a row (the fixture deletes it).
+    await page.getByRole("button", { name: "New note", exact: true }).click();
+    if (isPhone(page)) {
+      // The phone opens the editor once the note is created; go back to the list.
+      const backToNotes = page.getByLabel("Back to notes");
+      await expect(backToNotes).toBeVisible({ timeout: 10000 });
+      await backToNotes.click();
+    }
+
+    const noteList = page.locator("section").filter({ has: notesHeading });
+    const actions = noteList.getByLabel(/^Actions for /).first();
+    await expect(actions).toBeVisible({ timeout: 10000 });
+    await expect(actions).toHaveCSS("opacity", "1");
+
+    await actions.tap();
+    await expect(page.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+  });
+
+  test("notebook delete is shown without hover", async ({ page }) => {
+    await settleOnPanel(page);
+    if (!isPhone(page)) {
+      await openSidebar(page);
+    } else {
+      const backToNotebooks = page.getByLabel("Back to notebooks");
+      if (await backToNotebooks.isVisible()) await backToNotebooks.click();
+    }
+
+    const deleteNotebook = page
+      .locator("aside nav")
+      .getByLabel(/^Delete /)
+      .first();
+    await expect(deleteNotebook).toBeVisible({ timeout: 10000 });
+    await expect(deleteNotebook).toHaveCSS("opacity", "1");
+  });
+});

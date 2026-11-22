@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import WelcomePage from "@/app/welcome/page";
 import { FeatureList, LANDING_FEATURES } from "@/components/landing/feature-list";
+import { APP_STORE_URL, GOOGLE_PLAY_PUBLIC } from "@/lib/store-links";
 
 describe("Landing page", () => {
   it("says what Drafto is", () => {
@@ -19,6 +20,23 @@ describe("Landing page", () => {
     expect(screen.getByRole("link", { name: "Sign up" })).toHaveAttribute("href", "/signup");
     expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
     expect(screen.queryByText(/approved by hand/)).not.toBeInTheDocument();
+  });
+
+  it("shows the store badges in the hero", () => {
+    render(<WelcomePage />);
+
+    const badges = screen.getByRole("list", { name: "Get the app" });
+    // The hero's <header> sits inside <main>, so it has no banner role: find it by tag.
+    expect(badges.closest("header")).toHaveTextContent("Your notes, beautifully organized");
+    expect(
+      within(badges).getByRole("link", { name: "Download Drafto on the App Store" }),
+    ).toHaveAttribute("href", APP_STORE_URL);
+    expect(
+      within(badges).getByRole("link", { name: "Download Drafto on the Mac App Store" }),
+    ).toHaveAttribute("href", APP_STORE_URL);
+    expect(within(badges).queryAllByRole("link", { name: /Google Play/ })).toHaveLength(
+      GOOGLE_PLAY_PUBLIC ? 1 : 0,
+    );
   });
 
   it("lists every feature", () => {

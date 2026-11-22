@@ -24,7 +24,7 @@ A card can switch drivers in almost any column, in either direction. A card in P
 - **Claim.** `node scripts/drive-issue.mjs claim <n>` adds the **`driver:interactive`** label.
   - Every factory mode skips a labelled card, the same way it skips `factory-pause` (`card_opted_out` in `scripts/factory-agent.sh`).
   - A detached implement run that ends while the card is claimed is held, not collected.
-  - A card not yet on the board is added to Ready, after the label is on.
+  - A card not yet on the board is added to Ready, after the label is on. The board's "Item added to project" workflow may then set it to Backlog a moment later; the factory skips the claimed card either way, and the session's next `move` sets the column.
 - **Same artifacts as the factory.** (Only PRs from this repo count. A fork PR from a branch of the same name is ignored.)
   - The branch is `factory/issue-<n>`.
   - The PR body starts with `<!-- drafto-factory-pr -->`.

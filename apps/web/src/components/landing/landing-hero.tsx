@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { buttonClassName } from "@/components/ui/button-styles";
+import { StoreBadges } from "@/components/landing/store-badges";
 
 export function LandingHero() {
   return (
@@ -23,6 +24,7 @@ export function LandingHero() {
           Log in
         </Link>
       </div>
+      <StoreBadges />
     </header>
   );
 }

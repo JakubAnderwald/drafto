@@ -1,6 +1,6 @@
 # MCP Server
 
-**Status:** shipped **Updated:** 2026-11-13
+**Status:** shipped **Updated:** 2026-11-22
 
 ## What it is
 
@@ -8,7 +8,7 @@ Drafto exposes a remote Model Context Protocol (MCP) server at `/api/mcp`, letti
 
 ## Current state
 
-The server is live in production at `https://drafto.eu/api/mcp` and listed on the public MCP Registry under the namespace `eu.drafto/mcp`. Authentication is via user-generated API keys managed at `/settings`. Eleven tools are registered in the server — see the enumeration below.
+The server is live in production at `https://drafto.eu/api/mcp` and listed on the public MCP Registry under the namespace `eu.drafto/mcp`. Tool calls authenticate with user-generated API keys managed at `/settings`; the handshake, `ping` and `tools/list` answer without a key, so clients and directories can see what the server does first ([ADR-0095](../adr/0095-mcp-anonymous-discovery.md)). Eleven tools are registered in the server — see the enumeration below.
 
 Platform coverage:
 
@@ -19,28 +19,35 @@ The route is stateless: every POST is independent, and the transport is Streamab
 
 ## Code paths
 
-| Concern                               | Path                                                    |
-| ------------------------------------- | ------------------------------------------------------- |
-| MCP route (tool registry + transport) | `apps/web/src/app/api/mcp/route.ts`                     |
-| Tool handler implementations          | `apps/web/src/lib/api/mcp-tools.ts`                     |
-| Bearer-token authentication           | `apps/web/src/lib/api/mcp-auth.ts`                      |
-| `web-mcp` activity day                | `apps/web/src/lib/api/record-mcp-activity.ts`           |
-| API-key CRUD (list, generate)         | `apps/web/src/app/api/api-keys/route.ts`                |
-| API-key revoke                        | `apps/web/src/app/api/api-keys/[id]/route.ts`           |
-| API-key management UI (`/settings`)   | `apps/web/src/components/settings/settings-content.tsx` |
-| `api_keys` table + RLS                | `supabase/migrations/20260411000001_api_keys.sql`       |
-| BlockNote <-> Markdown conversion     | `packages/shared/src/editor/markdown-converter.ts`      |
-| MCP Registry metadata                 | `server.json` (repo root)                               |
-| Auth tests                            | `apps/web/__tests__/unit/mcp-auth.test.ts`              |
-| Route tests                           | `apps/web/__tests__/unit/mcp-route.test.ts`             |
-| Activity-day tests                    | `apps/web/__tests__/unit/record-mcp-activity.test.ts`   |
-| Tool handler tests                    | `apps/web/__tests__/unit/mcp-tools.test.ts`             |
-| API-key endpoint tests                | `apps/web/__tests__/unit/api-keys.test.ts`              |
+| Concern                               | Path                                                             |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| MCP route (tool registry + transport) | `apps/web/src/app/api/mcp/route.ts`                              |
+| Tool handler implementations          | `apps/web/src/lib/api/mcp-tools.ts`                              |
+| Bearer-token authentication           | `apps/web/src/lib/api/mcp-auth.ts`                               |
+| Methods served without a key          | `apps/web/src/lib/api/mcp-public-methods.ts`                     |
+| `web-mcp` activity day                | `apps/web/src/lib/api/record-mcp-activity.ts`                    |
+| API-key CRUD (list, generate)         | `apps/web/src/app/api/api-keys/route.ts`                         |
+| API-key revoke                        | `apps/web/src/app/api/api-keys/[id]/route.ts`                    |
+| API-key management UI (`/settings`)   | `apps/web/src/components/settings/settings-content.tsx`          |
+| `api_keys` table + RLS                | `supabase/migrations/20260411000001_api_keys.sql`                |
+| BlockNote <-> Markdown conversion     | `packages/shared/src/editor/markdown-converter.ts`               |
+| MCP Registry metadata                 | `server.json` (repo root)                                        |
+| Server icon (registry + `initialize`) | `apps/web/public/mcp-icon.png`                                   |
+| mcptry maintainer claim               | `apps/web/public/.well-known/mcptry-verify.txt`                  |
+| Auth tests                            | `apps/web/__tests__/unit/mcp-auth.test.ts`                       |
+| Route tests                           | `apps/web/__tests__/unit/mcp-route.test.ts`                      |
+| Key-less method tests                 | `apps/web/__tests__/unit/mcp-public-methods.test.ts`             |
+| Key-less discovery, real SDK          | `apps/web/__tests__/integration/mcp-anonymous-discovery.test.ts` |
+| Key-less discovery E2E                | `apps/web/e2e/mcp-anonymous-discovery.spec.ts`                   |
+| Activity-day tests                    | `apps/web/__tests__/unit/record-mcp-activity.test.ts`            |
+| Tool handler tests                    | `apps/web/__tests__/unit/mcp-tools.test.ts`                      |
+| API-key endpoint tests                | `apps/web/__tests__/unit/api-keys.test.ts`                       |
 
 ## Related ADRs
 
 - [0017 — MCP Server for Claude Cowork Integration](../adr/0017-mcp-server-for-claude-cowork.md)
 - [0088 — Activity Days Instead of Event Analytics](../adr/0088-activity-days-instead-of-event-analytics.md) (the `web-mcp` activity day)
+- [0095 — Key-less Discovery on the MCP Server](../adr/0095-mcp-anonymous-discovery.md)
 
 ## The eleven tools
 
@@ -70,23 +77,27 @@ Notes on the implementation:
 
 ## Auth model
 
+- **Key-less discovery:** without a key (`hasApiKey`: no `Authorization` header, an empty one, or a bare `Bearer`, which a client sends when the user left the optional key blank), the route serves a request whose every message is `initialize`, `notifications/initialized`, `ping` or `tools/list` (`PUBLIC_MCP_METHODS`), with `createMcpServer(null)`. It never calls `authenticateMcpRequest`, so it makes no database call and needs no service-role key. The same eleven tools are registered, so `tools/list` looks the same with or without a key; each handler runs through `withAuth` and returns a sign-in error without one, as a backstop. A key-less `tools/call`, any other method, a batch holding one or a body that isn't JSON gets a 401 whose message (`MCP_SIGN_IN_MESSAGE`) says where to get a key. A request that sends a key is authenticated before its body is read, so a wrong key gets a 401 whatever the method and costs no body parse; a bad key shows up at the handshake ([ADR-0095](../adr/0095-mcp-anonymous-discovery.md)). The route reads a clone of the body once (`readJsonRpcBody`) for this check and the activity-day check below. A key-less body is capped at `KEYLESS_MAX_BODY_BYTES` (64 KiB, refused by `Content-Length` or while streaming), since anyone can send one; an over-cap body counts as not public and gets the 401.
 - **Key shape:** `dk_` prefix + 48 hex characters (24 random bytes). Generated in `POST /api/api-keys` using `crypto.getRandomValues` and `crypto.subtle.digest`.
 - **Storage:** Only the SHA-256 hex digest (`key_hash`) and the first 8 chars (`key_prefix`, for display) are stored in `public.api_keys`. The raw key is returned **once** from the generation endpoint and shown in the UI with a copy-to-clipboard button; revisiting `/settings` never re-displays it.
 - **Transport:** Clients send `Authorization: Bearer <raw key>`. `authenticateMcpRequest` re-hashes the bearer, looks up the row by `key_hash`, rejects on `revoked_at IS NOT NULL`, and then requires `profiles.is_approved = true` for the owning user.
 - **RLS:** The `api_keys` table has RLS enabled with per-user select/insert/update/delete policies that also require `public.is_approved()`. The MCP route itself uses the service-role client (bypassing RLS) and enforces ownership by explicit `user_id` filtering in every handler.
 - **Side effect:** Each successful auth fires `UPDATE api_keys SET last_used_at = now()` (fire-and-forget) — surfaced as the "Last used" timestamp in `/settings`.
-- **Activity day:** Each authenticated tool call (`tools/call`, alone or in a batch) also records that the user used Drafto that UTC day through an AI assistant, so weekly active users count MCP-only users ([product metrics](./product-metrics.md#activity-days-usage_daily), [ADR-0088](../adr/0088-activity-days-instead-of-event-analytics.md)). The handshake (`initialize`, `notifications/initialized`) and `tools/list` record nothing: an assistant with the connector enabled sends them whenever a session starts, before the user asks it for anything in Drafto. After `authenticateMcpRequest` succeeds, the route checks a clone of the body with `isMcpToolCallRequest` (the transport still reads the original), and for a tool call schedules `recordMcpActivity(supabase, userId)` with Next's `after()`, so it runs once the response has been sent. It upserts `(user_id, today UTC, 'web-mcp')` into `usage_daily` with `onConflict: "user_id,day,client"` and `ignoreDuplicates`, so only the day's first tool call adds a row. The route can't use the `record_activity` RPC that the apps call: it queries as the service role, where `auth.uid()` is null. The write is best-effort: an error goes to Sentry and never changes the response. A 401 records nothing. Only the day and the client are stored, never the tool, the note or the arguments.
-- **Failure response:** Auth errors are returned as JSON-RPC 2.0 errors (`code: -32000`) with HTTP status 401.
+- **Activity day:** Each authenticated tool call (`tools/call`, alone or in a batch) also records that the user used Drafto that UTC day through an AI assistant, so weekly active users count MCP-only users ([product metrics](./product-metrics.md#activity-days-usage_daily), [ADR-0088](../adr/0088-activity-days-instead-of-event-analytics.md)). The handshake (`initialize`, `notifications/initialized`) and `tools/list` record nothing: an assistant with the connector enabled sends them whenever a session starts, before the user asks it for anything in Drafto. After `authenticateMcpRequest` succeeds, the route checks the body it read with `isMcpToolCall` (the transport still reads the original), and for a tool call schedules `recordMcpActivity(supabase, userId)` with Next's `after()`, so it runs once the response has been sent. It upserts `(user_id, today UTC, 'web-mcp')` into `usage_daily` with `onConflict: "user_id,day,client"` and `ignoreDuplicates`, so only the day's first tool call adds a row. The route can't use the `record_activity` RPC that the apps call: it queries as the service role, where `auth.uid()` is null. The write is best-effort: an error goes to Sentry and never changes the response. A 401 records nothing. Only the day and the client are stored, never the tool, the note or the arguments.
+- **Failure response:** Auth errors are returned as JSON-RPC 2.0 errors (`code: -32000`) with HTTP status 401. There's no `WWW-Authenticate` resource metadata: Drafto has no OAuth server, so advertising one would only send clients into discovery that fails.
+- **Server info:** `initialize` returns `title`, `websiteUrl`, `icons` and `instructions` (where to get a key). `SERVER_VERSION` in the route must match `version` in `server.json`; `mcp-route.test.ts` checks that it does.
 
 ## MCP Registry
 
-Drafto is published at `registry.modelcontextprotocol.io` as `eu.drafto/mcp`. Registry metadata is in `server.json` at the repo root; the single remote entry points to `https://drafto.eu/api/mcp` with an `Authorization` Bearer header.
+Drafto is published at `registry.modelcontextprotocol.io` as `eu.drafto/mcp`. Registry metadata is in `server.json` at the repo root: `websiteUrl` (`https://drafto.eu`), an `icons` entry (`https://drafto.eu/mcp-icon.png`, served from `apps/web/public/`, so publish only after the icon is deployed), and a single remote entry pointing to `https://drafto.eu/api/mcp` with an optional `Authorization` Bearer header (optional because listing tools works without it; tool calls need it).
 
 Publishing an update (e.g. after adding or changing a tool):
 
-1. Bump `version` in `server.json`.
+1. Bump `version` in `server.json`, and `SERVER_VERSION` in `apps/web/src/app/api/mcp/route.ts` to match.
 2. Run `~/bin/mcp-publisher publish`.
 3. Verify: `curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=drafto"`.
+
+mcptry (a directory built on the registry) lists the server at `mcptry.com/server/eu.drafto/mcp`. The listing is claimed by a file: `apps/web/public/.well-known/mcptry-verify.txt` holds the `mcptry-verify=…` line from the claim page. It isn't a secret, only proof that we control drafto.eu. The middleware matcher skips that path, and `PUBLIC_ROUTES` lists it too, because mcptry fetches it signed out. Keep the file: mcptry may re-check it.
 
 Registry namespace auth is DNS-based: the `drafto.eu` TXT record holds the Ed25519 public key. The matching private key lives at `~/drafto-secrets/mcp-registry-key.pem` and is never committed. If the publisher login has expired, re-authenticate:
 
@@ -118,7 +129,10 @@ See the "MCP Server (Claude Cowork Integration)" section of `CLAUDE.md` for the 
 **Tests that catch regressions:**
 
 - `apps/web/__tests__/unit/mcp-auth.test.ts` — bearer parsing, key hashing, revocation, unapproved user rejection.
-- `apps/web/__tests__/unit/mcp-route.test.ts` — the route rejects bad auth and wires the server + transport correctly; an authenticated tool call schedules the activity day after the response, while a 401, the handshake, `tools/list` and a body that isn't JSON don't, and the transport can still read the body.
+- `apps/web/__tests__/unit/mcp-route.test.ts` — the route rejects bad auth and wires the server + transport correctly; it serves the handshake, `ping` and `tools/list` without a key and 401s everything else, every handler refuses to run without a key, and the server's version matches `server.json`; an authenticated tool call schedules the activity day after the response, while a 401, the handshake, `tools/list` and a body that isn't JSON don't, and the transport can still read the body.
+- `apps/web/__tests__/unit/mcp-public-methods.test.ts` — which bodies count as key-less, and that the body is read from a clone.
+- `apps/web/__tests__/integration/mcp-anonymous-discovery.test.ts` — with the real SDK: key-less `initialize` (server info), `tools/list` (all eleven tools and their schemas) and `ping`, and a key-less `tools/call` gets a 401.
+- `apps/web/e2e/mcp-anonymous-discovery.spec.ts` — the same against the running app, plus the icon.
 - `apps/web/__tests__/unit/record-mcp-activity.test.ts` — the `usage_daily` upsert (today's UTC day, `web-mcp`, duplicates ignored), that an error is reported to Sentry instead of thrown, and which JSON-RPC messages count as a tool call.
 - `apps/web/__tests__/unit/mcp-tools.test.ts` — handler-level tests for each of the eleven tools.
 - `apps/web/__tests__/unit/api-keys.test.ts` — `/api/api-keys` generate / list / revoke.
@@ -140,6 +154,12 @@ cd packages/shared && pnpm test
 
 # Type + lint from the repo root.
 pnpm lint && pnpm typecheck
+
+# Key-less discovery: lists the eleven tools; the same body with tools/call gets a 401.
+curl -s -X POST http://localhost:3000/api/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools[].name'
 
 # End-to-end smoke test: generate a key at /settings, then hit the local server.
 curl -s -X POST http://localhost:3000/api/mcp \

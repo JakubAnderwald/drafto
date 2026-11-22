@@ -3,6 +3,9 @@
 /* ── Design Tokens ────────────────────────────────────────── */
 
 :root {
+  /* Form controls, scroll bars and the browser UI follow the in-app theme, not the OS (#865) */
+  color-scheme: light;
+
   /* Semantic surface tokens — light mode (overridden by .dark below) */
   --bg: #fff8f5;
   --bg-subtle: #fcf2eb;
@@ -46,6 +49,8 @@
 /* ── Dark Mode Token Overrides ───────────────────────────── */
 
 .dark {
+  color-scheme: dark;
+
   --bg: #1f1b17;
   --bg-subtle: #251f1b;
   --bg-muted: #2e2822;
@@ -322,6 +327,25 @@ body {
 
   .dark .brand-wordmark {
     @apply text-primary-300;
+  }
+
+  /*
+   * Artwork with a light-theme and a dark-theme variant (the store badges on the landing page):
+   * both are in the DOM and these rules show one. They key on `.dark` for the same reason as
+   * `.doc-link` above. The display is set here, not with a utility class, because a utility
+   * would win over the `.dark` rule.
+   */
+  .theme-light-only {
+    display: block;
+  }
+
+  .theme-dark-only,
+  .dark .theme-light-only {
+    display: none;
+  }
+
+  .dark .theme-dark-only {
+    display: block;
   }
 
   .doc-prose table {

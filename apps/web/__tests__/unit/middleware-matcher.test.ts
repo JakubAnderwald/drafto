@@ -58,6 +58,7 @@ describe("middleware matcher", () => {
     "/sitemap.xml",
     "/.well-known/apple-app-site-association",
     "/.well-known/assetlinks.json",
+    "/.well-known/mcptry-verify.txt",
   ])("skips %s so crawlers and app-link verifiers are not redirected to /login", (path) => {
     expect(matches(path)).toBe(false);
   });
@@ -81,6 +82,7 @@ describe("middleware matcher", () => {
     "/well-known/x",
     "/api/.well-known/x",
     "/.well-known/assetlinks.json.bak",
+    "/.well-known/mcptry-verify.txt.bak",
     "/register/extra",
     "/tokens",
   ])("still runs on %s, which only resembles a skipped path", (path) => {

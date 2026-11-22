@@ -1,5 +1,5 @@
 // evidence-upload.mjs is the only path from a factory test run's screenshots
-// to the public repo (ADR-0095), so these tests lock in that it fails closed:
+// to the public repo (ADR-0096), so these tests lock in that it fails closed:
 // the switch, a withheld or unreadable render, a missing or failed selftest,
 // an unusable OCR helper and an unreadable account file each refuse before
 // anything is pushed, and each refusal is written to upload.json as a reason

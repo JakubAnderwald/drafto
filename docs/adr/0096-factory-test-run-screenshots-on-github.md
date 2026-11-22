@@ -1,4 +1,4 @@
-# 0095 — Factory Test-Run Screenshots on GitHub
+# 0096 — Factory Test-Run Screenshots on GitHub
 
 - **Status**: Accepted
 - **Date**: 2026-11-10

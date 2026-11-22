@@ -2,6 +2,10 @@ name: Factory feature spec
 description: A feature or change spec the dark factory can read end-to-end.
 title: "feat: "
 labels: []
+# Puts the issue on the Drafto Factory board; the board's "Item added to project"
+# workflow then sets its Status to Backlog. GitHub only does this when the filer
+# has write access to the project.
+projects: ["JakubAnderwald/1"]
 body:
   - type: markdown
     attributes:

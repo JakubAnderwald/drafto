@@ -30,9 +30,20 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    gh project link <number> --owner JakubAnderwald --repo JakubAnderwald/drafto
    ```
 
-   Without this, issues filed in the repo don't auto-add to the board.
+   The factory issue form (`.github/ISSUE_TEMPLATE/factory-feature.yml`) names the board in its `projects:` key, so an issue filed through it lands on the board. `gh issue create` needs `--project "Drafto Factory"`.
 
-4. **Grant `gh` the `project` scope on the Mac mini.**
+4. **Make new cards land in Backlog.**
+
+   On the board, open ⋯ → **Workflows** → **Item added to project**, click **Edit**, set **Set value** to `Status: Backlog`, and click **Save and turn on workflow**. GitHub has no API to configure project workflows, so this step is manual. Check it took with:
+
+   ```bash
+   gh api graphql -f query='{user(login:"JakubAnderwald"){projectV2(number:1){workflows(first:20){nodes{name enabled}}}}}' \
+     --jq '.data.user.projectV2.workflows.nodes[] | select(.name=="Item added to project")'
+   ```
+
+   Without it a new card has no Status and sits outside every column; with it the card waits in Backlog, which the factory ignores, until you drag it to Ready.
+
+5. **Grant `gh` the `project` scope on the Mac mini.**
 
    The agent reads and writes the Project v2 board directly via the GitHub GraphQL API — there is no Action mirror. Refresh the existing token on the Mac mini to add Projects v2 read+write:
 
@@ -42,7 +53,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    Verify with `gh auth status` — the listed scopes should include `project`. Without it the agent's first board read fails on every tick with a `factory-project find-project failed` warning.
 
-5. **Create the dedicated factory checkout (Deployment).**
+6. **Create the dedicated factory checkout (Deployment).**
 
    The factory runs from its **own git worktree pinned to `main`**, never from your
    everyday dev checkout. This guarantees it only ever executes reviewed,
@@ -83,7 +94,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    that sync, it re-execs the fresh copy once. Set `FACTORY_AUTOPULL=0` only for
    ad-hoc manual runs against a dirty tree.
 
-6. **Install the factory launchd job.**
+7. **Install the factory launchd job.**
 
    On the Mac mini, drop a plist at `~/Library/LaunchAgents/eu.drafto.factory.plist` modelled on `eu.drafto.support-agent.plist` with:
    - `Label = eu.drafto.factory`
@@ -104,7 +115,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    `=== factory-agent --plan run started (phase=A …) ===` followed by
    `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
 
-7. **(Optional) Install the CodeRabbit CLI for the gap-fill lane.**
+8. **(Optional) Install the CodeRabbit CLI for the gap-fill lane.**
 
    Only needed before turning on `FACTORY_CR_CLI=1` (see "CodeRabbit CLI gap-fill lane" below). On the Mac mini:
 
@@ -1074,7 +1085,7 @@ node scripts/lib/state-cli.mjs factory:verify-reset <n>                    # for
 
 ## Test-run screenshots on GitHub
 
-The In Test browser report and the verification report's Web lane embed the run's screenshots under the steps that took them ([ADR-0095](../adr/0095-factory-test-run-screenshots-on-github.md)). After a run, and only once its report has passed the secret scan, the factory's own code does this, never a claude session:
+The In Test browser report and the verification report's Web lane embed the run's screenshots under the steps that took them ([ADR-0096](../adr/0096-factory-test-run-screenshots-on-github.md)). After a run, and only once its report has passed the secret scan, the factory's own code does this, never a claude session:
 
 1. `scripts/lib/evidence-upload.mjs` takes the screenshots the guard copied, in the order its decision log recorded them;
 2. it checks each file and OCR-scans it for secrets (`scripts/lib/evidence-images.mjs`);
@@ -1085,7 +1096,7 @@ The ref isn't a branch or a tag, so a normal clone or fetch never downloads it a
 
 | Setting                   | Default | What it does                                                                                                                                                                                                                                        |
 | ------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FACTORY_EVIDENCE_UPLOAD` | `1`     | `0` keeps every screenshot on the Mac mini, as before ADR-0095, and each report says so. Any value but `0` or `1` warns in the launchd log and acts as `0`. Even at `1`, nothing is published until the selftest below has passed on this Mac mini. |
+| `FACTORY_EVIDENCE_UPLOAD` | `1`     | `0` keeps every screenshot on the Mac mini, as before ADR-0096, and each report says so. Any value but `0` or `1` warns in the launchd log and acts as `0`. Even at `1`, nothing is published until the selftest below has passed on this Mac mini. |
 
 Fixed in the code: at most 20 images and 20 MB per comment, 5 MB per image, `.png` or `.jpg` only.
 
@@ -1131,7 +1142,7 @@ Fixed in the code: at most 20 images and 20 MB per comment, 5 MB per image, `.pn
 git push origin <commit>:refs/factory-evidence/selftest/<epoch>
 ```
 
-If GitHub refuses the namespace itself, the fallback is a tag prefix, `refs/tags/factory-evidence/`. That's one constant, `EVIDENCE_REF_PREFIX` in `scripts/lib/evidence-upload.mjs`, changed in a PR, not a setting. ADR-0095 gives the cost: every evidence tag is listed on the repo's Tags page, and `git fetch --tags` downloads them all. Once it's merged, run the selftest again.
+If GitHub refuses the namespace itself, the fallback is a tag prefix, `refs/tags/factory-evidence/`. That's one constant, `EVIDENCE_REF_PREFIX` in `scripts/lib/evidence-upload.mjs`, changed in a PR, not a setting. ADR-0096 gives the cost: every evidence tag is listed on the repo's Tags page, and `git fetch --tags` downloads them all. Once it's merged, run the selftest again.
 
 **The OCR helper.** Each screenshot's text is read with `logs/factory/bin/ocr` and scanned like the report. The factory compiles it on first use from the macOS harness's `apps/desktop/e2e/in-test/lib/ocr.swift`, with `swiftc -O` (the Xcode command-line tools) under a 300-second cap. It compiles it again whenever `ocr.swift` is newer than the binary. Without it nothing is published (`ocr-missing`), and the browser log says `the OCR helper that scans screenshots for secrets isn't available (swiftc?)`. To build and try it by hand:
 
@@ -1691,6 +1702,6 @@ The pnpm store sits on the same volume as the factory's checkouts, so installs c
 - [`docs/features/dark-factory.md`](../features/dark-factory.md) — operator manual.
 - [ADR-0026](../adr/0026-dark-factory-pipeline.md) — decision record.
 - [ADR-0035](../adr/0035-factory-code-review-gate.md) / [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md) — review-thread merge gate and the CodeRabbit CLI gap-fill lane.
-- [ADR-0051](../adr/0051-factory-browser-runner.md) / [ADR-0095](../adr/0095-factory-test-run-screenshots-on-github.md) — the browser runner, and its screenshots on GitHub.
+- [ADR-0051](../adr/0051-factory-browser-runner.md) / [ADR-0096](../adr/0096-factory-test-run-screenshots-on-github.md) — the browser runner, and its screenshots on GitHub.
 - [`docs/operations/migrations.md`](./migrations.md) — migration safety + rollback workflow.
 - [`docs/operations/builds-and-releases.md`](./builds-and-releases.md) — release commands, beta lanes.

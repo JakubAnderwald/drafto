@@ -152,6 +152,7 @@ export function NoteList({
   );
 
   const otherNotebooks = notebooks.filter((nb) => nb.id !== notebookId);
+  const hasActions = Boolean(onDeleteNote || (onMoveNote && otherNotebooks.length > 0));
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -197,6 +198,8 @@ export function NoteList({
                   onClick={() => onSelectNote(note.id)}
                   {...(selectedNoteId === note.id && { "data-testid": "note-item-active" })}
                   className={`w-full rounded-md px-3 py-2 text-left transition-colors duration-[var(--transition-fast)] ${
+                    hasActions ? "[@media(hover:none)]:pr-10" : ""
+                  } ${
                     selectedNoteId === note.id
                       ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-[3px] font-medium"
                       : "text-fg hover:bg-bg-muted"
@@ -222,7 +225,7 @@ export function NoteList({
                   </p>
                 </button>
 
-                {(onDeleteNote || (onMoveNote && otherNotebooks.length > 0)) && (
+                {hasActions && (
                   <IconButton
                     size="sm"
                     variant="ghost"
@@ -230,7 +233,7 @@ export function NoteList({
                       e.stopPropagation();
                       setMenuOpenForNote(menuOpenForNote === note.id ? null : note.id);
                     }}
-                    className="absolute top-2 right-2 opacity-0 transition-opacity duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100"
+                    className="absolute top-2 right-2 opacity-0 transition-opacity duration-[var(--transition-fast)] group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
                     aria-label={`Actions for ${displayNoteTitle(note.title)}`}
                   >
                     <svg

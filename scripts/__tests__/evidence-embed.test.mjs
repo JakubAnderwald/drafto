@@ -23,7 +23,7 @@ import {
 import { imagePath, rawUrl } from "../lib/evidence-upload.mjs";
 
 // evidence-embed.mjs turns an upload record (upload.json) into the Markdown
-// that puts a run's screenshots into a public GitHub comment (ADR-0095). These
+// that puts a run's screenshots into a public GitHub comment (ADR-0096). These
 // tests lock in the layout (one image inline, several in a <details>), the
 // "screenshot k" → step mapping, the "kept on the Mac mini" overflow list, and
 // the fallbacks: a withheld report shows no image, a failed upload keeps
@@ -724,7 +724,7 @@ describe("localFooter / publishedFooter", () => {
   it("says the published screenshots are the dev test account's, or the operator's macOS run's", () => {
     const web = publishedFooter(DIR);
     assert.ok(web.startsWith("<sub>") && web.endsWith("</sub>"));
-    assert.ok(web.includes("ADR-0095") && web.includes("dev test account"));
+    assert.ok(web.includes("ADR-0096") && web.includes("dev test account"));
     assert.ok(web.includes(`\`${DIR}\``));
     const mac = publishedFooter(DIR, "macos", { throwaway: true });
     assert.ok(mac.includes("published by the operator") && mac.includes("production"));
