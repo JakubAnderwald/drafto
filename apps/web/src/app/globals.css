@@ -329,6 +329,25 @@ body {
     @apply text-primary-300;
   }
 
+  /*
+   * Artwork with a light-theme and a dark-theme variant (the store badges on the landing page):
+   * both are in the DOM and these rules show one. They key on `.dark` for the same reason as
+   * `.doc-link` above. The display is set here, not with a utility class, because a utility
+   * would win over the `.dark` rule.
+   */
+  .theme-light-only {
+    display: block;
+  }
+
+  .theme-dark-only,
+  .dark .theme-light-only {
+    display: none;
+  }
+
+  .dark .theme-dark-only {
+    display: block;
+  }
+
   .doc-prose table {
     @apply w-full border-collapse text-left text-sm leading-6;
   }
