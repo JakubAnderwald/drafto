@@ -122,8 +122,14 @@ interface NoteRowProps {
 
 function NoteRow({ note, isSelected, onSelect, onTrash, styles }: NoteRowProps) {
   const [hovered, setHovered] = useState(false);
-  // The × below is hover-only; the row itself takes the Delete key and VoiceOver's action.
-  const deleteAction = useRowDeleteAction({ label: "Delete note", onDelete: onTrash });
+  // The × below is hover-only. A press also focuses the row, which then takes ⌫ / ⌦, and
+  // VoiceOver lists a named delete action on it.
+  const deleteAction = useRowDeleteAction({
+    label: "Delete note",
+    onPress: onSelect,
+    onDelete: onTrash,
+    isSelected,
+  });
 
   return (
     <Pressable
@@ -133,7 +139,6 @@ function NoteRow({ note, isSelected, onSelect, onTrash, styles }: NoteRowProps) 
         hovered && !isSelected && styles.noteItemHover,
         isSelected && styles.noteItemSelected,
       ]}
-      onPress={onSelect}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       accessibilityLabel={note.title || "Untitled"}

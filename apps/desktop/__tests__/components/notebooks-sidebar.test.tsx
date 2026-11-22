@@ -1,4 +1,4 @@
-import { ActivityIndicator, Alert, ScrollView, StyleSheet } from "react-native";
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
 import { Q } from "@nozbe/watermelondb";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
@@ -968,7 +968,7 @@ describe("NotebooksSidebar — delete without a mouse (#864)", () => {
   it("runs the same guard on the Delete key, so a notebook with notes is kept", async () => {
     mockNotebooks.push({ id: "nb-1", name: "Work Notes", markAsDeleted: jest.fn() });
     mockNoteFetchCount.mockResolvedValue(3);
-    const utils = render(<NotebooksSidebar {...defaultProps} />);
+    const utils = render(<NotebooksSidebar {...defaultProps} selectedNotebookId="nb-1" />);
 
     fireEvent(utils.getByLabelText("Work Notes"), "keyDown", {
       nativeEvent: { key: "Backspace" },
@@ -983,10 +983,37 @@ describe("NotebooksSidebar — delete without a mouse (#864)", () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
+  it("selects the notebook on press and focuses its row, except while renaming", () => {
+    mockNotebooks.push({ id: "nb-1", name: "Work Notes", markAsDeleted: jest.fn() });
+    mockNotebooks.push({ id: "nb-2", name: "Personal", markAsDeleted: jest.fn() });
+    const onSelectNotebook = jest.fn();
+    // In jest the row's ref is react-native's mocked View; its focus() stands in for the
+    // native focus command.
+    const focus = jest.spyOn(
+      (View as unknown as { prototype: { focus: () => void } }).prototype,
+      "focus",
+    );
+    const utils = render(
+      <NotebooksSidebar {...defaultProps} onSelectNotebook={onSelectNotebook} />,
+    );
+
+    fireEvent.press(utils.getByLabelText("Work Notes"));
+    expect(onSelectNotebook).toHaveBeenCalledWith("nb-1");
+    expect(focus).toHaveBeenCalledTimes(1);
+
+    // While a rename field is open, pressing a row (this one or another) leaves the focus in
+    // the field, so the typed name isn't dropped by a blur.
+    fireEvent(utils.getByLabelText("Work Notes"), "longPress");
+    fireEvent.press(utils.getByLabelText("Personal"));
+    expect(utils.getByDisplayValue("Work Notes")).toBeTruthy();
+    expect(focus).toHaveBeenCalledTimes(1);
+    focus.mockRestore();
+  });
+
   it("never deletes on a ⌫ typed while renaming the notebook", async () => {
     mockNotebooks.push({ id: "nb-1", name: "Work Notes", markAsDeleted: jest.fn() });
     mockNoteFetchCount.mockResolvedValue(0);
-    const utils = render(<NotebooksSidebar {...defaultProps} />);
+    const utils = render(<NotebooksSidebar {...defaultProps} selectedNotebookId="nb-1" />);
 
     fireEvent(utils.getByLabelText("Work Notes"), "longPress");
     const input = utils.getByDisplayValue("Work Notes");

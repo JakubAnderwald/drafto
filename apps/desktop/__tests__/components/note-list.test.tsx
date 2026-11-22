@@ -1,3 +1,5 @@
+import { View } from "react-native";
+
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import { NoteList } from "@/components/notes/note-list";
 
@@ -42,8 +44,13 @@ function addNote(id: string, title: string): MockNote {
   return note;
 }
 
-function renderList() {
-  return render(<NoteList notebookId="nb-1" selectedNoteId={undefined} onSelectNote={jest.fn()} />);
+function renderList(
+  onSelectNote: (id: string) => void = jest.fn(),
+  selectedNoteId: string | undefined = undefined,
+) {
+  return render(
+    <NoteList notebookId="nb-1" selectedNoteId={selectedNoteId} onSelectNote={onSelectNote} />,
+  );
 }
 
 describe("NoteList — delete without a mouse (#864)", () => {
@@ -79,9 +86,9 @@ describe("NoteList — delete without a mouse (#864)", () => {
     expect(other.update).not.toHaveBeenCalled();
   });
 
-  it("moves the focused note to Trash on the Delete key", async () => {
+  it("moves the focused, selected note to Trash on the Delete key", async () => {
     const note = addNote("n-1", "Groceries");
-    const utils = renderList();
+    const utils = renderList(jest.fn(), "n-1");
 
     fireEvent(utils.getByLabelText("Groceries"), "keyDown", {
       nativeEvent: { key: "Backspace" },
@@ -93,13 +100,44 @@ describe("NoteList — delete without a mouse (#864)", () => {
 
   it("leaves the note alone on other keys", () => {
     const note = addNote("n-1", "Groceries");
-    const utils = renderList();
+    const utils = renderList(jest.fn(), "n-1");
     const row = utils.getByLabelText("Groceries");
 
     fireEvent(row, "keyDown", { nativeEvent: { key: "a" } });
     fireEvent(row, "keyDown", { nativeEvent: { key: "Backspace", shiftKey: true } });
 
     expect(note.update).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("selects the note on press and gives its row keyboard focus, so ⌫ reaches it", () => {
+    addNote("n-1", "Groceries");
+    const onSelectNote = jest.fn();
+    // In jest the row's ref is react-native's mocked View; its focus() stands in for the
+    // native focus command.
+    const focus = jest.spyOn(
+      (View as unknown as { prototype: { focus: () => void } }).prototype,
+      "focus",
+    );
+    const utils = renderList(onSelectNote);
+
+    fireEvent.press(utils.getByLabelText("Groceries"));
+
+    expect(onSelectNote).toHaveBeenCalledWith("n-1");
+    expect(focus).toHaveBeenCalledTimes(1);
+    focus.mockRestore();
+  });
+
+  it("ignores ⌫ on a row that kept focus after another note was selected", () => {
+    const stale = addNote("n-1", "Groceries");
+    addNote("n-2", "Ideas");
+    const utils = renderList(jest.fn(), "n-2");
+
+    fireEvent(utils.getByLabelText("Groceries"), "keyDown", {
+      nativeEvent: { key: "Backspace" },
+    });
+
+    expect(stale.update).not.toHaveBeenCalled();
     expect(mockWrite).not.toHaveBeenCalled();
   });
 });

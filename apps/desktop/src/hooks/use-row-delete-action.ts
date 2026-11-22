@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useRef } from "react";
-import type { AccessibilityActionEvent, AccessibilityActionInfo } from "react-native";
+import { useCallback, useMemo, useRef, type RefObject } from "react";
+import type { AccessibilityActionEvent, AccessibilityActionInfo, View } from "react-native";
 
 /**
  * A key react-native-macos matches in `keyDownEvents`. Fabric reads an absent modifier as
@@ -25,10 +25,14 @@ export interface RowKeyDownEvent {
 }
 
 /**
- * Props for a list row's Pressable. `keyDownEvents` and `onKeyDown` are react-native-macos
- * props the react-native types don't declare, so the row takes them by spreading this object.
+ * Props for a list row's Pressable. `keyDownEvents`, `onKeyDown` and `enableFocusRing` are
+ * react-native-macos props the react-native types don't declare, so the row takes them by
+ * spreading this object.
  */
 export interface RowDeleteActionProps {
+  ref: RefObject<View | null>;
+  onPress: () => void;
+  enableFocusRing: boolean;
   keyDownEvents: HandledKey[] | undefined;
   onKeyDown: (event: RowKeyDownEvent) => void;
   accessibilityActions: AccessibilityActionInfo[];
@@ -59,24 +63,45 @@ export function isDeleteKey({ nativeEvent }: RowKeyDownEvent): boolean {
 interface UseRowDeleteActionOptions {
   /** What the delete is called in VoiceOver's Actions menu: "Delete note". */
   label: string;
+  /** The row's own press (select). The returned `onPress` runs it, then focuses the row. */
+  onPress: () => void;
   /** The row's delete. While a returned promise is pending, further requests are ignored. */
   onDelete: () => void | Promise<void>;
-  /** False while the row holds a text field, whose key presses bubble up to the row. */
+  /**
+   * Whether the row is the selected one. The Delete key acts only then: a row keeps keyboard
+   * focus when the selection moves some other way (New note, search), and a ⌫ must never
+   * trash a row the user no longer sees as selected. VoiceOver's action doesn't need it.
+   */
+  isSelected: boolean;
+  /**
+   * False while a rename field is open in the list: its key presses bubble up to the row, and
+   * focusing a row would blur it and drop the typed name.
+   */
   enabled?: boolean;
 }
 
 /**
- * Makes a row's delete reachable without a mouse: the Delete key on the focused row, and a
- * named action VoiceOver lists in the row's Actions menu (an NSAccessibilityCustomAction).
- * The row's hover-revealed × button stays as it is for mouse users.
+ * Makes a row's delete reachable without the hover-only × button: the Delete key on the
+ * focused row, and a named action VoiceOver lists in the row's Actions menu (an
+ * NSAccessibilityCustomAction).
+ *
+ * react-native-macos never lets a click move keyboard focus (`needsPanelToBecomeKey`), and its
+ * rows aren't in the Tab order, so pressing the row also focuses it, as a click on a note in
+ * Apple Notes does. The focus ring stays off: the row's selected style already marks it.
  */
 export function useRowDeleteAction({
   label,
+  onPress,
   onDelete,
+  isSelected,
   enabled = true,
 }: UseRowDeleteActionOptions): RowDeleteActionProps {
-  // A held ⌫ auto-repeats; one delete at a time, so a notebook's confirm doesn't stack.
+  const ref = useRef<View>(null);
+  // A held ⌫ auto-repeats. One delete at a time: a repeat that lands while a notebook's
+  // guard is still counting its notes is dropped. (The guard's promise settles once its
+  // alert is shown; the alert itself is modal and takes the keys from there.)
   const pending = useRef(false);
+  const keysActive = enabled && isSelected;
 
   const runDelete = useCallback(() => {
     if (!enabled || pending.current) return;
@@ -88,11 +113,17 @@ export function useRowDeleteAction({
     });
   }, [enabled, onDelete]);
 
+  const handlePress = useCallback(() => {
+    onPress();
+    // While disabled the row holds a text field, which keeps the focus.
+    if (enabled) ref.current?.focus();
+  }, [enabled, onPress]);
+
   const onKeyDown = useCallback(
     (event: RowKeyDownEvent) => {
-      if (isDeleteKey(event)) runDelete();
+      if (keysActive && isDeleteKey(event)) runDelete();
     },
-    [runDelete],
+    [keysActive, runDelete],
   );
 
   // Fabric names the custom action after `name` alone (Paper uses `label`), so the action's
@@ -106,12 +137,15 @@ export function useRowDeleteAction({
 
   return useMemo(
     () => ({
+      ref,
+      onPress: handlePress,
+      enableFocusRing: false,
       // Undefined leaves Pressable's default in place.
-      keyDownEvents: enabled ? ROW_KEY_EVENTS : undefined,
+      keyDownEvents: keysActive ? ROW_KEY_EVENTS : undefined,
       onKeyDown,
       accessibilityActions: enabled ? [{ name: label, label }] : [],
       onAccessibilityAction,
     }),
-    [enabled, label, onKeyDown, onAccessibilityAction],
+    [enabled, keysActive, label, handlePress, onKeyDown, onAccessibilityAction],
   );
 }

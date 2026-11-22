@@ -353,14 +353,21 @@ echo "TEST 5: Create a new note"
 cliclick kp:esc
 wait_for_ui
 
+# TEST 5b may delete only a note this test created: it runs only if the note list's
+# Untitled count went up here.
+TEST5_UNTITLED_BEFORE=""
+TEST5_UNTITLED_AFTER=""
 if has_element "New note"; then
   BEFORE_NOTE_COUNT=$(get_element_count)
-  click_element_by_desc "New note"
+  TEST5_UNTITLED_BEFORE=$(count_rows_in_area "$(scroll_area_under "New note")" "Untitled") || TEST5_UNTITLED_BEFORE=""
+  # Exact match: a substring lookup finds "New notebook" first.
+  click_window_element_exact "New note"
   wait_for_ui
   sleep 1
 
   AFTER_NOTE_COUNT=$(get_element_count)
   AFTER_DESCS=$(get_all_descs)
+  TEST5_UNTITLED_AFTER=$(count_rows_in_area "$(scroll_area_under "New note")" "Untitled") || TEST5_UNTITLED_AFTER=""
 
   screencapture -x /tmp/drafto_e2e_new_note.png
 
@@ -379,16 +386,17 @@ fi
 echo ""
 echo "TEST 5b: Delete a note from the keyboard (#864)"
 # ──────────────────────────────────────────────
-# The row's × is hover-only; the focused row takes ⌫ itself. Everything here looks
-# only inside the note list (the scroll area under "New note"), so a notebook named
-# Untitled never matches. A click may leave focus elsewhere (the editor), and a ⌫
-# there would edit the note, so press it only once the row reports AXFocused: after
-# the click, or after asking for focus directly.
+# The row's × is hover-only; a click on the row focuses it, and the focused, selected row
+# takes ⌫. Everything here looks only inside the note list (the scroll area under "New
+# note"), so a notebook named Untitled never matches. It deletes only the note TEST 5 just
+# created (newest first, so the first Untitled row), and presses ⌫ only once the click has
+# given that row keyboard focus: a ⌫ anywhere else would edit a note.
 NOTE_AREA=$(scroll_area_under "New note")
-if ! UNTITLED_BEFORE=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
+if [ -z "$TEST5_UNTITLED_BEFORE" ] || [ -z "$TEST5_UNTITLED_AFTER" ] ||
+  [ "$TEST5_UNTITLED_AFTER" -le "$TEST5_UNTITLED_BEFORE" ]; then
+  fail "Keyboard delete" "TEST 5 didn't add an Untitled note (${TEST5_UNTITLED_BEFORE:-?} -> ${TEST5_UNTITLED_AFTER:-?}); nothing safe to delete"
+elif ! UNTITLED_BEFORE=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
   fail "Keyboard delete" "Could not read the note list's rows (scroll area '$NOTE_AREA')"
-elif [ "$UNTITLED_BEFORE" -eq 0 ]; then
-  fail "Keyboard delete" "No Untitled row in the note list to delete (did Test 5 create one?)"
 else
   ROW_POS=$(scroll_row_center "$NOTE_AREA" "Untitled")
   if [ -z "$ROW_POS" ]; then
@@ -396,20 +404,15 @@ else
   else
     cliclick "c:$ROW_POS"
     sleep 0.5
-    ROW_FOCUSED=$(row_focused_in_area "$NOTE_AREA" "Untitled")
-    if [ "$ROW_FOCUSED" != "true" ]; then
-      echo "  ℹ  Keyboard delete: the click didn't focus the row; setting AXFocused"
-      ROW_FOCUSED=$(row_focused_in_area "$NOTE_AREA" "Untitled" set)
-    fi
-    if [ "$ROW_FOCUSED" != "true" ]; then
-      fail "Keyboard delete" "Could not give the note row keyboard focus; ⌫ not pressed"
+    if [ "$(row_focused_in_area "$NOTE_AREA" "Untitled")" != "true" ]; then
+      fail "Keyboard delete" "Clicking the note row didn't give it keyboard focus; ⌫ not pressed"
     else
       cliclick kp:delete
       wait_for_ui
       if ! UNTITLED_AFTER=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
         fail "Keyboard delete" "Could not read the note list's rows after ⌫"
       elif [ "$UNTITLED_AFTER" -lt "$UNTITLED_BEFORE" ]; then
-        pass "⌫ on the focused note row moves it to Trash ($UNTITLED_BEFORE -> $UNTITLED_AFTER)"
+        pass "⌫ on the clicked note row moves it to Trash ($UNTITLED_BEFORE -> $UNTITLED_AFTER)"
       else
         fail "Keyboard delete" "Untitled rows unchanged ($UNTITLED_BEFORE) after ⌫ on the focused row"
       fi
