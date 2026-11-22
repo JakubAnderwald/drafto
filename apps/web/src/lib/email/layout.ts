@@ -36,8 +36,9 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Inlined into a double-quoted style attribute: never use a double quote inside it.
 const baseStyles = `
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   color: ${EMAIL_COLORS.fg};
   line-height: 1.5;
   max-width: 560px;
@@ -49,6 +50,10 @@ export function renderEmailLayout(args: { title: string; bodyHtml: string }): st
   const { title, bodyHtml } = args;
   return `<!doctype html>
 <html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
   <body style="margin:0;padding:0;background:${EMAIL_COLORS.bg};">
     <div style="${baseStyles}">
       <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:${EMAIL_COLORS.fg};">${title}</h1>

@@ -141,6 +141,19 @@ describe("weeklyMetricsEmail", () => {
     );
   });
 
+  it("declares UTF-8 and keeps the layout's styles inside their attribute", () => {
+    const { html } = weeklyMetricsEmail(report());
+    expect(html).toContain('<meta charset="utf-8" />');
+    expect(html).toContain(
+      '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    );
+    // A double quote inside the inlined style would end the attribute and drop the rest.
+    const frame = html.match(/<div style="([^"]*)">/)?.[1] ?? "";
+    expect(frame).toContain("font-family: -apple-system");
+    expect(frame).toContain("max-width: 560px");
+    expect(frame).toContain("padding: 32px 24px");
+  });
+
   it("links to /admin/stats", () => {
     const { html, text } = weeklyMetricsEmail(report());
     expect(html).toContain('href="https://drafto.eu/admin/stats"');
