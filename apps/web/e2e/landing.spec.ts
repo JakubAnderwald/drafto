@@ -40,6 +40,30 @@ test.describe("Landing page (signed out)", () => {
     await expect(page).toHaveURL(/\/login$/);
   });
 
+  test("shows the App Store badges and no Google Play badge yet", async ({ page }) => {
+    await page.goto("/");
+    const badges = page.getByRole("list", { name: "Get the app" });
+    const appStoreUrl = "https://apps.apple.com/app/drafto/id6760675784";
+
+    for (const name of [
+      "Download Drafto on the App Store",
+      "Download Drafto on the Mac App Store",
+    ]) {
+      const badge = badges.getByRole("link", { name });
+      await expect(badge).toBeVisible();
+      await expect(badge).toHaveAttribute("href", appStoreUrl);
+      // Exactly one of the two theme variants is shown, and its artwork loaded.
+      const shown = badge.locator("img:visible");
+      await expect(shown).toHaveCount(1);
+      await expect
+        .poll(() => shown.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth))
+        .toBeGreaterThan(0);
+    }
+    // GOOGLE_PLAY_PUBLIC is false until the Android app is live on Play; update this when it flips.
+    await expect(page.getByRole("link", { name: /Google Play/ })).toHaveCount(0);
+    await expect(page.locator('img[src*="google-play"]')).toHaveCount(0);
+  });
+
   test("links the privacy policy and support page", async ({ page }) => {
     // Google's OAuth brand verification reads https://drafto.eu as the app's home page: it must
     // describe the app (checked above) and link the privacy policy.
