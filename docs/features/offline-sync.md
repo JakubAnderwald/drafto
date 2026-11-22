@@ -1,6 +1,6 @@
 # Offline Sync
 
-**Status:** shipped **Updated:** 2026-11-18
+**Status:** shipped **Updated:** 2026-11-22
 
 ## What it is
 
@@ -212,6 +212,13 @@ header's Back arrow and took its taps (PrimeTestLab report 10668, M-03).
 - **macOS.** `apps/desktop/src/components/offline-banner.tsx` is the first child of
   `MainScreen`'s column (`src/screens/main.tsx`), so it pushes the three panes down
   instead of covering the sidebar's top row and the note list's "New note" button.
+  For VoiceOver (#872), the strip itself is the accessibility element: `accessible`,
+  labelled with its message, role `text` (`AXStaticText`, AXIdentifier `offline-banner`).
+  react-native-macos exposes neither a `<Text>` nor a plain View, and maps role
+  `alert` to `AXUnknown`, so `useAccessibilityAnnouncement()`
+  (`src/hooks/use-accessibility-announcement.ts`) has VoiceOver speak each new message.
+  The in-test harness reads it with `banner_text` (`e2e/in-test/lib/ax.sh`); step B10 of
+  `458-sync-gating.sh` asserts it while offline.
 - **E2E.** `apps/mobile/e2e/android-only/10-offline-banner-header.yaml` and
   `ios-only/10-offline-banner-header.yaml`, run by `run-qa-10668-e2e.sh`, tap the
   header Back button while offline and end on an offline note; the host check

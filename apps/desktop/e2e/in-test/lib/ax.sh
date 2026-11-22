@@ -228,11 +228,29 @@ type_marker() {
 
 # The Sync status button's accessibility help: "Syncing..." / "Offline" /
 # "N pending" / "Synced" (apps/desktop/src/components/sync-status.tsx).
-sync_help() {
-  ax_dump 1 | jq -r 'map(select(.desc == "Sync status")) | first | .help // empty'
+sync_help() { sync_help_in "$(ax_dump 1)"; }
+
+# sync_help_in <dump> — the same, read from a dump the caller already took.
+sync_help_in() {
+  jq -r 'map(select(.desc == "Sync status")) | first | .help // empty' <<< "$1"
 }
 
 help_matches() { [[ "$(sync_help)" =~ $1 ]]; }
+
+# The offline banner's accessibility label (its AXDescription): "You are
+# offline" / "Back online — syncing...", empty while it is hidden. The banner is
+# one AXStaticText with AXIdentifier offline-banner, labelled with its message
+# (apps/desktop/src/components/offline-banner.tsx, #872). Like the Sync status
+# button, it is a direct child of the window in the AX tree, so a depth-1 dump
+# finds it.
+banner_text() { banner_text_in "$(ax_dump 1)"; }
+
+# banner_text_in <dump> — the same, read from a dump the caller already took.
+banner_text_in() {
+  jq -r 'map(select(.id == "offline-banner")) | first | .desc // empty' <<< "$1"
+}
+
+banner_is() { [ "$(banner_text)" = "$1" ]; }
 
 # wait_help <timeout_s> <regex>
 wait_help() { poll "$1" help_matches "$2"; }
