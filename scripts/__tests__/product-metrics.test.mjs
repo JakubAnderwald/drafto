@@ -10,8 +10,9 @@
 // metrics_cohort_activation: every activation case below runs against that
 // definition. Its own functions are tested in usage-daily.test.mjs.
 //
-// The hosting-usage migration (20261121000002, ADR 0093) runs last: it reads
-// only its own table, and metrics_hosted_usage is tested at the end of this file.
+// The hosting-usage migrations (20261121000002, ADR 0093, then 20261122000001,
+// which adds log ingestion) run last: they read only their own table, and
+// metrics_hosted_usage is tested at the end of this file.
 //
 // The stand-ins carry only the columns the functions read, with the grants the
 // real projects give the API roles (20261020000001_explicit_data_api_grants.sql,
@@ -38,6 +39,7 @@ const MIGRATIONS = [
   "20261112000002_product_metrics.sql",
   "20261113000003_usage_daily.sql",
   "20261121000002_hosted_usage_snapshots.sql",
+  "20261122000001_hosted_usage_log_ingestion.sql",
 ].map((f) => path.join(REPO_ROOT, "supabase", "migrations", f));
 
 const STUB_SQL = `
@@ -959,6 +961,23 @@ describe("product metrics: metrics_hosted_usage (PGlite)", () => {
     const cached = (await usage()).find((r) => r.resource === "supabase_cached_egress");
     assert.equal(cached.stale, true);
     assert.equal(cached.pct, 20);
+  });
+
+  it("reads Supabase log ingestion against its 1 GB limit, last in order", async () => {
+    await record("supabase_log_ingestion", 1.02);
+    await record("supabase_egress", 1.61);
+    const rows = await usage();
+    assert.equal(rows.at(-1).resource, "supabase_log_ingestion");
+    assert.deepEqual(rows.at(-1), {
+      provider: "supabase",
+      resource: "supabase_log_ingestion",
+      unit: "GB",
+      used: 1.02,
+      limit: 1,
+      pct: 102,
+      level: "critical",
+      stale: false,
+    });
   });
 
   it("refuses an unknown resource, a negative reading and a reversed period", async () => {

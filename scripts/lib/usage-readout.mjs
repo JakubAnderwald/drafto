@@ -50,6 +50,7 @@ export const FIELDS = Object.freeze([
   { provider: "vercel", key: "activeCpu", resource: "vercel_active_cpu", unit: "hours" },
   { provider: "supabase", key: "egress", resource: "supabase_egress", unit: "GB" },
   { provider: "supabase", key: "cachedEgress", resource: "supabase_cached_egress", unit: "GB" },
+  { provider: "supabase", key: "logIngestion", resource: "supabase_log_ingestion", unit: "GB" },
 ]);
 
 const STATUS_LINE = /^browser=(ok|unavailable|auth-expired|blocked)$/;

@@ -786,7 +786,7 @@ For a card still in Testing, `factory:verify-reset <n>` instead restarts its who
 
 ### Weekly usage readout (ADR-0093)
 
-Once a week, on Sunday evening, the runner reads the Vercel and Supabase usage dashboards, read-only, and posts the figures to Drafto's `POST /api/cron/hosted-usage`. `/admin/stats` then shows fast data transfer, CDN requests, function invocations, active CPU and Supabase egress against their plan limits ([product metrics → Hosting usage](../features/product-metrics.md#hosting-usage-egress-vercel)). The decision and its risk are in [ADR-0093](../adr/0093-weekly-hosting-usage-readout.md).
+Once a week, on Sunday evening, the runner reads the Vercel and Supabase usage dashboards, read-only, and posts the figures to Drafto's `POST /api/cron/hosted-usage`. `/admin/stats` then shows fast data transfer, CDN requests, function invocations, active CPU, Supabase egress and Supabase log ingestion against their plan limits ([product metrics → Hosting usage](../features/product-metrics.md#hosting-usage-egress-vercel)). The decision and its risk are in [ADR-0093](../adr/0093-weekly-hosting-usage-readout.md).
 
 **How it is locked down.** This Chrome profile is signed in to the Vercel account with full control, so the run is a separate, read-only `usage` kind:
 

@@ -244,6 +244,9 @@ Neither provider has both the data and a read-only credential, and a full-access
   | `vercel_active_cpu`           | CPU-hours | 4         |
   | `supabase_egress`             | GB        | 5         |
   | `supabase_cached_egress`      | GB        | 5         |
+  | `supabase_log_ingestion`      | GB        | 1         |
+
+  Log ingestion is the log data Supabase ingests across all of the org's projects (Postgres, API gateway, Auth, Storage, Realtime and the rest) in the billing cycle. The Free plan includes 1 GB. Supabase says billing for it starts after a grace period that ends in early 2027. It was added in `20261122000001_hosted_usage_log_ingestion.sql`, when it stood at 1.02 GB (102%), so `/admin/stats` and the Monday email (#823) flag it before it can cost anything.
 
   Readings and limits are kept in the dashboard's unit, so the percentage doesn't depend on decimal vs binary gigabytes. Levels are as in `metrics_platform_limits()`: `ok` below 70%, `warn` from 70%, `critical` from 85%. A reading more than 8 days old is `stale`. Readings are only added: a resource that drops out of the dashboard keeps its last row and goes stale.
 

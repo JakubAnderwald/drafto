@@ -13,7 +13,7 @@ export function hostedUsageLinks(): HostedUsageLink[] {
   return [
     {
       provider: "Supabase",
-      resources: "Egress (database, storage, cached)",
+      resources: "Egress (database, storage, cached), log ingestion",
       href: SUPABASE_USAGE_URL,
     },
     {
