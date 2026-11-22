@@ -56,15 +56,17 @@ export const config = {
   //   would send them to /login instead.
   // - The two `/.well-known` app-link association files: Apple and Google fetch them signed
   //   out and don't follow redirects, so a 307 to /login breaks Universal Links and App Links.
+  // - `/.well-known/mcptry-verify.txt`: mcptry fetches it signed out to verify that we maintain
+  //   the `eu.drafto/mcp` listing (`docs/features/mcp-server.md` → MCP Registry).
   // Each exclusion is anchored with `$` (or bounded to a prefix like `oauth-`), so lookalike
   // paths and any future `/.well-known/*` route still get a session, except under the explicit
   // `oauth-*` and `openid-configuration` exclusions: a route added there would get no session and
   // must authenticate itself, never through `x-verified-*` headers. `/api/health`, `/api/mcp`,
-  // the two crawler files and the two association files are also in PUBLIC_ROUTES, in case a
+  // the two crawler files, the two association files and the mcptry file are also in PUBLIC_ROUTES, in case a
   // matcher edit ever drops one of them; the OAuth paths are not, and would go back to /login.
   // The skipped paths get `next.config.ts`'s static security headers but no CSP. Of them, only
   // the OAuth probes' 404 is a page with scripts, and with no CSP those scripts run unblocked.
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/health$|api/mcp(?:/|$)|register$|authorize$|token$|robots\\.txt$|sitemap\\.xml$|\\.well-known/(?:apple-app-site-association$|assetlinks\\.json$|oauth-|openid-configuration$)|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/health$|api/mcp(?:/|$)|register$|authorize$|token$|robots[.]txt$|sitemap[.]xml$|[.]well-known/(?:apple-app-site-association$|assetlinks[.]json$|mcptry-verify[.]txt$|oauth-|openid-configuration$)|.*[.](?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

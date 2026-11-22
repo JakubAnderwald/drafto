@@ -1,6 +1,6 @@
 # MCP Server
 
-**Status:** shipped **Updated:** 2026-11-21
+**Status:** shipped **Updated:** 2026-11-22
 
 ## What it is
 
@@ -33,6 +33,7 @@ The route is stateless: every POST is independent, and the transport is Streamab
 | BlockNote <-> Markdown conversion     | `packages/shared/src/editor/markdown-converter.ts`               |
 | MCP Registry metadata                 | `server.json` (repo root)                                        |
 | Server icon (registry + `initialize`) | `apps/web/public/mcp-icon.png`                                   |
+| mcptry maintainer claim               | `apps/web/public/.well-known/mcptry-verify.txt`                  |
 | Auth tests                            | `apps/web/__tests__/unit/mcp-auth.test.ts`                       |
 | Route tests                           | `apps/web/__tests__/unit/mcp-route.test.ts`                      |
 | Key-less method tests                 | `apps/web/__tests__/unit/mcp-public-methods.test.ts`             |
@@ -95,6 +96,8 @@ Publishing an update (e.g. after adding or changing a tool):
 1. Bump `version` in `server.json`, and `SERVER_VERSION` in `apps/web/src/app/api/mcp/route.ts` to match.
 2. Run `~/bin/mcp-publisher publish`.
 3. Verify: `curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=drafto"`.
+
+mcptry (a directory built on the registry) lists the server at `mcptry.com/server/eu.drafto/mcp`. The listing is claimed by a file: `apps/web/public/.well-known/mcptry-verify.txt` holds the `mcptry-verify=…` line from the claim page. It isn't a secret, only proof that we control drafto.eu. The middleware matcher skips that path, and `PUBLIC_ROUTES` lists it too, because mcptry fetches it signed out. Keep the file: mcptry may re-check it.
 
 Registry namespace auth is DNS-based: the `drafto.eu` TXT record holds the Ed25519 public key. The matching private key lives at `~/drafto-secrets/mcp-registry-key.pem` and is never committed. If the publisher login has expired, re-authenticate:
 
