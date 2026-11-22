@@ -77,6 +77,24 @@ for (const { stored, os, expected } of CASES) {
   });
 }
 
+// The landing page's store badges ship a black and a white variant; `dark:` picks one.
+for (const { stored, os, artwork } of [
+  { stored: "dark", os: "light", artwork: "white" },
+  { stored: "light", os: "dark", artwork: "black" },
+] as const) {
+  test.describe(`landing badges, in-app theme ${stored}, OS ${os}`, () => {
+    test.use({ storageState: signedOutWithTheme(stored), colorScheme: os });
+
+    test(`shows the ${artwork} artwork`, async ({ page }) => {
+      await page.goto("/");
+      const badge = page.getByRole("link", { name: "Download Drafto on the App Store" });
+      const shown = badge.locator("img:visible");
+      await expect(shown).toHaveCount(1);
+      await expect(shown).toHaveAttribute("src", `/badges/app-store-${artwork}.svg`);
+    });
+  });
+}
+
 test.describe("toggling the theme", () => {
   test.use({ storageState: signedOutWithTheme("system"), colorScheme: "dark" });
 

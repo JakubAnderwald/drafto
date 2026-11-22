@@ -25,9 +25,9 @@ describe("globals.css dark variant", () => {
     expect(GLOBALS_CSS).toContain("@custom-variant dark (&:where(.dark, .dark *));");
   });
 
-  it("has no hand-written .dark workarounds for the doc-link and brand rules", () => {
+  it("has no hand-written .dark workarounds for the doc-link, brand and theme-only rules", () => {
     expect(GLOBALS_CSS).not.toMatch(
-      /\.dark\s+\.(doc-prose|doc-link|brand-backdrop|brand-wordmark)/,
+      /\.dark\s+\.(doc-prose|doc-link|brand-backdrop|brand-wordmark|theme-light-only|theme-dark-only)/,
     );
   });
 
