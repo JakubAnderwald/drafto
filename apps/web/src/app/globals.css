@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/*
+ * `dark:` follows the `.dark` class the in-app theme sets on `<html>`, like the tokens below,
+ * not the OS's `prefers-color-scheme` (Tailwind's default). `:where()` adds no specificity.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* ── Design Tokens ────────────────────────────────────────── */
 
 :root {
@@ -293,40 +299,26 @@ body {
   }
 
   /*
-   * `.doc-link` gives a link outside `.doc-prose` the same look. The `.dark` rule is
-   * needed because Tailwind's `dark:` variant follows the OS setting, not the `.dark`
-   * class the theme toggle sets, and primary-600 is unreadable on the dark surfaces.
+   * `.doc-link` gives a link outside `.doc-prose` the same look. The scale colours don't change
+   * with the theme, and primary-600 is unreadable on the dark surfaces, so the `dark:` ones are lighter.
    */
   .doc-prose a,
   .doc-link {
-    @apply text-primary-600 decoration-primary-600/30 hover:text-primary-700 underline underline-offset-4 transition-colors hover:decoration-current;
-  }
-
-  .dark .doc-prose a,
-  .dark .doc-link {
-    @apply text-primary-300 decoration-primary-300/40 hover:text-primary-200 hover:decoration-current;
+    @apply text-primary-600 decoration-primary-600/30 hover:text-primary-700 dark:text-primary-300 dark:decoration-primary-300/40 dark:hover:text-primary-200 underline underline-offset-4 transition-colors hover:decoration-current;
   }
 
   /*
    * The signed-out pages (the landing page and the (auth) group) sit on `.brand-backdrop`, with
    * the Drafto name in `.brand-wordmark`. The primary-50/secondary-50 tints and primary-600 don't
-   * change in dark mode, where `text-fg` and `text-fg-muted` turn light, so the dark versions are
-   * set here for the same reason as `.doc-link` above.
+   * change in dark mode, where `text-fg` and `text-fg-muted` turn light, so each rule sets
+   * `dark:` versions, for the same reason as `.doc-link` above.
    */
   .brand-backdrop {
-    @apply from-primary-50 to-secondary-50 bg-gradient-to-br;
-  }
-
-  .dark .brand-backdrop {
-    @apply from-bg-subtle to-bg;
+    @apply from-primary-50 to-secondary-50 dark:from-bg-subtle dark:to-bg bg-gradient-to-br;
   }
 
   .brand-wordmark {
-    @apply text-primary-600;
-  }
-
-  .dark .brand-wordmark {
-    @apply text-primary-300;
+    @apply text-primary-600 dark:text-primary-300;
   }
 
   /*
