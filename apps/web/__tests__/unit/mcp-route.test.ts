@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // Mock env before importing route
@@ -74,6 +76,9 @@ vi.mock("@/lib/storage/remove-orphaned-attachments", () => ({
 
 const { authenticateMcpRequest } = await import("@/lib/api/mcp-auth");
 const { POST, GET, DELETE } = await import("@/app/api/mcp/route");
+const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+const { MCP_SIGN_IN_MESSAGE } = await import("@/lib/api/mcp-tools");
+const { KEYLESS_MAX_BODY_BYTES } = await import("@/lib/api/mcp-public-methods");
 
 describe("POST /api/mcp", () => {
   beforeEach(() => {
@@ -88,7 +93,7 @@ describe("POST /api/mcp", () => {
 
     const request = new Request("http://localhost/api/mcp", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: "Bearer dk_wrong" },
       body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1 }),
     });
 
@@ -98,18 +103,16 @@ describe("POST /api/mcp", () => {
     expect(body.error.message).toBe("Invalid API key");
   });
 
-  it("returns 401 when no Authorization header", async () => {
-    vi.mocked(authenticateMcpRequest).mockRejectedValue(
-      new Error("Missing or invalid Authorization header"),
-    );
-
+  it("returns 401 for a tool call without an Authorization header", async () => {
     const request = new Request("http://localhost/api/mcp", {
       method: "POST",
-      body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1 }),
+      body: JSON.stringify({ jsonrpc: "2.0", method: "tools/call", id: 1 }),
     });
 
     const response = await POST(request);
     expect(response.status).toBe(401);
+    expect(authenticateMcpRequest).not.toHaveBeenCalled();
+    expect(mockHandleRequest).not.toHaveBeenCalled();
   });
 
   it("processes MCP request when authenticated", async () => {
@@ -406,6 +409,183 @@ describe("POST /api/mcp activity day (ADR 0088)", () => {
     await expect(runAfterCallbacks()).resolves.toBeUndefined();
     expect(response.status).toBe(200);
     expect(mockCaptureException).toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/mcp without a key (ADR 0095)", () => {
+  type Handler = (
+    args: Record<string, unknown>,
+  ) => Promise<{ isError?: boolean; content: unknown }>;
+
+  function keylessRequest(body: unknown): Request {
+    return new Request("http://localhost/api/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    afterTasks.length = 0;
+    mockHandleRequest.mockResolvedValue(
+      new Response(JSON.stringify({ jsonrpc: "2.0", result: {} }), { status: 200 }),
+    );
+  });
+
+  // The transport answers a request with 200 and a notification alone with 202 (the
+  // integration test checks the real SDK); the route returns whatever the transport answered.
+  it.each([
+    ["initialize", { jsonrpc: "2.0", method: "initialize", id: 1 }, 200],
+    ["notifications/initialized", { jsonrpc: "2.0", method: "notifications/initialized" }, 202],
+    ["ping", { jsonrpc: "2.0", method: "ping", id: 1 }, 200],
+    ["tools/list", { jsonrpc: "2.0", method: "tools/list", id: 1 }, 200],
+    [
+      "a batch of public methods",
+      [
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        { jsonrpc: "2.0", method: "tools/list", id: 2 },
+      ],
+      200,
+    ],
+  ])("serves %s without authenticating or recording a day", async (_name, body, status) => {
+    mockHandleRequest.mockResolvedValueOnce(
+      new Response(status === 202 ? null : JSON.stringify({ jsonrpc: "2.0", result: {} }), {
+        status,
+      }),
+    );
+    const request = keylessRequest(body);
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(status);
+    expect(authenticateMcpRequest).not.toHaveBeenCalled();
+    expect(mockHandleRequest).toHaveBeenCalledWith(request);
+    expect(mockAfter).not.toHaveBeenCalled();
+    expect(mockServerClose).toHaveBeenCalled();
+    expect(mockTransportClose).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["tools/call", { jsonrpc: "2.0", method: "tools/call", id: 1 }],
+    [
+      "a batch holding a tool call",
+      [
+        { jsonrpc: "2.0", method: "tools/list", id: 1 },
+        { jsonrpc: "2.0", method: "tools/call", id: 2 },
+      ],
+    ],
+    ["another method", { jsonrpc: "2.0", method: "resources/list", id: 1 }],
+    ["a body that isn't JSON", "not json"],
+  ])("returns 401 for %s, saying where to get a key", async (_name, body) => {
+    const response = await POST(keylessRequest(body));
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: MCP_SIGN_IN_MESSAGE },
+      id: null,
+    });
+    expect(MCP_SIGN_IN_MESSAGE).toContain("drafto.eu/settings");
+    expect(authenticateMcpRequest).not.toHaveBeenCalled();
+    expect(mockHandleRequest).not.toHaveBeenCalled();
+    expect(mockAfter).not.toHaveBeenCalled();
+  });
+
+  // A client sends these when the user left the optional key blank in the registry entry.
+  it.each([
+    ["an empty header", ""],
+    ["a bare Bearer", "Bearer "],
+    ["Bearer and spaces", "bearer   "],
+  ])("treats %s as no key", async (_name, header) => {
+    const response = await POST(
+      new Request("http://localhost/api/mcp", {
+        method: "POST",
+        headers: { Authorization: header },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(authenticateMcpRequest).not.toHaveBeenCalled();
+    expect(mockHandleRequest).toHaveBeenCalled();
+  });
+
+  it("authenticates a key before reading the body", async () => {
+    vi.mocked(authenticateMcpRequest).mockRejectedValue(new Error("Invalid API key"));
+    const request = new Request("http://localhost/api/mcp", {
+      method: "POST",
+      headers: { Authorization: "Bearer dk_wrong" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+    });
+    const clone = vi.spyOn(request, "clone");
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(401);
+    expect(clone).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for a key-less body over the size cap, without handing it to the transport", async () => {
+    const padded = {
+      jsonrpc: "2.0",
+      method: "tools/list",
+      id: 1,
+      params: { pad: "x".repeat(KEYLESS_MAX_BODY_BYTES) },
+    };
+
+    const response = await POST(keylessRequest(padded));
+
+    expect(response.status).toBe(401);
+    expect(mockHandleRequest).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for a public method sent with a bad key", async () => {
+    vi.mocked(authenticateMcpRequest).mockRejectedValue(new Error("Invalid API key"));
+
+    const response = await POST(
+      new Request("http://localhost/api/mcp", {
+        method: "POST",
+        headers: { Authorization: "Bearer dk_wrong" },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(authenticateMcpRequest).toHaveBeenCalledWith("Bearer dk_wrong");
+    expect(mockHandleRequest).not.toHaveBeenCalled();
+  });
+
+  it("registers the same 11 tools, each of which refuses to run without a key", async () => {
+    await POST(keylessRequest({ jsonrpc: "2.0", method: "tools/list", id: 1 }));
+
+    expect(mockTool).toHaveBeenCalledTimes(11);
+    for (const call of mockTool.mock.calls as unknown[][]) {
+      const handler = call[3] as Handler;
+      const result = await handler({ notebook_id: "nb-1", note_id: "n-1", name: "x", query: "q" });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("drafto.eu/settings");
+    }
+    expect(mockDeleteNotebook).not.toHaveBeenCalled();
+    expect(afterTasks).toHaveLength(0);
+  });
+
+  it("names the server, its website and icon, at the version in server.json", async () => {
+    const serverJson = JSON.parse(
+      readFileSync(path.resolve(__dirname, "../../../../server.json"), "utf8"),
+    ) as { version: string; title: string; websiteUrl: string; icons: unknown[] };
+
+    await POST(keylessRequest({ jsonrpc: "2.0", method: "initialize", id: 1 }));
+
+    const [info, options] = vi.mocked(McpServer).mock.calls.at(-1) ?? [];
+    expect(info).toEqual({
+      name: "drafto",
+      title: serverJson.title,
+      version: serverJson.version,
+      websiteUrl: serverJson.websiteUrl,
+      icons: serverJson.icons,
+    });
+    expect(options?.instructions).toContain("drafto.eu/settings");
   });
 });
 

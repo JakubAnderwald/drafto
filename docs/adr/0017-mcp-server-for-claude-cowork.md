@@ -17,7 +17,7 @@ Build a remote MCP server as a Next.js API route at `/api/mcp` within the existi
 Key design choices:
 
 - **Hosted in existing app**: Shares Supabase config, env vars, and Vercel deployment — no new infrastructure
-- **API key auth**: Users generate keys from a settings page; simpler than full OAuth 2.1 while still secure
+- **API key auth**: Users generate keys from a settings page; simpler than full OAuth 2.1 while still secure. Since [0095](./0095-mcp-anonymous-discovery.md), the handshake, `ping` and `tools/list` are answered without a key; tool calls still need one
 - **Service role client**: Used for API key lookup, with explicit `user_id` filtering in all queries
 - **Stateless transport**: Each request is independent — fits Vercel serverless functions perfectly
 - **Markdown conversion**: BlockNote JSONB content is converted to/from Markdown for Claude to read and write
