@@ -99,8 +99,12 @@ reason and move on.
    GitHub or anything other than Drafto's own form, don't type anything there:
    stop with `browser=auth-expired`.
 7. **Screenshots may be published with your report.** Take them with
-   `computer` `screenshot`, `save_to_disk: true`, `scale: 0.5`, at each step's
-   expected result. Always pass `save_to_disk: true`, so every screenshot you
+   `computer` `screenshot`, `save_to_disk: true`, `scale: 1`, at each step's
+   expected result: people read them on the issue, so take them at full
+   resolution. When the expected result is a small detail (a truncated title,
+   an icon, a badge), also take a `zoom` of that region with
+   `save_to_disk: true`, `scale: 1`; it is the next numbered screenshot.
+   Always pass `save_to_disk: true`, so every screenshot you
    take is filed and the numbers below match. The guard files them, and after
    the run the factory may post them on the issue under the step that mentions
    them. The repo is public, so never take one while the page shows a secret: a

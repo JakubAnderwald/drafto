@@ -1100,6 +1100,8 @@ The ref isn't a branch or a tag, so a normal clone or fetch never downloads it a
 
 Fixed in the code: at most 20 images and 20 MB per comment, 5 MB per image, `.png` or `.jpg` only.
 
+The runner takes each screenshot at `scale: 1` (prompt rule 7), the largest image Claude in Chrome returns: 1081×1120 on the Mac mini's Chrome window. When a step's result is a small detail, it adds a `zoom` close-up of that region. Comments show every image 480 px wide (`IMAGE_WIDTH` in `evidence-embed.mjs`), and a click opens it at full size.
+
 ### One-time setup
 
 1. **Run the selftest** from the factory checkout. It pushes with that checkout's git credentials, so run it as the factory's user:
