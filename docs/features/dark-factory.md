@@ -32,6 +32,7 @@ The runtime phase is set by `FACTORY_PHASE` on the launchd plist (see the runboo
 - **Owner**: `JakubAnderwald`
 - **Title**: `Drafto Factory`
 - **URL**: <https://github.com/users/JakubAnderwald/projects/1>
+- **New cards land in Backlog.** The board's built-in **Item added to project** workflow sets Status to **Backlog** on every issue or PR added to the board: from the issue form, `gh issue create --project "Drafto Factory"`, the board itself, or the sub-issue auto-add. The factory ignores Backlog, so nothing is worked until you drag the card to **Ready**. GitHub has no API for project workflows; it's configured in the board's ⋯ → **Workflows** (runbook "Initial setup" step 4).
 
 To re-bootstrap (e.g. after a deletion), run `scripts/setup-factory-board.sh`. It is idempotent and prints the URL on success. On a board that's already in use it keeps every existing option's id, so cards keep their Status. It refuses to delete an option unless you pass `--allow-drop`, and `--dry-run` previews the change. To add a column to the live board, follow the runbook's "Changing the board's Status options".
 
@@ -93,7 +94,7 @@ Use the **Factory feature spec** template (`.github/ISSUE_TEMPLATE/factory-featu
 5. **UI?** — screenshot / Figma URL if applicable.
 6. **Out of scope** — explicit non-goals.
 
-After filing, drag the card to **Ready** on the board. The factory picks it up on its next 5-min tick — it queries the board's Status field directly, then applies the `status:ready` label as a side-effect for filtering on the Issues list.
+The form adds the issue to the board, in **Backlog**, as long as you have write access to the project; a CLI-filed issue needs `gh issue create --project "Drafto Factory"`. When the spec is ready, drag the card to **Ready** on the board. The factory picks it up on its next 5-min tick — it queries the board's Status field directly, then applies the `status:ready` label as a side-effect for filtering on the Issues list.
 
 ## Kill switches
 
