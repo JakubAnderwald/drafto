@@ -82,4 +82,12 @@ test.describe("MCP server without a key", () => {
     expect(response.status()).toBe(200);
     expect(response.headers()["content-type"]).toBe("image/png");
   });
+
+  test("the mcptry claim file is served signed out as plain text", async ({ request }) => {
+    const response = await request.get("/.well-known/mcptry-verify.txt", { maxRedirects: 0 });
+
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toMatch(/^text\/plain/);
+    expect(await response.text()).toMatch(/^mcptry-verify=\S+$/m);
+  });
 });

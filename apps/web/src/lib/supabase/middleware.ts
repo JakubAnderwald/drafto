@@ -41,6 +41,8 @@ const PUBLIC_ROUTES = [
   "/sitemap.xml",
   "/.well-known/apple-app-site-association",
   "/.well-known/assetlinks.json",
+  // mcptry fetches it signed out to verify the `eu.drafto/mcp` listing's maintainer.
+  "/.well-known/mcptry-verify.txt",
 ];
 
 // Where signed-out `/` is rewritten to (`src/app/welcome/page.tsx`).

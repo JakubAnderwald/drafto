@@ -72,6 +72,7 @@ describe("Auth middleware", () => {
       "/sitemap.xml",
       "/.well-known/apple-app-site-association",
       "/.well-known/assetlinks.json",
+      "/.well-known/mcptry-verify.txt",
     ];
 
     for (const route of publicRoutes) {
