@@ -466,6 +466,47 @@ describe("NoteList", () => {
     expect(screen.getByLabelText("Actions for Second Note")).toBeInTheDocument();
   });
 
+  describe("on a touch-only pointer", () => {
+    // jsdom applies no CSS, so these check the classes; the Playwright touch
+    // projects (e2e/responsive.spec.ts) check the computed opacity.
+    const TOUCH_VISIBLE = "[@media(hover:none)]:opacity-100";
+    const TOUCH_PADDING = "[@media(hover:none)]:pr-10";
+
+    async function renderList(props: Partial<ComponentProps<typeof NoteList>>) {
+      await act(async () => {
+        render(
+          <Suspense fallback={<Skeleton height="2.5rem" />}>
+            <NoteList
+              notebookId="nb-1"
+              selectedNoteId={null}
+              onSelectNote={vi.fn()}
+              onCreateNote={vi.fn()}
+              refreshTrigger={nextTrigger()}
+              {...props}
+            />
+          </Suspense>,
+        );
+      });
+      await waitFor(() => {
+        expect(screen.getByText("First Note")).toBeInTheDocument();
+      });
+    }
+
+    it("shows the actions button without hover and keeps the title clear of it", async () => {
+      await renderList({ onDeleteNote: vi.fn() });
+
+      expect(screen.getByLabelText("Actions for First Note")).toHaveClass(TOUCH_VISIBLE);
+      expect(screen.getByText("First Note").closest("button")).toHaveClass(TOUCH_PADDING);
+    });
+
+    it("leaves the title its full width when a row has no actions", async () => {
+      await renderList({});
+
+      expect(screen.queryByLabelText("Actions for First Note")).not.toBeInTheDocument();
+      expect(screen.getByText("First Note").closest("button")).not.toHaveClass(TOUCH_PADDING);
+    });
+  });
+
   it("shows an empty-titled note as Untitled, in the row and its actions label", async () => {
     const trigger = nextTrigger();
     mockFetch.mockResolvedValue({
