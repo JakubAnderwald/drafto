@@ -197,8 +197,10 @@ export function NoteList({
                 <button
                   onClick={() => onSelectNote(note.id)}
                   {...(selectedNoteId === note.id && { "data-testid": "note-item-active" })}
-                  className={`w-full rounded-md px-3 py-2 text-left transition-colors duration-[var(--transition-fast)] ${
-                    hasActions ? "[@media(hover:none)]:pr-10" : ""
+                  className={`w-full rounded-md py-2 text-left transition-colors duration-[var(--transition-fast)] ${
+                    // Reserve the actions button's width on every pointer, not only on hover,
+                    // so the title truncates before the ⋮ and never moves when it appears.
+                    hasActions ? "pr-10 pl-3" : "px-3"
                   } ${
                     selectedNoteId === note.id
                       ? "bg-sidebar-active text-sidebar-active-text border-primary-500 border-l-[3px] font-medium"

@@ -384,4 +384,69 @@ test.describe("Note editing flow", () => {
     await noteList.getByText(title2).click();
     await expect(titleInput).toHaveValue(title2, { timeout: 5000 });
   });
+
+  // #900: on a hover-capable pointer the row reserves the ⋮'s width, so a long title
+  // truncates before the ⋮ and doesn't move when the ⋮ appears on hover or focus.
+  test("a long note title stays clear of the row's actions button when hovered or focused", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    const activeNotebook = await getActiveNotebookName(page);
+
+    await page.getByRole("button", { name: "New note", exact: true }).click();
+    const titleInput = page.getByRole("textbox", { name: "Note title" });
+    await expect(titleInput).toBeVisible({ timeout: 5000 });
+
+    const noteTitle = `Long Title Overlap Check With Enough Words To Run Well Past The Note List Column ${Date.now()}`;
+    await titleInput.fill(noteTitle);
+    await expect(page.getByText("Saved")).toBeVisible({ timeout: 10000 });
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({ timeout: 10000 });
+    await selectNotebookByName(page, activeNotebook);
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    const noteList = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Notes" }) });
+    await expect(noteList.getByText(noteTitle, { exact: true })).toBeVisible({ timeout: 5000 });
+    const row = noteList.locator("li").filter({ hasText: noteTitle });
+    const title = row.getByText(noteTitle, { exact: true });
+    const rowButton = row.locator("button").filter({ hasText: noteTitle });
+    const actions = row.getByLabel(`Actions for ${noteTitle}`);
+
+    // At rest, with the pointer away from the list, the ⋮ is hidden and the title is
+    // long enough to be truncated.
+    await page.mouse.move(0, 0);
+    await expect(actions).toHaveCSS("opacity", "0");
+    const isTruncated = await title.evaluate((el) => el.scrollWidth > el.clientWidth);
+    expect(isTruncated).toBe(true);
+    const restBox = await title.boundingBox();
+    expect(restBox).not.toBeNull();
+
+    async function expectTitleClearOfActions(): Promise<void> {
+      await expect(actions).toHaveCSS("opacity", "1");
+      const titleBox = await title.boundingBox();
+      const actionsBox = await actions.boundingBox();
+      if (!titleBox || !actionsBox || !restBox) throw new Error("Missing a bounding box");
+      // The title ends before the ⋮ starts …
+      expect(titleBox.x + titleBox.width).toBeLessThanOrEqual(actionsBox.x);
+      // … and hasn't moved or changed width since the ⋮ was hidden.
+      expect(titleBox.x).toBeCloseTo(restBox.x, 1);
+      expect(titleBox.width).toBeCloseTo(restBox.width, 1);
+    }
+
+    // Hovered with a mouse.
+    await row.hover();
+    await expectTitleClearOfActions();
+
+    // Focused from the keyboard, with the pointer away again.
+    await page.mouse.move(0, 0);
+    await rowButton.focus();
+    await expectTitleClearOfActions();
+  });
 });
