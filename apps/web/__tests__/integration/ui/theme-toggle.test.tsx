@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { THEME_COLOR } from "@/lib/theme/theme-chrome";
 
 // Mock localStorage for jsdom
 const localStorageStore: Record<string, string> = {};
@@ -16,6 +17,7 @@ const localStorageMock = {
 Object.defineProperty(window, "localStorage", { value: localStorageMock, writable: true });
 
 let ThemeToggle: typeof import("@/components/ui/theme-toggle").ThemeToggle;
+let systemDark: boolean;
 
 describe("ThemeToggle", () => {
   beforeEach(async () => {
@@ -24,11 +26,13 @@ describe("ThemeToggle", () => {
     localStorageMock.getItem.mockClear();
     localStorageMock.setItem.mockClear();
     document.documentElement.classList.remove("dark");
+    document.head.innerHTML = "";
+    systemDark = false;
 
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: vi.fn().mockImplementation((query: string) => ({
-        matches: false,
+        matches: query === "(prefers-color-scheme: dark)" ? systemDark : false,
         media: query,
         addEventListener: vi.fn(),
         removeEventListener: vi.fn(),
@@ -106,5 +110,60 @@ describe("ThemeToggle", () => {
     render(<ThemeToggle className="custom-class" />);
     const button = screen.getByTestId("theme-toggle");
     expect(button.className).toContain("custom-class");
+  });
+
+  // #865: the browser chrome (the `theme-color` meta, and `color-scheme` through the `.dark`
+  // class) follows the in-app theme, not the OS.
+  describe("browser chrome", () => {
+    let meta: HTMLMetaElement;
+
+    async function renderWith(stored: string): Promise<void> {
+      localStorageStore["theme"] = stored;
+      vi.resetModules();
+      ({ ThemeToggle } = await import("@/components/ui/theme-toggle"));
+      render(<ThemeToggle />);
+    }
+
+    beforeEach(() => {
+      meta = document.createElement("meta");
+      meta.name = "theme-color";
+      meta.content = THEME_COLOR.light;
+      document.head.appendChild(meta);
+    });
+
+    it("cycles system → light → dark → system with the meta following", async () => {
+      systemDark = true;
+      await renderWith("system");
+      const user = userEvent.setup();
+      const button = screen.getByTestId("theme-toggle");
+      expect(meta.content).toBe(THEME_COLOR.dark);
+
+      await user.click(button);
+      expect(button).toHaveAttribute("aria-label", "Light mode");
+      expect(document.documentElement.classList.contains("dark")).toBe(false);
+      expect(meta.content).toBe(THEME_COLOR.light);
+
+      await user.click(button);
+      expect(button).toHaveAttribute("aria-label", "Dark mode");
+      expect(document.documentElement.classList.contains("dark")).toBe(true);
+      expect(meta.content).toBe(THEME_COLOR.dark);
+
+      await user.click(button);
+      expect(button).toHaveAttribute("aria-label", "System theme (dark)");
+      expect(meta.content).toBe(THEME_COLOR.dark);
+    });
+
+    it("keeps a light in-app theme light under a dark OS", async () => {
+      systemDark = true;
+      await renderWith("light");
+      expect(document.documentElement.classList.contains("dark")).toBe(false);
+      expect(meta.content).toBe(THEME_COLOR.light);
+    });
+
+    it("keeps a dark in-app theme dark under a light OS", async () => {
+      await renderWith("dark");
+      expect(document.documentElement.classList.contains("dark")).toBe(true);
+      expect(meta.content).toBe(THEME_COLOR.dark);
+    });
   });
 });

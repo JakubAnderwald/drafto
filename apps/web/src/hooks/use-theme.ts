@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import {
+  syncThemeColorMeta,
+  THEME_STORAGE_KEY as STORAGE_KEY,
+  type ResolvedTheme,
+} from "@/lib/theme/theme-chrome";
 
 export type Theme = "light" | "dark" | "system";
-export type ResolvedTheme = "light" | "dark";
-
-const STORAGE_KEY = "theme";
+export type { ResolvedTheme };
 
 function getStoredTheme(): Theme {
   if (typeof window === "undefined") return "system";
@@ -29,7 +32,9 @@ function resolveTheme(theme: Theme): ResolvedTheme {
 
 function applyTheme(resolved: ResolvedTheme) {
   if (typeof document === "undefined") return;
+  // `color-scheme` follows the class through globals.css; the meta needs setting.
   document.documentElement.classList.toggle("dark", resolved === "dark");
+  syncThemeColorMeta(resolved);
 }
 
 // External store for theme preference
