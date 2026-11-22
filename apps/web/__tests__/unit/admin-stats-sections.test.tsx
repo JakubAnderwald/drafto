@@ -276,6 +276,28 @@ describe("hosting usage readout", () => {
     );
   });
 
+  it("shows Supabase log ingestion over its 1 GB limit as critical", () => {
+    const logs = row({
+      provider: "supabase",
+      resource: "supabase_log_ingestion",
+      unit: "GB",
+      used: 1.02,
+      limit_value: 1,
+      pct: 102,
+      level: "critical",
+      period_from: "2026-10-25",
+      period_to: "2026-11-25",
+      stale: false,
+    });
+    render(<HostedUsageList readings={{ status: "ok", data: [logs] }} now={NOW} />);
+    expect(screen.getByTestId("hosted-supabase_log_ingestion")).toHaveTextContent(
+      "Supabase — Log ingestion1.02 GB of 1 GB (102%)critical",
+    );
+    expect(
+      screen.getByRole("progressbar", { name: "Supabase — Log ingestion used" }),
+    ).toHaveAttribute("aria-valuenow", "100");
+  });
+
   it("lists high and stale readings under Needs attention", () => {
     render(
       <NeedsAttentionSection

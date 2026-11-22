@@ -32,7 +32,12 @@ const USAGE = {
     functionInvocations: "122K",
     activeCpu: "2h 17m",
   },
-  supabase: { period: "Nov 1 - Nov 30, 2026", egress: "365.52 MB", cachedEgress: "0 B" },
+  supabase: {
+    period: "Nov 1 - Nov 30, 2026",
+    egress: "365.52 MB",
+    cachedEgress: "0 B",
+    logIngestion: "1.02 GB",
+  },
 };
 
 const output = (usage = USAGE, status = "browser=ok") =>
@@ -74,6 +79,12 @@ describe("usage-readout: number parsing", () => {
     assert.equal(parseGigabytes("1,420 GB"), 1.42);
     assert.equal(parseGigabytes("1.42"), null);
     assert.equal(parseGigabytes("1.42 GB / 100 GB"), null);
+    // Log ingestion as the Supabase page shows it: "Used in period" in either decimal
+    // mark, and the summary row ("used / limit"), which must not parse.
+    assert.equal(parseGigabytes("1.02 GB"), 1.02);
+    assert.equal(parseGigabytes("1,02 GB"), 1.02);
+    assert.equal(parseGigabytes("1,019 GB"), 1.019);
+    assert.equal(parseGigabytes("1,019 / 1 GB"), null);
   });
 
   test("reads counts with K / M suffixes", () => {
@@ -134,7 +145,7 @@ describe("usage-readout: number parsing", () => {
 });
 
 describe("usage-readout: buildReadout", () => {
-  test("turns a full report into six readings with periods", () => {
+  test("turns a full report into seven readings with periods", () => {
     const r = buildReadout(output(), { now: NOW });
     assert.equal(r.problem, null);
     assert.deepEqual(r.missing, []);
@@ -175,8 +186,14 @@ describe("usage-readout: buildReadout", () => {
         periodFrom: "2026-11-01",
         periodTo: "2026-11-30",
       },
+      {
+        resource: "supabase_log_ingestion",
+        used: 1.02,
+        periodFrom: "2026-11-01",
+        periodTo: "2026-11-30",
+      },
     ]);
-    assert.equal(FIELDS.length, 6);
+    assert.equal(FIELDS.length, 7);
   });
 
   test("keeps what it could read and names the rest", () => {
@@ -185,7 +202,12 @@ describe("usage-readout: buildReadout", () => {
     delete usage.supabase;
     const r = buildReadout(output(usage), { now: NOW });
     assert.equal(r.problem, null);
-    assert.deepEqual(r.missing, ["vercel_active_cpu", "supabase_egress", "supabase_cached_egress"]);
+    assert.deepEqual(r.missing, [
+      "vercel_active_cpu",
+      "supabase_egress",
+      "supabase_cached_egress",
+      "supabase_log_ingestion",
+    ]);
     assert.equal(r.readings.length, 3);
   });
 
@@ -195,7 +217,11 @@ describe("usage-readout: buildReadout", () => {
     assert.equal(stopped.problem, null);
     assert.equal(stopped.status, "auth-expired");
     assert.equal(stopped.readings.length, 4);
-    assert.deepEqual(stopped.missing, ["supabase_egress", "supabase_cached_egress"]);
+    assert.deepEqual(stopped.missing, [
+      "supabase_egress",
+      "supabase_cached_egress",
+      "supabase_log_ingestion",
+    ]);
     assert.equal(buildReadout(output({}, "browser=unavailable")).problem, "browser=unavailable");
     assert.equal(buildReadout(output(USAGE, "browser=blocked")).problem, "browser=blocked");
     assert.equal(buildReadout(output(USAGE, "browser=blocked")).readings.length, 0);
@@ -212,7 +238,7 @@ describe("usage-readout: buildReadout", () => {
     usage.vercel.cdnRequests = "20B";
     const huge = buildReadout(output(usage), { now: NOW });
     assert.ok(huge.missing.includes("vercel_cdn_requests"));
-    assert.equal(huge.readings.length, 5);
+    assert.equal(huge.readings.length, 6);
   });
 
   test("posts nothing when the block is missing, or nothing parsed", () => {
@@ -328,8 +354,8 @@ describe("usage-readout: run", () => {
     try {
       const r = await run(t.base, t.deps);
       assert.equal(r.posted, true);
-      assert.equal(r.resources.length, 6);
-      assert.equal(t.posts[0].readings.length, 6);
+      assert.equal(r.resources.length, 7);
+      assert.equal(t.posts[0].readings.length, 7);
       assert.deepEqual(t.emails, []);
     } finally {
       rmSync(t.dir, { recursive: true, force: true });
@@ -343,7 +369,11 @@ describe("usage-readout: run", () => {
     try {
       const r = await run(t.base, t.deps);
       assert.equal(r.posted, true);
-      assert.deepEqual(r.missing, ["supabase_egress", "supabase_cached_egress"]);
+      assert.deepEqual(r.missing, [
+        "supabase_egress",
+        "supabase_cached_egress",
+        "supabase_log_ingestion",
+      ]);
       assert.equal(t.emails.length, 1);
       assert.match(t.emails[0], /readout incomplete/);
     } finally {
@@ -417,7 +447,7 @@ describe("usage-readout: run", () => {
     try {
       const r = await run({ ...t.base, dryRun: true }, t.deps);
       assert.equal(r.dryRun, true);
-      assert.equal(r.readings.length, 6);
+      assert.equal(r.readings.length, 7);
       assert.equal(t.posts.length, 0);
       assert.equal(t.emails.length, 0);
     } finally {

@@ -70,6 +70,7 @@ describe("factory-agent.sh --usage-readout: static wiring", () => {
       "activeCpu",
       "egress",
       "cachedEgress",
+      "logIngestion",
     ]) {
       assert.ok(prompt.includes(`\`${key}\``), key);
     }

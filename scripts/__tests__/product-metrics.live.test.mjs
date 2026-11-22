@@ -393,7 +393,7 @@ describe(
       });
       assert.equal(chars, 5);
       assert.equal((await rpcRows("metrics_week_starts", { p_weeks: 3 })).length, 3);
-      // Hosting usage (ADR 0093): readable, and each row names one of the six resources.
+      // Hosting usage (ADR 0093): readable, and each row names one of the seven resources.
       for (const row of await rpcRows("metrics_hosted_usage")) {
         assert.match(row.resource, /^(vercel|supabase)_[a-z_]+$/);
       }

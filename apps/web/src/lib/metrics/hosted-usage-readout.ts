@@ -5,7 +5,8 @@ import { z } from "zod";
  * Vercel and Supabase usage dashboards posts to `/api/cron/hosted-usage`.
  *
  * Each reading is in the unit its dashboard shows, the unit
- * `metrics_hosted_usage()` holds the limit in (20261121000002_hosted_usage_snapshots.sql).
+ * `metrics_hosted_usage()` holds the limit in (20261121000002_hosted_usage_snapshots.sql,
+ * 20261122000001_hosted_usage_log_ingestion.sql).
  * The resource list matches the table's check constraint; change both together.
  */
 export const HOSTED_USAGE_RESOURCES = {
@@ -15,6 +16,7 @@ export const HOSTED_USAGE_RESOURCES = {
   vercel_active_cpu: { provider: "Vercel", label: "Active CPU", unit: "hours" },
   supabase_egress: { provider: "Supabase", label: "Egress", unit: "GB" },
   supabase_cached_egress: { provider: "Supabase", label: "Cached egress", unit: "GB" },
+  supabase_log_ingestion: { provider: "Supabase", label: "Log ingestion", unit: "GB" },
 } as const;
 
 export type HostedUsageResource = keyof typeof HOSTED_USAGE_RESOURCES;

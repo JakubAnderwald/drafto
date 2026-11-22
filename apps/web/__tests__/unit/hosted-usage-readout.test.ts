@@ -7,7 +7,7 @@ import {
 } from "@/lib/metrics/hosted-usage-readout";
 
 describe("hosted usage readout", () => {
-  it("knows the six resources the table allows, each with its dashboard unit", () => {
+  it("knows the seven resources the table allows, each with its dashboard unit", () => {
     expect(
       Object.entries(HOSTED_USAGE_RESOURCES).map(([resource, meta]) => [resource, meta.unit]),
     ).toEqual([
@@ -17,6 +17,7 @@ describe("hosted usage readout", () => {
       ["vercel_active_cpu", "hours"],
       ["supabase_egress", "GB"],
       ["supabase_cached_egress", "GB"],
+      ["supabase_log_ingestion", "GB"],
     ]);
   });
 
@@ -34,6 +35,17 @@ describe("hosted usage readout", () => {
     ).toBe(false);
   });
 
+  it("accepts all seven resources in one readout, log ingestion included", () => {
+    const readings = Object.keys(HOSTED_USAGE_RESOURCES).map((resource) => ({ resource, used: 1 }));
+    expect(readings).toHaveLength(7);
+    expect(hostedUsageReadoutSchema.safeParse({ readings }).success).toBe(true);
+    expect(
+      hostedUsageReadoutSchema.safeParse({
+        readings: [{ resource: "supabase_log_ingestion", used: 1.02, periodFrom: "2026-10-25" }],
+      }).success,
+    ).toBe(true);
+  });
+
   it("maps readings to snapshot rows", () => {
     expect(
       toSnapshotRows({
@@ -47,6 +59,7 @@ describe("hosted usage readout", () => {
   it("labels resources for the page", () => {
     expect(hostedResourceLabel("vercel_active_cpu")).toBe("Vercel — Active CPU");
     expect(hostedResourceLabel("supabase_egress")).toBe("Supabase — Egress");
+    expect(hostedResourceLabel("supabase_log_ingestion")).toBe("Supabase — Log ingestion");
     expect(hostedResourceLabel("something_new")).toBe("something_new");
   });
 });

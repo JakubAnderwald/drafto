@@ -81,6 +81,9 @@ current billing cycle:
 
 - `egress`: total (uncached) egress.
 - `cachedEgress`: cached egress.
+- `logIngestion`: log ingestion, the "Used in period" figure in the "Log
+  Ingestion" section, e.g. `"1.02 GB"`. Not the "used / limit" line in the
+  usage summary at the top (e.g. `"1,019 / 1 GB"`): that holds two figures.
 - `period`: the billing cycle's dates as shown.
 
 ## Output
@@ -90,7 +93,7 @@ line as the very last line of your reply:
 
 ```text
 <<<USAGE
-{"vercel": {"period": "…", "fastDataTransfer": "…", "cdnRequests": "…", "functionInvocations": "…", "activeCpu": "…"}, "supabase": {"period": "…", "egress": "…", "cachedEgress": "…"}}
+{"vercel": {"period": "…", "fastDataTransfer": "…", "cdnRequests": "…", "functionInvocations": "…", "activeCpu": "…"}, "supabase": {"period": "…", "egress": "…", "cachedEgress": "…", "logIngestion": "…"}}
 USAGE>>>
 browser=<ok|unavailable|auth-expired|blocked>
 ```
