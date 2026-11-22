@@ -367,8 +367,9 @@ describe("buildWeeklyReport", () => {
         ],
       },
     });
-    // The label comes from the readout's resource registry (#904 adds log ingestion to it).
-    const label = hostedResourceLabel("supabase_log_ingestion");
+    // The label comes from the readout's resource registry, which #904 added log ingestion to.
+    const label = "Supabase — Log ingestion";
+    expect(hostedResourceLabel("supabase_log_ingestion")).toBe(label);
     const line = { label, level: "critical", detail: "1.02 GB of 1 GB", pct: "102%", stale: false };
     expect(report.needsAttention.limits).toEqual([line]);
     expect(report.subject).toMatch(/needs attention$/);
