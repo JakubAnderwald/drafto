@@ -30,9 +30,20 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    gh project link <number> --owner JakubAnderwald --repo JakubAnderwald/drafto
    ```
 
-   Without this, issues filed in the repo don't auto-add to the board.
+   The factory issue form (`.github/ISSUE_TEMPLATE/factory-feature.yml`) names the board in its `projects:` key, so an issue filed through it lands on the board. `gh issue create` needs `--project "Drafto Factory"`.
 
-4. **Grant `gh` the `project` scope on the Mac mini.**
+4. **Make new cards land in Backlog.**
+
+   On the board, open ⋯ → **Workflows** → **Item added to project**, click **Edit**, set **Set value** to `Status: Backlog`, and click **Save and turn on workflow**. GitHub has no API to configure project workflows, so this step is manual. Check it took with:
+
+   ```bash
+   gh api graphql -f query='{user(login:"JakubAnderwald"){projectV2(number:1){workflows(first:20){nodes{name enabled}}}}}' \
+     --jq '.data.user.projectV2.workflows.nodes[] | select(.name=="Item added to project")'
+   ```
+
+   Without it a new card has no Status and sits outside every column; with it the card waits in Backlog, which the factory ignores, until you drag it to Ready.
+
+5. **Grant `gh` the `project` scope on the Mac mini.**
 
    The agent reads and writes the Project v2 board directly via the GitHub GraphQL API — there is no Action mirror. Refresh the existing token on the Mac mini to add Projects v2 read+write:
 
@@ -42,7 +53,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
 
    Verify with `gh auth status` — the listed scopes should include `project`. Without it the agent's first board read fails on every tick with a `factory-project find-project failed` warning.
 
-5. **Create the dedicated factory checkout (Deployment).**
+6. **Create the dedicated factory checkout (Deployment).**
 
    The factory runs from its **own git worktree pinned to `main`**, never from your
    everyday dev checkout. This guarantees it only ever executes reviewed,
@@ -83,7 +94,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    that sync, it re-execs the fresh copy once. Set `FACTORY_AUTOPULL=0` only for
    ad-hoc manual runs against a dirty tree.
 
-6. **Install the factory launchd job.**
+7. **Install the factory launchd job.**
 
    On the Mac mini, drop a plist at `~/Library/LaunchAgents/eu.drafto.factory.plist` modelled on `eu.drafto.support-agent.plist` with:
    - `Label = eu.drafto.factory`
@@ -104,7 +115,7 @@ Run these in order, on a workstation with `gh` authenticated as the project owne
    `=== factory-agent --plan run started (phase=A …) ===` followed by
    `=== factory-agent --plan completed in <N>s ===`. Subsequent ticks fire every 5 min.
 
-7. **(Optional) Install the CodeRabbit CLI for the gap-fill lane.**
+8. **(Optional) Install the CodeRabbit CLI for the gap-fill lane.**
 
    Only needed before turning on `FACTORY_CR_CLI=1` (see "CodeRabbit CLI gap-fill lane" below). On the Mac mini:
 
