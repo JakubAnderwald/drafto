@@ -3,6 +3,9 @@
 /* ── Design Tokens ────────────────────────────────────────── */
 
 :root {
+  /* Form controls, scroll bars and the browser UI follow the in-app theme, not the OS (#865) */
+  color-scheme: light;
+
   /* Semantic surface tokens — light mode (overridden by .dark below) */
   --bg: #fff8f5;
   --bg-subtle: #fcf2eb;
@@ -46,6 +49,8 @@
 /* ── Dark Mode Token Overrides ───────────────────────────── */
 
 .dark {
+  color-scheme: dark;
+
   --bg: #1f1b17;
   --bg-subtle: #251f1b;
   --bg-muted: #2e2822;

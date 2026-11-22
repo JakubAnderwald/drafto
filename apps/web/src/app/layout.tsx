@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { headers } from "next/headers";
+import { ThemeSync } from "@/components/layout/theme-sync";
 import { PostHogProvider } from "@/lib/posthog/provider";
 import { NONCE_HEADER } from "@/lib/security/content-security-policy";
 import { SITE_URL } from "@/lib/site";
+import { buildThemeBootstrapScript } from "@/lib/theme/theme-chrome";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -36,14 +38,11 @@ export default async function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <script
-          nonce={nonce}
-          dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("theme");var d=t==="dark"||(t!=="light"&&matchMedia("(prefers-color-scheme:dark)").matches);if(d)document.documentElement.classList.add("dark")}catch(e){}})()`,
-          }}
-        />
+        {/* Sets the `dark` class and adds the `theme-color` meta before first paint (#865). */}
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: buildThemeBootstrapScript() }} />
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        <ThemeSync />
         <PostHogProvider>{children}</PostHogProvider>
       </body>
     </html>

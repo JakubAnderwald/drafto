@@ -56,7 +56,16 @@ describe("useTheme", () => {
 
   afterEach(() => {
     document.documentElement.classList.remove("dark");
+    document.head.innerHTML = "";
   });
+
+  function addThemeColorMeta(): HTMLMetaElement {
+    const meta = document.createElement("meta");
+    meta.name = "theme-color";
+    meta.content = "#fff8f5";
+    document.head.appendChild(meta);
+    return meta;
+  }
 
   it("defaults to system theme when no localStorage value", () => {
     const { result } = renderHook(() => useTheme());
@@ -162,5 +171,50 @@ describe("useTheme", () => {
     const mod = await import("@/hooks/use-theme");
     const { result } = renderHook(() => mod.useTheme());
     expect(result.current.theme).toBe("system");
+  });
+
+  // #865: the browser chrome follows the in-app theme, not the OS.
+  it("setTheme points the theme-color meta at the resolved theme", () => {
+    const meta = addThemeColorMeta();
+    const { result } = renderHook(() => useTheme());
+
+    act(() => {
+      result.current.setTheme("dark");
+    });
+    expect(meta.content).toBe("#1f1b17");
+
+    act(() => {
+      result.current.setTheme("light");
+    });
+    expect(meta.content).toBe("#fff8f5");
+  });
+
+  it("updates the theme-color meta when the OS theme changes under system", () => {
+    const meta = addThemeColorMeta();
+    renderHook(() => useTheme());
+    expect(meta.content).toBe("#fff8f5");
+
+    darkMatches = true;
+    act(() => {
+      matchMediaListeners.forEach((listener) => listener({ matches: true }));
+    });
+
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(meta.content).toBe("#1f1b17");
+  });
+
+  it("keeps the theme-color meta on an explicit theme when the OS changes", async () => {
+    localStorage.setItem("theme", "light");
+    vi.resetModules();
+    const mod = await import("@/hooks/use-theme");
+    const meta = addThemeColorMeta();
+    renderHook(() => mod.useTheme());
+
+    darkMatches = true;
+    act(() => {
+      matchMediaListeners.forEach((listener) => listener({ matches: true }));
+    });
+
+    expect(meta.content).toBe("#fff8f5");
   });
 });
