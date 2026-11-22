@@ -228,7 +228,8 @@ Every Monday at 06:00 UTC, each admin gets a summary of the ISO week that just e
      It says "Nothing needs attention" only when every check ran and found nothing, as `deriveNeedsAttention()` decides for the page.
 
   3. **Headline numbers,** this week beside the week before:
-     - weekly active users and writers (`metrics_active_users`; "not tracked yet" where the function is missing);
+     - weekly active users (`metrics_active_users`; "not tracked yet" where the function is missing);
+     - weekly writers from `metrics_writers` (note history), as the page's Writers section shows them. Writers from activity days (`metrics_active_users`) read 0 for every week before activity days were recorded (Nov 2026), so the email doesn't use them;
      - sign-ups;
      - activation for the newest cohort whose 14-day window has closed, beside the cohort before, as counts ("1 of 3 (33.3%)").
 
