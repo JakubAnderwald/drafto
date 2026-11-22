@@ -59,6 +59,41 @@ describe("dark-mode link lint guard", () => {
     expect(await guardHits(`<a className="text-primary-600 dark:text-fg">x</a>`)).toBe(0);
   }, 60_000);
 
+  it("doesn't count an arbitrary font size as a dark: colour", async () => {
+    expect(await guardHits(`<a className="text-primary-600 dark:text-[14px]">x</a>`)).toBe(1);
+    expect(
+      await guardHits(`<a className="text-primary-600 dark:text-[length:var(--size)]">x</a>`),
+    ).toBe(1);
+    expect(await guardHits(`<a className="text-primary-600 dark:text-(length:--size)">x</a>`)).toBe(
+      1,
+    );
+    expect(
+      await guardHits(`<a className="text-primary-600 dark:text-[var(--color-primary-300)]">x</a>`),
+    ).toBe(0);
+    expect(
+      await guardHits(`<a className="text-primary-600 dark:text-(--color-primary-300)">x</a>`),
+    ).toBe(0);
+  }, 60_000);
+
+  it("counts only a dark: colour that applies at rest", async () => {
+    expect(
+      await guardHits(`<a className="text-primary-600 hover:dark:text-primary-300">x</a>`),
+    ).toBe(1);
+    expect(await guardHits(`<a className="text-primary-600 md:dark:text-primary-300">x</a>`)).toBe(
+      1,
+    );
+    expect(
+      await guardHits(
+        "<a className={`text-primary-600 ${on ? 'font-bold' : ''} hover:dark:text-primary-300`}>x</a>",
+      ),
+    ).toBe(1);
+    expect(
+      await guardHits(
+        `<a className="text-primary-600 hover:text-primary-700 dark:text-primary-300 dark:hover:text-primary-200">x</a>`,
+      ),
+    ).toBe(0);
+  }, 60_000);
+
   it("reads a template literal as a whole", async () => {
     expect(
       await guardHits(
