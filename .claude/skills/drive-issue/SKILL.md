@@ -123,7 +123,7 @@ Summarise the plan in the terminal: approach, size, platforms, risks, anything y
      | `exit=2` otherwise                | **Run the CLI review** (below).                                                   |
      | any other exit                    | Outcome "coverage unknown" with the error. **Log the outcome** (below) and go on. |
 
-   - **Run the CLI review.** It takes 7–30+ minutes, so start it with the Bash tool's `run_in_background: true` and wait for the completion notification; don't poll. Tell the operator in one line that it is running. That is information, not a question. If they say "skip" on their own, stop the task and take the outcome "skipped by the operator"; `review` frees its slot itself when it is stopped. Pass the factory's state file when it exists (on the Mac mini), so the run shares the lane's single slot and its 3/hour allowance and never runs alongside a factory review of another card. Elsewhere the file is absent, and the vendor's own limit is the only guard.
+   - **Run the CLI review.** It takes 7–30+ minutes, so start it with the Bash tool's `run_in_background: true` and `timeout: 2400000` (40 minutes), and wait for the completion notification; don't poll. The Bash tool stops a background command when its `timeout` runs out, 10 minutes by default, and a review stopped that way posts nothing and still spends its hourly slot. Tell the operator in one line that it is running. That is information, not a question. If they say "skip" on their own, stop the task and take the outcome "skipped by the operator"; `review` frees its slot itself when it is stopped. Pass the factory's state file when it exists (on the Mac mini), so the run shares the lane's single slot and its 3/hour allowance and never runs alongside a factory review of another card. Elsewhere the file is absent, and the vendor's own limit is the only guard.
 
      ```bash
      STATE="${DRAFTO_FACTORY_STATE_FILE:-/Volumes/DraftoFactory/drafto-factory/logs/factory-state.json}"
@@ -145,7 +145,7 @@ Summarise the plan in the terminal: approach, size, platforms, risks, anything y
 
      A fix you push for its threads, or a head that moved during the run, leaves a new head the bot may skip again: check coverage again on it. Run at most 2 CLI reviews per In Review stint, the lane's own per-card default (`FACTORY_CR_CLI_MAX_RUNS_PER_CARD`). Past that, take the outcome "not reviewed (per-card cap)".
 
-   - **Wait for the bot.** A review it is running covers the head, and the threads it opens must be answered like any other. Run this loop with `run_in_background: true`, tell the operator in one line that you're waiting, and wait for the notification:
+   - **Wait for the bot.** A review it is running covers the head, and the threads it opens must be answered like any other. Run this loop with `run_in_background: true` and `timeout: 1500000` (25 minutes, more than the loop's 20), tell the operator in one line that you're waiting, and wait for the notification:
 
      ```bash
      for i in $(seq 1 20); do
