@@ -466,11 +466,12 @@ describe("NoteList", () => {
     expect(screen.getByLabelText("Actions for Second Note")).toBeInTheDocument();
   });
 
-  describe("on a touch-only pointer", () => {
-    // jsdom applies no CSS, so these check the classes; the Playwright touch
-    // projects (e2e/responsive.spec.ts) check the computed opacity.
+  describe("row actions and the title's padding", () => {
+    // jsdom applies no CSS, so these check the classes. The Playwright projects check
+    // the result: e2e/responsive.spec.ts the touch opacity, e2e/notes.spec.ts (chromium)
+    // that a long title stays clear of the ⋮ while a row is hovered or focused.
     const TOUCH_VISIBLE = "[@media(hover:none)]:opacity-100";
-    const TOUCH_PADDING = "[@media(hover:none)]:pr-10";
+    const ACTIONS_PADDING = ["pl-3", "pr-10"];
 
     async function renderList(props: Partial<ComponentProps<typeof NoteList>>) {
       await act(async () => {
@@ -492,18 +493,49 @@ describe("NoteList", () => {
       });
     }
 
-    it("shows the actions button without hover and keeps the title clear of it", async () => {
+    function rowButton(title: string): HTMLElement {
+      const button = screen.getByText(title).closest("button");
+      if (!button) throw new Error(`No row button for ${title}`);
+      return button;
+    }
+
+    it("shows the actions button without hover on a touch-only pointer", async () => {
       await renderList({ onDeleteNote: vi.fn() });
 
       expect(screen.getByLabelText("Actions for First Note")).toHaveClass(TOUCH_VISIBLE);
-      expect(screen.getByText("First Note").closest("button")).toHaveClass(TOUCH_PADDING);
+    });
+
+    it("reserves the actions button's width on every pointer, whether or not the row is hovered", async () => {
+      await renderList({ onDeleteNote: vi.fn() });
+
+      const button = rowButton("First Note");
+      expect(button).toHaveClass(...ACTIONS_PADDING);
+      // The padding must not depend on the pointer, hover or focus, or the title would
+      // run under the ⋮ on a mouse or move when the ⋮ appears.
+      expect(button).not.toHaveClass("px-3");
+      expect(button.className).not.toMatch(/(?:hover|focus|group-[\w-]+|\[@media[^\]]*\]):pr-/);
+    });
+
+    it("reserves the width when the only action is a move to another notebook", async () => {
+      await renderList({
+        onMoveNote: vi.fn(),
+        notebooks: [
+          { id: "nb-1", name: "Current" },
+          { id: "nb-2", name: "Other" },
+        ],
+      });
+
+      expect(screen.getByLabelText("Actions for First Note")).toBeInTheDocument();
+      expect(rowButton("First Note")).toHaveClass(...ACTIONS_PADDING);
     });
 
     it("leaves the title its full width when a row has no actions", async () => {
       await renderList({});
 
       expect(screen.queryByLabelText("Actions for First Note")).not.toBeInTheDocument();
-      expect(screen.getByText("First Note").closest("button")).not.toHaveClass(TOUCH_PADDING);
+      const button = rowButton("First Note");
+      expect(button).toHaveClass("px-3");
+      expect(button).not.toHaveClass("pr-10");
     });
   });
 
