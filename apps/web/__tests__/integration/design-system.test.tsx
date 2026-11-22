@@ -223,6 +223,7 @@ describe("DesignSystemPage", () => {
       "Purpose",
     );
     expect(screen.getByRole("link", { name: ".doc-link" })).toHaveClass("doc-link");
+    expect(screen.getByRole("link", { name: ".ui-link" })).toHaveClass("ui-link");
   });
 
   it("renders shadow demos", () => {
