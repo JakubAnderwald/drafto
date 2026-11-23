@@ -1,0 +1,96 @@
+appId: eu.drafto.mobile
+tags:
+  - qa-11035
+---
+# Flow 12: Sign-up checks the email format before sending (PrimeTestLab 11035, M-02)
+#
+# The report typed "planner.com" (no @) and a short password, tapped Sign up, and got Supabase's
+# raw "Unable to validate email address: invalid format" in the top banner, with nothing said
+# about the password. The fixed form checks both fields before any request and shows each error
+# under its own field (testID `<field testID>-error`), on the same tap.
+#
+# Before the fix this flow fails at the first inline-error assertion: the form showed only the
+# password error in the banner, and on a second try the raw Supabase text.
+#
+# Never signs in, creates no data and needs no env vars or RUN_ID: the form refuses the values
+# locally, so nothing reaches Supabase. Only dummy values are typed.
+
+# --- Clean start ---
+- clearKeychain
+- stopApp
+- clearState
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Log In"
+    timeout: 60000
+
+# --- Open sign-up ---
+# The Sign up <Link> sits inside a <Text>, so its testID can't be matched on
+# either platform; its text matches on both.
+- tapOn: "Sign up"
+- extendedWaitUntil:
+    visible: "Create your Drafto account"
+    timeout: 10000
+# Let the push finish first: iOS keeps the previous screen in the hierarchy
+# until it does, and a tap during the slide lands on its frames.
+- waitForAnimationToEnd
+
+# --- The report's values ---
+- tapOn:
+    id: "signup-email-input"
+- inputText: "planner.com"
+# iOS opens its out-of-process "Use a strong password?" sheet when the secure
+# new-password field gets focus; revealed, the field is not secure and gets no sheet.
+- tapOn:
+    id: "signup-password-input-toggle"
+- tapOn:
+    id: "signup-password-input"
+- inputText: "abc"
+# hideKeyboard fails on iOS; a tap on the screen's static subtitle closes it.
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - hideKeyboard
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: "Create your Drafto account"
+- tapOn:
+    id: "signup-submit"
+
+# --- Both errors, inline, on the first tap ---
+- assertVisible:
+    id: "signup-email-input-error"
+    text: "Enter a valid email address, like name@example.com."
+- assertVisible:
+    id: "signup-password-input-error"
+    text: "Password must be at least 6 characters."
+# No raw Supabase text, and no top banner: the request never left the device.
+- assertNotVisible: ".*Unable to validate.*"
+- assertNotVisible:
+    id: "signup-error"
+# Still on the form, not the check-email state.
+- assertVisible: "Create your Drafto account"
+- assertNotVisible: "Check Your Email"
+
+# --- Editing the email clears its error, and only its error ---
+- tapOn:
+    id: "signup-email-input"
+- inputText: "@example.com"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - hideKeyboard
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: "Create your Drafto account"
+- assertNotVisible:
+    id: "signup-email-input-error"
+- assertVisible:
+    id: "signup-password-input-error"

@@ -1,6 +1,12 @@
 import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet } from "react-native";
-import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
+import {
+  ACCOUNT_DELETED_MESSAGE,
+  describeAuthError,
+  hasFieldErrors,
+  validateCredentials,
+  type AuthFieldErrors,
+} from "@drafto/shared";
 
 import { clearAccountDeletedNotice, useAccountDeletedNotice } from "@/lib/account-deleted-notice";
 import { supabase } from "@/lib/supabase";
@@ -23,13 +29,27 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [loading, setLoading] = useState(false);
   const accountDeleted = useAccountDeletedNotice();
 
+  const handleEmailChange = (value: string) => {
+    setEmail(value);
+    setFieldErrors((current) => ({ ...current, email: undefined }));
+  };
+
+  const handlePasswordChange = (value: string) => {
+    setPassword(value);
+    setFieldErrors((current) => ({ ...current, password: undefined }));
+  };
+
   const handleLogin = async () => {
     clearAccountDeletedNotice();
-    if (!email.trim() || !password) {
-      setError("Please enter your email and password.");
+    // A malformed address is refused here, before any request (PrimeTestLab 11035 M-02).
+    const validation = validateCredentials({ email, password }, "login");
+    setFieldErrors(validation);
+    if (hasFieldErrors(validation)) {
+      setError(null);
       return;
     }
 
@@ -43,7 +63,9 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
       });
 
       if (signInError) {
-        setError(signInError.message);
+        const copy = describeAuthError(signInError);
+        if (copy.field) setFieldErrors({ [copy.field]: copy.message });
+        else setError(copy.message);
       }
       // Navigation is handled by the auth provider via onAuthStateChange
     } finally {
@@ -67,7 +89,7 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
       )}
 
       {error && (
-        <View style={styles.errorContainer}>
+        <View style={styles.errorContainer} accessibilityRole="alert" testID="login-error">
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}
@@ -79,7 +101,8 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
             label="Email"
             placeholder="you@example.com"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={handleEmailChange}
+            errorText={fieldErrors.email}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"
@@ -94,7 +117,8 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
             label="Password"
             placeholder="Your password"
             value={password}
-            onChangeText={setPassword}
+            onChangeText={handlePasswordChange}
+            errorText={fieldErrors.password}
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="password"

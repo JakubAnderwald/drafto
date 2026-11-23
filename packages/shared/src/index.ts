@@ -259,3 +259,30 @@ export {
   nextOfflineBannerVariant,
 } from "./network/offline-banner";
 export type { OfflineBannerEvent, OfflineBannerVariant } from "./network/offline-banner";
+
+// Auth form validation and error copy (PrimeTestLab 11035 M-02, M-03)
+export {
+  EMAIL_REQUIRED_MESSAGE,
+  INVALID_EMAIL_MESSAGE,
+  isValidEmail,
+  validateEmailField,
+} from "./auth/email";
+export {
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_REQUIRED_MESSAGE,
+  PASSWORD_TOO_SHORT_MESSAGE,
+  validateCredentials,
+  hasFieldErrors,
+} from "./auth/credentials";
+export type { AuthField, AuthFieldErrors, Credentials, CredentialsMode } from "./auth/credentials";
+export {
+  INVALID_CREDENTIALS_MESSAGE,
+  USER_ALREADY_EXISTS_MESSAGE,
+  EMAIL_NOT_CONFIRMED_MESSAGE,
+  AUTH_RATE_LIMITED_MESSAGE,
+  WEAK_PASSWORD_MESSAGE,
+  AUTH_GENERIC_ERROR_MESSAGE,
+  describeAuthError,
+} from "./auth/auth-error-copy";
+export type { AuthErrorLike, AuthErrorCopy } from "./auth/auth-error-copy";
+export { oauthQueryParams } from "./auth/oauth-query-params";

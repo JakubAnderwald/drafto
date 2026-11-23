@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet } from "react-native";
+import { describeAuthError, validateEmailField } from "@drafto/shared";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,16 +23,25 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
   const { isConnected } = useNetworkStatus();
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | undefined>(undefined);
   const [retryable, setRetryable] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const handleEmailChange = (value: string) => {
+    setEmail(value);
+    setEmailError(undefined);
+  };
+
   const handleSubmit = async () => {
     const trimmed = email.trim();
 
-    if (!trimmed) {
+    // An empty or malformed address is refused here, under the field (PrimeTestLab 11035 M-02).
+    const invalid = validateEmailField(email);
+    if (invalid) {
       setRetryable(false);
-      setError("Please enter your email address.");
+      setError(null);
+      setEmailError(invalid);
       return;
     }
 
@@ -54,7 +64,9 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
       });
 
       if (resetError) {
-        setError(resetError.message);
+        const copy = describeAuthError(resetError);
+        if (copy.field === "email") setEmailError(copy.message);
+        else setError(copy.message);
         return;
       }
 
@@ -91,7 +103,11 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
       <Text style={styles.subtitle}>We&apos;ll email you a link to set a new password</Text>
 
       {error && (
-        <View style={styles.errorContainer}>
+        <View
+          style={styles.errorContainer}
+          accessibilityRole="alert"
+          testID="forgot-password-error"
+        >
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}
@@ -103,7 +119,8 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
             label="Email"
             placeholder="you@example.com"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={handleEmailChange}
+            errorText={emailError}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"

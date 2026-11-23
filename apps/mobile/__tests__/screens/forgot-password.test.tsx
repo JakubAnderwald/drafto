@@ -1,6 +1,7 @@
 import React from "react";
 import { KeyboardAvoidingView } from "react-native";
 import { useHeaderHeight } from "@react-navigation/elements";
+import { AUTH_RATE_LIMITED_MESSAGE, INVALID_EMAIL_MESSAGE } from "@drafto/shared";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import ForgotPasswordScreen from "../../app/(auth)/forgot-password";
@@ -37,12 +38,49 @@ describe("ForgotPasswordScreen", () => {
   });
 
   it("requires an email address before calling Supabase", () => {
-    const { getByText } = render(<ForgotPasswordScreen />);
+    const { getByText, getByTestId } = render(<ForgotPasswordScreen />);
 
     fireEvent.press(getByText("Send reset link"));
 
-    expect(getByText("Please enter your email address.")).toBeTruthy();
+    // Flow 06 asserts this exact text.
+    expect(getByTestId("forgot-password-email-input-error")).toHaveTextContent(
+      "Please enter your email address.",
+    );
     expect(mockResetPasswordForEmail).not.toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-02: refuses a malformed email under the field, before going online", () => {
+    mockUseNetworkStatus.mockReturnValue({ isConnected: false, isInternetReachable: false });
+    const { getByText, getByTestId, queryByTestId } = render(<ForgotPasswordScreen />);
+
+    fireEvent.changeText(getByTestId("forgot-password-email-input"), "planner.com");
+    fireEvent.press(getByText("Send reset link"));
+
+    expect(getByTestId("forgot-password-email-input-error")).toHaveTextContent(
+      INVALID_EMAIL_MESSAGE,
+    );
+    expect(queryByTestId("forgot-password-error")).toBeNull();
+    expect(mockResetPasswordForEmail).not.toHaveBeenCalled();
+
+    fireEvent.changeText(getByTestId("forgot-password-email-input"), "planner@example.com");
+    expect(queryByTestId("forgot-password-email-input-error")).toBeNull();
+  });
+
+  it("PrimeTestLab 11035 M-02: puts Supabase's format error under the field", async () => {
+    mockResetPasswordForEmail.mockResolvedValue({
+      error: { message: "Unable to validate email address: invalid format" },
+    });
+    const { getByText, getByTestId, queryByText } = render(<ForgotPasswordScreen />);
+
+    fireEvent.changeText(getByTestId("forgot-password-email-input"), "name@example.com");
+    fireEvent.press(getByText("Send reset link"));
+
+    await waitFor(() => {
+      expect(getByTestId("forgot-password-email-input-error")).toHaveTextContent(
+        INVALID_EMAIL_MESSAGE,
+      );
+    });
+    expect(queryByText(/Unable to validate/)).toBeNull();
   });
 
   it("sends the reset link to the deep-link redirect and confirms", async () => {
@@ -73,7 +111,7 @@ describe("ForgotPasswordScreen", () => {
     fireEvent.press(getByText("Send reset link"));
 
     await waitFor(() => {
-      expect(getByText("Rate limit exceeded")).toBeTruthy();
+      expect(getByText(AUTH_RATE_LIMITED_MESSAGE)).toBeTruthy();
     });
     expect(queryByText("Check Your Email")).toBeNull();
   });

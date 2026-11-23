@@ -2,7 +2,14 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
-import { SIGNUP_CONFIRMATION_SENT } from "@drafto/shared";
+import {
+  EMAIL_REQUIRED_MESSAGE,
+  INVALID_EMAIL_MESSAGE,
+  PASSWORD_REQUIRED_MESSAGE,
+  PASSWORD_TOO_SHORT_MESSAGE,
+  SIGNUP_CONFIRMATION_SENT,
+  USER_ALREADY_EXISTS_MESSAGE,
+} from "@drafto/shared";
 
 // Mock next/navigation
 const mockPush = vi.fn();
@@ -165,8 +172,119 @@ describe("Signup page", () => {
     await user.type(screen.getByLabelText("Password"), "password123");
     await user.click(screen.getByRole("button", { name: "Sign up" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("User already registered");
+    expect(await screen.findByRole("alert")).toHaveTextContent(USER_ALREADY_EXISTS_MESSAGE);
     expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  describe("email validation (PrimeTestLab 11035 M-02)", () => {
+    it("PrimeTestLab 11035 M-02: refuses a malformed email without calling Supabase, inline", async () => {
+      const user = userEvent.setup();
+      await act(async () => {
+        render(<SignupPage />);
+      });
+
+      await user.type(screen.getByLabelText("Email"), "planner.com");
+      await user.type(screen.getByLabelText("Password"), "secret123");
+      await user.click(screen.getByRole("button", { name: "Sign up" }));
+
+      expect(mockSignUp).not.toHaveBeenCalled();
+      const email = screen.getByLabelText("Email");
+      expect(screen.getByTestId("signup-email-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+      expect(email).toHaveAttribute("aria-invalid", "true");
+      expect(email).toHaveAccessibleDescription(INVALID_EMAIL_MESSAGE);
+      // The first invalid field gets focus, so a screen reader reads its error.
+      expect(email).toHaveFocus();
+      // The inline error is the only alert: no top banner.
+      expect(screen.getAllByRole("alert")).toEqual([screen.getByTestId("signup-email-error")]);
+    });
+
+    it("PrimeTestLab 11035 M-02: shows the email and password errors together on the first click", async () => {
+      const user = userEvent.setup();
+      await act(async () => {
+        render(<SignupPage />);
+      });
+
+      await user.type(screen.getByLabelText("Email"), "planner.com");
+      await user.type(screen.getByLabelText("Password"), "abc");
+      await user.click(screen.getByRole("button", { name: "Sign up" }));
+
+      expect(screen.getByTestId("signup-email-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+      expect(screen.getByTestId("signup-password-error")).toHaveTextContent(
+        PASSWORD_TOO_SHORT_MESSAGE,
+      );
+      expect(mockSignUp).not.toHaveBeenCalled();
+    });
+
+    it("PrimeTestLab 11035 M-02: asks for both fields on an empty submit", async () => {
+      const user = userEvent.setup();
+      await act(async () => {
+        render(<SignupPage />);
+      });
+
+      await user.click(screen.getByRole("button", { name: "Sign up" }));
+
+      expect(screen.getByTestId("signup-email-error")).toHaveTextContent(EMAIL_REQUIRED_MESSAGE);
+      expect(screen.getByTestId("signup-password-error")).toHaveTextContent(
+        PASSWORD_REQUIRED_MESSAGE,
+      );
+    });
+
+    it("PrimeTestLab 11035 M-02: clears a field's error once the user edits it", async () => {
+      const user = userEvent.setup();
+      await act(async () => {
+        render(<SignupPage />);
+      });
+
+      await user.type(screen.getByLabelText("Email"), "planner.com");
+      await user.type(screen.getByLabelText("Password"), "abc");
+      await user.click(screen.getByRole("button", { name: "Sign up" }));
+      await user.type(screen.getByLabelText("Email"), "x");
+
+      expect(screen.queryByTestId("signup-email-error")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Email")).not.toHaveAttribute("aria-invalid");
+      expect(screen.getByTestId("signup-password-error")).toBeInTheDocument();
+    });
+
+    it("PrimeTestLab 11035 M-02: puts Supabase's format error under the field, never the raw text", async () => {
+      mockSignUp.mockResolvedValueOnce({
+        data: { user: null, session: null },
+        error: {
+          message: "Unable to validate email address: invalid format",
+          code: "validation_failed",
+          status: 400,
+        },
+      });
+      const user = userEvent.setup();
+      await act(async () => {
+        render(<SignupPage />);
+      });
+
+      await user.type(screen.getByLabelText("Email"), "name@example.com");
+      await user.type(screen.getByLabelText("Password"), "secret123");
+      await user.click(screen.getByRole("button", { name: "Sign up" }));
+
+      expect(await screen.findByTestId("signup-email-error")).toHaveTextContent(
+        INVALID_EMAIL_MESSAGE,
+      );
+      expect(screen.queryByText(/Unable to validate/)).not.toBeInTheDocument();
+      expect(screen.getAllByRole("alert")).toEqual([screen.getByTestId("signup-email-error")]);
+    });
+
+    it("PrimeTestLab 11035 M-02: announces an error on the field that already has focus", async () => {
+      const user = userEvent.setup();
+      await act(async () => {
+        render(<SignupPage />);
+      });
+
+      await user.type(screen.getByLabelText("Email"), "name@example.com");
+      await user.type(screen.getByLabelText("Password"), "abc{Enter}");
+
+      expect(mockSignUp).not.toHaveBeenCalled();
+      // focus() on the already-focused password field fires no focus event, so the error must be
+      // a live region of its own to be announced.
+      expect(screen.getByLabelText("Password")).toHaveFocus();
+      expect(screen.getByRole("alert")).toBe(screen.getByTestId("signup-password-error"));
+    });
   });
 
   it("shows loading state while submitting", async () => {

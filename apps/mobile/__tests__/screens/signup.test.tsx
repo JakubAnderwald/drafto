@@ -2,7 +2,15 @@ import React from "react";
 import { KeyboardAvoidingView } from "react-native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useRouter } from "expo-router";
-import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
+import {
+  EMAIL_REQUIRED_MESSAGE,
+  INVALID_EMAIL_MESSAGE,
+  PASSWORD_REQUIRED_MESSAGE,
+  PASSWORD_TOO_SHORT_MESSAGE,
+  SIGNUP_CONFIRMATION_SENT,
+  SIGNUP_EMAIL_REDIRECT_URL,
+  USER_ALREADY_EXISTS_MESSAGE,
+} from "@drafto/shared";
 
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import SignupScreen from "../../app/(auth)/signup";
@@ -45,17 +53,118 @@ describe("SignupScreen", () => {
   });
 
   it("validates the form before calling Supabase", () => {
-    const { getByText, getByPlaceholderText } = render(<SignupScreen />);
+    const { getByText, getByPlaceholderText, getByTestId, queryByTestId } = render(
+      <SignupScreen />,
+    );
 
     fireEvent.press(getByText("Sign up"));
-    expect(getByText("Please enter your email and password.")).toBeTruthy();
+    expect(getByTestId("signup-email-input-error")).toHaveTextContent(EMAIL_REQUIRED_MESSAGE);
+    expect(getByTestId("signup-password-input-error")).toHaveTextContent(PASSWORD_REQUIRED_MESSAGE);
 
     fireEvent.changeText(getByPlaceholderText("you@example.com"), "new@example.com");
     fireEvent.changeText(getByPlaceholderText("Min. 6 characters"), "12345");
     fireEvent.press(getByText("Sign up"));
-    expect(getByText("Password must be at least 6 characters.")).toBeTruthy();
+    expect(queryByTestId("signup-email-input-error")).toBeNull();
+    expect(getByTestId("signup-password-input-error")).toHaveTextContent(
+      PASSWORD_TOO_SHORT_MESSAGE,
+    );
 
     expect(mockSignUp).not.toHaveBeenCalled();
+  });
+
+  describe("email validation (PrimeTestLab 11035 M-02)", () => {
+    it("PrimeTestLab 11035 M-02: refuses a malformed email without calling Supabase, under the field", () => {
+      const { getByText, getByPlaceholderText, getByTestId, queryByTestId } = render(
+        <SignupScreen />,
+      );
+
+      fireEvent.changeText(getByPlaceholderText("you@example.com"), "planner.com");
+      fireEvent.changeText(getByPlaceholderText("Min. 6 characters"), "secret123");
+      fireEvent.press(getByText("Sign up"));
+
+      expect(mockSignUp).not.toHaveBeenCalled();
+      expect(getByTestId("signup-email-input-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+      expect(queryByTestId("signup-password-input-error")).toBeNull();
+      // No top banner: the error belongs to the field.
+      expect(queryByTestId("signup-error")).toBeNull();
+    });
+
+    it("PrimeTestLab 11035 M-02: shows the email and password errors together on the first tap", () => {
+      const { getByText, getByPlaceholderText, getByTestId } = render(<SignupScreen />);
+
+      fireEvent.changeText(getByPlaceholderText("you@example.com"), "planner.com");
+      fireEvent.changeText(getByPlaceholderText("Min. 6 characters"), "abc");
+      fireEvent.press(getByText("Sign up"));
+
+      expect(getByTestId("signup-email-input-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+      expect(getByTestId("signup-password-input-error")).toHaveTextContent(
+        PASSWORD_TOO_SHORT_MESSAGE,
+      );
+      expect(mockSignUp).not.toHaveBeenCalled();
+    });
+
+    it("PrimeTestLab 11035 M-02: announces the inline error and carries it on the field", () => {
+      const { getByText, getByPlaceholderText, getByTestId } = render(<SignupScreen />);
+
+      fireEvent.changeText(getByPlaceholderText("you@example.com"), "planner.com");
+      fireEvent.press(getByText("Sign up"));
+
+      const error = getByTestId("signup-email-input-error");
+      expect(error.props.accessibilityRole).toBe("alert");
+      expect(error.props.accessibilityLiveRegion).toBe("polite");
+      expect(getByTestId("signup-email-input").props.accessibilityHint).toBe(INVALID_EMAIL_MESSAGE);
+    });
+
+    it("PrimeTestLab 11035 M-02: clears a field's error once the user edits that field", () => {
+      const { getByText, getByPlaceholderText, getByTestId, queryByTestId } = render(
+        <SignupScreen />,
+      );
+
+      fireEvent.changeText(getByPlaceholderText("you@example.com"), "planner.com");
+      fireEvent.changeText(getByPlaceholderText("Min. 6 characters"), "abc");
+      fireEvent.press(getByText("Sign up"));
+
+      fireEvent.changeText(getByPlaceholderText("you@example.com"), "planner@example.com");
+      expect(queryByTestId("signup-email-input-error")).toBeNull();
+      // The other field keeps its error until it is edited too.
+      expect(getByTestId("signup-password-input-error")).toBeTruthy();
+    });
+
+    it("PrimeTestLab 11035 M-02: puts Supabase's format error under the field, never the raw text", async () => {
+      mockSignUp.mockResolvedValue({
+        data: { user: null, session: null },
+        error: {
+          message: "Unable to validate email address: invalid format",
+          code: "validation_failed",
+          status: 400,
+        },
+      });
+
+      const screen = render(<SignupScreen />);
+      fillAndSubmit(screen);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("signup-email-input-error")).toHaveTextContent(
+          INVALID_EMAIL_MESSAGE,
+        );
+      });
+      expect(screen.queryByText(/Unable to validate/)).toBeNull();
+      expect(screen.queryByTestId("signup-error")).toBeNull();
+    });
+
+    it("PrimeTestLab 11035 M-02: keeps other server errors in the banner, in plain words", async () => {
+      mockSignUp.mockResolvedValue({
+        data: { user: null, session: null },
+        error: { message: "User already registered", code: "user_already_exists" },
+      });
+
+      const screen = render(<SignupScreen />);
+      fillAndSubmit(screen);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("signup-error")).toHaveTextContent(USER_ALREADY_EXISTS_MESSAGE);
+      });
+    });
   });
 
   it("sends the confirmation link to the web login page", async () => {

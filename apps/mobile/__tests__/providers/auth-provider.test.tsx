@@ -3,6 +3,7 @@ import { Linking, Platform } from "react-native";
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as WebBrowser from "expo-web-browser";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
+import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import type { User } from "@supabase/supabase-js";
 import {
   buildAppleRevocationDeepLink,
@@ -91,6 +92,7 @@ const mockProcessPendingUploads = processPendingUploads as jest.Mock;
 const mockDeleteAllLocalAttachments = deleteAllLocalAttachments as jest.Mock;
 const mockRequestAccountDeletion = requestAccountDeletion as jest.Mock;
 const mockAppleSignIn = jest.mocked(AppleAuthentication.signInAsync);
+const mockGoogleSignOut = jest.mocked(GoogleSignin.signOut);
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>;
@@ -1265,5 +1267,119 @@ describe("AuthProvider — approval re-checks", () => {
     });
 
     expect(isAccountDeletedNoticeShown()).toBe(false);
+  });
+});
+
+describe("AuthProvider — native Google session (PrimeTestLab 11035 M-03)", () => {
+  /** Replays an auth event through the listener the provider registered. */
+  function emitAuthEvent(event: string, session: unknown) {
+    const handler = (mockSupabase.auth.onAuthStateChange as jest.Mock).mock.calls[0][0] as (
+      event: string,
+      session: unknown,
+    ) => void;
+    handler(event, session);
+  }
+
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockExpoExtra.apiUrl = "https://api.drafto.test";
+    mockApprovalCache.getCachedApproval.mockResolvedValue(null);
+    mockApprovalCache.setCachedApproval.mockResolvedValue(undefined);
+    mockApprovalCache.clearCachedApproval.mockResolvedValue(undefined);
+    mockSyncDatabase.mockResolvedValue({ remoteChangeCount: 0 });
+    mockProcessPendingUploads.mockResolvedValue({ uploaded: 0, failed: 0 });
+    mockDeleteAllLocalAttachments.mockResolvedValue(undefined);
+    (mockSupabase.auth.getSession as jest.Mock).mockResolvedValue({
+      data: { session: TEST_SESSION },
+    });
+    (mockSupabase.auth.signOut as jest.Mock).mockResolvedValue({ error: null });
+    mockProfileQuery({ is_approved: true }, null);
+    mockRequestAccountDeletion.mockResolvedValue({ status: "ok" });
+    mockGoogleSignOut.mockResolvedValue(null);
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    clearAccountDeletedNotice();
+  });
+
+  async function renderSignedIn() {
+    const rendered = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => {
+      expect(rendered.result.current.isLoading).toBe(false);
+    });
+    return rendered;
+  }
+
+  it("PrimeTestLab 11035 M-03: signs out of Google on sign-out, after Supabase", async () => {
+    const { result } = await renderSignedIn();
+    expect(mockGoogleSignOut).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(mockGoogleSignOut).toHaveBeenCalled();
+    expect((mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
+      mockGoogleSignOut.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("PrimeTestLab 11035 M-03: signs out of Google after an account deletion", async () => {
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.deleteAccount();
+    });
+
+    expect(mockGoogleSignOut).toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-03: does not sign out of Google when the deletion did not happen", async () => {
+    mockRequestAccountDeletion.mockResolvedValue({ status: "network" });
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.deleteAccount();
+    });
+
+    expect(mockGoogleSignOut).not.toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-03: signs out of Google when the session ends elsewhere", async () => {
+    await renderSignedIn();
+
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+
+    expect(mockGoogleSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("PrimeTestLab 11035 M-03: leaves Google alone on other auth events", async () => {
+    await renderSignedIn();
+
+    await act(async () => {
+      emitAuthEvent("TOKEN_REFRESHED", TEST_SESSION);
+      emitAuthEvent("SIGNED_IN", TEST_SESSION);
+    });
+
+    expect(mockGoogleSignOut).not.toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-03: completes sign-out even when Google's sign-out fails", async () => {
+    mockGoogleSignOut.mockRejectedValue(new Error("native failure"));
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(mockGoogleSignOut).toHaveBeenCalled();
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+    expect(result.current.session).toBeNull();
   });
 });

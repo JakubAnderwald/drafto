@@ -101,10 +101,44 @@ test.describe("Auth page smoke tests", () => {
     await page.getByLabel("Password", { exact: true }).fill("abc");
     await page.getByRole("button", { name: "Sign up" }).click();
 
-    // HTML5 minLength validation should prevent submission — form stays on page
+    // The form's own check stops the submit and says why, under the field
     await expect(page).toHaveURL(/\/signup/);
-    // The password field should still be visible (form not submitted)
-    await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("signup-password-error")).toHaveText(
+      "Password must be at least 6 characters.",
+    );
+  });
+
+  test("PrimeTestLab 11035 M-02: sign-up refuses a malformed email inline, never the raw Supabase error", async ({
+    page,
+  }) => {
+    await page.goto("/signup");
+
+    let signupRequests = 0;
+    page.on("request", (request) => {
+      if (request.url().includes("/auth/v1/signup")) signupRequests += 1;
+    });
+
+    // The report's values: "planner.com" has no @, "abc" is too short.
+    await page.getByLabel("Email").fill("planner.com");
+    await page.getByLabel("Password", { exact: true }).fill("abc");
+    await page.getByRole("button", { name: "Sign up" }).click();
+
+    // Both errors on the first click, each under its own field.
+    await expect(page.getByTestId("signup-email-error")).toHaveText(
+      "Enter a valid email address, like name@example.com.",
+    );
+    await expect(page.getByTestId("signup-password-error")).toHaveText(
+      "Password must be at least 6 characters.",
+    );
+    await expect(page.getByLabel("Email")).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByText(/Unable to validate/)).toHaveCount(0);
+    await expect(page).toHaveURL(/\/signup/);
+    expect(signupRequests).toBe(0);
+
+    // Editing the email clears its error, and only its error.
+    await page.getByLabel("Email").fill("planner@example.com");
+    await expect(page.getByTestId("signup-email-error")).toHaveCount(0);
+    await expect(page.getByTestId("signup-password-error")).toBeVisible();
   });
 
   test("forgot-password page renders correctly", async ({ page }) => {

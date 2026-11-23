@@ -1,5 +1,13 @@
 import React from "react";
-import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
+import {
+  EMAIL_REQUIRED_MESSAGE,
+  INVALID_EMAIL_MESSAGE,
+  PASSWORD_REQUIRED_MESSAGE,
+  PASSWORD_TOO_SHORT_MESSAGE,
+  SIGNUP_CONFIRMATION_SENT,
+  SIGNUP_EMAIL_REDIRECT_URL,
+  USER_ALREADY_EXISTS_MESSAGE,
+} from "@drafto/shared";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import { SignupScreen } from "../../src/screens/signup";
@@ -42,29 +50,79 @@ describe("SignupScreen", () => {
   });
 
   it("shows error when submitting empty form", async () => {
-    const { getByText } = render(<SignupScreen />);
+    const { getByText, getByTestId } = render(<SignupScreen />);
 
     fireEvent.press(getByText("Sign up"));
 
     await waitFor(() => {
-      expect(getByText("Please enter your email and password.")).toBeTruthy();
+      expect(getByTestId("signup-email-input-error")).toHaveTextContent(EMAIL_REQUIRED_MESSAGE);
     });
+    expect(getByTestId("signup-password-input-error")).toHaveTextContent(PASSWORD_REQUIRED_MESSAGE);
 
     expect(mockSignUp).not.toHaveBeenCalled();
   });
 
   it("shows error when password is too short", async () => {
-    const { getByText, getByPlaceholderText } = render(<SignupScreen />);
+    const { getByText, getByPlaceholderText, getByTestId } = render(<SignupScreen />);
 
     fireEvent.changeText(getByPlaceholderText("you@example.com"), "test@example.com");
     fireEvent.changeText(getByPlaceholderText("Min. 6 characters"), "12345");
     fireEvent.press(getByText("Sign up"));
 
     await waitFor(() => {
-      expect(getByText("Password must be at least 6 characters.")).toBeTruthy();
+      expect(getByTestId("signup-password-input-error")).toHaveTextContent(
+        PASSWORD_TOO_SHORT_MESSAGE,
+      );
     });
 
     expect(mockSignUp).not.toHaveBeenCalled();
+  });
+
+  describe("email validation (PrimeTestLab 11035 M-02)", () => {
+    it("PrimeTestLab 11035 M-02: shows the email and password errors together on the first click", () => {
+      const { getByTestId, queryByTestId } = render(<SignupScreen />);
+
+      fireEvent.changeText(getByTestId("signup-email-input"), "planner.com");
+      fireEvent.changeText(getByTestId("signup-password-input"), "abc");
+      fireEvent.press(getByTestId("signup-submit"));
+
+      expect(mockSignUp).not.toHaveBeenCalled();
+      expect(getByTestId("signup-email-input-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+      expect(getByTestId("signup-password-input-error")).toHaveTextContent(
+        PASSWORD_TOO_SHORT_MESSAGE,
+      );
+      expect(queryByTestId("signup-error")).toBeNull();
+    });
+
+    it("PrimeTestLab 11035 M-02: clears a field's error once the user edits that field", () => {
+      const { getByTestId, queryByTestId } = render(<SignupScreen />);
+
+      fireEvent.changeText(getByTestId("signup-email-input"), "planner.com");
+      fireEvent.changeText(getByTestId("signup-password-input"), "abc");
+      fireEvent.press(getByTestId("signup-submit"));
+
+      fireEvent.changeText(getByTestId("signup-password-input"), "abcdef");
+      expect(queryByTestId("signup-password-input-error")).toBeNull();
+      expect(getByTestId("signup-email-input-error")).toBeTruthy();
+    });
+
+    it("PrimeTestLab 11035 M-02: puts Supabase's format error under the field, never the raw text", async () => {
+      mockSignUp.mockResolvedValue({
+        data: { user: null, session: null },
+        error: { message: "Unable to validate email address: invalid format", status: 400 },
+      });
+      const screen = render(<SignupScreen />);
+
+      fillAndSubmit(screen);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("signup-email-input-error")).toHaveTextContent(
+          INVALID_EMAIL_MESSAGE,
+        );
+      });
+      expect(screen.queryByText(/Unable to validate/)).toBeNull();
+      expect(screen.queryByTestId("signup-error")).toBeNull();
+    });
   });
 
   it("calls signUp with the trimmed email and the web login page as the confirmation target", async () => {
@@ -164,7 +222,7 @@ describe("SignupScreen", () => {
     fireEvent.press(getByText("Sign up"));
 
     await waitFor(() => {
-      expect(getByText("User already registered")).toBeTruthy();
+      expect(getByText(USER_ALREADY_EXISTS_MESSAGE)).toBeTruthy();
     });
     expect(queryByTestId("signup-check-email")).toBeNull();
   });
