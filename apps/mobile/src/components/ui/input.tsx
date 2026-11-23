@@ -9,6 +9,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
+import { useFieldErrorAnnouncement } from "@/hooks/use-field-error-announcement";
 import { useTheme } from "@/providers/theme-provider";
 import { fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -16,9 +17,10 @@ import type { SemanticColors } from "@/theme/tokens";
 export interface InputProps extends Omit<TextInputProps, "style"> {
   label?: string;
   /**
-   * Shown under the field, which turns its border red. Its testID is `${testID}-error`, and it is
-   * announced as it appears (an alert role, plus a polite live region on Android); the field also
-   * carries it as its accessibility hint, so it is read again when the field gets focus.
+   * Shown under the field, which turns its border red. Its testID is `${testID}-error`. It is
+   * announced as it appears: by a polite live region on Android, and by a queued VoiceOver
+   * announcement on iOS (where the alert role alone announces nothing). The field also carries it
+   * as its accessibility hint, so it is read again when the field gets focus.
    */
   errorText?: string;
   leftIcon?: ReactNode;
@@ -47,6 +49,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [focused, setFocused] = useState(false);
+  useFieldErrorAnnouncement(errorText);
 
   const hasError = Boolean(errorText);
   const borderColor = hasError ? semantic.errorText : focused ? semantic.ring : semantic.border;

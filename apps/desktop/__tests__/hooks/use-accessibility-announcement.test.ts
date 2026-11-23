@@ -55,3 +55,24 @@ describe("useAccessibilityAnnouncement", () => {
     ]);
   });
 });
+
+describe("useAccessibilityAnnouncement with queue", () => {
+  it("PrimeTestLab 11035 M-02: queues the announcement behind current speech", () => {
+    const announce = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibility")
+      .mockImplementation(() => {});
+    const announceWithOptions = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+    announceWithOptions.mockClear();
+
+    renderHook(() => useAccessibilityAnnouncement("Enter a valid email address.", { queue: true }));
+
+    expect(announceWithOptions).toHaveBeenCalledWith("Enter a valid email address.", {
+      queue: true,
+    });
+    expect(announce).not.toHaveBeenCalled();
+    announce.mockRestore();
+    announceWithOptions.mockRestore();
+  });
+});

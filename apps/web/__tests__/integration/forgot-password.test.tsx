@@ -120,7 +120,10 @@ describe("Forgot password page", () => {
     expect(await screen.findByTestId("forgot-password-email-error")).toHaveTextContent(
       INVALID_EMAIL_MESSAGE,
     );
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // The inline error is the only alert: no top banner.
+    expect(screen.getAllByRole("alert")).toEqual([
+      screen.getByTestId("forgot-password-email-error"),
+    ]);
   });
 
   it("shows loading state while submitting", async () => {

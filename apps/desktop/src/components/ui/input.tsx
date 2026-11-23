@@ -9,6 +9,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
+import { useAccessibilityAnnouncement } from "@/hooks/use-accessibility-announcement";
 import { useTheme } from "@/providers/theme-provider";
 import { fontSizes, radii, spacing, type SemanticColors } from "@/theme/tokens";
 
@@ -18,9 +19,10 @@ export interface InputProps extends Omit<TextInputProps, "style"> {
   placeholder?: string;
   label?: string;
   /**
-   * Shown under the field, which turns its border red. Its testID is `${testID}-error`, it is
-   * announced as it appears (an alert role), and the field carries it as its accessibility hint,
-   * so VoiceOver reads it again when the field gets focus.
+   * Shown under the field, which turns its border red. Its testID is `${testID}-error`. VoiceOver
+   * announces it as it appears (a queued announcement: the alert role alone maps to no macOS role
+   * and says nothing), and the field carries it as its accessibility hint, so VoiceOver reads it
+   * again when the field gets focus.
    */
   errorText?: string;
   leftIcon?: React.ReactNode;
@@ -52,6 +54,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [focused, setFocused] = useState(false);
+  useAccessibilityAnnouncement(errorText || null, { queue: true });
 
   const hasError = Boolean(errorText);
 

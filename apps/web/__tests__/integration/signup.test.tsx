@@ -194,7 +194,8 @@ describe("Signup page", () => {
       expect(email).toHaveAccessibleDescription(INVALID_EMAIL_MESSAGE);
       // The first invalid field gets focus, so a screen reader reads its error.
       expect(email).toHaveFocus();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      // The inline error is the only alert: no top banner.
+      expect(screen.getAllByRole("alert")).toEqual([screen.getByTestId("signup-email-error")]);
     });
 
     it("PrimeTestLab 11035 M-02: shows the email and password errors together on the first click", async () => {
@@ -266,7 +267,23 @@ describe("Signup page", () => {
         INVALID_EMAIL_MESSAGE,
       );
       expect(screen.queryByText(/Unable to validate/)).not.toBeInTheDocument();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getAllByRole("alert")).toEqual([screen.getByTestId("signup-email-error")]);
+    });
+
+    it("PrimeTestLab 11035 M-02: announces an error on the field that already has focus", async () => {
+      const user = userEvent.setup();
+      await act(async () => {
+        render(<SignupPage />);
+      });
+
+      await user.type(screen.getByLabelText("Email"), "name@example.com");
+      await user.type(screen.getByLabelText("Password"), "abc{Enter}");
+
+      expect(mockSignUp).not.toHaveBeenCalled();
+      // focus() on the already-focused password field fires no focus event, so the error must be
+      // a live region of its own to be announced.
+      expect(screen.getByLabelText("Password")).toHaveFocus();
+      expect(screen.getByRole("alert")).toBe(screen.getByTestId("signup-password-error"));
     });
   });
 

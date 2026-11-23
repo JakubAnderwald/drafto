@@ -1,4 +1,5 @@
 import React from "react";
+import { AccessibilityInfo } from "react-native";
 
 import { render, fireEvent } from "../../helpers/test-utils";
 import { Input } from "@/components/ui/input";
@@ -60,5 +61,21 @@ describe("Input", () => {
     );
     expect(getByText("L")).toBeTruthy();
     expect(getByText("R")).toBeTruthy();
+  });
+
+  it("PrimeTestLab 11035 M-02: asks VoiceOver to announce an error as it appears", () => {
+    const announce = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+    announce.mockClear();
+    const { rerender } = render(<Input value="" onChangeText={() => {}} testID="input" />);
+    expect(announce).not.toHaveBeenCalled();
+
+    rerender(
+      <Input value="" onChangeText={() => {}} testID="input" errorText="Email is required" />,
+    );
+
+    expect(announce).toHaveBeenCalledWith("Email is required", { queue: true });
+    announce.mockRestore();
   });
 });
