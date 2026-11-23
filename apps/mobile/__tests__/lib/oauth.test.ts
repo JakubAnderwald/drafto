@@ -17,7 +17,12 @@ import * as WebBrowser from "expo-web-browser";
 import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import type { SignInResponse, User } from "@react-native-google-signin/google-signin";
 
-import { signInWithApple, signInWithGoogle, describeGoogleSignInError } from "@/lib/oauth";
+import {
+  signInWithApple,
+  signInWithGoogle,
+  describeGoogleSignInError,
+  signOutOfGoogle,
+} from "@/lib/oauth";
 import { claimAuthCallbackDelivery } from "@/lib/auth-callback";
 import { clearAuthCallbackError, getAuthCallbackError } from "@/lib/auth-callback-errors";
 
@@ -163,6 +168,40 @@ describe("signInWithGoogle", () => {
 
     expect(result).toEqual({ error: "Google Sign-In did not return an ID token." });
     expect(mockSignInWithIdToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("signOutOfGoogle (PrimeTestLab 11035 M-03)", () => {
+  const mockGoogleSignOut = jest.mocked(GoogleSignin.signOut);
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGoogleSignOut.mockResolvedValue(null);
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it("PrimeTestLab 11035 M-03: ends the native Google session, so the next sign-in shows the chooser", async () => {
+    await signOutOfGoogle();
+
+    expect(mockGoogleSignOut).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-03: swallows a native failure and logs only its code and message", async () => {
+    mockGoogleSignOut.mockRejectedValue(
+      nativeError("SIGN_IN_REQUIRED", "apiClient is null - call configure() first"),
+    );
+
+    await expect(signOutOfGoogle()).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith("[oauth][google] sign-out failed", {
+      code: "SIGN_IN_REQUIRED",
+      message: "apiClient is null - call configure() first",
+    });
   });
 });
 

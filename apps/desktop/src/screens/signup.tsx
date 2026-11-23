@@ -1,6 +1,13 @@
 import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet } from "react-native";
-import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
+import {
+  SIGNUP_CONFIRMATION_SENT,
+  SIGNUP_EMAIL_REDIRECT_URL,
+  describeAuthError,
+  hasFieldErrors,
+  validateCredentials,
+  type AuthFieldErrors,
+} from "@drafto/shared";
 
 import { cryptoReady, supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
@@ -21,18 +28,28 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [loading, setLoading] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
 
+  const handleEmailChange = (value: string) => {
+    setEmail(value);
+    setFieldErrors((current) => ({ ...current, email: undefined }));
+  };
+
+  const handlePasswordChange = (value: string) => {
+    setPassword(value);
+    setFieldErrors((current) => ({ ...current, password: undefined }));
+  };
+
   const handleSignup = async () => {
     const trimmedEmail = email.trim();
-    if (!trimmedEmail || !password) {
-      setError("Please enter your email and password.");
-      return;
-    }
-
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters.");
+    // Both fields are checked on every submit, so the user sees every problem at once, and a
+    // malformed address never reaches Supabase (PrimeTestLab 11035 M-02).
+    const validation = validateCredentials({ email, password }, "signup");
+    setFieldErrors(validation);
+    if (hasFieldErrors(validation)) {
+      setError(null);
       return;
     }
 
@@ -49,7 +66,9 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
       });
 
       if (signUpError) {
-        setError(signUpError.message);
+        const copy = describeAuthError(signUpError);
+        if (copy.field) setFieldErrors({ [copy.field]: copy.message });
+        else setError(copy.message);
         return;
       }
 
@@ -91,7 +110,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
       <Text style={styles.subtitle}>Create your Drafto account</Text>
 
       {error && (
-        <View style={styles.errorContainer}>
+        <View style={styles.errorContainer} accessibilityRole="alert" testID="signup-error">
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}
@@ -99,10 +118,12 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
       <View style={styles.form}>
         <View style={styles.field}>
           <Input
+            testID="signup-email-input"
             label="Email"
             placeholder="you@example.com"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={handleEmailChange}
+            errorText={fieldErrors.email}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"
@@ -117,7 +138,8 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
             label="Password"
             placeholder="Min. 6 characters"
             value={password}
-            onChangeText={setPassword}
+            onChangeText={handlePasswordChange}
+            errorText={fieldErrors.password}
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
@@ -127,7 +149,14 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
           />
         </View>
 
-        <Button title="Sign up" onPress={handleSignup} loading={loading} fullWidth size="lg" />
+        <Button
+          title="Sign up"
+          onPress={handleSignup}
+          loading={loading}
+          fullWidth
+          size="lg"
+          testID="signup-submit"
+        />
       </View>
 
       <OAuthButtons onError={(msg) => setError(msg)} />

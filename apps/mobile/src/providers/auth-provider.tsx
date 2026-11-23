@@ -16,6 +16,7 @@ import { needsAppleConfirmation, requestAppleRevocationGrant } from "@/lib/apple
 import { getCachedApproval, setCachedApproval, clearCachedApproval } from "@/lib/approval-cache";
 import { createRecoveryLinkHandler } from "@/lib/auth-recovery";
 import { deleteAllLocalAttachments, processPendingUploads } from "@/lib/data/attachment-queue";
+import { signOutOfGoogle } from "@/lib/oauth";
 import { supabase } from "@/lib/supabase";
 
 /** Max time to wait for the pre-sign-out flush before proceeding to reset. */
@@ -257,6 +258,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch (error) {
         console.error("Failed to delete local attachments on sign-out:", error);
       }
+
+      // End the native Google session too, so the next Google sign-in shows the account chooser
+      // instead of signing the same account straight back in (PrimeTestLab 11035 M-03). Never
+      // throws.
+      await signOutOfGoogle();
     },
     [abandonApprovalCheck],
   );
@@ -398,6 +404,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // A new sign-in makes an earlier "account deleted" confirmation stale.
       if (event === "SIGNED_IN") {
         clearAccountDeletedNotice();
+      }
+
+      // A session that ends without signOut() (revoked elsewhere, refresh token expired) still
+      // ends the native Google session, like a sign-out from Settings (PrimeTestLab 11035 M-03).
+      if (event === "SIGNED_OUT") {
+        void signOutOfGoogle();
       }
 
       setSession(newSession);

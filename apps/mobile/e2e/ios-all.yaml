@@ -8,6 +8,10 @@ appId: eu.drafto.mobile
 # Self-contained: clean start, never signs in, types only dummy values.
 - runFlow: 09-password-visibility.yaml
 
+# ===== FLOW 12: Sign-up email validation (PrimeTestLab 11035, M-02) =====
+# Self-contained: clean start, never signs in, nothing reaches Supabase.
+- runFlow: 12-signup-email.yaml
+
 # ===== FLOW 01: Login =====
 - clearKeychain
 - stopApp

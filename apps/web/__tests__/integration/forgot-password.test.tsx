@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
+import { AUTH_RATE_LIMITED_MESSAGE, INVALID_EMAIL_MESSAGE } from "@drafto/shared";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -79,8 +80,47 @@ describe("Forgot password page", () => {
     await user.type(screen.getByLabelText("Email"), "test@example.com");
     await user.click(screen.getByRole("button", { name: "Send reset link" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Rate limit exceeded");
+    expect(await screen.findByRole("alert")).toHaveTextContent(AUTH_RATE_LIMITED_MESSAGE);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Forgot Password");
+  });
+
+  it("PrimeTestLab 11035 M-02: refuses a malformed email without calling Supabase, inline", async () => {
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<ForgotPasswordPage />);
+    });
+
+    await user.type(screen.getByLabelText("Email"), "planner.com");
+    await user.click(screen.getByRole("button", { name: "Send reset link" }));
+
+    expect(mockResetPassword).not.toHaveBeenCalled();
+    const email = screen.getByLabelText("Email");
+    expect(screen.getByTestId("forgot-password-email-error")).toHaveTextContent(
+      INVALID_EMAIL_MESSAGE,
+    );
+    expect(email).toHaveAttribute("aria-invalid", "true");
+    expect(email).toHaveFocus();
+
+    await user.type(email, "x");
+    expect(screen.queryByTestId("forgot-password-email-error")).not.toBeInTheDocument();
+  });
+
+  it("PrimeTestLab 11035 M-02: puts Supabase's format error under the field", async () => {
+    mockResetPassword.mockResolvedValueOnce({
+      error: { message: "Unable to validate email address: invalid format" },
+    });
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<ForgotPasswordPage />);
+    });
+
+    await user.type(screen.getByLabelText("Email"), "name@example.com");
+    await user.click(screen.getByRole("button", { name: "Send reset link" }));
+
+    expect(await screen.findByTestId("forgot-password-email-error")).toHaveTextContent(
+      INVALID_EMAIL_MESSAGE,
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("shows loading state while submitting", async () => {

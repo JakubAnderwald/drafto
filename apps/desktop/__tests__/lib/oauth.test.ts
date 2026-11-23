@@ -58,6 +58,7 @@ describe("signInWithOAuthBrowser", () => {
       options: {
         redirectTo: "https://api.drafto.test/auth/desktop/callback",
         skipBrowserRedirect: true,
+        queryParams: { prompt: "select_account" },
       },
     });
     expect(openURL).toHaveBeenCalledWith("https://supabase.test/auth/v1/authorize?provider=google");
@@ -85,6 +86,16 @@ describe("signInWithOAuthBrowser", () => {
     expect(mockSignInWithOAuth).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "apple" }),
     );
+  });
+
+  it("PrimeTestLab 11035 M-03: asks Google for its account chooser, and only Google", async () => {
+    await signInWithOAuthBrowser("google");
+    expect(mockSignInWithOAuth.mock.calls[0][0].options.queryParams).toEqual({
+      prompt: "select_account",
+    });
+
+    await signInWithOAuthBrowser("apple");
+    expect(mockSignInWithOAuth.mock.calls[1][0].options).not.toHaveProperty("queryParams");
   });
 
   it("surfaces the Supabase error and opens nothing", async () => {

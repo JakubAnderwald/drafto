@@ -17,6 +17,11 @@ export interface InputProps extends Omit<TextInputProps, "style"> {
   onChangeText: (text: string) => void;
   placeholder?: string;
   label?: string;
+  /**
+   * Shown under the field, which turns its border red. Its testID is `${testID}-error`, it is
+   * announced as it appears (an alert role), and the field carries it as its accessibility hint,
+   * so VoiceOver reads it again when the field gets focus.
+   */
   errorText?: string;
   leftIcon?: React.ReactNode;
   rightIcon?: React.ReactNode;
@@ -39,6 +44,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
     testID,
     onFocus,
     onBlur,
+    accessibilityHint,
     ...rest
   },
   ref,
@@ -71,6 +77,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
           placeholderTextColor={semantic.fgSubtle}
           secureTextEntry={secureTextEntry}
           accessibilityLabel={label}
+          accessibilityHint={errorText || accessibilityHint}
           onFocus={(e) => {
             setFocused(true);
             onFocus?.(e);
@@ -83,7 +90,15 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
         />
         {rightIcon ? <View style={styles.rightIcon}>{rightIcon}</View> : null}
       </View>
-      {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
+      {errorText ? (
+        <Text
+          style={styles.errorText}
+          testID={testID ? `${testID}-error` : undefined}
+          accessibilityRole="alert"
+        >
+          {errorText}
+        </Text>
+      ) : null}
     </View>
   );
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { oauthQueryParams } from "@drafto/shared";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/cn";
 
@@ -51,10 +52,14 @@ export function OAuthButtons({ className }: OAuthButtonsProps) {
 
     try {
       const supabase = createClient();
+      // Google always shows its account chooser, so signing out and back in can switch
+      // accounts (PrimeTestLab 11035 M-03).
+      const queryParams = oauthQueryParams(provider);
       const { error: oauthError } = await supabase.auth.signInWithOAuth({
         provider,
         options: {
           redirectTo: `${window.location.origin}/auth/callback`,
+          ...(queryParams ? { queryParams } : {}),
         },
       });
 
