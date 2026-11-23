@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   duplicateNotebookNameMessage,
@@ -16,6 +16,24 @@ describe("PrimeTestLab 11035 M-01 normalizeNotebookName", () => {
   it("trims, collapses inner spaces and ignores case", () => {
     expect(normalizeNotebookName("  Project   Ideas ")).toBe("project ideas");
     expect(normalizeNotebookName("PROJECT\tIDEAS")).toBe("project ideas");
+  });
+
+  it("folds case the same way whatever the device locale is", () => {
+    // A Turkish-locale device lower-cases "I" to dotless "ı"; the check must not follow it.
+    const turkish = vi.spyOn(String.prototype, "toLocaleLowerCase").mockImplementation(function (
+      this: string,
+    ) {
+      return this.replace(/I/g, "ı").toLowerCase();
+    });
+    try {
+      expect(normalizeNotebookName("IDEAS")).toBe("ideas");
+      expect(findDuplicateNotebook("IDEAS", [{ id: "nb-1", name: "ideas" }])).toEqual({
+        id: "nb-1",
+        name: "ideas",
+      });
+    } finally {
+      turkish.mockRestore();
+    }
   });
 
   it("treats composed and decomposed accents as the same name", () => {

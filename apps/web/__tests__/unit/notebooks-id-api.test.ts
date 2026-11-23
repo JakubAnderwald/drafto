@@ -171,6 +171,24 @@ describe("PATCH /api/notebooks/[id]", () => {
       expect(update).not.toHaveBeenCalled();
     });
 
+    it("answers 404, not 409, for a notebook the user doesn't own, even with a taken name", async () => {
+      authenticateAs("user-1");
+      const update = vi.fn();
+      withNotebooks(update);
+
+      const response = await PATCH(
+        new NextRequest("http://localhost:3000/api/notebooks/nb-missing", {
+          method: "PATCH",
+          body: JSON.stringify({ name: "Recipes" }),
+          headers: { "Content-Type": "application/json" },
+        }),
+        { params: Promise.resolve({ id: "nb-missing" }) },
+      );
+
+      expect(response.status).toBe(404);
+      expect(update).not.toHaveBeenCalled();
+    });
+
     it("lets a notebook change only the case of its own name", async () => {
       authenticateAs("user-1");
       const renamed = { id: "nb-1", name: "project ideas" };

@@ -19,7 +19,7 @@ The obvious fix is a unique index on `notebooks (user_id, lower(name))`. It woul
 
 Notebook names are unique per user, ignoring case and spacing, and the apps and the API enforce it. There is no database constraint.
 
-- **One rule.** `packages/shared/src/notebooks/notebook-name.ts` defines it once: `normalizeNotebookName` (Unicode NFC, trim, collapse inner whitespace, lower-case), `findDuplicateNotebook(name, notebooks, excludeId?)` and the message `A notebook named "<name>" already exists. Choose a different name.` Every platform uses these.
+- **One rule.** `packages/shared/src/notebooks/notebook-name.ts` defines it once: `normalizeNotebookName` (Unicode NFC, trim, collapse inner whitespace, locale-independent lower-case so every device and the server agree), `findDuplicateNotebook(name, notebooks, excludeId?)` and the message `A notebook named "<name>" already exists. Choose a different name.` Every platform uses these.
 - **Renames.** A notebook never clashes with itself: on a rename the caller passes the notebook's id, so changing only the case of a name works, and a notebook may keep the name it already has even if an older duplicate exists.
 - **Mobile and desktop** check the local WatermelonDB notebook list before writing. A refused name keeps the field open with the message under it.
 - **Web** checks its sidebar list before sending, and `POST /api/notebooks` and `PATCH /api/notebooks/:id` read the user's notebook names and answer `409` with the message (`apps/web/src/lib/api/notebook-name-conflict.ts`). The sidebar shows the 409, and any other create or rename failure, under the field.

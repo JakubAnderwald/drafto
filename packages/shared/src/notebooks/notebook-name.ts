@@ -13,9 +13,14 @@ export interface NamedNotebook {
   name: string;
 }
 
-/** The form two names are compared in: trimmed, inner spaces collapsed, Unicode-normalized, lower-cased. */
+/**
+ * The form two names are compared in: trimmed, inner spaces collapsed, Unicode-normalized,
+ * lower-cased. The lower-casing ignores the device locale (`toLowerCase`, not
+ * `toLocaleLowerCase`), so a Turkish-locale phone folds "I" to "i" like the server does and
+ * every platform agrees on which names clash.
+ */
 export function normalizeNotebookName(name: string): string {
-  return name.normalize("NFC").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return name.normalize("NFC").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 /**

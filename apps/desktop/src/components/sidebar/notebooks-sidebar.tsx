@@ -500,8 +500,8 @@ function NotebookRow({
           <Text style={[styles.itemText, isSelected && styles.itemTextSelected]} numberOfLines={1}>
             {notebook.name}
           </Text>
-          {/* The hover × takes the count's place at the end of the row. */}
-          {countText !== null && !hovered ? (
+          {/* The count stays put on hover: the × appears in its own slot beside it. */}
+          {countText !== null ? (
             <Text
               testID="notebook-note-count"
               style={[styles.countText, isSelected && styles.countTextSelected]}
@@ -638,9 +638,7 @@ const createStyles = (semantic: SemanticColors) =>
       opacity: 0,
       // Prevent the invisible button from intercepting taps on the row body.
       pointerEvents: "none",
-      // Out of the flow, so the note count sits flush right until hover swaps the two.
-      position: "absolute",
-      right: 0,
+      // Still in the flow: its slot keeps every row the same height, hovered or not.
     },
     countText: {
       marginLeft: spacing.xs,

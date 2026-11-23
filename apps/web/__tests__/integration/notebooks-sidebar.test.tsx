@@ -700,7 +700,8 @@ describe("NotebooksSidebar — duplicate names (PrimeTestLab 11035 M-01)", () =>
 
     expect(screen.getByRole("alert")).toHaveTextContent(DUPLICATE_WORK);
     expect(input).toHaveAttribute("aria-invalid", "true");
-    expect(input).toHaveAttribute("aria-describedby", "notebook-name-error");
+    expect(input).toHaveAttribute("aria-describedby", "notebook-create-name-error");
+    expect(document.getElementById("notebook-create-name-error")).toHaveTextContent(DUPLICATE_WORK);
     expect(mockFetch).not.toHaveBeenCalled();
 
     // Leaving the field doesn't send the refused name or close it.
@@ -780,6 +781,59 @@ describe("NotebooksSidebar — duplicate names (PrimeTestLab 11035 M-01)", () =>
     expect(screen.getByDisplayValue("Journal")).toBeInTheDocument();
   });
 
+  it("opens the next rename without the last one's error, and saves it on blur", async () => {
+    const user = await renderSidebar();
+
+    await user.dblClick(screen.getByText("Notes"));
+    const input = screen.getByDisplayValue("Notes");
+    await user.clear(input);
+    await user.type(input, "WORK{Enter}");
+    expect(screen.getByRole("alert")).toHaveTextContent(DUPLICATE_WORK);
+
+    // Double-clicking another notebook leaves the refused field and opens a clean one.
+    await user.dblClick(screen.getByText("Work"));
+    const workInput = screen.getByDisplayValue("Work");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(workInput).not.toHaveAttribute("aria-invalid");
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    mockFetch.mockResolvedValueOnce(jsonResponse({ ...mockNotebooks[1], name: "Office" }));
+    await user.clear(workInput);
+    await user.type(workInput, "Office");
+    await act(async () => {
+      workInput.blur();
+    });
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/notebooks/nb-2",
+        expect.objectContaining({ method: "PATCH", body: JSON.stringify({ name: "Office" }) }),
+      );
+    });
+  });
+
+  it("gives a refused create and a refused rename their own error ids", async () => {
+    const user = await renderSidebar();
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const createInput = screen.getByPlaceholderText("Notebook name");
+    await user.type(createInput, "Work{Enter}");
+
+    await user.dblClick(screen.getByText("Notes"));
+    const renameInput = screen.getByDisplayValue("Notes");
+    await user.clear(renameInput);
+    await user.type(renameInput, "Work{Enter}");
+
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    const createErrorId = createInput.getAttribute("aria-describedby");
+    const renameErrorId = renameInput.getAttribute("aria-describedby");
+    expect(createErrorId).toBeTruthy();
+    expect(renameErrorId).toBeTruthy();
+    expect(createErrorId).not.toBe(renameErrorId);
+    expect(document.querySelectorAll(`[id="${createErrorId}"]`)).toHaveLength(1);
+    expect(document.querySelectorAll(`[id="${renameErrorId}"]`)).toHaveLength(1);
+  });
+
   it("lets a notebook change only the case of its own name, keeping its count", async () => {
     const user = await renderSidebar();
     mockFetch.mockResolvedValueOnce(
@@ -813,6 +867,23 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
 
     const counts = screen.getAllByTestId("notebook-note-count").map((el) => el.textContent);
     expect(counts).toEqual(["3 notes", "1 note"]);
+  });
+
+  it("keeps the name in its own element, apart from the count", async () => {
+    // E2E helpers read the active notebook's name from it (apps/web/e2e/notes.spec.ts).
+    await act(async () => {
+      render(
+        <NotebooksSidebar
+          selectedNotebookId="nb-1"
+          onSelectNotebook={vi.fn()}
+          initialNotebooks={mockNotebooks}
+        />,
+      );
+    });
+
+    const active = screen.getByTestId("notebook-item-active");
+    expect(active).toHaveTextContent("3 notes");
+    expect(within(active).getByTestId("notebook-name").textContent).toBe("Notes");
   });
 
   it("refetches the counts when the lists refresh", async () => {

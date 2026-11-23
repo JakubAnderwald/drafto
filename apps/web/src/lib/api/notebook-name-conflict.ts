@@ -5,6 +5,12 @@ import type { Database } from "@/lib/supabase/database.types";
 export interface NotebookNameConflict {
   /** The user's notebook that already has the name, or null when the name is free. */
   duplicate: NamedNotebook | null;
+  /**
+   * On a rename, whether the user owns the renamed notebook (`excludeId`). False means the id
+   * is missing or someone else's, which the caller reports as not found before any name
+   * conflict. Always true on a create.
+   */
+  renamedNotebookFound: boolean;
   /** Set when the user's notebooks couldn't be read, so the name couldn't be checked. */
   error: { message: string } | null;
 }
@@ -24,6 +30,12 @@ export async function findNotebookNameConflict(
 ): Promise<NotebookNameConflict> {
   const { data, error } = await supabase.from("notebooks").select("id, name").eq("user_id", userId);
 
-  if (error) return { duplicate: null, error };
-  return { duplicate: findDuplicateNotebook(name, data ?? [], excludeId) ?? null, error: null };
+  if (error) return { duplicate: null, renamedNotebookFound: false, error };
+  const notebooks = data ?? [];
+  return {
+    duplicate: findDuplicateNotebook(name, notebooks, excludeId) ?? null,
+    renamedNotebookFound:
+      excludeId === undefined || notebooks.some((notebook) => notebook.id === excludeId),
+    error: null,
+  };
 }

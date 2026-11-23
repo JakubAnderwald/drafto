@@ -16,7 +16,9 @@ import {
 // The same wording as the mobile and desktop delete confirms.
 const TRASHED_NOTES_WARNING = "Trashed notes inside will be permanently deleted.";
 const NETWORK_ERROR = "Network error. Please try again.";
-const NAME_ERROR_ID = "notebook-name-error";
+// Each field has its own error id: a refused create and a refused rename can both be open.
+const CREATE_ERROR_ID = "notebook-create-name-error";
+const RENAME_ERROR_ID = "notebook-rename-name-error";
 
 interface Notebook {
   id: string;
@@ -34,10 +36,10 @@ async function errorMessageFrom(res: Response, fallback: string): Promise<string
 }
 
 /** Why a typed name was refused (PrimeTestLab 11035 M-01), under its field. */
-function NameError({ message }: { message: string }) {
+function NameError({ id, message }: { id: string; message: string }) {
   return (
     <p
-      id={NAME_ERROR_ID}
+      id={id}
       role="alert"
       data-testid="notebook-name-error"
       className="text-error-text mt-1 px-1 text-xs"
@@ -148,6 +150,13 @@ export function NotebooksSidebar({
 
   function closeRename() {
     setEditingId(null);
+    setRenameError(null);
+  }
+
+  /** Opens a notebook's rename field afresh: an earlier refused rename's error doesn't carry over. */
+  function startRename(notebook: Notebook) {
+    setEditingId(notebook.id);
+    setEditingName(notebook.name);
     setRenameError(null);
   }
 
@@ -363,22 +372,19 @@ export function NotebooksSidebar({
                     maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                     aria-label="Notebook name"
                     aria-invalid={renameError ? true : undefined}
-                    aria-describedby={renameError ? NAME_ERROR_ID : undefined}
+                    aria-describedby={renameError ? RENAME_ERROR_ID : undefined}
                     className={`text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm transition-colors duration-[var(--transition-fast)] focus:ring-1 focus:outline-none ${
                       renameError ? "border-error" : "border-border"
                     }`}
                   />
-                  {renameError && <NameError message={renameError} />}
+                  {renameError && <NameError id={RENAME_ERROR_ID} message={renameError} />}
                 </>
               ) : (
                 <div
                   role="button"
                   tabIndex={0}
                   onClick={() => onSelectNotebook(notebook.id)}
-                  onDoubleClick={() => {
-                    setEditingId(notebook.id);
-                    setEditingName(notebook.name);
-                  }}
+                  onDoubleClick={() => startRename(notebook)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -394,7 +400,10 @@ export function NotebooksSidebar({
                       : "text-fg hover:bg-sidebar-hover"
                   }`}
                 >
-                  <span className="truncate">{notebook.name}</span>
+                  {/* E2E helpers read the name from here: the row's text includes the count. */}
+                  <span data-testid="notebook-name" className="truncate">
+                    {notebook.name}
+                  </span>
                   {notebook.note_count !== undefined && (
                     <span
                       data-testid="notebook-note-count"
@@ -456,12 +465,12 @@ export function NotebooksSidebar({
                 maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                 placeholder="Notebook name"
                 aria-invalid={createError ? true : undefined}
-                aria-describedby={createError ? NAME_ERROR_ID : undefined}
+                aria-describedby={createError ? CREATE_ERROR_ID : undefined}
                 className={`text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm transition-colors duration-[var(--transition-fast)] focus:ring-1 focus:outline-none ${
                   createError ? "border-error" : "border-border"
                 }`}
               />
-              {createError && <NameError message={createError} />}
+              {createError && <NameError id={CREATE_ERROR_ID} message={createError} />}
             </li>
           )}
         </ul>

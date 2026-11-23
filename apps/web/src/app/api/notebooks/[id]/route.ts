@@ -33,6 +33,11 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   if (conflict.error) {
     return errorResponse("Failed to check notebook names", 500);
   }
+  // A missing or foreign notebook is not found, whatever name was asked for: the same 404
+  // the update below gives it, before any 409 about the name.
+  if (!conflict.renamedNotebookFound) {
+    return errorResponse("Failed to update notebook", 404);
+  }
   if (conflict.duplicate) {
     return errorResponse(duplicateNotebookNameMessage(conflict.duplicate.name), 409);
   }

@@ -1,4 +1,5 @@
 import { ActivityIndicator, Alert, ScrollView, StyleSheet } from "react-native";
+import type { StyleProp, ViewStyle } from "react-native";
 import { Q } from "@nozbe/watermelondb";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
@@ -1194,7 +1195,7 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
     expect(utils.getByLabelText("Project Ideas").props.accessibilityValue?.text).toBeUndefined();
   });
 
-  it("swaps the count for the delete × while the row is hovered", () => {
+  it("keeps the count beside the delete × while the row is hovered", () => {
     mockNotebooks.push({ id: "nb-1", name: "Project Ideas", markAsDeleted: jest.fn() });
     mockNoteCounts["nb-1"] = 0;
     const utils = render(<NotebooksSidebar {...defaultProps} />);
@@ -1203,10 +1204,23 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
     expect(utils.getByText("0 notes")).toBeTruthy();
 
     fireEvent(row, "hoverIn");
-    expect(utils.queryByText("0 notes")).toBeNull();
+    expect(utils.getByText("0 notes")).toBeTruthy();
     expect(findDeleteButton(utils.UNSAFE_root)).toBeTruthy();
 
     fireEvent(row, "hoverOut");
     expect(utils.getByText("0 notes")).toBeTruthy();
+  });
+
+  it("keeps the hidden × in the row's layout, so hovering doesn't change the row's height", () => {
+    mockNotebooks.push({ id: "nb-1", name: "Project Ideas", markAsDeleted: jest.fn() });
+    mockNoteCounts["nb-1"] = 2;
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    const hiddenStyle = StyleSheet.flatten(
+      (findDeleteButton(utils.UNSAFE_root) as unknown as { props: { style: StyleProp<ViewStyle> } })
+        .props.style,
+    );
+    expect(hiddenStyle.opacity).toBe(0);
+    expect(hiddenStyle.position).toBeUndefined();
   });
 });
