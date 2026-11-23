@@ -9,7 +9,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
-import { useFieldErrorAnnouncement } from "@/hooks/use-field-error-announcement";
+import { useErrorAnnouncement } from "@/hooks/use-error-announcement";
 import { useTheme } from "@/providers/theme-provider";
 import { fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -23,6 +23,11 @@ export interface InputProps extends Omit<TextInputProps, "style"> {
    * as its accessibility hint, so it is read again when the field gets focus.
    */
   errorText?: string;
+  /**
+   * The form's submit counter. When it changes, the error is announced again even if its words
+   * are the same, so every submit that fails is heard (iOS; Android relies on the live region).
+   */
+  submitAttempt?: number;
   leftIcon?: ReactNode;
   rightIcon?: ReactNode;
   containerStyle?: StyleProp<ViewStyle>;
@@ -33,6 +38,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
   {
     label,
     errorText,
+    submitAttempt,
     leftIcon,
     rightIcon,
     containerStyle,
@@ -49,7 +55,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [focused, setFocused] = useState(false);
-  useFieldErrorAnnouncement(errorText);
+  useErrorAnnouncement(errorText, submitAttempt);
 
   const hasError = Boolean(errorText);
   const borderColor = hasError ? semantic.errorText : focused ? semantic.ring : semantic.border;

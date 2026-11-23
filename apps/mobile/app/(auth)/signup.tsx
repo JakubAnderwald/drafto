@@ -12,6 +12,7 @@ import {
 } from "@drafto/shared";
 
 import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
+import { useErrorAnnouncement } from "@/hooks/use-error-announcement";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -32,6 +33,10 @@ export default function SignupScreen() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [loading, setLoading] = useState(false);
+  // Bumped by every submit (and OAuth try), so an error that repeats the last one's words is
+  // still announced to VoiceOver (PrimeTestLab 11035 review).
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  useErrorAnnouncement(error, submitAttempt);
   const [sentTo, setSentTo] = useState<string | null>(null);
 
   const handleEmailChange = (value: string) => {
@@ -44,7 +49,13 @@ export default function SignupScreen() {
     setFieldErrors((current) => ({ ...current, password: undefined }));
   };
 
+  const handleOAuthError = (message: string) => {
+    setSubmitAttempt((attempt) => attempt + 1);
+    setError(message);
+  };
+
   const handleSignup = async () => {
+    setSubmitAttempt((attempt) => attempt + 1);
     const trimmedEmail = email.trim();
     // Both fields are checked on every submit, so the user sees every problem at once, and a
     // malformed address never reaches Supabase (PrimeTestLab 11035 M-02).
@@ -109,7 +120,12 @@ export default function SignupScreen() {
         <Text style={styles.subtitle}>Create your Drafto account</Text>
 
         {error && (
-          <View style={styles.errorContainer} accessibilityRole="alert" testID="signup-error">
+          <View
+            style={styles.errorContainer}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+            testID="signup-error"
+          >
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
@@ -121,6 +137,7 @@ export default function SignupScreen() {
             value={email}
             onChangeText={handleEmailChange}
             errorText={fieldErrors.email}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"
@@ -136,6 +153,7 @@ export default function SignupScreen() {
             value={password}
             onChangeText={handlePasswordChange}
             errorText={fieldErrors.password}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
@@ -159,7 +177,7 @@ export default function SignupScreen() {
           />
         </View>
 
-        <OAuthButtons onError={(msg) => setError(msg)} />
+        <OAuthButtons onError={handleOAuthError} />
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>

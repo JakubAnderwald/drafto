@@ -1,6 +1,7 @@
 import { ATTACHMENT_URL_PREFIX } from "../constants";
 import { radii, spacing, type SemanticColors } from "../design-tokens";
 import { formatFileSize } from "../formatters/file-size";
+import { UNIQUE_KEY_SUFFIX } from "./attachment-url";
 
 // How a link to a non-image attachment looks in the editors (PrimeTestLab
 // 11035 S-04): a small card with a file icon, the file name and its size.
@@ -81,13 +82,6 @@ export function cssString(value: string): string {
   }
   return `${out}"`;
 }
-
-/**
- * The unique part of a storage key made by `buildAttachmentStoragePath`:
- * `-<timestamp>-<8 hex>` before the extension. Digits, hex and dashes read the
- * same in every encoding of the URL.
- */
-const UNIQUE_KEY_SUFFIX = /-\d{10,}-[0-9a-f]{8}(?=(?:\.[^./]*)?$)/;
 
 function encodeOrNull(encode: (value: string) => string, value: string): string | null {
   try {

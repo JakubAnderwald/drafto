@@ -33,6 +33,15 @@ const RATE_LIMIT_CODES = new Set([
 ]);
 
 /**
+ * Whether a `validation_failed` message is about the email address ("Password recovery requires
+ * an email", "To signup, please provide your email"), not about a phone number or the request
+ * itself.
+ */
+function isAboutEmail(message: string): boolean {
+  return /\bemail\b/.test(message) && !/\bphone\b/.test(message);
+}
+
+/**
  * Turns a Supabase Auth error into words a user can act on (PrimeTestLab 11035 M-02). Matches the
  * stable `code` first and the message second, because older GoTrue versions and some proxies send
  * only the message. An unknown error keeps its own message, so nothing is hidden; the result is
@@ -49,11 +58,21 @@ export function describeAuthError(error: AuthErrorLike | null | undefined): Auth
 
   if (
     code === "email_address_invalid" ||
-    code === "validation_failed" ||
     message.includes("unable to validate email address") ||
-    message.includes("invalid format")
+    message.includes("invalid format") ||
+    (code === "validation_failed" && isAboutEmail(message))
   ) {
     return { message: INVALID_EMAIL_MESSAGE, field: "email" };
+  }
+
+  // GoTrue also sends `validation_failed` for a missing password ("Signup requires a valid
+  // password") and for malformed requests (PKCE parameters, flow state). Only the password ones
+  // belong under a field; the rest keep their own message in the banner.
+  if (code === "validation_failed") {
+    if (message.includes("password")) {
+      return { message: raw, field: "password" };
+    }
+    return { message: raw || AUTH_GENERIC_ERROR_MESSAGE };
   }
 
   if (code === "invalid_credentials" || message.includes("invalid login credentials")) {

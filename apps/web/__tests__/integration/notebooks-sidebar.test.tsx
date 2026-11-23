@@ -834,6 +834,54 @@ describe("NotebooksSidebar — duplicate names (PrimeTestLab 11035 M-01)", () =>
     expect(document.querySelectorAll(`[id="${renameErrorId}"]`)).toHaveLength(1);
   });
 
+  it("PrimeTestLab 11035 review: renames while a create is still pending, and never sends a create twice", async () => {
+    const user = await renderSidebar();
+    let finishCreate: (response: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishCreate = resolve;
+        });
+      }
+      if (init?.method === "PATCH" && url === "/api/notebooks/nb-1") {
+        return Promise.resolve(jsonResponse({ ...mockNotebooks[0], name: "Journal" }));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const createInput = screen.getByPlaceholderText("Notebook name");
+    await user.type(createInput, "Ideas{Enter}");
+    // A second Enter on the pending create is ignored.
+    await user.type(createInput, "{Enter}");
+
+    await user.dblClick(screen.getByText("Notes"));
+    const renameInput = screen.getByDisplayValue("Notes");
+    await user.clear(renameInput);
+    await user.type(renameInput, "Journal{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByText("Journal")).toBeInTheDocument();
+    });
+    const methods = mockFetch.mock.calls.map(([, init]) => (init as RequestInit).method);
+    expect(methods.filter((method) => method === "POST")).toHaveLength(1);
+    expect(methods.filter((method) => method === "PATCH")).toHaveLength(1);
+
+    await act(async () => {
+      finishCreate(
+        jsonResponse({
+          id: "nb-3",
+          name: "Ideas",
+          created_at: "2026-03-01",
+          updated_at: "2026-03-01",
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Ideas")).toBeInTheDocument();
+    });
+  });
+
   it("lets a notebook change only the case of its own name, keeping its count", async () => {
     const user = await renderSidebar();
     mockFetch.mockResolvedValueOnce(

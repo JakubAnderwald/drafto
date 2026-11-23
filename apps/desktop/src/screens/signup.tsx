@@ -9,6 +9,7 @@ import {
   type AuthFieldErrors,
 } from "@drafto/shared";
 
+import { useAccessibilityAnnouncement } from "@/hooks/use-accessibility-announcement";
 import { cryptoReady, supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -30,6 +31,10 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [loading, setLoading] = useState(false);
+  // Bumped by every submit (and OAuth try), so an error that repeats the last one's words is
+  // still announced to VoiceOver (PrimeTestLab 11035 review).
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  useAccessibilityAnnouncement(error, { queue: true, attempt: submitAttempt });
   const [sentTo, setSentTo] = useState<string | null>(null);
 
   const handleEmailChange = (value: string) => {
@@ -42,7 +47,13 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
     setFieldErrors((current) => ({ ...current, password: undefined }));
   };
 
+  const handleOAuthError = (message: string) => {
+    setSubmitAttempt((attempt) => attempt + 1);
+    setError(message);
+  };
+
   const handleSignup = async () => {
+    setSubmitAttempt((attempt) => attempt + 1);
     const trimmedEmail = email.trim();
     // Both fields are checked on every submit, so the user sees every problem at once, and a
     // malformed address never reaches Supabase (PrimeTestLab 11035 M-02).
@@ -124,6 +135,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
             value={email}
             onChangeText={handleEmailChange}
             errorText={fieldErrors.email}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"
@@ -140,6 +152,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
             value={password}
             onChangeText={handlePasswordChange}
             errorText={fieldErrors.password}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
@@ -159,7 +172,7 @@ export function SignupScreen({ onNavigateToLogin }: SignupScreenProps) {
         />
       </View>
 
-      <OAuthButtons onError={(msg) => setError(msg)} />
+      <OAuthButtons onError={handleOAuthError} />
 
       <View style={styles.footer}>
         <Pressable onPress={onNavigateToLogin} disabled={!onNavigateToLogin}>

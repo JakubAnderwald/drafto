@@ -137,6 +137,41 @@ describe("describeAuthError (PrimeTestLab 11035 M-02)", () => {
     ).toEqual({ message: INVALID_EMAIL_MESSAGE, field: "email" });
   });
 
+  it("PrimeTestLab 11035 review: puts an email-only validation_failed under the email field", () => {
+    expect(
+      describeAuthError({
+        message: "Password recovery requires an email",
+        code: "validation_failed",
+      }),
+    ).toEqual({ message: INVALID_EMAIL_MESSAGE, field: "email" });
+    expect(
+      describeAuthError({
+        message: "To signup, please provide your email",
+        code: "validation_failed",
+      }),
+    ).toEqual({ message: INVALID_EMAIL_MESSAGE, field: "email" });
+  });
+
+  it("PrimeTestLab 11035 review: puts a password validation_failed under the password field", () => {
+    expect(
+      describeAuthError({ message: "Signup requires a valid password", code: "validation_failed" }),
+    ).toEqual({ message: "Signup requires a valid password", field: "password" });
+  });
+
+  it("PrimeTestLab 11035 review: keeps other validation_failed errors in the banner, with their own words", () => {
+    const pkce = "code challenge method not supported";
+    expect(describeAuthError({ message: pkce, code: "validation_failed" })).toEqual({
+      message: pkce,
+    });
+    const phone = "Only an email address or phone number should be provided on signup.";
+    expect(describeAuthError({ message: phone, code: "validation_failed" })).toEqual({
+      message: phone,
+    });
+    expect(describeAuthError({ code: "validation_failed" })).toEqual({
+      message: AUTH_GENERIC_ERROR_MESSAGE,
+    });
+  });
+
   it("does not say which credential was wrong", () => {
     expect(describeAuthError({ message: "Invalid login credentials" })).toEqual({
       message: INVALID_CREDENTIALS_MESSAGE,

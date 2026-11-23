@@ -75,6 +75,14 @@ function parseInitialContent(note: Note): TipTapDoc {
 // content is unchanged. Same bound as desktop's RESOLVE_TIMEOUT_MS.
 const RESOLVE_TIMEOUT_MS = 8000;
 
+// Bound on resolving the signed URL of a file just attached, before it is
+// inserted. The user is waiting on the insert, so this is far shorter than the
+// note-load bound: on a stalled network the file goes in with its
+// attachment:// href after this long (a plain link until the note is opened
+// again) instead of nothing appearing for 8 s. A file was just uploaded, so the
+// network normally answers well inside it. Same bound as desktop's.
+const INSERT_RESOLVE_TIMEOUT_MS = 1500;
+
 // Bound on reading the editor back once it is ready to add that serialisation
 // to the no-op-save baseline. Content saves wait for the read, so a stuck
 // WebView reply must not hold them up for long.
@@ -370,10 +378,11 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
         } else {
           // An uploaded file is shown with its signed URL, as it is once the
           // note is opened again, so it is a file card at once (PrimeTestLab
-          // 11035 S-04). Every save maps the link back to attachment://.
+          // 11035 S-04). Every save maps the link back to attachment://. A
+          // slow resolve gives up after INSERT_RESOLVE_TIMEOUT_MS.
           const href =
             attachment.uploadStatus === "uploaded"
-              ? await withResolveTimeout(resolveAttachmentSrc, RESOLVE_TIMEOUT_MS)(
+              ? await withResolveTimeout(resolveAttachmentSrc, INSERT_RESOLVE_TIMEOUT_MS)(
                   attachment.filePath,
                   "link",
                 )

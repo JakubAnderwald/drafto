@@ -977,7 +977,7 @@ describe("round-trip fidelity", () => {
           content: [
             {
               type: "text",
-              text: "report.pdf",
+              text: "my report.pdf",
               marks: [
                 {
                   type: "link",
@@ -995,7 +995,7 @@ describe("round-trip fidelity", () => {
     expect(tiptapToBlocknote(tiptap)).toEqual([
       {
         type: "file",
-        props: { url: "attachment://user-1/note-1/my report.pdf", name: "report.pdf" },
+        props: { url: "attachment://user-1/note-1/my report.pdf", name: "my report.pdf" },
         children: [],
       },
     ]);
@@ -1019,6 +1019,80 @@ describe("round-trip fidelity", () => {
     };
 
     expect(tiptapToBlocknote(tiptap)[0].type).toBe("paragraph");
+  });
+
+  describe("PrimeTestLab 11035 review: which lone attachment links become file blocks", () => {
+    const KEY = "user-1/note-1/Quarterly report-1700000000000-0a1b2c3d.pdf";
+    const SIGNED = `https://x.supabase.co/storage/v1/object/sign/attachments/${encodeURI(KEY)}?token=t`;
+    const IMAGE_KEY = "user-1/note-1/IMG_0001-1700000000000-0a1b2c3d.jpg";
+    const IMAGE_SIGNED = `https://x.supabase.co/storage/v1/object/sign/attachments/${IMAGE_KEY}?token=t`;
+
+    function lonelyLink(text: string, href: string): TipTapDoc {
+      return {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text, marks: [{ type: "link", attrs: { href } }] }],
+          },
+        ],
+      };
+    }
+
+    it("restores a file block from a signed URL worded as the file's name", () => {
+      expect(tiptapToBlocknote(lonelyLink("Quarterly report.pdf", SIGNED))).toEqual([
+        {
+          type: "file",
+          props: { url: `attachment://${KEY}`, name: "Quarterly report.pdf" },
+          children: [],
+        },
+      ]);
+    });
+
+    it("restores a file block from a local cached src worded as the file's name", () => {
+      const local = `file:///cache/x.pdf#drafto-attachment=${encodeURIComponent(KEY)}`;
+      expect(tiptapToBlocknote(lonelyLink("Quarterly report.pdf", local))[0]).toEqual({
+        type: "file",
+        props: { url: `attachment://${KEY}`, name: "Quarterly report.pdf" },
+        children: [],
+      });
+    });
+
+    it("restores a file block whose key kept only 20 characters of a long extension", () => {
+      const longKey = "user-1/note-1/Dr-1700000000000-0a1b2c3d. Smith referral let";
+      const longSigned = `https://x.supabase.co/storage/v1/object/sign/attachments/${encodeURI(longKey)}?token=t`;
+      expect(tiptapToBlocknote(lonelyLink("Dr. Smith referral letter scan", longSigned))).toEqual([
+        {
+          type: "file",
+          props: { url: `attachment://${longKey}`, name: "Dr. Smith referral letter scan" },
+          children: [],
+        },
+      ]);
+    });
+
+    it("keeps an image file block (an image uploaded as a file) a file block", () => {
+      expect(tiptapToBlocknote(lonelyLink("IMG_0001.jpg", IMAGE_SIGNED))[0].type).toBe("file");
+    });
+
+    it("keeps a pasted signed URL a paragraph with a link", () => {
+      const blocks = tiptapToBlocknote(lonelyLink(SIGNED, SIGNED));
+      expect(blocks[0].type).toBe("paragraph");
+    });
+
+    it("keeps a signed link worded as anything else a paragraph with a link", () => {
+      expect(tiptapToBlocknote(lonelyLink("see the report", SIGNED))[0].type).toBe("paragraph");
+      expect(tiptapToBlocknote(lonelyLink("my holiday", IMAGE_SIGNED))[0].type).toBe("paragraph");
+    });
+
+    it("still restores any lone attachment:// link as a file block, whatever its text", () => {
+      expect(tiptapToBlocknote(lonelyLink("see the report", `attachment://${KEY}`))).toEqual([
+        {
+          type: "file",
+          props: { url: `attachment://${KEY}`, name: "see the report" },
+          children: [],
+        },
+      ]);
+    });
   });
 
   it("image without optional props round-trips", () => {

@@ -1,4 +1,5 @@
 import React from "react";
+import { AccessibilityInfo } from "react-native";
 import {
   ACCOUNT_DELETED_MESSAGE,
   EMAIL_REQUIRED_MESSAGE,
@@ -191,5 +192,57 @@ describe("LoginScreen", () => {
 
     fireEvent.press(getByTestId("password-input-toggle"));
     expect(field().props.secureTextEntry).toBe(true);
+  });
+});
+
+describe("LoginScreen — VoiceOver announcements (PrimeTestLab 11035 review)", () => {
+  let announce: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    announce = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    announce.mockRestore();
+  });
+
+  /** How many times VoiceOver was asked to speak `message`. */
+  const announced = (message: string) =>
+    announce.mock.calls.filter(([spoken]) => spoken === message).length;
+
+  it("PrimeTestLab 11035 review: announces the error banner, and again when a resubmit fails the same way", async () => {
+    mockSignInWithPassword.mockResolvedValue({ error: { message: "Invalid login credentials" } });
+    const { getByText, getByTestId } = render(<LoginScreen />);
+
+    fireEvent.changeText(getByTestId("email-input"), "test@example.com");
+    fireEvent.changeText(getByTestId("password-input"), "wrongpassword");
+    fireEvent.press(getByText("Log in"));
+
+    await waitFor(() => {
+      expect(getByTestId("login-error")).toHaveTextContent(INVALID_CREDENTIALS_MESSAGE);
+    });
+    expect(announced(INVALID_CREDENTIALS_MESSAGE)).toBe(1);
+
+    fireEvent.press(getByText("Log in"));
+
+    await waitFor(() => {
+      expect(announced(INVALID_CREDENTIALS_MESSAGE)).toBe(2);
+    });
+    expect(mockSignInWithPassword).toHaveBeenCalledTimes(2);
+  });
+
+  it("PrimeTestLab 11035 review: announces unchanged field errors again on each submit", () => {
+    const { getByText } = render(<LoginScreen />);
+
+    fireEvent.press(getByText("Log in"));
+    expect(announced(EMAIL_REQUIRED_MESSAGE)).toBe(1);
+    expect(announced(PASSWORD_REQUIRED_MESSAGE)).toBe(1);
+
+    fireEvent.press(getByText("Log in"));
+    expect(announced(EMAIL_REQUIRED_MESSAGE)).toBe(2);
+    expect(announced(PASSWORD_REQUIRED_MESSAGE)).toBe(2);
   });
 });

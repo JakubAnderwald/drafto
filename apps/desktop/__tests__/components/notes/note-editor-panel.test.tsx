@@ -1094,4 +1094,35 @@ describe("NoteEditorPanel — PrimeTestLab 11035 toolbar and file cards", () => 
     // The setContent echo of the insertion adds no second write.
     expect(writes(note)).toBe(1);
   });
+
+  it("PrimeTestLab 11035 review: inserts a file after 1.5 s, not 8 s, when its signed URL stalls", async () => {
+    const note = createRecord("a", "Report", webAuthoredContent("Hello"));
+    renderPanel("a");
+    await flushAsync();
+    mockResolveAttachmentSrc.mockImplementation(() => new Promise<string>(() => {}));
+
+    await act(async () => {
+      mockAttachmentPicker.onAttachmentReady?.({
+        filePath: LINK_PATH,
+        fileName: "report.pdf",
+        mimeType: "application/pdf",
+        uploadStatus: "uploaded",
+      } as Attachment);
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    expect(JSON.stringify(web.currentDoc())).not.toContain("report.pdf");
+
+    await flushAsync(500);
+    const shown = web.currentDoc();
+    expect(JSON.stringify(shown.content[shown.content.length - 1])).toContain(
+      toAttachmentUrl(LINK_PATH),
+    );
+    await flushAsync(DEBOUNCE_MS * 2);
+    const stored = JSON.parse(note.content ?? "[]") as { type: string; props?: unknown }[];
+    expect(stored[stored.length - 1]).toEqual({
+      type: "file",
+      props: { url: toAttachmentUrl(LINK_PATH), name: "report.pdf" },
+      children: [],
+    });
+  });
 });

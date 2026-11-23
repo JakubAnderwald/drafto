@@ -77,7 +77,10 @@ export function NotebooksSidebar({
   // 11035 M-01): a taken name, or the API's error. Editing the name clears it.
   const [createError, setCreateError] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  const submittingName = useRef(false);
+  // One in-flight guard per field, so a pending create never swallows Enter on a rename (or
+  // the reverse): each only stops a second submit of its own field.
+  const submittingCreate = useRef(false);
+  const submittingRename = useRef(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -172,7 +175,7 @@ export function NotebooksSidebar({
       closeCreate();
       return;
     }
-    if (submittingName.current) return;
+    if (submittingCreate.current) return;
 
     const duplicate = findDuplicateNotebook(name, notebooks);
     if (duplicate) {
@@ -180,7 +183,7 @@ export function NotebooksSidebar({
       return;
     }
 
-    submittingName.current = true;
+    submittingCreate.current = true;
     try {
       const res = await fetch("/api/notebooks", {
         method: "POST",
@@ -207,7 +210,7 @@ export function NotebooksSidebar({
     } catch {
       setCreateError(NETWORK_ERROR);
     } finally {
-      submittingName.current = false;
+      submittingCreate.current = false;
     }
   }
 
@@ -217,7 +220,7 @@ export function NotebooksSidebar({
       closeRename();
       return;
     }
-    if (submittingName.current) return;
+    if (submittingRename.current) return;
 
     const duplicate = findDuplicateNotebook(name, notebooks, id);
     if (duplicate) {
@@ -225,7 +228,7 @@ export function NotebooksSidebar({
       return;
     }
 
-    submittingName.current = true;
+    submittingRename.current = true;
     try {
       const res = await fetch(`/api/notebooks/${id}`, {
         method: "PATCH",
@@ -252,7 +255,7 @@ export function NotebooksSidebar({
     } catch {
       setRenameError(NETWORK_ERROR);
     } finally {
-      submittingName.current = false;
+      submittingRename.current = false;
     }
   }
 

@@ -703,6 +703,51 @@ describe("EditorScreen offline attachment images (ADR-0086)", () => {
     });
   });
 
+  it("PrimeTestLab 11035 review: inserts a file after 1.5 s, not 8 s, when its signed URL stalls", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    const record = storeNote(null);
+    mockGetJSON.mockResolvedValue({ type: "doc", content: [{ type: "paragraph" }] });
+    render(<EditorScreen />);
+    await settle();
+    mockResolveAttachmentSrc.mockImplementation(() => new Promise<string>(() => {}));
+    mockSetContent.mockClear();
+
+    jest.useFakeTimers();
+    try {
+      let inserted: Promise<void> | undefined;
+      act(() => {
+        inserted = mockOnAttachmentReady?.({
+          filePath: LINK_PATH,
+          fileName: "report.pdf",
+          mimeType: "application/pdf",
+          uploadStatus: "uploaded",
+          localUri: null,
+        });
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1000);
+      });
+      expect(mockSetContent).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(500);
+        await inserted;
+      });
+      const shown = mockSetContent.mock.calls[mockSetContent.mock.calls.length - 1][0] as TipTapDoc;
+      expect(JSON.stringify(shown.content[shown.content.length - 1])).toContain(
+        toAttachmentUrl(LINK_PATH),
+      );
+      const stored = JSON.parse(record.content ?? "[]") as { type: string; props?: unknown }[];
+      expect(stored[stored.length - 1]).toEqual({
+        type: "file",
+        props: { url: toAttachmentUrl(LINK_PATH), name: "report.pdf" },
+        children: [],
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("PrimeTestLab 11035 S-04 inserts a file still waiting to upload with attachment://", async () => {
     const LINK_PATH = "user-1/note-1/report.pdf";
     storeNote(null);

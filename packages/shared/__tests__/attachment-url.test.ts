@@ -7,7 +7,9 @@ import {
   extractFilePathFromSignedUrl,
   canonicalAttachmentUrl,
   toLocalAttachmentSrc,
+  isAttachmentFileName,
 } from "../src/editor/attachment-url";
+import { buildAttachmentStoragePath, safeAttachmentFileName } from "../src/storage/storage-key";
 
 describe("attachment-url helpers", () => {
   describe("toAttachmentUrl", () => {
@@ -110,5 +112,79 @@ describe("PrimeTestLab 11035 S-04 canonicalAttachmentUrl", () => {
   it("is null for any other URL, attachment:// included", () => {
     expect(canonicalAttachmentUrl("https://example.com/a.pdf")).toBeNull();
     expect(canonicalAttachmentUrl("attachment://u/n/a.pdf")).toBeNull();
+  });
+});
+
+describe("isAttachmentFileName — PrimeTestLab 11035 review", () => {
+  it("matches the name the native editors insert (the safe name, no unique suffix)", () => {
+    const raw = "Quarterly report (v2).pdf";
+    const { filePath } = buildAttachmentStoragePath(raw, "user-1", "note-1");
+    expect(isAttachmentFileName(safeAttachmentFileName(raw), filePath)).toBe(true);
+  });
+
+  it("matches the raw name a web file block carries", () => {
+    const raw = "Résumé #2.pdf";
+    const { filePath } = buildAttachmentStoragePath(raw, "user-1", "note-1");
+    expect(isAttachmentFileName(raw, filePath)).toBe(true);
+  });
+
+  it("matches the key's own segment, as the web's attachment rows are named", () => {
+    const { fileName, filePath } = buildAttachmentStoragePath("report.pdf", "user-1", "note-1");
+    expect(isAttachmentFileName(fileName, filePath)).toBe(true);
+  });
+
+  it("matches an older key with no unique suffix on its exact name", () => {
+    expect(isAttachmentFileName("report.pdf", "user-1/note-1/report.pdf")).toBe(true);
+    expect(isAttachmentFileName("other.pdf", "user-1/note-1/report.pdf")).toBe(false);
+  });
+
+  it("matches a long name whose key cut its base short", () => {
+    const raw = `${"a".repeat(300)}.pdf`;
+    const { filePath, fileName } = buildAttachmentStoragePath(raw, "user-1", "note-1");
+    expect(fileName).toHaveLength(255);
+    expect(isAttachmentFileName(safeAttachmentFileName(raw), filePath)).toBe(true);
+    expect(isAttachmentFileName(`${"a".repeat(300)}.txt`, filePath)).toBe(false);
+  });
+
+  it("matches a name whose key kept only the first 20 characters of its extension", () => {
+    for (const raw of ["Dr. Smith referral letter scan", "notes.markdown-backup-2024"]) {
+      const { filePath } = buildAttachmentStoragePath(raw, "user-1", "note-1");
+      expect(isAttachmentFileName(safeAttachmentFileName(raw), filePath)).toBe(true);
+      expect(isAttachmentFileName(raw, filePath)).toBe(true);
+    }
+  });
+
+  it("matches a long name with a long extension whose key cut both short", () => {
+    const raw = `${"a".repeat(300)}. Smith referral letter scan`;
+    const { filePath, fileName } = buildAttachmentStoragePath(raw, "user-1", "note-1");
+    expect(fileName).toHaveLength(255);
+    expect(isAttachmentFileName(safeAttachmentFileName(raw), filePath)).toBe(true);
+    expect(isAttachmentFileName(raw, filePath)).toBe(true);
+    expect(isAttachmentFileName(`${"b".repeat(300)}. Smith referral letter scan`, filePath)).toBe(
+      false,
+    );
+  });
+
+  it("does not match a name whose capped extension differs from the key's", () => {
+    const { filePath } = buildAttachmentStoragePath(
+      "Dr. Smith referral letter scan",
+      "user-1",
+      "note-1",
+    );
+    expect(isAttachmentFileName("Dr. Jones referral letter scan", filePath)).toBe(false);
+    expect(isAttachmentFileName("Dr", filePath)).toBe(false);
+  });
+
+  it("does not match other link text", () => {
+    const { filePath } = buildAttachmentStoragePath("photo.jpg", "user-1", "note-1");
+    expect(isAttachmentFileName("my holiday", filePath)).toBe(false);
+    expect(isAttachmentFileName("photo.png", filePath)).toBe(false);
+    expect(isAttachmentFileName("", filePath)).toBe(false);
+    expect(
+      isAttachmentFileName(
+        `https://x.supabase.co/storage/v1/object/sign/attachments/${filePath}?token=t`,
+        filePath,
+      ),
+    ).toBe(false);
   });
 });
