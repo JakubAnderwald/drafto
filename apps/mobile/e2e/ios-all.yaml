@@ -268,6 +268,25 @@ appId: eu.drafto.mobile
     timeout: 10000
 - assertVisible:
     id: "delete-account-row"
+
+# --- The About section (PrimeTestLab 11035 S-01) ---
+# Mirrors 07-delete-account.yaml: the version row and the Privacy policy /
+# Support links. The links aren't tapped: they leave the app for the browser.
+- scrollUntilVisible:
+    element:
+      id: "about-support"
+    direction: DOWN
+    timeout: 10000
+# The section title is uppercased on screen, so match it case-insensitively.
+- assertVisible: "(?i)about"
+- assertVisible:
+    id: "about-version"
+- assertVisible: "(Version )?\\d+\\.\\d+\\.\\d+( \\(\\d+\\))?"
+- assertVisible:
+    id: "about-privacy"
+- assertVisible: "Privacy policy"
+- assertVisible:
+    id: "about-support"
 - tapOn: "Notebooks, tab.*"
 - extendedWaitUntil:
     visible: ".*NB ${RUN_ID}.*"

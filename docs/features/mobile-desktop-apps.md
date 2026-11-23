@@ -135,12 +135,19 @@ version and links to the privacy policy and support. Each platform shows them:
   (`apps/web/src/components/settings/about-section.tsx`) below Delete account.
   It links `/privacy` and `/support` on the current origin, so a preview links
   its own copy, and holds the "Build <sha>" line, which used to sit below the
-  Delete account card.
+  Delete account card. The links come from `LEGAL_PAGES`
+  (`apps/web/src/components/legal/legal-pages.ts`), the same list the
+  signed-out `LegalLinks` renders, built on `PRIVACY_POLICY_PATH` and
+  `SUPPORT_PATH` from `@drafto/shared`. The mobile URLs use those paths too, on
+  `DRAFTO_WEB_ORIGIN` (`packages/shared/src/web-origin.ts`), which the sign-up
+  redirect and the Apple revocation origin also derive from.
 - **macOS: no change.** The desktop app has no settings window. The standard
   Drafto → About Drafto panel already shows the version and build, and
   Help → Drafto Help opens the support page (`supportUrl` in
   `apps/desktop/src/lib/config.ts`). The support page links the privacy policy.
-  Adding a Settings… item only for this would break the menu rule above.
+  So the app already gives everything the About section shows, in the places
+  macOS users look for it. A Settings… item would need a new settings window
+  for three rows that would only repeat those menus.
 
 No new data leaves the app, so the privacy policy needs no update.
 

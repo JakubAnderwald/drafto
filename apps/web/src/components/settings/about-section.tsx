@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
+import { LEGAL_PAGES } from "@/components/legal/legal-pages";
 
 export interface AboutSectionProps {
   // Short commit SHA of the running build; the build line is left out when it's unknown.
@@ -7,15 +8,11 @@ export interface AboutSectionProps {
   className?: string;
 }
 
-const ABOUT_LINKS = [
-  { href: "/privacy", label: "Privacy policy", testId: "about-privacy" },
-  { href: "/support", label: "Support", testId: "about-support" },
-] as const;
-
 /**
  * The Settings page's last card (PrimeTestLab 11035 S-01): links to the privacy policy and the
- * support page, and which build is running. The links stay on the current origin, so a preview
- * links its own copy of the pages; mobile links drafto.eu (`PRIVACY_POLICY_URL`, `SUPPORT_URL`).
+ * support page (the same `LEGAL_PAGES` as the signed-out `LegalLinks`), and which build is
+ * running. The links stay on the current origin, so a preview links its own copy of the pages;
+ * mobile links drafto.eu (`PRIVACY_POLICY_URL`, `SUPPORT_URL`).
  */
 export function AboutSection({ buildCommit, className }: Readonly<AboutSectionProps>) {
   return (
@@ -25,10 +22,10 @@ export function AboutSection({ buildCommit, className }: Readonly<AboutSectionPr
       </CardHeader>
       <CardBody>
         <ul className="flex flex-col gap-2 text-sm">
-          {ABOUT_LINKS.map((link) => (
-            <li key={link.href}>
-              <Link href={link.href} className="doc-link" data-testid={link.testId}>
-                {link.label}
+          {LEGAL_PAGES.map((page) => (
+            <li key={page.key}>
+              <Link href={page.href} className="doc-link" data-testid={`about-${page.key}`}>
+                {page.label}
               </Link>
             </li>
           ))}

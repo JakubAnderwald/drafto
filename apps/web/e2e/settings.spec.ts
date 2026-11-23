@@ -43,13 +43,13 @@ test("PrimeTestLab 11035 S-01: the About section links the privacy policy and su
 
   const about = page.getByTestId("about-section");
   await expect(about.getByRole("heading", { name: "About" })).toBeVisible({ timeout: 10000 });
-  await expect(about.getByRole("link", { name: "Privacy policy" })).toHaveAttribute(
+  await expect(about.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute(
     "href",
     "/privacy",
   );
   await expect(about.getByRole("link", { name: "Support" })).toHaveAttribute("href", "/support");
 
-  await about.getByRole("link", { name: "Privacy policy" }).click();
+  await about.getByRole("link", { name: "Privacy Policy" }).click();
   await expect(page).toHaveURL(/\/privacy$/);
   await expect(page.getByRole("heading", { level: 1 })).toContainText(/privacy/i);
 });

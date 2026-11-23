@@ -261,4 +261,10 @@ export {
 export type { OfflineBannerEvent, OfflineBannerVariant } from "./network/offline-banner";
 
 // Public drafto.eu pages linked from Settings → About (PrimeTestLab 11035 S-01)
-export { DRAFTO_WEB_ORIGIN, PRIVACY_POLICY_URL, SUPPORT_URL } from "./constants";
+export {
+  DRAFTO_WEB_ORIGIN,
+  PRIVACY_POLICY_PATH,
+  PRIVACY_POLICY_URL,
+  SUPPORT_PATH,
+  SUPPORT_URL,
+} from "./constants";

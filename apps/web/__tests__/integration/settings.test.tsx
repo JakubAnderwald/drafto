@@ -467,7 +467,7 @@ describe("SettingsPage", () => {
 
       const about = screen.getByTestId("about-section");
       expect(within(about).getByRole("heading", { name: "About", level: 2 })).toBeInTheDocument();
-      expect(within(about).getByRole("link", { name: "Privacy policy" })).toHaveAttribute(
+      expect(within(about).getByRole("link", { name: "Privacy Policy" })).toHaveAttribute(
         "href",
         "/privacy",
       );
