@@ -7,6 +7,10 @@ default_platform(:android)
 PACKAGE_NAME = "eu.drafto.mobile"
 PROJECT_ROOT = File.expand_path("..", __dir__)
 
+# Google Play track helpers (version code across tracks, track labels). Kept in a
+# plain Ruby file so scripts/__tests__/play-release.test.mjs can test them.
+require File.expand_path("play_release.rb", __dir__)
+
 # App Review answers App Store Connect otherwise blocks a submission on. Drafto
 # integrates no ad framework (no IDFA), reaches the network only over HTTPS/TLS
 # provided by the OS (exempt encryption — the same claim as
@@ -211,13 +215,18 @@ end
 # post-release-notes.mjs as --build so TestFlight notes target that exact iOS
 # build — macOS + iOS share one App Store Connect app, so "the newest build"
 # alone can resolve to a macOS (desktop) build.
-def post_release_notes(platform:, max_chars:, build: nil)
+#
+# `track` is the Google Play track the Android lane uploaded to (nil for iOS).
+# Without it the script falls back to GOOGLE_PLAY_TRACK or "internal", which put
+# a closed-testing or production build's notes on the internal track instead.
+def post_release_notes(platform:, max_chars:, build: nil, track: nil)
   Dir.chdir(PROJECT_ROOT) do
     notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s).strip
     next if notes.empty?
 
     cmd = ["node", "scripts/post-release-notes.mjs", "--platform", platform, "--notes", notes]
     cmd += ["--build", build.to_s] unless build.nil? || build.to_s.empty?
+    cmd += ["--track", track.to_s] unless track.nil? || track.to_s.empty?
     sh(*cmd)
   end
 rescue StandardError => e
@@ -647,12 +656,38 @@ rescue StandardError => e
   UI.important("In Test build comment failed (non-fatal): #{e.message}")
 end
 
+# The next Android version code: one above the highest code on ANY Play track
+# (PlayRelease::TRACKS). Play rejects a code that any track already used, so
+# taking the target track's max alone breaks as soon as two tracks diverge.
+def next_play_version_code
+  codes, errors = PlayRelease.collect_version_codes do |track|
+    google_play_track_version_codes(package_name: PACKAGE_NAME, track: track, json_key: json_key_path)
+  end
+  errors.each do |track, message|
+    UI.important("Google Play track '#{track}': no version codes read (#{message}) — treating it as empty")
+  end
+  next_code = PlayRelease.next_version_code(codes, errors)
+  summary = codes.map { |track, list| "#{track}=#{list.max || '-'}" }.join(", ")
+  UI.message("Google Play version codes by track: #{summary} → next #{next_code}")
+  next_code
+rescue PlayRelease::AllTracksUnreadable => e
+  UI.user_error!(e.message)
+end
+
 # ---------- Android ----------
 
 platform :android do
   desc "Build and submit to Google Play internal track"
   lane :beta do
     build_and_submit(track: "internal")
+  end
+
+  # Closed testing. NOT one of the pre-authorized beta lanes: Google reviews a
+  # closed-testing release before testers get it, and the tester list is wider
+  # than internal. Run it when the operator asks for it.
+  desc "Build and submit to Google Play closed testing (alpha) track"
+  lane :alpha do
+    build_and_submit(track: "alpha")
   end
 
   desc "Build and submit to Google Play production track"
@@ -679,13 +714,8 @@ platform :android do
     # without it (JEP 472). Every JDK in the supported range accepts the flag.
     ENV["_JAVA_OPTIONS"] = "--enable-native-access=ALL-UNNAMED"
 
-    # Auto-increment version code from store
-    latest_codes = google_play_track_version_codes(
-      package_name: PACKAGE_NAME,
-      track: track,
-      json_key: json_key_path
-    )
-    next_code = (latest_codes.max || 0) + 1
+    # Auto-increment version code from the store, across every track
+    next_code = next_play_version_code
     android_set_version_code(
       gradle_file: File.join(PROJECT_ROOT, "android", "app", "build.gradle"),
       version_code: next_code
@@ -709,17 +739,22 @@ platform :android do
       skip_upload_screenshots: true
     )
 
-    # Post release notes
-    post_release_notes(platform: "android", max_chars: 500)
+    # Post release notes to the track this build went to
+    post_release_notes(platform: "android", max_chars: 500, track: track)
 
     # Phase G: comment "Now live" on closed support issues for this build.
-    # Track label distinguishes internal-track beta from production for the
-    # customer-facing email (TestFlight is iOS-only — Android beta is the
-    # Play "internal" track).
-    track_label =
-      track == "production" ? "Google Play (build #{next_code})" : "Google Play internal track (build #{next_code})"
-    comment_released_issues(platform: "android", build: next_code, track: track_label)
+    # Track label distinguishes internal-track beta, closed testing and
+    # production for the customer-facing email (TestFlight is iOS-only —
+    # Android beta is the Play "internal" track). Closed testing (alpha) does
+    # not announce: see PlayRelease.announces_release?.
+    track_label = PlayRelease.track_label(track, next_code)
+    if PlayRelease.announces_release?(track)
+      comment_released_issues(platform: "android", build: next_code, track: track_label)
+    else
+      UI.message("#{track_label} — no customer 'now live' notice: closed-testing testers are a hand-picked list")
+    end
     comment_intest_build(platform: "android", build: next_code, track: track_label)
+    # Tagged like every other release, so the next build's notes start here.
     tag_release(platform: "android", build: next_code)
   end
 end

@@ -21,9 +21,12 @@ done
 # `apps/mobile/apps/mobile/` and silently match nothing).
 cd "$(git rev-parse --show-toplevel)"
 
-# Find the latest mobile release tag.
-# If the latest tag points to HEAD (just created by the tag job), use the
-# previous tag so the range covers the actual changes in this release.
+# Find the latest mobile release tag that does NOT point at HEAD.
+# A tag on HEAD is a release of this very commit (just created by the tag job,
+# or another lane that already shipped it), so the range has to start from the
+# release before it. There can be several: iOS TestFlight, the Play internal
+# track and Play closed testing (alpha) can all ship one commit, and stepping
+# back only one tag then left an empty range and no notes at all.
 # Newest by date, not by version sort. iOS and Android ship the same version
 # under two independent build counters, so the tags are `mobile@1.3.0+ios.32`
 # and `mobile@1.3.0+android.41` — ordering those by refname compares the string
@@ -31,15 +34,16 @@ cd "$(git rev-parse --show-toplevel)"
 # (These are lightweight tags, so `creatordate` resolves to the TAGGED COMMIT's
 # date — which is exactly the ordering we want: whichever release is later in
 # history wins.)
-LAST_TAG=$(git tag --list 'mobile@*' --sort=-creatordate | head -1)
-
-if [[ -n "$LAST_TAG" ]]; then
-  TAG_COMMIT=$(git rev-parse "$LAST_TAG" 2>/dev/null || true)
-  HEAD_COMMIT=$(git rev-parse HEAD)
-  if [[ "$TAG_COMMIT" == "$HEAD_COMMIT" ]]; then
-    LAST_TAG=$(git tag --list 'mobile@*' --sort=-creatordate | sed -n '2p')
+HEAD_COMMIT=$(git rev-parse HEAD)
+LAST_TAG=""
+while IFS= read -r TAG; do
+  [[ -z "$TAG" ]] && continue
+  TAG_COMMIT=$(git rev-parse "${TAG}^{commit}" 2>/dev/null || true)
+  if [[ "$TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+    LAST_TAG="$TAG"
+    break
   fi
-fi
+done < <(git tag --list 'mobile@*' --sort=-creatordate)
 
 if [[ -z "$LAST_TAG" ]]; then
   RANGE="HEAD"

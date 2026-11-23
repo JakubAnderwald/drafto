@@ -18,6 +18,11 @@ public stores and needs explicit user approval per
 [CLAUDE.md → Release Authorization](../../CLAUDE.md#release-authorization); the dark
 factory refuses all of them (`assertBetaOnly` in `scripts/lib/dispatch-release.mjs`).
 
+Android also has a **closed testing (alpha)** lane, `cd apps/mobile && pnpm release:alpha:android`.
+It is not a beta lane in the sense above: run it only when the user asks for it, and
+the factory refuses it too. See
+[Release to Google Play closed testing (alpha)](#release-to-google-play-closed-testing-alpha).
+
 **`promote` vs. the hotfix column.** `promote` submits the binary TestFlight users
 already tested — it resolves an existing App Store Connect build and never compiles
 anything. The `release:prod:*` / `release:production` lanes rebuild from source and
@@ -183,6 +188,45 @@ cd apps/mobile && pnpm release:beta:android
 
 What it does: `expo prebuild` → Gradle `bundleRelease` (signed AAB) → `upload_to_play_store` (internal track) → post release notes.
 
+### Release to Google Play closed testing (alpha)
+
+```bash
+cd apps/mobile && pnpm release:alpha:android   # = bundle exec fastlane android alpha
+```
+
+What it does: the same build as the internal track (`expo prebuild` → Gradle
+`bundleRelease` → `upload_to_play_store`), uploaded to Play's `alpha` track, which the
+Play Console calls **Closed testing**. Then:
+
+- **Release notes** go to the `alpha` track (`post-release-notes.mjs --track alpha`).
+- **No "Now live" notice** on support issues. Closed-testing testers are a hand-picked
+  list, and the people who reported an issue are generally not on it. An issue is
+  announced only once per platform, so an alpha notice would also stop the
+  internal-track or production one they can install. `PlayRelease.announces_release?`
+  in `apps/mobile/fastlane/play_release.rb` decides this.
+- **The In Test build comment** is still posted when `DRAFTO_INTEST_ISSUE` is set.
+- **The build is tagged** `mobile@<version>+android.<code>` like every other release,
+  so the next build's notes start from it. The notes generator skips every tag on
+  `HEAD`, so an alpha build of a commit that iOS and the internal track already tagged
+  still gets notes from the release before it.
+
+**Version code across tracks.** Play needs a version code that no track has used and
+that is higher than all of them. Every Android lane therefore takes the highest code
+on any of `internal`, `alpha`, `beta` and `production`, plus one (`next_play_version_code`
+in the Fastfile). Taking only the target track's highest code breaks once tracks
+diverge: internal was at 87 while alpha held 82, so an alpha build would have reused
+code 83. A track the API can't read (for example one with no releases yet) counts as
+empty and is logged. If no track can be read at all, the lane stops before building.
+
+**Google review.** Unlike the internal track, a closed-testing release goes through
+Google's review before testers get it. That usually takes a few hours and can take
+days. The Play Console shows its status under **Publishing overview**.
+
+**Authorization.** This lane is **not** one of the pre-authorized beta lanes in
+[CLAUDE.md → Release Authorization](../../CLAUDE.md#release-authorization). Run it when
+the user asks for it. The factory never runs it: `assertBetaOnly` in
+`scripts/lib/dispatch-release.mjs` refuses `release:alpha` and `fastlane … alpha`.
+
 ### Release to Google Play production track
 
 ```bash
@@ -200,7 +244,7 @@ cd apps/mobile && pnpm release:prod:android
 - Google Play service account key: `apps/mobile/google-play-service-account.json` (gitignored)
 - Android upload keystore: `~/drafto-secrets/drafto-release.keystore` (env var `ANDROID_KEYSTORE_PATH`)
 - Signing config injected via Expo config plugin (`plugins/with-android-signing.js`)
-- Build numbers auto-incremented from Google Play's latest version code
+- Build numbers (version codes) auto-incremented from the highest version code on any Google Play track (see [closed testing](#release-to-google-play-closed-testing-alpha))
 
 #### Google Sign-In (Android OAuth client)
 
@@ -672,8 +716,8 @@ Release notes are auto-generated from conventional commits and posted to both st
 
 ### How it works
 
-1. `apps/mobile/scripts/generate-release-notes.sh` extracts `feat:` and `fix:` commits since the last `mobile@*` git tag.
-2. `apps/mobile/scripts/post-release-notes.mjs` posts notes to Google Play (via Publisher API) and TestFlight (via App Store Connect API).
+1. `apps/mobile/scripts/generate-release-notes.sh` extracts `feat:` and `fix:` commits since the newest `mobile@*` git tag that is not on `HEAD`. Tags on `HEAD` are other releases of the same commit (iOS, the Play internal track, Play closed testing).
+2. `apps/mobile/scripts/post-release-notes.mjs` posts notes to Google Play (via Publisher API) and TestFlight (via App Store Connect API). For Google Play, `--track internal|alpha|beta|production` picks the track; without it the script uses `GOOGLE_PLAY_TRACK`, else `internal`. The Android lanes pass the track they uploaded to.
 3. CI workflows (when functional) call both scripts after successful build+submit. Local Fastlane lanes invoke them directly.
 
 ### Character limits

@@ -1,6 +1,6 @@
 {
   "name": "@drafto/mobile",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -16,6 +16,7 @@
     "release:beta:android": "bundle exec fastlane android beta",
     "release:beta:ios": "bundle exec fastlane ios beta",
     "release:beta:all": "bundle exec fastlane android beta && bundle exec fastlane ios beta",
+    "release:alpha:android": "bundle exec fastlane android alpha",
     "release:prod:android": "bundle exec fastlane android production",
     "release:prod:ios": "bundle exec fastlane ios production",
     "release:prod:all": "bundle exec fastlane android production && bundle exec fastlane ios production",
