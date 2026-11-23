@@ -6,8 +6,11 @@ import type { WebViewMessageEvent } from "react-native-webview";
 import { useNote } from "@/hooks/use-note";
 import { useAutoSave } from "@/hooks/use-auto-save";
 import { useTheme } from "@/providers/theme-provider";
+import { useNoteAttachmentSizes } from "@/hooks/use-note-attachment-sizes";
 import { database, Note, type Attachment } from "@/db";
 import {
+  ATTACHMENT_SIZES_CSS_TAG,
+  buildAttachmentSizeCss,
   contentToTiptap,
   formatRelativeTime,
   toAttachmentUrl,
@@ -22,6 +25,7 @@ import {
 import type { ContentBaseline, TipTapDoc, TipTapNode } from "@drafto/shared";
 import { localAttachmentSrcFor, resolveAttachmentSrc } from "@/lib/data";
 import { editorWebViewBaseUrl } from "@/lib/editor-webview";
+import { buildEditorTheme } from "@/lib/editor-theme";
 import { useImageRenderStatus } from "@/hooks/use-image-render-status";
 import { colors, fontFamily, fontSizes, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
@@ -66,8 +70,14 @@ function isImageMimeType(mimeType: string | null | undefined): boolean {
   return typeof mimeType === "string" && mimeType.startsWith("image/");
 }
 
+// Bound on resolving each attachment reference, so a never-settling
+// signed-URL fetch can't hang a note load (and strand the loading overlay). A
+// reference that times out keeps its attachment:// src and degrades to a
+// placeholder, while the others keep what they resolved to; attachment:// is
+// the canonical stored form, so persisting it back is non-destructive.
+const RESOLVE_TIMEOUT_MS = 8000;
+
 async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
-  const attachmentUrl = toAttachmentUrl(attachment.filePath);
   if (isImageMimeType(attachment.mimeType)) {
     // tentap's image node renders `<img src>` directly, so show the picked file
     // itself, kept in the attachment cache: it appears at once, online or
@@ -77,24 +87,28 @@ async function buildInsertNode(attachment: Attachment): Promise<TipTapNode> {
     const src = await localAttachmentSrcFor(attachment);
     return { type: "image", attrs: { src, alt: attachment.fileName } };
   }
+  // An uploaded file is shown with its signed URL, as it is once the note is
+  // opened again, so it is a file card at once (PrimeTestLab 11035 S-04).
+  // Every save maps the link back to attachment://. Never rejects: on a
+  // failure or timeout it keeps attachment://.
+  const href =
+    attachment.uploadStatus === "uploaded"
+      ? await withResolveTimeout(resolveAttachmentSrc, RESOLVE_TIMEOUT_MS)(
+          attachment.filePath,
+          "link",
+        )
+      : toAttachmentUrl(attachment.filePath);
   return {
     type: "paragraph",
     content: [
       {
         type: "text",
         text: attachment.fileName,
-        marks: [{ type: "link", attrs: { href: attachmentUrl } }],
+        marks: [{ type: "link", attrs: { href } }],
       },
     ],
   };
 }
-
-// Bound on resolving each attachment reference, so a never-settling
-// signed-URL fetch can't hang a note load (and strand the loading overlay). A
-// reference that times out keeps its attachment:// src and degrades to a
-// placeholder, while the others keep what they resolved to; attachment:// is
-// the canonical stored form, so persisting it back is non-destructive.
-const RESOLVE_TIMEOUT_MS = 8000;
 
 // Bound on reading the editor back after a load to add its serialisation to
 // the no-op-save baseline. On timeout the autosave gate still opens without it,
@@ -115,8 +129,10 @@ interface NoteEditorPanelProps {
 
 export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
   const { note, loading } = useNote(noteId);
-  const { semantic } = useTheme();
+  const { semantic, isDark } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
+  // Memoised: TenTap re-merges its theme whenever this object changes.
+  const editorTheme = useMemo(() => buildEditorTheme(semantic, isDark), [semantic, isDark]);
 
   const [title, setTitle] = useState("");
 
@@ -257,9 +273,23 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
     // A file:// base URL lets the editor show cached attachment images
     // (ADR-0086); see NoteEditor for the WebView's file access.
     webviewBaseURL: editorWebViewBaseUrl(),
+    // Styles the formatting toolbar, shown at all times (PrimeTestLab 11035 S-02).
+    theme: editorTheme,
     onChange: handleEditorChange,
   });
   editorRef.current = editor;
+
+  // The size label on each file card (PrimeTestLab 11035 S-04), rebuilt as the
+  // open note's attachments change. TenTap keeps an injected stylesheet across
+  // a WebView reload and queues it until the page can take it.
+  const attachmentSizes = useNoteAttachmentSizes(note?.id);
+  const attachmentSizeCss = useMemo(
+    () => buildAttachmentSizeCss(attachmentSizes),
+    [attachmentSizes],
+  );
+  useEffect(() => {
+    editorRef.current?.injectCSS(attachmentSizeCss, ATTACHMENT_SIZES_CSS_TAG);
+  }, [attachmentSizeCss]);
 
   // Whether each image in the note rendered (ADR-0086), for screen readers and
   // the E2E checks. Reached through a ref by the load effect, which must not

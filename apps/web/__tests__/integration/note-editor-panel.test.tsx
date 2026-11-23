@@ -29,6 +29,12 @@ vi.mock("@blocknote/mantine", () => ({
 
 vi.mock("@blocknote/mantine/style.css", () => ({}));
 
+// The editor's file-size list (PrimeTestLab 11035 S-04) fetches on its own;
+// this suite counts the panel's note fetches.
+vi.mock("@/components/editor/use-note-attachment-sizes", () => ({
+  useNoteAttachmentSizes: () => ({ attachments: [], addAttachment: () => undefined }),
+}));
+
 // Mock useAutoSave to avoid real fetch calls from the hook
 const mockDebouncedSave = vi.fn();
 const mockCancelPendingSave = vi.fn();

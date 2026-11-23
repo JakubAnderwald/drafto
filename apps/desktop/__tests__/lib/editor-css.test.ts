@@ -1,6 +1,13 @@
-import { EDITOR_CSS, EDITOR_FONT_CSS, EDITOR_LAYOUT_CSS } from "@/lib/editor-css";
+import { buildAttachmentCardCss } from "@drafto/shared";
+
+import {
+  EDITOR_ATTACHMENT_CARD_CSS,
+  EDITOR_CSS,
+  EDITOR_FONT_CSS,
+  EDITOR_LAYOUT_CSS,
+} from "@/lib/editor-css";
 import { EDITOR_BRIDGE_EXTENSIONS } from "@/components/editor/editor-bridge-extensions";
-import { spacing } from "@/theme/tokens";
+import { semanticLight, spacing } from "@/theme/tokens";
 
 describe("desktop editor CSS", () => {
   it("pads the note body sideways, in line with the title", () => {
@@ -15,6 +22,17 @@ describe("desktop editor CSS", () => {
     expect(EDITOR_CSS).toContain(EDITOR_FONT_CSS);
     expect(EDITOR_CSS).toContain(EDITOR_LAYOUT_CSS);
     expect(EDITOR_FONT_CSS).toMatch(/font-family: -apple-system/);
+  });
+});
+
+describe("PrimeTestLab 11035 S-04 file card", () => {
+  it("draws file links as a card in the light body's colours", () => {
+    expect(EDITOR_ATTACHMENT_CARD_CSS).toBe(buildAttachmentCardCss(semanticLight));
+    expect(EDITOR_CSS).toContain(EDITOR_ATTACHMENT_CARD_CSS);
+    expect(EDITOR_ATTACHMENT_CARD_CSS).toContain(
+      '.ProseMirror a[href*="/storage/v1/object/sign/attachments/"]',
+    );
+    expect(EDITOR_ATTACHMENT_CARD_CSS).toContain(`background-color: ${semanticLight.bgSubtle}`);
   });
 });
 

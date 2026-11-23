@@ -86,6 +86,10 @@ jest.mock("@/lib/data/attachment-resolver", () => ({
   localAttachmentSrcFor: jest.fn(),
 }));
 
+jest.mock("@/hooks/use-note-attachment-sizes", () => ({
+  useNoteAttachmentSizes: () => [],
+}));
+
 jest.mock("@/hooks/use-auto-save", () => ({
   useAutoSave: () => ({ trigger: jest.fn(), cancel: jest.fn(), flush: jest.fn(), status: "idle" }),
 }));
@@ -230,7 +234,7 @@ describe("EditorScreen layout", () => {
     expect(props.accessory.props.noteId).toBe("note-1");
   });
 
-  it("keeps the attachment row above the home indicator with the keyboard down", () => {
+  it("PrimeTestLab 11035 S-02 keeps the always-shown toolbar above the home indicator with the keyboard down", () => {
     loadNote();
     const { getByTestId } = render(<EditorScreen />);
 

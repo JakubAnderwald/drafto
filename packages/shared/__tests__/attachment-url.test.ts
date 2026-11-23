@@ -5,6 +5,8 @@ import {
   extractFilePath,
   isSignedStorageUrl,
   extractFilePathFromSignedUrl,
+  canonicalAttachmentUrl,
+  toLocalAttachmentSrc,
 } from "../src/editor/attachment-url";
 
 describe("attachment-url helpers", () => {
@@ -87,5 +89,26 @@ describe("attachment-url helpers", () => {
     it("returns null for non-matching URLs", () => {
       expect(extractFilePathFromSignedUrl("https://example.com/image.jpg")).toBeNull();
     });
+  });
+});
+
+describe("PrimeTestLab 11035 S-04 canonicalAttachmentUrl", () => {
+  it("maps a signed URL to its attachment:// URL, decoding the path", () => {
+    expect(
+      canonicalAttachmentUrl(
+        "https://x.supabase.co/storage/v1/object/sign/attachments/u/n/my%20file.pdf?token=t",
+      ),
+    ).toBe("attachment://u/n/my file.pdf");
+  });
+
+  it("maps a local cached src to its attachment:// URL", () => {
+    expect(
+      canonicalAttachmentUrl(toLocalAttachmentSrc("file:///cache/u/n/a.png", "u/n/a.png")),
+    ).toBe("attachment://u/n/a.png");
+  });
+
+  it("is null for any other URL, attachment:// included", () => {
+    expect(canonicalAttachmentUrl("https://example.com/a.pdf")).toBeNull();
+    expect(canonicalAttachmentUrl("attachment://u/n/a.pdf")).toBeNull();
   });
 });

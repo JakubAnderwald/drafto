@@ -3,6 +3,8 @@ import type { EditorTheme, RecursivePartial } from "@10play/tentap-editor";
 
 import type { SemanticColors } from "@/theme/tokens";
 
+// Mirrored in apps/desktop/src/lib/editor-theme.ts.
+
 /** TenTap's toolbar row height (its RichText assumes 44 too). */
 export const EDITOR_TOOLBAR_HEIGHT = 44;
 

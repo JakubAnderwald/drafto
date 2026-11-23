@@ -968,6 +968,59 @@ describe("round-trip fidelity", () => {
     expect(roundTripped).toEqual(original);
   });
 
+  it("PrimeTestLab 11035 S-04 restores a file block from a file link shown with its signed URL", () => {
+    const tiptap: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "report.pdf",
+              marks: [
+                {
+                  type: "link",
+                  attrs: {
+                    href: "https://x.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/my%20report.pdf?token=t",
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(tiptapToBlocknote(tiptap)).toEqual([
+      {
+        type: "file",
+        props: { url: "attachment://user-1/note-1/my report.pdf", name: "report.pdf" },
+        children: [],
+      },
+    ]);
+  });
+
+  it("PrimeTestLab 11035 S-04 keeps a lone link to another site a paragraph", () => {
+    const tiptap: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "site",
+              marks: [{ type: "link", attrs: { href: "https://example.com/report.pdf" } }],
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(tiptapToBlocknote(tiptap)[0].type).toBe("paragraph");
+  });
+
   it("image without optional props round-trips", () => {
     const original: BlockNoteBlock[] = [
       {

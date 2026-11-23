@@ -66,6 +66,15 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
+# --- Test: formatting toolbar with the keyboard closed (PrimeTestLab 11035 S-02) ---
+# The editor opens without focus, so the keyboard is down. The toolbar must
+# still be shown; its buttons carry TenTap's accessibility labels.
+- extendedWaitUntil:
+    visible: "Bold"
+    timeout: 10000
+- assertVisible: "Italic"
+- takeScreenshot: editor-toolbar-keyboard-closed
+
 # --- Test: editor with the keyboard up ---
 # The body is a WebView, so tap it by position, then type a line so the gutter
 # shows. The screenshot records the layout to check by eye: a gutter around the

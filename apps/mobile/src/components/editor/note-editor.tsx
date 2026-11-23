@@ -13,7 +13,8 @@ interface NoteEditorProps {
   /**
    * Rendered between the note body and the formatting toolbar (the attachment
    * row). The toolbar stays last so that, with the keyboard up, it sits
-   * directly on top of the keyboard.
+   * directly on top of the keyboard, and with it down, just above the bottom
+   * safe-area inset.
    */
   accessory?: ReactNode;
   /**
@@ -53,7 +54,11 @@ export function NoteEditor({ editor, accessory, onMessage }: NoteEditorProps) {
         />
       )}
       {accessory}
-      <Toolbar editor={editor} items={DEFAULT_TOOLBAR_ITEMS} />
+      {/* Always shown (PrimeTestLab 11035 S-02): TenTap's default hides the
+        toolbar whenever the keyboard is down or the editor is blurred, so
+        formatting was out of reach while reading a note. Each button focuses
+        the editor itself before it applies. */}
+      <Toolbar editor={editor} items={DEFAULT_TOOLBAR_ITEMS} hidden={false} />
     </>
   );
 }

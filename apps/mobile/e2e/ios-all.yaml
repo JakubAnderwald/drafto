@@ -194,6 +194,14 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
+# --- Formatting toolbar with the keyboard closed (PrimeTestLab 11035 S-02;
+# mirrors flow 03) ---
+- extendedWaitUntil:
+    visible: "Bold"
+    timeout: 10000
+- assertVisible: "Italic"
+- takeScreenshot: editor-toolbar-keyboard-closed
+
 # --- Editor with the keyboard up (check the screenshot: body gutter, toolbar
 # directly on the keyboard, no blank band) ---
 - tapOn:

@@ -7,7 +7,7 @@ import {
   type TipTapMark,
   type TipTapNode,
 } from "./types";
-import { isAttachmentUrl } from "./attachment-url";
+import { canonicalAttachmentUrl, isAttachmentUrl } from "./attachment-url";
 
 // --- BlockNote -> TipTap ---
 
@@ -368,10 +368,16 @@ function tryExtractFileBlock(node: TipTapNode): BlockNoteBlock | null {
   const linkMarks = marks.filter((m) => m.type === "link");
   if (linkMarks.length !== 1) return null;
   const href = linkMarks[0]?.attrs?.href;
-  if (typeof href !== "string" || !isAttachmentUrl(href)) return null;
+  if (typeof href !== "string") return null;
+  // The native editors show a file link with its display URL (a signed URL
+  // once the note's attachments are resolved), so the link is read back as
+  // its attachment:// form. Without this a resolved file link saved as a
+  // paragraph with a link, and the web lost its file block.
+  const url = isAttachmentUrl(href) ? href : canonicalAttachmentUrl(href);
+  if (!url) return null;
   return {
     type: "file",
-    props: { url: href, name: only.text },
+    props: { url, name: only.text },
     children: [],
   };
 }

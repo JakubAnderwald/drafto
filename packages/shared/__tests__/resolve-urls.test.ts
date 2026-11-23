@@ -4,6 +4,7 @@ import {
   resolveTipTapImageUrls,
   migrateSignedUrlsToAttachmentUrls,
   withResolveTimeout,
+  hasTipTapAttachmentRefs,
 } from "../src/editor/resolve-urls";
 import type { BlockNoteBlock, TipTapDoc } from "../src/editor/types";
 import { toLocalAttachmentSrc } from "../src/editor/attachment-url";
@@ -529,5 +530,35 @@ describe("withResolveTimeout", () => {
     expect(result.content[1].content?.[0].marks?.[0].attrs?.href).toBe(
       "attachment://u/n/report.pdf",
     );
+  });
+});
+
+describe("PrimeTestLab 11035 S-04 hasTipTapAttachmentRefs", () => {
+  const paragraphWithLink = (href: string): TipTapDoc => ({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "report.pdf", marks: [{ type: "link", attrs: { href } }] }],
+      },
+    ],
+  });
+
+  it("is true for a note with only a file link", () => {
+    expect(hasTipTapAttachmentRefs(paragraphWithLink("attachment://u/n/report.pdf"))).toBe(true);
+  });
+
+  it("is true for an attachment image", () => {
+    expect(
+      hasTipTapAttachmentRefs({
+        type: "doc",
+        content: [{ type: "image", attrs: { src: "attachment://u/n/a.png" } }],
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for ordinary links and an empty note", () => {
+    expect(hasTipTapAttachmentRefs(paragraphWithLink("https://example.com"))).toBe(false);
+    expect(hasTipTapAttachmentRefs({ type: "doc", content: [] })).toBe(false);
   });
 });
