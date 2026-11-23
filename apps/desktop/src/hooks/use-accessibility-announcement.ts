@@ -8,11 +8,17 @@ export interface AccessibilityAnnouncementOptions {
    * announcement at low priority.
    */
   queue?: boolean;
+  /**
+   * The form's submit counter. Bump it on every submit (or other try, such as an OAuth button)
+   * and the message is spoken again even when the new try fails with the same words.
+   */
+  attempt?: number;
 }
 
 /**
- * Has VoiceOver speak `message` each time it changes to a new non-null value.
- * null stays silent, and a re-render with the same message doesn't repeat it.
+ * Has VoiceOver speak `message` each time it changes to a new non-null value, or
+ * `options.attempt` changes while it is shown. null stays silent, and a re-render
+ * with the same message and attempt doesn't repeat it.
  *
  * On macOS this posts NSAccessibilityAnnouncementRequestedNotification
  * (react-native-macos RCTAccessibilityManager), the only way to make VoiceOver
@@ -27,7 +33,7 @@ export function useAccessibilityAnnouncement(
   message: string | null,
   options: AccessibilityAnnouncementOptions = {},
 ): void {
-  const { queue = false } = options;
+  const { queue = false, attempt } = options;
   useEffect(() => {
     if (!message) return;
     if (queue) {
@@ -35,5 +41,5 @@ export function useAccessibilityAnnouncement(
     } else {
       AccessibilityInfo.announceForAccessibility(message);
     }
-  }, [message, queue]);
+  }, [message, queue, attempt]);
 }

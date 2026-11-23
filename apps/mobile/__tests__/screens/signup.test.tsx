@@ -1,5 +1,5 @@
 import React from "react";
-import { KeyboardAvoidingView } from "react-native";
+import { KeyboardAvoidingView, AccessibilityInfo, Platform } from "react-native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useRouter } from "expo-router";
 import {
@@ -302,5 +302,46 @@ describe("SignupScreen", () => {
     } finally {
       jest.mocked(useHeaderHeight).mockReturnValue(0);
     }
+  });
+});
+
+describe("SignupScreen — VoiceOver announcements (PrimeTestLab 11035 review)", () => {
+  const originalOS = Platform.OS;
+  let announce: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Object.defineProperty(Platform, "OS", { value: "ios", configurable: true });
+    announce = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    announce.mockRestore();
+    Object.defineProperty(Platform, "OS", { value: originalOS, configurable: true });
+  });
+
+  /** How many times VoiceOver was asked to speak `message`. */
+  const announced = (message: string) =>
+    announce.mock.calls.filter(([spoken]) => spoken === message).length;
+
+  it("PrimeTestLab 11035 review: announces the error banner on each failed submit", async () => {
+    mockSignUp.mockResolvedValue({
+      data: { user: null, session: null },
+      error: { message: "User already registered", code: "user_already_exists" },
+    });
+    const screen = render(<SignupScreen />);
+
+    fillAndSubmit(screen);
+    await waitFor(() => {
+      expect(screen.getByTestId("signup-error")).toHaveTextContent(USER_ALREADY_EXISTS_MESSAGE);
+    });
+    expect(announced(USER_ALREADY_EXISTS_MESSAGE)).toBe(1);
+
+    fireEvent.press(screen.getByText("Sign up"));
+    await waitFor(() => {
+      expect(announced(USER_ALREADY_EXISTS_MESSAGE)).toBe(2);
+    });
   });
 });

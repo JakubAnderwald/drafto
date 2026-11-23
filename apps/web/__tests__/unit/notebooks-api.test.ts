@@ -48,7 +48,11 @@ function namesQuery(
       eq: vi.fn((column: string, value: string) => {
         expect(columns).toBe("id, name");
         expect([column, value]).toEqual(["user_id", "user-1"]);
-        return Promise.resolve({ data: error ? null : names, error });
+        return {
+          order: () => ({
+            range: () => Promise.resolve({ data: error ? null : names, error }),
+          }),
+        };
       }),
     })),
   };

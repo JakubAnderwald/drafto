@@ -219,7 +219,19 @@ describe("searchNotes", () => {
 describe("createNotebook", () => {
   it("creates notebook successfully", async () => {
     const nb = { id: "nb-new", name: "New" };
-    const supabase = createMockSupabase(vi.fn(() => chainOk(nb)));
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        // The paged name read finds no other notebooks.
+        select: () => ({
+          eq: () => ({
+            order: () => ({ range: () => Promise.resolve({ data: [], error: null }) }),
+          }),
+        }),
+        insert: () => ({
+          select: () => ({ single: () => Promise.resolve({ data: nb, error: null }) }),
+        }),
+      })),
+    );
 
     const result = await createNotebook(supabase, "user-1", "New");
     expect(result.isError).toBeUndefined();
@@ -231,7 +243,12 @@ describe("createNotebook", () => {
     const supabase = createMockSupabase(
       vi.fn(() => ({
         select: () => ({
-          eq: () => Promise.resolve({ data: [{ id: "nb-1", name: "Project Ideas" }], error: null }),
+          eq: () => ({
+            order: () => ({
+              range: () =>
+                Promise.resolve({ data: [{ id: "nb-1", name: "Project Ideas" }], error: null }),
+            }),
+          }),
         }),
         insert,
       })),
@@ -250,7 +267,11 @@ describe("createNotebook", () => {
     const supabase = createMockSupabase(
       vi.fn(() => ({
         select: () => ({
-          eq: () => Promise.resolve({ data: null, error: { message: "db down" } }),
+          eq: () => ({
+            order: () => ({
+              range: () => Promise.resolve({ data: null, error: { message: "db down" } }),
+            }),
+          }),
         }),
         insert,
       })),
@@ -446,10 +467,15 @@ describe("renameNotebook", () => {
     }));
     const supabase = createMockSupabase(
       vi.fn(() => ({
+        // The existence check (select → eq → eq → single), then the paged name read
+        // (select → eq → order → range).
         select: () => ({
           eq: () => ({
             eq: () => ({
               single: () => Promise.resolve({ data: { id: "nb-1" }, error: null }),
+            }),
+            order: () => ({
+              range: () => Promise.resolve({ data: [{ id: "nb-1", name: "Old" }], error: null }),
             }),
           }),
         }),
@@ -495,14 +521,15 @@ describe("renameNotebook", () => {
       { id: "nb-2", name: "Recipes" },
     ];
 
-    // The existence check (select → eq → eq → single), then the name read (select → eq).
+    // The existence check (select → eq → eq → single), then the paged name read
+    // (select → eq → order → range).
     function buildSupabase(update: ReturnType<typeof vi.fn>) {
       return createMockSupabase(
         vi.fn(() => ({
           select: (columns: string) => ({
             eq: () =>
               columns === "id, name"
-                ? Promise.resolve({ data: names, error: null })
+                ? { order: () => ({ range: () => Promise.resolve({ data: names, error: null }) }) }
                 : {
                     eq: () => ({
                       single: () => Promise.resolve({ data: { id: "nb-1" }, error: null }),

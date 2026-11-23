@@ -76,3 +76,46 @@ describe("useAccessibilityAnnouncement with queue", () => {
     announceWithOptions.mockRestore();
   });
 });
+
+describe("useAccessibilityAnnouncement with attempt", () => {
+  let announceWithOptions: jest.SpyInstance;
+
+  beforeEach(() => {
+    announceWithOptions = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+    announceWithOptions.mockClear();
+  });
+
+  afterEach(() => {
+    announceWithOptions.mockRestore();
+  });
+
+  it("PrimeTestLab 11035 review: announces the same message again for each new attempt", () => {
+    const { rerender } = renderHook(
+      ({ attempt }: { attempt: number }) =>
+        useAccessibilityAnnouncement("Email or password is incorrect.", { queue: true, attempt }),
+      { initialProps: { attempt: 1 } },
+    );
+    // A re-render within the same attempt stays quiet.
+    rerender({ attempt: 1 });
+    // The next submit fails with the same words: heard again.
+    rerender({ attempt: 2 });
+
+    expect(announceWithOptions.mock.calls).toEqual([
+      ["Email or password is incorrect.", { queue: true }],
+      ["Email or password is incorrect.", { queue: true }],
+    ]);
+  });
+
+  it("PrimeTestLab 11035 review: a new attempt without a message stays silent", () => {
+    const { rerender } = renderHook(
+      ({ attempt }: { attempt: number }) =>
+        useAccessibilityAnnouncement(null, { queue: true, attempt }),
+      { initialProps: { attempt: 1 } },
+    );
+    rerender({ attempt: 2 });
+
+    expect(announceWithOptions).not.toHaveBeenCalled();
+  });
+});

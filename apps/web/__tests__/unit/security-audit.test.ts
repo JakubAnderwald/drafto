@@ -295,10 +295,14 @@ describe("Security Audit", () => {
           };
         }
         if (table === "notebooks") {
-          // RLS would filter: user-2 cannot see user-1's notebook
+          // RLS would filter: user-2 cannot see user-1's notebook, so the name
+          // check's paged read of user-2's notebooks doesn't include it either.
           return {
             select: () => ({
               eq: () => ({
+                order: () => ({
+                  range: () => Promise.resolve({ data: [], error: null }),
+                }),
                 eq: () => ({
                   single: () =>
                     Promise.resolve({

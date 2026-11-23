@@ -12,6 +12,7 @@ import {
 
 import { clearAccountDeletedNotice, useAccountDeletedNotice } from "@/lib/account-deleted-notice";
 import { clearAuthCallbackError, useAuthCallbackError } from "@/lib/auth-callback-errors";
+import { useErrorAnnouncement } from "@/hooks/use-error-announcement";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
@@ -34,6 +35,10 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [loading, setLoading] = useState(false);
+  // Bumped by every submit (and OAuth try), so an error that repeats the last one's words is
+  // still announced to VoiceOver (PrimeTestLab 11035 review).
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  useErrorAnnouncement(error, submitAttempt);
 
   const handleEmailChange = (value: string) => {
     setEmail(value);
@@ -54,7 +59,13 @@ export default function LoginScreen() {
 
   const accountDeleted = useAccountDeletedNotice();
 
+  const handleOAuthError = (message: string) => {
+    setSubmitAttempt((attempt) => attempt + 1);
+    setError(message);
+  };
+
   const handleLogin = async () => {
+    setSubmitAttempt((attempt) => attempt + 1);
     clearAuthCallbackError();
     clearAccountDeletedNotice();
     // A malformed address is refused here, before any request (PrimeTestLab 11035 M-02).
@@ -107,7 +118,12 @@ export default function LoginScreen() {
         )}
 
         {error && (
-          <View style={styles.errorContainer} accessibilityRole="alert" testID="login-error">
+          <View
+            style={styles.errorContainer}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+            testID="login-error"
+          >
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
@@ -119,6 +135,7 @@ export default function LoginScreen() {
             value={email}
             onChangeText={handleEmailChange}
             errorText={fieldErrors.email}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"
@@ -134,6 +151,7 @@ export default function LoginScreen() {
             value={password}
             onChangeText={handlePasswordChange}
             errorText={fieldErrors.password}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="password"
@@ -157,7 +175,7 @@ export default function LoginScreen() {
           />
         </View>
 
-        <OAuthButtons onError={(msg) => setError(msg)} />
+        <OAuthButtons onError={handleOAuthError} />
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>

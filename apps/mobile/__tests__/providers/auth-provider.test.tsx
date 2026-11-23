@@ -1314,6 +1314,17 @@ describe("AuthProvider — native Google session (PrimeTestLab 11035 M-03)", () 
     return rendered;
   }
 
+  /**
+   * Has the mocked `supabase.auth.signOut` fire SIGNED_OUT through the provider's listener before
+   * it resolves, as supabase-js does for both the `global` and the `local` scope.
+   */
+  function emitSignedOutOnSignOut() {
+    (mockSupabase.auth.signOut as jest.Mock).mockImplementation(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+      return { error: null };
+    });
+  }
+
   it("PrimeTestLab 11035 M-03: signs out of Google on sign-out, after Supabase", async () => {
     const { result } = await renderSignedIn();
     expect(mockGoogleSignOut).not.toHaveBeenCalled();
@@ -1322,7 +1333,7 @@ describe("AuthProvider — native Google session (PrimeTestLab 11035 M-03)", () 
       await result.current.signOut();
     });
 
-    expect(mockGoogleSignOut).toHaveBeenCalled();
+    expect(mockGoogleSignOut).toHaveBeenCalledTimes(1);
     expect((mockSupabase.auth.signOut as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
       mockGoogleSignOut.mock.invocationCallOrder[0],
     );
@@ -1335,7 +1346,49 @@ describe("AuthProvider — native Google session (PrimeTestLab 11035 M-03)", () 
       await result.current.deleteAccount();
     });
 
-    expect(mockGoogleSignOut).toHaveBeenCalled();
+    expect(mockGoogleSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("PrimeTestLab 11035 review: signs out of Google once when sign-out also fires SIGNED_OUT", async () => {
+    emitSignedOutOnSignOut();
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledTimes(1);
+    expect(mockGoogleSignOut).toHaveBeenCalledTimes(1);
+    expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 review: signs out of Google once when a deletion's local sign-out fires SIGNED_OUT", async () => {
+    emitSignedOutOnSignOut();
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.deleteAccount();
+    });
+
+    expect(mockSupabase.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(mockGoogleSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("PrimeTestLab 11035 review: signs out of Google again for the next session's end", async () => {
+    emitSignedOutOnSignOut();
+    const { result } = await renderSignedIn();
+
+    await act(async () => {
+      await result.current.signOut();
+    });
+    await act(async () => {
+      emitAuthEvent("SIGNED_IN", TEST_SESSION);
+    });
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+
+    expect(mockGoogleSignOut).toHaveBeenCalledTimes(2);
   });
 
   it("PrimeTestLab 11035 M-03: does not sign out of Google when the deletion did not happen", async () => {
@@ -1353,6 +1406,8 @@ describe("AuthProvider — native Google session (PrimeTestLab 11035 M-03)", () 
     await renderSignedIn();
 
     await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+      // supabase-js can report one session end more than once; Google is signed out once.
       emitAuthEvent("SIGNED_OUT", null);
     });
 
@@ -1378,7 +1433,7 @@ describe("AuthProvider — native Google session (PrimeTestLab 11035 M-03)", () 
       await result.current.signOut();
     });
 
-    expect(mockGoogleSignOut).toHaveBeenCalled();
+    expect(mockGoogleSignOut).toHaveBeenCalledTimes(1);
     expect(mockDatabase.unsafeResetDatabase).toHaveBeenCalled();
     expect(result.current.session).toBeNull();
   });

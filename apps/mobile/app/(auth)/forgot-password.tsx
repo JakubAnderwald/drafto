@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { RECOVERY_REDIRECT_URL } from "@/lib/auth-recovery";
+import { useErrorAnnouncement } from "@/hooks/use-error-announcement";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -29,6 +30,10 @@ export default function ForgotPasswordScreen() {
   const [retryable, setRetryable] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Bumped by every submit, so an error that repeats the last one's words is still announced
+  // to VoiceOver (PrimeTestLab 11035 review).
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  useErrorAnnouncement(error, submitAttempt);
 
   const handleEmailChange = (value: string) => {
     setEmail(value);
@@ -36,14 +41,17 @@ export default function ForgotPasswordScreen() {
   };
 
   const handleSubmit = async () => {
+    setSubmitAttempt((attempt) => attempt + 1);
     const trimmed = email.trim();
 
     // An empty or malformed address is refused here, under the field (PrimeTestLab 11035 M-02).
+    // Set in the same batch as the attempt bump, so a field error left by the last try (one the
+    // server sent) is cleared now rather than spoken again while this request is in flight.
     const invalid = validateEmailField(email);
+    setEmailError(invalid);
     if (invalid) {
       setRetryable(false);
       setError(null);
-      setEmailError(invalid);
       return;
     }
 
@@ -111,6 +119,7 @@ export default function ForgotPasswordScreen() {
           <View
             style={styles.errorContainer}
             accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
             testID="forgot-password-error"
           >
             <Text style={styles.errorText}>{error}</Text>
@@ -124,6 +133,7 @@ export default function ForgotPasswordScreen() {
             value={email}
             onChangeText={handleEmailChange}
             errorText={emailError}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"

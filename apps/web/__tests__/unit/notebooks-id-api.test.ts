@@ -54,7 +54,9 @@ const approvedProfile = {
 function namesQuery(names: Array<{ id: string; name: string }>) {
   return {
     select: () => ({
-      eq: () => Promise.resolve({ data: names, error: null }),
+      eq: () => ({
+        order: () => ({ range: () => Promise.resolve({ data: names, error: null }) }),
+      }),
     }),
   };
 }

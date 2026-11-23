@@ -110,6 +110,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // approval: a slow check for an account that was signed out or replaced meanwhile (e.g. a
   // second sign-in from the still-visible login screen) must not route the new session.
   const approvalCheckRef = useRef(0);
+  // The native Google sign-out for the session that just ended (PrimeTestLab 11035 M-03).
+  // supabase-js fires SIGNED_OUT for signOut() of either scope as well as for a session that
+  // ends elsewhere, and signOut() and deleteAccount() then wipe the device through
+  // resetLocalSession. Both paths share this one promise, so a single session end calls
+  // GoogleSignin.signOut() once. A new session clears it.
+  const googleSignOutRef = useRef<Promise<void> | null>(null);
+
+  /** Ends the native Google session once per Drafto session end. Never rejects. */
+  const endGoogleSession = useCallback((): Promise<void> => {
+    googleSignOutRef.current ??= signOutOfGoogle();
+    return googleSignOutRef.current;
+  }, []);
 
   /** Drops any approval check in flight; for a session that just ended. */
   const abandonApprovalCheck = useCallback(() => {
@@ -260,11 +272,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // End the native Google session too, so the next Google sign-in shows the account chooser
-      // instead of signing the same account straight back in (PrimeTestLab 11035 M-03). Never
-      // throws.
-      await signOutOfGoogle();
+      // instead of signing the same account straight back in (PrimeTestLab 11035 M-03). Usually
+      // the SIGNED_OUT event has already started it; this covers a sign-out whose Supabase call
+      // failed without emitting one. Never throws.
+      await endGoogleSession();
     },
-    [abandonApprovalCheck],
+    [abandonApprovalCheck, endGoogleSession],
   );
 
   const signOut = useCallback(
@@ -406,10 +419,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearAccountDeletedNotice();
       }
 
-      // A session that ends without signOut() (revoked elsewhere, refresh token expired) still
-      // ends the native Google session, like a sign-out from Settings (PrimeTestLab 11035 M-03).
+      // Every session end, including one without signOut() (revoked elsewhere, refresh token
+      // expired), ends the native Google session (PrimeTestLab 11035 M-03). A new session lets
+      // the next session end do it again.
       if (event === "SIGNED_OUT") {
-        void signOutOfGoogle();
+        void endGoogleSession();
+      } else if (newSession?.user) {
+        googleSignOutRef.current = null;
       }
 
       setSession(newSession);
@@ -430,7 +446,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
-  }, [checkApproval, recheckApproval, startRecovery, abandonApprovalCheck]);
+  }, [checkApproval, recheckApproval, startRecovery, abandonApprovalCheck, endGoogleSession]);
 
   return (
     <AuthContext.Provider

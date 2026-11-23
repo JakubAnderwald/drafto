@@ -9,6 +9,7 @@ import {
 } from "@drafto/shared";
 
 import { clearAccountDeletedNotice, useAccountDeletedNotice } from "@/lib/account-deleted-notice";
+import { useAccessibilityAnnouncement } from "@/hooks/use-accessibility-announcement";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -31,6 +32,10 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [loading, setLoading] = useState(false);
+  // Bumped by every submit (and OAuth try), so an error that repeats the last one's words is
+  // still announced to VoiceOver (PrimeTestLab 11035 review).
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  useAccessibilityAnnouncement(error, { queue: true, attempt: submitAttempt });
   const accountDeleted = useAccountDeletedNotice();
 
   const handleEmailChange = (value: string) => {
@@ -43,7 +48,13 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
     setFieldErrors((current) => ({ ...current, password: undefined }));
   };
 
+  const handleOAuthError = (message: string) => {
+    setSubmitAttempt((attempt) => attempt + 1);
+    setError(message);
+  };
+
   const handleLogin = async () => {
+    setSubmitAttempt((attempt) => attempt + 1);
     clearAccountDeletedNotice();
     // A malformed address is refused here, before any request (PrimeTestLab 11035 M-02).
     const validation = validateCredentials({ email, password }, "login");
@@ -103,6 +114,7 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
             value={email}
             onChangeText={handleEmailChange}
             errorText={fieldErrors.email}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"
@@ -119,6 +131,7 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
             value={password}
             onChangeText={handlePasswordChange}
             errorText={fieldErrors.password}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="password"
@@ -131,7 +144,7 @@ export function LoginScreen({ onNavigateToSignup, onNavigateToForgotPassword }: 
         <Button title="Log in" onPress={handleLogin} loading={loading} fullWidth size="lg" />
       </View>
 
-      <OAuthButtons onError={(msg) => setError(msg)} />
+      <OAuthButtons onError={handleOAuthError} />
 
       <View style={styles.footer}>
         <Pressable onPress={onNavigateToSignup} disabled={!onNavigateToSignup}>

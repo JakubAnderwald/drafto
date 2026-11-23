@@ -25,6 +25,11 @@ export interface InputProps extends Omit<TextInputProps, "style"> {
    * again when the field gets focus.
    */
   errorText?: string;
+  /**
+   * The form's submit counter. When it changes, the error is announced again even if its words
+   * are the same, so every submit that fails is heard.
+   */
+  submitAttempt?: number;
   leftIcon?: React.ReactNode;
   rightIcon?: React.ReactNode;
   secureTextEntry?: boolean;
@@ -39,6 +44,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
     placeholder,
     label,
     errorText,
+    submitAttempt,
     leftIcon,
     rightIcon,
     secureTextEntry,
@@ -54,7 +60,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [focused, setFocused] = useState(false);
-  useAccessibilityAnnouncement(errorText || null, { queue: true });
+  useAccessibilityAnnouncement(errorText || null, { queue: true, attempt: submitAttempt });
 
   const hasError = Boolean(errorText);
 
