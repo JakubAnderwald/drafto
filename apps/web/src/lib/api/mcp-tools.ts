@@ -1,7 +1,13 @@
-import { blockNoteToMarkdown, markdownToBlockNote, contentToBlocknote } from "@drafto/shared";
+import {
+  blockNoteToMarkdown,
+  markdownToBlockNote,
+  contentToBlocknote,
+  duplicateNotebookNameMessage,
+} from "@drafto/shared";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
 import { contentQuotaMessageFor } from "@/lib/api/content-quota";
+import { findNotebookNameConflict } from "@/lib/api/notebook-name-conflict";
 
 export interface ToolResult {
   [key: string]: unknown;
@@ -30,6 +36,22 @@ export const MCP_SIGN_IN_MESSAGE = `Sign in required: generate an API key at ${M
  */
 export function signInRequired(): ToolResult {
   return err(`Error: ${MCP_SIGN_IN_MESSAGE}`);
+}
+
+/**
+ * The error for a notebook name the user already has (ADR-0097), or null when it is free.
+ * A notebook never clashes with itself, so pass its id on a rename.
+ */
+async function notebookNameErr(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  name: string,
+  excludeId?: string,
+): Promise<ToolResult | null> {
+  const { duplicate, error } = await findNotebookNameConflict(supabase, userId, name, excludeId);
+  if (error) return err(`Error: ${error.message}`);
+  if (duplicate) return err(`Error: ${duplicateNotebookNameMessage(duplicate.name)}`);
+  return null;
 }
 
 /** A failed note write: the content quota's own message (ADR 0090), or the database error. */
@@ -131,6 +153,9 @@ export async function createNotebook(
   userId: string,
   name: string,
 ): Promise<ToolResult> {
+  const nameError = await notebookNameErr(supabase, userId, name);
+  if (nameError) return nameError;
+
   const { data, error } = await supabase
     .from("notebooks")
     .insert({ user_id: userId, name: name.trim() })
@@ -261,6 +286,9 @@ export async function renameNotebook(
     .single();
 
   if (lookupError || !existing) return err("Error: Notebook not found");
+
+  const nameError = await notebookNameErr(supabase, userId, trimmed, notebookId);
+  if (nameError) return nameError;
 
   const { data, error } = await supabase
     .from("notebooks")

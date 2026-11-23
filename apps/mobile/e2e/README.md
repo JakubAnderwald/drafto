@@ -101,7 +101,7 @@ bash apps/mobile/e2e/run-nested-lists-e2e.sh
 | Flow                          | Description                                                    |
 | ----------------------------- | -------------------------------------------------------------- |
 | `01-login.yaml`               | Login with email/password, verify Notebooks screen             |
-| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                               |
+| `02-create-notebook.yaml`     | Create, rename, cancel notebooks; a taken name is refused      |
 | `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press               |
 | `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash                     |
 | `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile                 |

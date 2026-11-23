@@ -50,6 +50,15 @@ const approvedProfile = {
   }),
 };
 
+/** The duplicate check's read of the user's notebook names (PrimeTestLab 11035 M-01). */
+function namesQuery(names: Array<{ id: string; name: string }>) {
+  return {
+    select: () => ({
+      eq: () => Promise.resolve({ data: names, error: null }),
+    }),
+  };
+}
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -99,6 +108,7 @@ describe("PATCH /api/notebooks/[id]", () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === "profiles") return approvedProfile;
       return {
+        ...namesQuery([{ id: "nb-1", name: "Old" }]),
         update: () => ({
           eq: () => ({
             eq: () => ({
@@ -120,6 +130,82 @@ describe("PATCH /api/notebooks/[id]", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.name).toBe("Renamed");
+  });
+
+  describe("PrimeTestLab 11035 M-01: duplicate names", () => {
+    function patchName(name: string) {
+      return PATCH(
+        new NextRequest("http://localhost:3000/api/notebooks/nb-1", {
+          method: "PATCH",
+          body: JSON.stringify({ name }),
+          headers: { "Content-Type": "application/json" },
+        }),
+        { params },
+      );
+    }
+
+    function withNotebooks(update: ReturnType<typeof vi.fn>) {
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          ...namesQuery([
+            { id: "nb-1", name: "Project Ideas" },
+            { id: "nb-2", name: "Recipes" },
+          ]),
+          update,
+        };
+      });
+    }
+
+    it("refuses another notebook's name with a 409 and leaves the notebook alone", async () => {
+      authenticateAs("user-1");
+      const update = vi.fn();
+      withNotebooks(update);
+
+      const response = await patchName("RECIPES");
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toBe(
+        'A notebook named "Recipes" already exists. Choose a different name.',
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it("answers 404, not 409, for a notebook the user doesn't own, even with a taken name", async () => {
+      authenticateAs("user-1");
+      const update = vi.fn();
+      withNotebooks(update);
+
+      const response = await PATCH(
+        new NextRequest("http://localhost:3000/api/notebooks/nb-missing", {
+          method: "PATCH",
+          body: JSON.stringify({ name: "Recipes" }),
+          headers: { "Content-Type": "application/json" },
+        }),
+        { params: Promise.resolve({ id: "nb-missing" }) },
+      );
+
+      expect(response.status).toBe(404);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it("lets a notebook change only the case of its own name", async () => {
+      authenticateAs("user-1");
+      const renamed = { id: "nb-1", name: "project ideas" };
+      const update = vi.fn(() => ({
+        eq: () => ({
+          eq: () => ({
+            select: () => ({ single: () => Promise.resolve({ data: renamed, error: null }) }),
+          }),
+        }),
+      }));
+      withNotebooks(update);
+
+      const response = await patchName("project ideas");
+
+      expect(response.status).toBe(200);
+      expect(update).toHaveBeenCalledWith({ name: "project ideas" });
+    });
   });
 });
 

@@ -38,6 +38,22 @@ const approvedProfile = {
   }),
 };
 
+/** The duplicate check's read of the user's notebook names (PrimeTestLab 11035 M-01). */
+function namesQuery(
+  names: Array<{ id: string; name: string }>,
+  error: { message: string } | null = null,
+) {
+  return {
+    select: vi.fn((columns: string) => ({
+      eq: vi.fn((column: string, value: string) => {
+        expect(columns).toBe("id, name");
+        expect([column, value]).toEqual(["user_id", "user-1"]);
+        return Promise.resolve({ data: error ? null : names, error });
+      }),
+    })),
+  };
+}
+
 function authenticateAs(userId: string) {
   mockGetUser.mockResolvedValue({
     data: { user: { id: userId, email: "test@test.com" } },
@@ -67,6 +83,7 @@ describe("GET /api/notebooks", () => {
         user_id: "user-1",
         created_at: "2026-01-01",
         updated_at: "2026-01-01",
+        notes: [{ count: 3 }],
       },
     ];
 
@@ -75,7 +92,9 @@ describe("GET /api/notebooks", () => {
       return {
         select: () => ({
           eq: () => ({
-            order: () => Promise.resolve({ data: notebooks, error: null }),
+            eq: () => ({
+              order: () => Promise.resolve({ data: notebooks, error: null }),
+            }),
           }),
         }),
       };
@@ -86,6 +105,44 @@ describe("GET /api/notebooks", () => {
     const body = await response.json();
     expect(body).toHaveLength(1);
     expect(body[0].name).toBe("Notes");
+  });
+
+  it("PrimeTestLab 11035 S-03: counts each notebook's notes, leaving trashed ones out", async () => {
+    authenticateAs("user-1");
+
+    const select = vi.fn();
+    const filters: Array<[string, unknown]> = [];
+    const rows = [
+      { id: "nb-1", name: "Notes", notes: [{ count: 3 }] },
+      { id: "nb-2", name: "Empty", notes: [{ count: 0 }] },
+      { id: "nb-3", name: "No embed", notes: null },
+    ];
+    mockFrom.mockImplementation((table: string) => {
+      if (table === "profiles") return approvedProfile;
+      const builder = {
+        eq: (column: string, value: unknown) => {
+          filters.push([column, value]);
+          return builder;
+        },
+        order: () => Promise.resolve({ data: rows, error: null }),
+      };
+      select.mockReturnValue(builder);
+      return { select };
+    });
+
+    const response = await GET(mockGetRequest());
+    const body = await response.json();
+
+    expect(select).toHaveBeenCalledWith("*, notes(count)");
+    expect(filters).toEqual([
+      ["user_id", "user-1"],
+      ["notes.is_trashed", false],
+    ]);
+    expect(body).toEqual([
+      { id: "nb-1", name: "Notes", note_count: 3 },
+      { id: "nb-2", name: "Empty", note_count: 0 },
+      { id: "nb-3", name: "No embed", note_count: 0 },
+    ]);
   });
 });
 
@@ -129,6 +186,7 @@ describe("POST /api/notebooks", () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === "profiles") return approvedProfile;
       return {
+        ...namesQuery([{ id: "nb-1", name: "Personal" }]),
         insert: () => ({
           select: () => ({
             single: () => Promise.resolve({ data: notebook, error: null }),
@@ -146,5 +204,48 @@ describe("POST /api/notebooks", () => {
     expect(response.status).toBe(201);
     const body = await response.json();
     expect(body.name).toBe("Work");
+  });
+
+  describe("PrimeTestLab 11035 M-01: duplicate names", () => {
+    function postName(name: string) {
+      return POST(
+        new NextRequest("http://localhost:3000/api/notebooks", {
+          method: "POST",
+          body: JSON.stringify({ name }),
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+
+    it("refuses a name the user already has, ignoring case and spacing, with a 409", async () => {
+      authenticateAs("user-1");
+      const insert = vi.fn();
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return { ...namesQuery([{ id: "nb-1", name: "Project Ideas" }]), insert };
+      });
+
+      const response = await postName("  project   IDEAS ");
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toBe(
+        'A notebook named "Project Ideas" already exists. Choose a different name.',
+      );
+      expect(insert).not.toHaveBeenCalled();
+    });
+
+    it("answers 500 without inserting when the names can't be read", async () => {
+      authenticateAs("user-1");
+      const insert = vi.fn();
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return { ...namesQuery([], { message: "db down" }), insert };
+      });
+
+      const response = await postName("Work");
+
+      expect(response.status).toBe(500);
+      expect(insert).not.toHaveBeenCalled();
+    });
   });
 });

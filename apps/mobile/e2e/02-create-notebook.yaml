@@ -1,6 +1,6 @@
 appId: eu.drafto.mobile
 ---
-# Flow 02: Create, rename, and delete notebooks
+# Flow 02: Create, rename, and delete notebooks; refuse a taken name
 # Depends on: 01-login (user is logged in)
 # Pass -e RUN_ID=<timestamp> when running to ensure unique names across flows
 
@@ -33,6 +33,27 @@ appId: eu.drafto.mobile
 - tapOn:
     id: "swipe-hint-dismiss"
     optional: true
+
+# --- Test: a taken name is refused (PrimeTestLab 11035 M-01) ---
+# Same name again: the field stays open with an inline error and nothing is
+# created. (Unit tests cover the case- and spacing-insensitive match.)
+- tapOn:
+    id: "add"
+- assertVisible: "Notebook name"
+- inputText: "NB ${RUN_ID}"
+- tapOn:
+    id: "checkmark"
+- extendedWaitUntil:
+    visible:
+      id: "notebook-name-error"
+    timeout: 5000
+- assertVisible: ".*already exists. Choose a different name."
+- assertVisible:
+    id: "notebook-name-input"
+- tapOn:
+    id: "close"
+- assertNotVisible:
+    id: "notebook-name-error"
 
 # --- Test: cancel creating a notebook ---
 - tapOn:

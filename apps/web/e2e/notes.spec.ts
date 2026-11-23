@@ -11,9 +11,13 @@ import { test, expect } from "./helpers/test";
  * re-select it after a reload (the active row carries data-testid).
  */
 async function getActiveNotebookName(page: Page): Promise<string> {
-  const active = page.locator('[data-testid="notebook-item-active"]');
-  await active.waitFor({ timeout: 10000 });
-  return (await active.innerText()).trim();
+  // The name only: the row also shows its note count (PrimeTestLab 11035 S-03), which
+  // changes as the test adds notes.
+  const activeName = page.locator(
+    '[data-testid="notebook-item-active"] [data-testid="notebook-name"]',
+  );
+  await activeName.waitFor({ timeout: 10000 });
+  return (await activeName.innerText()).trim();
 }
 
 async function selectNotebookByName(page: Page, name: string): Promise<void> {

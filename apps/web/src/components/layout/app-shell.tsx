@@ -33,6 +33,8 @@ interface InitialNotebook {
   name: string;
   created_at: string;
   updated_at: string;
+  /** Notes not in the trash, shown beside the notebook (PrimeTestLab 11035 S-03). */
+  note_count?: number;
 }
 
 function ChevronLeftIcon() {

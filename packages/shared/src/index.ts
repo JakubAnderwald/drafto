@@ -286,3 +286,12 @@ export {
 } from "./auth/auth-error-copy";
 export type { AuthErrorLike, AuthErrorCopy } from "./auth/auth-error-copy";
 export { oauthQueryParams } from "./auth/oauth-query-params";
+
+// Notebook names and note counts (PrimeTestLab 11035 M-01, S-03; ADR-0097)
+export {
+  normalizeNotebookName,
+  findDuplicateNotebook,
+  duplicateNotebookNameMessage,
+  formatNoteCount,
+} from "./notebooks/notebook-name";
+export type { NamedNotebook } from "./notebooks/notebook-name";
