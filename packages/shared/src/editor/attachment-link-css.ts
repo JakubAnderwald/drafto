@@ -1,7 +1,6 @@
 import { ATTACHMENT_URL_PREFIX } from "../constants";
 import { radii, spacing, type SemanticColors } from "../design-tokens";
 import { formatFileSize } from "../formatters/file-size";
-import { toAttachmentUrl } from "./attachment-url";
 
 // How a link to a non-image attachment looks in the editors (PrimeTestLab
 // 11035 S-04): a small card with a file icon, the file name and its size.
@@ -123,18 +122,16 @@ export function attachmentHrefFragments(filePath: string): string[] {
   return [...new Set(candidates.filter((value): value is string => !!value))];
 }
 
-function isImageMimeType(mimeType: string | null | undefined): boolean {
-  return typeof mimeType === "string" && mimeType.startsWith("image/");
-}
-
 /** The attachments that get a size label, each once, with that label. */
 function sizedFiles(
   attachments: readonly AttachmentSizeInfo[],
 ): { filePath: string; label: string }[] {
+  // Images are not left out: the rules below only reach file links and file
+  // blocks, never an `<img>`, and an image uploaded into a web file block is
+  // shown as a card like any other file.
   const byPath = new Map<string, string>();
   for (const attachment of attachments) {
-    if (!attachment.filePath || isImageMimeType(attachment.mimeType)) continue;
-    if (typeof attachment.fileSize !== "number") continue;
+    if (!attachment.filePath || typeof attachment.fileSize !== "number") continue;
     const label = formatFileSize(attachment.fileSize);
     if (label) byPath.set(attachment.filePath, label);
   }
@@ -142,13 +139,15 @@ function sizedFiles(
 }
 
 /**
- * The native editors' per-note size stylesheet: for each non-image attachment
- * with a known size, a rule that writes its size after the file links to it,
- * e.g. `… a[href*="-1700000000000-0a1b2c3d"]::after { content: "1.2 MB"; }`.
- * Rules for longer fragments come later, so where one key's fragment is part
- * of another's, the longer (more specific) match wins.
+ * One rule per sized attachment: `selectorsFor(fragment)` for each of its
+ * href fragments, setting `content` to its size. Rules for longer fragments
+ * come later, so where one key's fragment is part of another's, the longer
+ * (more specific) match wins.
  */
-export function buildAttachmentSizeCss(attachments: readonly AttachmentSizeInfo[]): string {
+function buildSizeRules(
+  attachments: readonly AttachmentSizeInfo[],
+  selectorsFor: (fragment: string) => readonly string[],
+): string {
   return sizedFiles(attachments)
     .map(({ filePath, label }) => {
       const fragments = attachmentHrefFragments(filePath);
@@ -156,26 +155,33 @@ export function buildAttachmentSizeCss(attachments: readonly AttachmentSizeInfo[
     })
     .sort((a, b) => a.length - b.length)
     .map(({ fragments, label }) => {
-      const selectors = fragments.flatMap((fragment) =>
-        ATTACHMENT_LINK_SELECTORS.map(
-          (selector) => `${selector}[href*=${cssString(fragment)}]::after`,
-        ),
-      );
+      const selectors = fragments.flatMap((fragment) => selectorsFor(cssString(fragment)));
       return `${selectors.join(", ")} { content: ${cssString(label)}; }`;
     })
     .join("\n");
 }
 
 /**
+ * The native editors' per-note size stylesheet: for each attachment with a
+ * known size, a rule that writes its size after the file links to it, e.g.
+ * `… a[href*="-1700000000000-0a1b2c3d"]::after { content: "1.2 MB"; }`.
+ */
+export function buildAttachmentSizeCss(attachments: readonly AttachmentSizeInfo[]): string {
+  return buildSizeRules(attachments, (fragment) =>
+    ATTACHMENT_LINK_SELECTORS.map((selector) => `${selector}[href*=${fragment}]::after`),
+  );
+}
+
+/**
  * The web editor's size stylesheet. BlockNote renders a file block with its
- * stored URL in `data-url`, so each rule matches that URL exactly and writes
- * the size after the block's icon and name.
+ * URL in `data-url`. For a saved note that is the signed URL `GET
+ * /api/notes/:id` resolved it to, and for a file just uploaded it may be
+ * `attachment://<path>`, so each rule matches the same encoding-stable
+ * fragments as the native rules (`data-url*=`) and writes the size after the
+ * block's icon and name.
  */
 export function buildFileBlockSizeCss(attachments: readonly AttachmentSizeInfo[]): string {
-  return sizedFiles(attachments)
-    .map(
-      ({ filePath, label }) =>
-        `.bn-block-content[data-content-type="file"][data-url=${cssString(toAttachmentUrl(filePath))}] .bn-file-name-with-icon::after { content: ${cssString(label)}; }`,
-    )
-    .join("\n");
+  return buildSizeRules(attachments, (fragment) => [
+    `.bn-block-content[data-content-type="file"][data-url*=${fragment}] .bn-file-name-with-icon::after`,
+  ]);
 }

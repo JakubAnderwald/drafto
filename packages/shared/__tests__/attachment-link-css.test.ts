@@ -120,9 +120,8 @@ describe("PrimeTestLab 11035 S-04 buildAttachmentSizeCss", () => {
     );
   });
 
-  it("leaves out images, unknown sizes and duplicates", () => {
+  it("leaves out unknown sizes and duplicates", () => {
     const css = buildAttachmentSizeCss([
-      { filePath: "u/n/photo-1700000000000-aaaaaaaa.png", fileSize: 10, mimeType: "image/png" },
       { filePath: "u/n/a-1700000000000-11111111.pdf", fileSize: Number.NaN },
       { filePath: "u/n/b-1700000000000-22222222.pdf", fileSize: null },
       { filePath: "", fileSize: 10 },
@@ -131,8 +130,18 @@ describe("PrimeTestLab 11035 S-04 buildAttachmentSizeCss", () => {
     ]);
     expect(css.split("\n")).toHaveLength(1);
     expect(css).toContain('content: "2 KB"');
-    expect(css).not.toContain("aaaaaaaa");
     expect(css).not.toContain("11111111");
+  });
+
+  it("labels an image file too, since the rules only reach file links", () => {
+    // An image uploaded into a web file block is a file card on mobile and
+    // desktop; an inline image is an <img>, which no rule selects.
+    const css = buildAttachmentSizeCss([
+      { filePath: "u/n/photo-1700000000000-aaaaaaaa.png", fileSize: 10, mimeType: "image/png" },
+    ]);
+    expect(css).toContain('[href*="-1700000000000-aaaaaaaa"]::after');
+    expect(css).toContain('content: "10 B"');
+    expect(css).not.toContain("img");
   });
 
   it("escapes a file name that could break out of the stylesheet", () => {
@@ -160,15 +169,29 @@ describe("PrimeTestLab 11035 S-04 buildAttachmentSizeCss", () => {
 });
 
 describe("PrimeTestLab 11035 S-04 buildFileBlockSizeCss", () => {
-  it("matches BlockNote's file block on its stored URL", () => {
+  it("matches BlockNote's file block on the key's unique suffix in data-url", () => {
     expect(
-      buildFileBlockSizeCss([
-        { filePath: "u/n/report.pdf", fileSize: 812 * 1024, mimeType: "application/pdf" },
-        { filePath: "u/n/photo.png", fileSize: 812 * 1024, mimeType: "image/png" },
-      ]),
+      buildFileBlockSizeCss([{ filePath: KEY, fileSize: 812 * 1024, mimeType: "application/pdf" }]),
     ).toBe(
-      '.bn-block-content[data-content-type="file"][data-url="attachment://u/n/report.pdf"]' +
+      '.bn-block-content[data-content-type="file"][data-url*="-1700000000000-0a1b2c3d"]' +
         ' .bn-file-name-with-icon::after { content: "812 KB"; }',
     );
+  });
+
+  it("matches an older key on its whole path, raw and encoded", () => {
+    const css = buildFileBlockSizeCss([
+      { filePath: "u/n/old report.pdf", fileSize: 1024, mimeType: "application/pdf" },
+    ]);
+    expect(css).toContain('[data-url*="u/n/old report.pdf"]');
+    expect(css).toContain('[data-url*="u/n/old%20report.pdf"]');
+    expect(css).toContain('content: "1 KB"');
+  });
+
+  it("labels an image uploaded into a file block", () => {
+    expect(
+      buildFileBlockSizeCss([
+        { filePath: "u/n/photo-1700000000000-aaaaaaaa.png", fileSize: 2048, mimeType: "image/png" },
+      ]),
+    ).toContain('[data-url*="-1700000000000-aaaaaaaa"]');
   });
 });
