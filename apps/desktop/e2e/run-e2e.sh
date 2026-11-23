@@ -353,14 +353,33 @@ echo "TEST 5: Create a new note"
 cliclick kp:esc
 wait_for_ui
 
-if has_element "New note"; then
+# The note goes into this run's own notebook from TEST 4, which starts empty. TEST 5b may
+# delete only that note: it runs only if this notebook's list went from no Untitled row to
+# exactly one, so nothing else can be the row it deletes.
+TEST5_UNTITLED_BEFORE=""
+TEST5_UNTITLED_AFTER=""
+E2E_NB_POS=$(find_element_center_by_desc "$E2E_NB_NAME")
+if [ -n "$E2E_NB_POS" ]; then
+  cliclick "c:$E2E_NB_POS"
+  wait_for_ui
+else
+  echo "  ℹ  Create note: '$E2E_NB_NAME' not found; TEST 5b will not delete anything"
+fi
+# Exact match: a substring lookup (has_element) also finds the sidebar's "New notebook", which
+# is there even when no notebook is selected and the note list has no "New note" button.
+if has_window_element_exact "New note"; then
   BEFORE_NOTE_COUNT=$(get_element_count)
-  click_element_by_desc "New note"
+  TEST5_UNTITLED_BEFORE=$(count_rows_in_area "$(scroll_area_under "New note")" "Untitled") || TEST5_UNTITLED_BEFORE=""
+  if ! click_window_element_exact "New note"; then
+    TEST5_UNTITLED_BEFORE=""
+    fail "Create note" "The 'New note' button went away before it could be clicked"
+  fi
   wait_for_ui
   sleep 1
 
   AFTER_NOTE_COUNT=$(get_element_count)
   AFTER_DESCS=$(get_all_descs)
+  TEST5_UNTITLED_AFTER=$(count_rows_in_area "$(scroll_area_under "New note")" "Untitled") || TEST5_UNTITLED_AFTER=""
 
   screencapture -x /tmp/drafto_e2e_new_note.png
 
@@ -373,6 +392,46 @@ if has_element "New note"; then
   fi
 else
   fail "Create note" "Could not find 'New note' button — is a notebook selected?"
+fi
+
+# ──────────────────────────────────────────────
+echo ""
+echo "TEST 5b: Delete a note from the keyboard (#864)"
+# ──────────────────────────────────────────────
+# The row's × is hover-only; a click on the row focuses it, and the focused, selected row
+# takes ⌫. Everything here looks only inside the note list (the scroll area under "New
+# note"), so a notebook named Untitled never matches. It deletes only the note TEST 5 just
+# created, the one Untitled row in this run's own notebook, and presses ⌫ only once the
+# click has given that row keyboard focus: a ⌫ anywhere else would edit a note.
+NOTE_AREA=$(scroll_area_under "New note")
+if [ -z "$E2E_NB_POS" ] || [ "$TEST5_UNTITLED_BEFORE" != "0" ] || [ "$TEST5_UNTITLED_AFTER" != "1" ]; then
+  fail "Keyboard delete" "TEST 5's note isn't provably the only Untitled row in '$E2E_NB_NAME' (${TEST5_UNTITLED_BEFORE:-?} -> ${TEST5_UNTITLED_AFTER:-?}); nothing deleted"
+elif ! UNTITLED_BEFORE=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
+  fail "Keyboard delete" "Could not read the note list's rows (scroll area '$NOTE_AREA')"
+elif [ "$UNTITLED_BEFORE" != "1" ]; then
+  # Re-checked live: the row clicked below must still be the only Untitled one.
+  fail "Keyboard delete" "The note list has $UNTITLED_BEFORE Untitled rows before ⌫; nothing deleted"
+else
+  ROW_POS=$(scroll_row_center "$NOTE_AREA" "Untitled")
+  if [ -z "$ROW_POS" ]; then
+    fail "Keyboard delete" "The Untitled note row is not in view to click"
+  else
+    cliclick "c:$ROW_POS"
+    sleep 0.5
+    if [ "$(row_focused_in_area "$NOTE_AREA" "Untitled")" != "true" ]; then
+      fail "Keyboard delete" "Clicking the note row didn't give it keyboard focus; ⌫ not pressed"
+    else
+      cliclick kp:delete
+      wait_for_ui
+      if ! UNTITLED_AFTER=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
+        fail "Keyboard delete" "Could not read the note list's rows after ⌫"
+      elif [ "$UNTITLED_AFTER" -lt "$UNTITLED_BEFORE" ]; then
+        pass "⌫ on the clicked note row moves it to Trash ($UNTITLED_BEFORE -> $UNTITLED_AFTER)"
+      else
+        fail "Keyboard delete" "Untitled rows unchanged ($UNTITLED_BEFORE) after ⌫ on the focused row"
+      fi
+    fi
+  fi
 fi
 
 # ──────────────────────────────────────────────

@@ -185,11 +185,91 @@ scroll_row_center() {
   " 2>/dev/null || true
 }
 
+# Print how many rows of scroll area $1 (an index from scroll_area_under) are
+# described exactly $2. Returns 1, printing nothing, when the count can't be read
+# (no such area, or System Events failed), so a failure never reads as 0.
+count_rows_in_area() {
+  local area=$1 desc=$2 n
+  [ "$area" -gt 0 ] 2>/dev/null || return 1
+  n=$(osascript -e "
+  tell application \"System Events\"
+    tell process \"Drafto\"
+      set n to 0
+      repeat with el in (UI elements of scroll area $area of window 1)
+        -- No try: a row that can't be read fails the whole count rather than being skipped.
+        if role of el is not \"AXScrollBar\" then
+          if description of el is \"$desc\" then set n to n + 1
+        end if
+      end repeat
+      return n
+    end tell
+  end tell
+  " 2>/dev/null) || return 1
+  case $n in '' | *[!0-9]*) return 1 ;; esac
+  echo "$n"
+}
+
+# Print true or false: whether the first row of scroll area $1 described exactly
+# $2 has keyboard focus (AXFocused), or nothing if there is no such row.
+row_focused_in_area() {
+  local area=$1 desc=$2
+  [ "$area" -gt 0 ] 2>/dev/null || return 0
+  osascript -e "
+  tell application \"System Events\"
+    tell process \"Drafto\"
+      repeat with el in (UI elements of scroll area $area of window 1)
+        try
+          if description of el is \"$desc\" then return (focused of el) as text
+        end try
+      end repeat
+      return \"\"
+    end tell
+  end tell
+  " 2>/dev/null || true
+}
+
 # Find and click an element by its accessibility description (substring match),
 # including rows in view inside a scroll area
 click_element_by_desc() {
   local pos
   pos=$(find_element_center_by_desc "$1")
+  [ -n "$pos" ] || return 1
+  cliclick "c:$pos"
+}
+
+# Print the center ("x,y") of the direct child of window 1 described exactly $1 (not a
+# substring, so "New note" never finds "New notebook"), or nothing if there is none.
+find_window_element_exact() {
+  local desc=$1
+  osascript -e "
+  tell application \"System Events\"
+    tell process \"Drafto\"
+      repeat with el in (UI elements of window 1)
+        try
+          if description of el is \"$desc\" then
+            set p to position of el
+            set s to size of el
+            set cx to (item 1 of p) + (item 1 of s) / 2
+            set cy to (item 2 of p) + (item 2 of s) / 2
+            return (cx as integer as text) & \",\" & (cy as integer as text)
+          end if
+        end try
+      end repeat
+      return \"\"
+    end tell
+  end tell
+  " 2>/dev/null || true
+}
+
+# Whether window 1 has a direct child described exactly $1.
+has_window_element_exact() {
+  [ -n "$(find_window_element_exact "$1")" ]
+}
+
+# Click the direct child of window 1 described exactly $1. Returns 1 if there is none.
+click_window_element_exact() {
+  local pos
+  pos=$(find_window_element_exact "$1")
   [ -n "$pos" ] || return 1
   cliclick "c:$pos"
 }
