@@ -237,7 +237,7 @@ describe("SettingsPage", () => {
     expect(screen.getByText(/YOUR_API_KEY/)).toBeInTheDocument();
   });
 
-  it("renders the Delete account section as the last section", async () => {
+  it("renders the Delete account section as the last section before About", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve([]),
@@ -248,7 +248,9 @@ describe("SettingsPage", () => {
     const section = screen.getByTestId("delete-account-section");
     expect(section).toHaveTextContent("Delete account");
     expect(section.className).toContain("mt-6");
-    expect(container.firstElementChild?.lastElementChild).toBe(section);
+    // About (PrimeTestLab 11035 S-01) is the page's last card, right below Delete account.
+    expect(section.nextElementSibling).toBe(screen.getByTestId("about-section"));
+    expect(container.firstElementChild?.lastElementChild).toBe(screen.getByTestId("about-section"));
 
     await waitFor(() => {
       expect(screen.getByText("No API keys yet. Generate one to get started.")).toBeInTheDocument();
@@ -453,6 +455,31 @@ describe("SettingsPage", () => {
 
       await waitFor(() => {
         expect(within(storageSection()).getByText("Storage usage unavailable")).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe("About section (PrimeTestLab 11035 S-01)", () => {
+    it("PrimeTestLab 11035 S-01: links the privacy policy and support pages", async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+
+      render(<SettingsPage />);
+
+      const about = screen.getByTestId("about-section");
+      expect(within(about).getByRole("heading", { name: "About", level: 2 })).toBeInTheDocument();
+      expect(within(about).getByRole("link", { name: "Privacy policy" })).toHaveAttribute(
+        "href",
+        "/privacy",
+      );
+      expect(within(about).getByRole("link", { name: "Support" })).toHaveAttribute(
+        "href",
+        "/support",
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.getByText("No API keys yet. Generate one to get started."),
+        ).toBeInTheDocument();
       });
     });
   });

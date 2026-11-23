@@ -109,3 +109,11 @@ export const PASSWORD_VISIBILITY_LABELS = {
   show: "Show password",
   hide: "Hide password",
 } as const;
+
+// --- Public drafto.eu pages (PrimeTestLab 11035 S-01) ---
+// The About section of mobile and web Settings links these. Always the prod site: the
+// privacy policy and support page are not per-environment, so a dev or preview build still
+// links drafto.eu.
+export const DRAFTO_WEB_ORIGIN = "https://drafto.eu";
+export const PRIVACY_POLICY_URL = `${DRAFTO_WEB_ORIGIN}/privacy`;
+export const SUPPORT_URL = `${DRAFTO_WEB_ORIGIN}/support`;

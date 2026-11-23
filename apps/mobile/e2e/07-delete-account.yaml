@@ -3,7 +3,8 @@ appId: eu.drafto.mobile
 # Flow 07: Delete account (cancel only)
 # Tests: the Settings "Delete account" row opens the type-DELETE confirmation,
 # the destructive button stays disabled for anything but the exact word, and
-# Cancel closes the dialog with the user still signed in.
+# Cancel closes the dialog with the user still signed in. Then checks the
+# About section below it (PrimeTestLab 11035 S-01).
 # Depends on: 01-login (user is logged in)
 #
 # NEVER taps an enabled confirm: this runs against the shared E2E user, which
@@ -66,6 +67,28 @@ appId: eu.drafto.mobile
     timeout: 10000
 - assertVisible:
     id: "delete-account-row"
+
+# --- Test: the About section (PrimeTestLab 11035 S-01) ---
+# Below Delete account: the version row ("1.7.0 (82)" on iOS, "1.7.0" on
+# Android) and the Privacy policy / Support links. The links aren't tapped:
+# they leave the app for the browser.
+- scrollUntilVisible:
+    element:
+      id: "about-support"
+    direction: DOWN
+    timeout: 10000
+# The section title is uppercased on screen, so match it case-insensitively.
+- assertVisible: "(?i)about"
+- assertVisible:
+    id: "about-version"
+# The row is one accessibility element: iOS reads its label "Version 1.7.0 (82)",
+# Android may also expose the bare value, so the prefix is optional.
+- assertVisible: "(Version )?\\d+\\.\\d+\\.\\d+( \\(\\d+\\))?"
+- assertVisible:
+    id: "about-privacy"
+- assertVisible: "Privacy policy"
+- assertVisible:
+    id: "about-support"
 - tapOn: "Notebooks(, tab.*)?"
 - extendedWaitUntil:
     visible: "Notebooks"

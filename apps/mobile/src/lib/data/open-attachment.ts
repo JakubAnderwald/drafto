@@ -1,5 +1,6 @@
 import { Platform, Linking } from "react-native";
-import * as WebBrowser from "expo-web-browser";
+
+import { openExternalUrl } from "@/lib/open-external-url";
 
 export interface OpenAttachmentParams {
   signedUrl: string | null;
@@ -43,18 +44,9 @@ export async function openAttachment({
     return { status: "unavailable", reason: "Could not load attachment URL" };
   }
 
-  try {
-    await WebBrowser.openBrowserAsync(signedUrl, {
-      presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
-    });
+  // In-app browser first, then the system browser.
+  if (await openExternalUrl(signedUrl)) {
     return { status: "opened" };
-  } catch {
-    // Fallback to Linking.openURL if in-app browser fails
-    try {
-      await Linking.openURL(signedUrl);
-      return { status: "opened" };
-    } catch {
-      return { status: "unavailable", reason: "Failed to open attachment" };
-    }
   }
+  return { status: "unavailable", reason: "Failed to open attachment" };
 }
