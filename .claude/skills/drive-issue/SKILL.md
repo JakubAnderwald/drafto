@@ -127,9 +127,12 @@ Summarise the plan in the terminal: approach, size, platforms, risks, anything y
 
      ```bash
      STATE="${DRAFTO_FACTORY_STATE_FILE:-/Volumes/DraftoFactory/drafto-factory/logs/factory-state.json}"
-     node scripts/lib/coderabbit-cli.mjs review --pr <p> --repo-root . --timeout-min 30 \
-       $( [[ -f "$STATE" ]] && printf -- '--state-file %s' "$STATE" )
+     LEDGER=()
+     [[ -f "$STATE" ]] && LEDGER=(--state-file "$STATE")
+     node scripts/lib/coderabbit-cli.mjs review --pr <p> --repo-root . --timeout-min 30 "${LEDGER[@]}"
      ```
+
+     `LEDGER` is an array, so a state-file path with a space in it stays one argument.
 
      It prints one JSON line: `{ran, reason, outcome, coverage, posted: {inline, …}}`. Match the rows in order, on `reason` and `coverage`, never on `ran`: a rate limit, a timeout or a failed post all come back with `ran: true`. A `reason` can carry a detail after its name, such as `cli-budget (next slot …)`, so match its start.
 
@@ -158,7 +161,7 @@ Summarise the plan in the terminal: approach, size, platforms, risks, anything y
 
      `exit=0`: the bot finished; answer and resolve its threads, and take the outcome "covered by the bot". Still `retryable` after 20 minutes: take the outcome "bot still reviewing after 20 min". Anything else (the bot hit its limit meanwhile): back to the coverage table, and take the row for this result.
 
-   - **Log the outcome** of every review or wait, per head, before `ci-green`, and say the same line in the terminal: `log <n> --step note --key cr-<sha12> --body-file <f>`, with "CodeRabbit CLI on `<sha12>`: reviewed, N threads / reviewed, no threads / allowance spent (`<reason>`) / failed (`<reason>`) / covered by the bot". An allowance that is spent, a run that failed or coverage the tool couldn't read never blocks the card and never becomes a question for the operator: log it and go on.
+   - **Log the outcome** of every review or wait, per head, before `ci-green`, and say the same line in the terminal: `log <n> --step note --key cr-<sha12>-<k> --body-file <f>`, with "CodeRabbit CLI on `<sha12>`: reviewed, N threads / reviewed, no threads / allowance spent (`<reason>`) / failed (`<reason>`) / covered by the bot". `<k>` numbers the outcomes logged for that head, from 1. The CLI posts each key once, so reuse a `<k>` only to retry posting the same entry. A head can get a second outcome, for example when a later session or a return from stage 4 checks it again: if `log` answers `posted: false` and the entry at its `url` says something else, log the new outcome with the next `<k>`. An allowance that is spent, a run that failed or coverage the tool couldn't read never blocks the card and never becomes a question for the operator: log it and go on.
 
    Then `log <n> --step ci-green --key <sha12>`.
 

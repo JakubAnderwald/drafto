@@ -131,6 +131,13 @@ describe("/drive-issue CodeRabbit gap-fill step", () => {
     return out;
   }
 
+  // The fenced bash block that runs a subcommand: the invocation plus the
+  // lines that build its arguments.
+  function codeBlock(sub) {
+    const blocks = skill.match(/```bash\n[\s\S]*?```/g) ?? [];
+    return blocks.find((b) => b.includes(`coderabbit-cli.mjs ${sub} --pr`)) ?? "";
+  }
+
   // The flags USAGE lists for one subcommand.
   function usageFlags(sub) {
     const usage = /const USAGE =([\s\S]*?);/.exec(cliSrc)?.[1] ?? "";
@@ -151,16 +158,22 @@ describe("/drive-issue CodeRabbit gap-fill step", () => {
       assert.ok(known.has("--pr"), `USAGE should list ${sub} --pr`);
       const calls = invocations(sub);
       assert.ok(calls.length > 0, `the skill should invoke ${sub}`);
-      for (const call of calls) {
+      for (const call of [...calls, codeBlock(sub)]) {
         for (const flag of call.match(/--[a-z-]+/g) ?? []) {
           assert.ok(known.has(flag), `\`${sub}\` has no ${flag} flag: ${call}`);
         }
       }
     }
-    assert.ok(
-      invocations("review").some((c) => c.includes("--state-file")),
+    // The ledger path is passed quoted, from an array, so a path with a space
+    // in it stays one argument.
+    const review = codeBlock("review");
+    assert.match(
+      review,
+      /--state-file "\$STATE"/,
       "the review run should share the lane's ledger via --state-file",
     );
+    assert.match(review, /coderabbit-cli\.mjs review --pr .*"\$\{LEDGER\[@\]\}"/);
+    assert.doesNotMatch(review, /\$\(/, "build the review's arguments without $( … )");
   });
 
   it("never runs the review with the paid flag, and says so", () => {
@@ -211,6 +224,13 @@ describe("/drive-issue CodeRabbit gap-fill step", () => {
     const lane = /FACTORY_CR_CLI_MAX_RUNS_PER_CARD, ([0-9]+)\)/.exec(cliSrc)?.[1];
     assert.ok(lane, "coderabbit-cli.mjs should default FACTORY_CR_CLI_MAX_RUNS_PER_CARD");
     assert.match(skill, new RegExp(`at most ${lane} CLI reviews per In Review stint`));
+  });
+
+  it("keys each outcome entry, not each head", () => {
+    // `log --key` posts a key once, so a key per head would drop a head's
+    // second outcome.
+    assert.ok(skill.includes("--key cr-<sha12>-<k>"));
+    assert.ok(!/--key cr-<sha12>(?!-)/.test(skill), "an outcome key must carry its number");
   });
 
   it("runs the review without asking the operator", () => {
