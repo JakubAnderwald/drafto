@@ -87,9 +87,21 @@ appId: eu.drafto.mobile
 - takeScreenshot: editor-keyboard-up
 
 # --- Test: rename via long press on notes list ---
-# The editor's back button keeps the label "Notes" (the header shows the
-# notebook's name on the list itself).
-- tapOn: "Notes"
+# iOS: the editor's back button keeps the label "Notes" (the header shows the
+# notebook's name on the list itself). Android's header back button is an
+# unlabelled arrow, so go back with the back key, after closing the keyboard
+# (otherwise the back press only dismisses it), as android-all.yaml does.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: "Notes"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - hideKeyboard
+      - pressKey: back
 
 # Verify the title shows in the list
 - extendedWaitUntil:
