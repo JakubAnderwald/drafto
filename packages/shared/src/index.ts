@@ -259,3 +259,18 @@ export {
   nextOfflineBannerVariant,
 } from "./network/offline-banner";
 export type { OfflineBannerEvent, OfflineBannerVariant } from "./network/offline-banner";
+
+// --- PrimeTestLab 11035 S-04: file attachment card + size in the editors ---
+export { formatFileSize } from "./formatters/file-size";
+export { canonicalAttachmentUrl } from "./editor/attachment-url";
+export { hasTipTapAttachmentRefs } from "./editor/resolve-urls";
+export {
+  ATTACHMENT_SIZES_CSS_TAG,
+  ATTACHMENT_LINK_SELECTORS,
+  attachmentHrefFragments,
+  buildAttachmentCardCss,
+  buildAttachmentSizeCss,
+  buildFileBlockSizeCss,
+  cssString,
+} from "./editor/attachment-link-css";
+export type { AttachmentSizeInfo } from "./editor/attachment-link-css";

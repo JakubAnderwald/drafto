@@ -1,4 +1,6 @@
-import { spacing } from "@/theme/tokens";
+import { buildAttachmentCardCss } from "@drafto/shared";
+
+import { semanticLight, spacing } from "@/theme/tokens";
 
 // The note body's font stack, matching the mobile editor. Without it the
 // WebView falls back to its default serif (Times).
@@ -13,8 +15,15 @@ export const EDITOR_FONT_CSS = `body, .ProseMirror { font-family: -apple-system,
 export const EDITOR_LAYOUT_CSS = `.ProseMirror { padding-left: ${spacing["2xl"]}px; padding-right: ${spacing["2xl"]}px; }`;
 
 /**
+ * File links drawn as a card with a file icon (PrimeTestLab 11035 S-04), in
+ * the light colours the note body uses. Mirrors mobile's, which follows the
+ * theme.
+ */
+export const EDITOR_ATTACHMENT_CARD_CSS = buildAttachmentCardCss(semanticLight);
+
+/**
  * Stylesheet shipped with the editor through `CoreBridge.configureCSS`, so
  * TenTap injects it together with every bridge's own CSS (image max-width,
  * blockquote, task list, placeholder) on each WebView load.
  */
-export const EDITOR_CSS = `${EDITOR_FONT_CSS}\n${EDITOR_LAYOUT_CSS}`;
+export const EDITOR_CSS = `${EDITOR_FONT_CSS}\n${EDITOR_LAYOUT_CSS}\n${EDITOR_ATTACHMENT_CARD_CSS}`;

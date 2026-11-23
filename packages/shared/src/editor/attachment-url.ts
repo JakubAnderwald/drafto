@@ -73,6 +73,22 @@ export function isLocalAttachmentSrc(url: string): boolean {
   return extractFilePathFromLocalSrc(url) !== null;
 }
 
+/**
+ * The `attachment://` form of a URL the editors only show, or null when `url`
+ * is not one: a Supabase signed URL (older content, or a session's display
+ * src) or a device-local cached-file src (ADR-0086). A local src must never
+ * be stored: it names a file on one device, so it would show as a broken
+ * image everywhere else.
+ */
+export function canonicalAttachmentUrl(url: string): string | null {
+  if (isSignedStorageUrl(url)) {
+    const filePath = extractFilePathFromSignedUrl(url);
+    return filePath ? toAttachmentUrl(filePath) : null;
+  }
+  const localPath = extractFilePathFromLocalSrc(url);
+  return localPath ? toAttachmentUrl(localPath) : null;
+}
+
 /** Longest file or folder name APFS and ext4 accept, in bytes. */
 const MAX_CACHE_SEGMENT_LENGTH = 255;
 

@@ -92,6 +92,12 @@ vi.mock("@/hooks/use-theme", () => ({
   }),
 }));
 
+// The size list fetches on mount; kept out of the fetch sequences below.
+const mockAddAttachment = vi.fn();
+vi.mock("@/components/editor/use-note-attachment-sizes", () => ({
+  useNoteAttachmentSizes: () => ({ attachments: [], addAttachment: mockAddAttachment }),
+}));
+
 const mockFetch = vi.fn();
 
 const { NoteEditor } = await import("@/components/editor/note-editor");
@@ -101,6 +107,7 @@ describe("NoteEditor", () => {
     mockFetch.mockReset();
     vi.stubGlobal("fetch", mockFetch);
     mockUploadToSignedUrl.mockReset();
+    mockAddAttachment.mockReset();
     mockGetBlock.mockReset();
     mockRemoveBlocks.mockReset();
     mockUpdateBlock.mockReset();
@@ -240,6 +247,11 @@ describe("NoteEditor", () => {
         fileSize: 4,
         mimeType: "image/png",
       }),
+    }); // PrimeTestLab 11035 S-04: the upload's size labels its file block at once.
+    expect(mockAddAttachment).toHaveBeenCalledWith({
+      filePath: "user-1/note-42/image-12345.png",
+      fileSize: 4,
+      mimeType: "image/png",
     });
   });
 

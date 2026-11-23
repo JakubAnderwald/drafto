@@ -5,7 +5,13 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { EditorState } from "@tiptap/pm/state";
 import { StarterKit } from "@tiptap/starter-kit";
-import { blocknoteToTiptap, markdownToBlockNote, tiptapToBlocknote } from "../src";
+import {
+  blocknoteToTiptap,
+  markdownToBlockNote,
+  resolveTipTapImageUrls,
+  serializeEditorContent,
+  tiptapToBlocknote,
+} from "../src";
 import type { BlockNoteBlock, BlockNoteInlineContent, TipTapDoc } from "../src";
 
 // StarterKit 3.20.1 depends on `@tiptap/core ^3.20.1`, so it brings its own
@@ -346,5 +352,27 @@ describe("native editor schema", () => {
       const once = readBack(load(fixture.blocks));
       expect(readBack(load(once))).toEqual(once);
     }
+  });
+});
+
+describe("PrimeTestLab 11035 S-04: file attachments in the native editor", () => {
+  const signedUrlFor = (path: string) =>
+    `https://example.supabase.co/storage/v1/object/sign/attachments/${encodeURI(path)}?token=t`;
+
+  it("PrimeTestLab 11035 S-04 keeps a file as a linked paragraph, with no new node type", () => {
+    const doc = load([file("report-1700000000000-0a1b2c3d.pdf")]);
+    expect(schema.nodes.file).toBeUndefined();
+    expect(doc.firstChild?.type.name).toBe("paragraph");
+    expect(doc.firstChild?.firstChild?.marks.map((mark) => mark.type.name)).toEqual(["link"]);
+  });
+
+  it("PrimeTestLab 11035 S-04 saves a file shown with its signed URL as the same file block", async () => {
+    const stored = [file("Quarterly report-1700000000000-0a1b2c3d.pdf"), block("paragraph", "x")];
+    const shown = await resolveTipTapImageUrls(blocknoteToTiptap(stored), async (path) =>
+      signedUrlFor(path),
+    );
+    const doc = schema.nodeFromJSON(shown);
+    doc.check();
+    expect(JSON.parse(serializeEditorContent(doc.toJSON() as TipTapDoc))).toEqual(stored);
   });
 });

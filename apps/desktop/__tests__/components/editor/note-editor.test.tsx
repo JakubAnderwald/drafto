@@ -5,12 +5,16 @@ import { render, act } from "../../helpers/test-utils";
 import { NoteEditor } from "@/components/editor/note-editor";
 
 const mockRichText = jest.fn();
+const mockToolbar = jest.fn();
 jest.mock("@10play/tentap-editor", () => ({
   RichText: (props: Record<string, unknown>) => {
     mockRichText(props);
     return null;
   },
-  Toolbar: () => null,
+  Toolbar: (props: Record<string, unknown>) => {
+    mockToolbar(props);
+    return null;
+  },
   DEFAULT_TOOLBAR_ITEMS: [],
 }));
 
@@ -29,6 +33,7 @@ describe("NoteEditor (desktop)", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mockRichText.mockClear();
+    mockToolbar.mockClear();
     mockPage.current = { ready: true, webViewProps: {} };
   });
 
@@ -98,6 +103,19 @@ describe("NoteEditor (desktop)", () => {
       jest.advanceTimersByTime(100);
     });
     expect("source" in lastRichTextProps()).toBe(false);
+  });
+
+  it("PrimeTestLab 11035 S-02 always shows the formatting toolbar (macOS has no soft keyboard)", () => {
+    const editor = {} as EditorBridge;
+    render(<NoteEditor editor={editor} />);
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+
+    const props = mockToolbar.mock.calls[mockToolbar.mock.calls.length - 1][0];
+    // TenTap's default (hidden undefined) shows it only while a keyboard is up.
+    expect(props.hidden).toBe(false);
+    expect(props.editor).toBe(editor);
   });
 
   it("holds the WebView back until the page file is checked", () => {

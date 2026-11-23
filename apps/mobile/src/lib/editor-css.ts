@@ -1,3 +1,5 @@
+import { buildAttachmentCardCss } from "@drafto/shared";
+
 import { spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 
@@ -19,9 +21,14 @@ export const EDITOR_LAYOUT_CSS = `.ProseMirror { padding-left: ${spacing.lg}px; 
  * Colour rules for the TenTap WebView. The WebView's default stylesheet renders
  * black text, so in dark mode the body must be told to use the light
  * foreground — otherwise it reads as dark text on the dark background.
+ *
+ * File links are drawn as a card in the theme's colours (PrimeTestLab 11035
+ * S-04). They live here rather than in the static rules so a theme switch,
+ * which re-injects this stylesheet, recolours them too.
  */
 export function buildEditorColorCss(semantic: SemanticColors, isDark: boolean): string {
-  const base = `* { background-color: ${semantic.bg}; color: ${semantic.fg}; }`;
+  const base = `* { background-color: ${semantic.bg}; color: ${semantic.fg}; }
+${buildAttachmentCardCss(semantic)}`;
   if (!isDark) return base;
   return `${base}
 blockquote { border-left: 3px solid ${semantic.borderStrong}; padding-left: 1rem; }

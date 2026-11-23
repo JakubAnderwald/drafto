@@ -6,6 +6,7 @@ import { render } from "../helpers/test-utils";
 import { NoteEditor } from "@/components/editor/note-editor";
 
 const mockRichTextProps = jest.fn();
+const mockToolbarProps = jest.fn();
 jest.mock("@10play/tentap-editor", () => {
   const { Text: MockText } = require("react-native");
   return {
@@ -13,7 +14,10 @@ jest.mock("@10play/tentap-editor", () => {
       mockRichTextProps(props);
       return <MockText>body</MockText>;
     },
-    Toolbar: () => <MockText>toolbar</MockText>,
+    Toolbar: (props: Record<string, unknown>) => {
+      mockToolbarProps(props);
+      return <MockText>toolbar</MockText>;
+    },
     DEFAULT_TOOLBAR_ITEMS: [],
   };
 });
@@ -29,6 +33,7 @@ const editor = {} as EditorBridge;
 
 beforeEach(() => {
   mockRichTextProps.mockClear();
+  mockToolbarProps.mockClear();
   mockPage.current = { ready: true, webViewProps: {} };
 });
 
@@ -48,6 +53,16 @@ describe("NoteEditor", () => {
     expect(body).toBeGreaterThanOrEqual(0);
     expect(accessory).toBeGreaterThan(body);
     expect(toolbar).toBeGreaterThan(accessory);
+  });
+
+  it("PrimeTestLab 11035 S-02 keeps the formatting toolbar shown with the keyboard closed", () => {
+    render(<NoteEditor editor={editor} />);
+
+    const props = mockToolbarProps.mock.calls[mockToolbarProps.mock.calls.length - 1][0];
+    // TenTap's default (hidden undefined) hides it while the keyboard is down
+    // or the editor is blurred; false shows it always.
+    expect(props.hidden).toBe(false);
+    expect(props.editor).toBe(editor);
   });
 
   it("renders without an accessory", () => {

@@ -60,7 +60,9 @@ jest.mock("@10play/tentap-editor", () => ({
   useEditorBridge: jest.fn(() => ({
     getJSON: jest.fn().mockResolvedValue({ type: "doc", content: [] }),
     setContent: jest.fn(),
+    injectCSS: jest.fn(),
   })),
+  darkEditorTheme: { toolbar: { icon: { tintColor: "white" } } },
   TenTapStartKit: [],
   CoreBridge: { configureCSS: (css) => ({ name: "core", extendCSS: css }) },
   RichText: () => null,

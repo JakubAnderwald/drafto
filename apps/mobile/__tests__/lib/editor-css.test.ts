@@ -1,3 +1,5 @@
+import { buildAttachmentCardCss } from "@drafto/shared";
+
 import {
   buildEditorColorCss,
   buildEditorCss,
@@ -19,8 +21,27 @@ describe("buildEditorColorCss", () => {
   it("uses the light-theme colours in light mode, without dark-only rules", () => {
     const css = buildEditorColorCss(semanticLight, false);
 
-    expect(css).toBe(`* { background-color: ${semanticLight.bg}; color: ${semanticLight.fg}; }`);
+    expect(css).toBe(
+      `* { background-color: ${semanticLight.bg}; color: ${semanticLight.fg}; }\n${buildAttachmentCardCss(semanticLight)}`,
+    );
   });
+
+  it.each([
+    ["light", semanticLight, false],
+    ["dark", semanticDark, true],
+  ] as const)(
+    "PrimeTestLab 11035 S-04 draws file links as a card in %s mode",
+    (_mode, semantic, isDark) => {
+      const css = buildEditorColorCss(semantic, isDark);
+
+      expect(css).toContain(buildAttachmentCardCss(semantic));
+      expect(css).toContain('.ProseMirror a[href*="/storage/v1/object/sign/attachments/"]');
+      expect(css).toContain(`background-color: ${semantic.bgSubtle}`);
+      // The card rules come after the catch-all colours; their selectors are
+      // more specific, so the card keeps its own background either way.
+      expect(css.indexOf("* {")).toBeLessThan(css.indexOf(".ProseMirror a[href"));
+    },
+  );
 });
 
 describe("buildEditorCss", () => {
