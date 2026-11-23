@@ -40,9 +40,39 @@ interface NoteListProps {
   initialNotes?: NoteListItem[];
 }
 
-// Browser-only. On the server this Map would live for the whole process and be
-// shared by every user's request, so a server render never reads or writes it.
+// Browser-only. On the server these Maps would live for the whole process and be
+// shared by every user's request, so a server render never reads or writes them.
 const notesCache = new Map<string, Promise<NoteListItem[]>>();
+// A failed fetch leaves `notesCache` at once, so no later render is handed its
+// rejection: a retry fetches again. It waits here for the render React schedules when
+// the promise rejects, which must read the same promise for `use()` to throw the error
+// into the error boundary. If that render missed and fetched again instead, a lasting
+// failure would refetch for ever behind the loading skeleton and never show the error.
+const failedNotes = new Map<string, Promise<NoteListItem[]>>();
+// How long a failure nobody read stays parked, for example when the list unmounted
+// while its fetch was in flight. React's render follows the rejection far sooner. A
+// failure must not outlive this: AppShell's trigger restarts at 0 when it mounts
+// again, so a later visit can ask for the same key.
+const UNREAD_FAILURE_TTL_MS = 10_000;
+
+/** Drops `cacheKey`'s parked failure after `delayMs`, unless a newer one replaced it. */
+function expireFailure(cacheKey: string, failed: Promise<NoteListItem[]>, delayMs: number) {
+  setTimeout(() => {
+    if (failedNotes.get(cacheKey) === failed) failedNotes.delete(cacheKey);
+  }, delayMs);
+}
+
+/** Drops every entry for `notebookId`, so a notebook keeps at most one cached list. */
+function evictNotebook(notebookId: string) {
+  // Notebook IDs are fixed-length UUIDs, so the prefix never matches another
+  // notebook's keys.
+  const prefix = `${notebookId}-`;
+  for (const cache of [notesCache, failedNotes]) {
+    for (const key of cache.keys()) {
+      if (key.startsWith(prefix)) cache.delete(key);
+    }
+  }
+}
 
 function fetchNotes(notebookId: string, cacheKey: string): Promise<NoteListItem[]> {
   // A server render has no origin to resolve the relative URL against, and the
@@ -58,13 +88,36 @@ function fetchNotes(notebookId: string, cacheKey: string): Promise<NoteListItem[
   const cached = notesCache.get(cacheKey);
   if (cached) return cached;
 
-  const promise = fetch(`/api/notebooks/${notebookId}/notes`)
+  const failed = failedNotes.get(cacheKey);
+  if (failed) {
+    // Every read in this render gets the rejection, including the synchronous retry
+    // React makes after an error and StrictMode's second call. Once the task is
+    // over the error has reached the boundary, and the next render fetches again.
+    expireFailure(cacheKey, failed, 0);
+    return failed;
+  }
+
+  // A new key means a newer refresh of this notebook, so its older lists are stale.
+  // Without this, every refresh (each note click bumps the trigger) would add an
+  // entry for the tab's lifetime.
+  evictNotebook(notebookId);
+
+  const promise: Promise<NoteListItem[]> = fetch(`/api/notebooks/${notebookId}/notes`)
     .then((res) => {
       if (handleAuthError(res)) return [] as NoteListItem[];
       if (!res.ok) throw new Error(`Failed to fetch notes: ${res.status}`);
       return res.json();
     })
-    .then((data: NoteListItem[]) => data);
+    .then((data: NoteListItem[]) => data)
+    .catch((error: unknown) => {
+      // Only while the key still holds this request: a newer one may have replaced it.
+      if (notesCache.get(cacheKey) === promise) {
+        notesCache.delete(cacheKey);
+        failedNotes.set(cacheKey, promise);
+        expireFailure(cacheKey, promise, UNREAD_FAILURE_TTL_MS);
+      }
+      throw error;
+    });
 
   notesCache.set(cacheKey, promise);
   return promise;

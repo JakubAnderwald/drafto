@@ -581,6 +581,74 @@ describe("AppShell", () => {
     });
   });
 
+  // #475: a successful restore refreshes the lists, as a failed one already did. The
+  // trash refetch is the regression check. Going back to the notebook also bumps the
+  // trigger, so the second half checks the whole flow rather than the restore's bump.
+  it("refreshes the lists after a successful restore, and the notebook lists the note", async () => {
+    const user = userEvent.setup();
+    const now = new Date().toISOString();
+    let trashedNotes = [
+      { id: "t-1", title: "Restored Note", notebook_id: "nb-1", trashed_at: now },
+    ];
+    let personalNotes = mockNotes;
+    const trashFetches = () =>
+      mockFetch.mock.calls.filter(([url]) => url === "/api/notes/trash").length;
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      const respond = (data: unknown) =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+      if (options?.method === "PATCH" && url === "/api/notes/t-1") {
+        // The server now has the note back in its notebook and out of the trash.
+        trashedNotes = [];
+        personalNotes = [{ id: "t-1", title: "Restored Note", updated_at: now }, ...mockNotes];
+        return respond({});
+      }
+      if (url === "/api/notebooks") return respond(mockNotebooks);
+      if (url === "/api/notes/trash") return respond(trashedNotes);
+      if (url === "/api/notebooks/nb-1/notes") return respond(personalNotes);
+      if (url.match(/\/api\/notebooks\/[^/]+\/notes$/)) return respond([]);
+      return respond({});
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Restored Note")).not.toBeInTheDocument();
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: /Trash/i }));
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Restored Note")).toBeInTheDocument();
+    });
+    const trashFetchesBeforeRestore = trashFetches();
+
+    await act(async () => {
+      await user.click(screen.getByText("Restore"));
+    });
+
+    // The success bump changes every list's cache key, so the trash is fetched again.
+    await waitFor(() => {
+      expect(trashFetches()).toBeGreaterThan(trashFetchesBeforeRestore);
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Trash is empty.")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByText("Personal"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Restored Note")).toBeInTheDocument();
+    });
+    expect(screen.getByText("My First Note")).toBeInTheDocument();
+  });
+
   it("permanently deletes a note from trash", async () => {
     const user = userEvent.setup();
     const mockTrashedNotes = [

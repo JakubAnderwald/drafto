@@ -14,6 +14,7 @@ import type { AppleRevocationGrant } from "@drafto/shared";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
+import { useRowDeleteAction } from "@/hooks/use-row-delete-action";
 import { useSafeSignOut } from "@/hooks/use-safe-sign-out";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -277,6 +278,7 @@ export function NotebooksSidebar({
                     notebook={nb}
                     isSelected={!showTrash && nb.id === selectedNotebookId}
                     isEditing={editingId === nb.id}
+                    isRenaming={editingId !== null}
                     editName={editName}
                     onSelect={() => onSelectNotebook(nb.id)}
                     onStartEdit={() => {
@@ -360,6 +362,8 @@ interface NotebookRowProps {
   notebook: Notebook;
   isSelected: boolean;
   isEditing: boolean;
+  /** Whether any notebook's rename field is open, this row's or another's. */
+  isRenaming: boolean;
   editName: string;
   onSelect: () => void;
   onStartEdit: () => void;
@@ -374,6 +378,7 @@ function NotebookRow({
   notebook,
   isSelected,
   isEditing,
+  isRenaming,
   editName,
   onSelect,
   onStartEdit,
@@ -384,15 +389,26 @@ function NotebookRow({
   styles,
 }: NotebookRowProps) {
   const [hovered, setHovered] = useState(false);
+  // The × below is hover-only. A press also focuses the row, which then takes ⌫ / ⌦, and
+  // VoiceOver lists a named delete action on it.
+  // Off while any rename field is open: a ⌫ typed in it bubbles up to this row, and focusing
+  // a row would blur the field and drop the typed name.
+  const deleteAction = useRowDeleteAction({
+    label: "Delete notebook",
+    onPress: onSelect,
+    onDelete,
+    isSelected,
+    enabled: !isRenaming,
+  });
 
   return (
     <Pressable
+      {...deleteAction}
       style={[
         styles.item,
         hovered && !isSelected && styles.itemHover,
         isSelected && styles.itemSelected,
       ]}
-      onPress={onSelect}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       accessibilityLabel={notebook.name}
