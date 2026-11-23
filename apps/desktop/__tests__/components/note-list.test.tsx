@@ -1,7 +1,11 @@
-import { View } from "react-native";
-
 import { render, fireEvent, waitFor } from "../helpers/test-utils";
 import { NoteList } from "@/components/notes/note-list";
+
+// The native focus command, as the row's press dispatches it.
+const mockFocusView = jest.fn();
+jest.mock("@/lib/focus-view", () => ({
+  focusView: (view: unknown) => mockFocusView(view),
+}));
 
 jest.mock("@/providers/auth-provider", () => ({
   useAuth: () => ({ user: { id: "user-1", email: "user@example.com" } }),
@@ -113,19 +117,14 @@ describe("NoteList — delete without a mouse (#864)", () => {
   it("selects the note on press and gives its row keyboard focus, so ⌫ reaches it", () => {
     addNote("n-1", "Groceries");
     const onSelectNote = jest.fn();
-    // In jest the row's ref is react-native's mocked View; its focus() stands in for the
-    // native focus command.
-    const focus = jest.spyOn(
-      (View as unknown as { prototype: { focus: () => void } }).prototype,
-      "focus",
-    );
+    const focus = mockFocusView;
+    focus.mockClear();
     const utils = renderList(onSelectNote);
 
     fireEvent.press(utils.getByLabelText("Groceries"));
 
     expect(onSelectNote).toHaveBeenCalledWith("n-1");
     expect(focus).toHaveBeenCalledTimes(1);
-    focus.mockRestore();
   });
 
   it("ignores ⌫ on a row that kept focus after another note was selected", () => {

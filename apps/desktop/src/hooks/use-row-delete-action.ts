@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useRef, type RefObject } from "react";
 import type { AccessibilityActionEvent, AccessibilityActionInfo, View } from "react-native";
 
+import { focusView } from "@/lib/focus-view";
+
 /**
  * A key react-native-macos matches in `keyDownEvents`. Fabric reads an absent modifier as
  * "don't care" (Paper as "not held"), so each entry here spells every modifier out.
@@ -116,7 +118,7 @@ export function useRowDeleteAction({
   const handlePress = useCallback(() => {
     onPress();
     // While disabled the row holds a text field, which keeps the focus.
-    if (enabled) ref.current?.focus();
+    if (enabled) focusView(ref.current);
   }, [enabled, onPress]);
 
   const onKeyDown = useCallback(

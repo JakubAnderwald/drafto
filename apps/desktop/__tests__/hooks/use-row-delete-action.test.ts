@@ -1,4 +1,9 @@
 import { act, renderHook } from "@testing-library/react-native";
+
+const mockFocusView = jest.fn();
+jest.mock("@/lib/focus-view", () => ({
+  focusView: (view: unknown) => mockFocusView(view),
+}));
 import type { AccessibilityActionEvent, View } from "react-native";
 
 import {
@@ -155,10 +160,12 @@ describe("useRowDeleteAction", () => {
     const { result } = renderHook(() =>
       useRowDeleteAction({ label: "Delete note", onPress, onDelete: jest.fn(), isSelected: true }),
     );
-    const focus = jest.fn(() => calls.push("focus"));
-    result.current.ref.current = { focus } as unknown as View;
+    const row = {} as View;
+    result.current.ref.current = row;
+    mockFocusView.mockImplementation(() => calls.push("focus"));
 
     result.current.onPress();
+    expect(mockFocusView).toHaveBeenCalledWith(row);
 
     // A click never moves key focus on react-native-macos, so the press does it.
     expect(calls).toEqual(["press", "focus"]);
@@ -176,13 +183,13 @@ describe("useRowDeleteAction", () => {
         enabled: false,
       }),
     );
-    const focus = jest.fn();
-    result.current.ref.current = { focus } as unknown as View;
+    result.current.ref.current = {} as View;
+    mockFocusView.mockClear();
 
     result.current.onPress();
 
     expect(onPress).toHaveBeenCalledTimes(1);
-    expect(focus).not.toHaveBeenCalled();
+    expect(mockFocusView).not.toHaveBeenCalled();
   });
 
   it("ignores ⌫ on a focused row that is no longer the selected one", () => {

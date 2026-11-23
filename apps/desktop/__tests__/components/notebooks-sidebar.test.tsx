@@ -1,4 +1,4 @@
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, ScrollView, StyleSheet } from "react-native";
 import { Q } from "@nozbe/watermelondb";
 import {
   DEFAULT_STORAGE_QUOTA_BYTES,
@@ -18,6 +18,12 @@ import { spacing } from "@/theme/tokens";
 
 // SyncStatus pulls in useDatabase/useNetworkStatus providers we don't render here. The stub
 // renders a host view so the "nothing below the user section" check can see where it sits.
+// The native focus command, as the row's press dispatches it.
+const mockFocusView = jest.fn();
+jest.mock("@/lib/focus-view", () => ({
+  focusView: (view: unknown) => mockFocusView(view),
+}));
+
 jest.mock("@/components/sync-status", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { View } = jest.requireActual<typeof import("react-native")>("react-native");
@@ -987,12 +993,8 @@ describe("NotebooksSidebar — delete without a mouse (#864)", () => {
     mockNotebooks.push({ id: "nb-1", name: "Work Notes", markAsDeleted: jest.fn() });
     mockNotebooks.push({ id: "nb-2", name: "Personal", markAsDeleted: jest.fn() });
     const onSelectNotebook = jest.fn();
-    // In jest the row's ref is react-native's mocked View; its focus() stands in for the
-    // native focus command.
-    const focus = jest.spyOn(
-      (View as unknown as { prototype: { focus: () => void } }).prototype,
-      "focus",
-    );
+    const focus = mockFocusView;
+    focus.mockClear();
     const utils = render(
       <NotebooksSidebar {...defaultProps} onSelectNotebook={onSelectNotebook} />,
     );
@@ -1007,7 +1009,6 @@ describe("NotebooksSidebar — delete without a mouse (#864)", () => {
     fireEvent.press(utils.getByLabelText("Personal"));
     expect(utils.getByDisplayValue("Work Notes")).toBeTruthy();
     expect(focus).toHaveBeenCalledTimes(1);
-    focus.mockRestore();
   });
 
   it("never deletes on a ⌫ typed while renaming the notebook", async () => {
