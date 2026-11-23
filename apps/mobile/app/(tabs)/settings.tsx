@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Text, View, StyleSheet, ScrollView, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
+import { AboutSection } from "@/components/about-section";
 import { DeleteAccountDialog } from "@/components/delete-account-dialog";
 import { StorageUsage } from "@/components/storage-usage";
 import { SyncStatus } from "@/components/sync-status";
@@ -112,6 +113,9 @@ export default function SettingsScreen() {
       {!isOnline ? (
         <Text style={styles.offlineNote}>Deleting your account needs an internet connection.</Text>
       ) : null}
+
+      <Text style={styles.sectionTitle}>About</Text>
+      <AboutSection />
 
       <DeleteAccountDialog
         visible={isDeleteDialogVisible}

@@ -295,3 +295,12 @@ export {
   formatNoteCount,
 } from "./notebooks/notebook-name";
 export type { NamedNotebook } from "./notebooks/notebook-name";
+
+// Public drafto.eu pages linked from Settings → About (PrimeTestLab 11035 S-01)
+export {
+  DRAFTO_WEB_ORIGIN,
+  PRIVACY_POLICY_PATH,
+  PRIVACY_POLICY_URL,
+  SUPPORT_PATH,
+  SUPPORT_URL,
+} from "./constants";

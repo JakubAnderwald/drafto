@@ -106,7 +106,7 @@ bash apps/mobile/e2e/run-nested-lists-e2e.sh
 | `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash                     |
 | `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile                 |
 | `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link              |
-| `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel               |
+| `07-delete-account.yaml`      | Delete account gating + cancel; About section (11035 S-01)     |
 | `08-nested-lists.yaml`        | Open a web note with nested to-dos, edit the deepest one       |
 | `09-password-visibility.yaml` | Show/hide password toggle on Log In and Sign up (S-01)         |
 | `10-swipe-hint.yaml`          | One-time swipe hints on each list, Trash tap menu (S-03)       |

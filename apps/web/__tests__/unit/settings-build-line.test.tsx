@@ -59,15 +59,18 @@ describe("Settings page build line", () => {
     expect(line).toHaveClass("text-fg-muted", "font-mono", "text-xs");
   });
 
-  it("renders the line as the page's last child, right below the Delete account section", async () => {
+  it("PrimeTestLab 11035 S-01: renders the line last in the About section, the page's last card", async () => {
     mockEnv.VERCEL_GIT_COMMIT_SHA = SHA;
 
     const { container } = await renderSettings();
 
     const line = screen.getByTestId("build-commit");
-    const page = container.firstElementChild;
-    expect(page?.lastElementChild).toBe(line);
-    expect(line.previousElementSibling).toBe(screen.getByTestId("delete-account-section"));
+    const about = screen.getByTestId("about-section");
+    expect(about).toContainElement(line);
+    expect(line.parentElement?.lastElementChild).toBe(line);
+    expect(line.previousElementSibling).toContainElement(screen.getByTestId("about-support"));
+    expect(container.firstElementChild?.lastElementChild).toBe(about);
+    expect(about.previousElementSibling).toBe(screen.getByTestId("delete-account-section"));
   });
 
   it("renders no build line when the commit is unset", async () => {
@@ -76,6 +79,8 @@ describe("Settings page build line", () => {
     expect(screen.getByText("Settings")).toBeInTheDocument();
     expect(screen.queryByTestId("build-commit")).not.toBeInTheDocument();
     expect(screen.queryByText(/^Build /)).not.toBeInTheDocument();
+    // The About section's links still show without a build line.
+    expect(screen.getByTestId("about-privacy")).toBeInTheDocument();
   });
 
   it("renders no build line when the commit is empty", async () => {

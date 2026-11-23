@@ -5,6 +5,8 @@ import {
   DEFAULT_STORAGE_QUOTA_BYTES,
   SIGN_OUT_SYNCED_MESSAGE,
   SIGN_OUT_UNKNOWN_MESSAGE,
+  PRIVACY_POLICY_URL,
+  SUPPORT_URL,
   describeAccountDeletionFailure,
   formatContentUsage,
   formatStorageUsage,
@@ -69,6 +71,16 @@ jest.mock("@/hooks/use-haptics", () => ({
   }),
 }));
 
+jest.mock("expo-constants", () => ({
+  __esModule: true,
+  default: { expoConfig: { version: "1.7.0" }, platform: { ios: { buildNumber: "82" } } },
+}));
+
+const mockOpenExternalUrl = jest.fn();
+jest.mock("@/lib/open-external-url", () => ({
+  openExternalUrl: (url: string) => mockOpenExternalUrl(url),
+}));
+
 const OFFLINE_NOTE = "Deleting your account needs an internet connection.";
 
 describe("SettingsScreen", () => {
@@ -81,6 +93,7 @@ describe("SettingsScreen", () => {
     mockCountUnsyncedChanges.mockResolvedValue(0);
     mockFetchStorageUsage.mockResolvedValue(null);
     mockFetchContentUsage.mockResolvedValue(null);
+    mockOpenExternalUrl.mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -455,6 +468,51 @@ describe("SettingsScreen", () => {
       });
       expect(getByTestId("theme-option-system").props.accessibilityState).toEqual({
         selected: false,
+      });
+    });
+  });
+  describe("About section (PrimeTestLab 11035 S-01)", () => {
+    it("PrimeTestLab 11035 S-01: shows the app version with its build number", () => {
+      const { getByText, getByTestId } = render(<SettingsScreen />);
+
+      expect(getByText("About")).toBeTruthy();
+      expect(getByText("1.7.0 (82)")).toBeTruthy();
+      expect(getByTestId("about-version").props.accessibilityLabel).toBe("Version 1.7.0 (82)");
+    });
+
+    it("PrimeTestLab 11035 S-01: opens the privacy policy on drafto.eu", async () => {
+      const { getByTestId } = render(<SettingsScreen />);
+
+      expect(getByTestId("about-privacy").props.accessibilityRole).toBe("link");
+      fireEvent.press(getByTestId("about-privacy"));
+
+      await waitFor(() => {
+        expect(mockOpenExternalUrl).toHaveBeenCalledWith(PRIVACY_POLICY_URL);
+      });
+    });
+
+    it("PrimeTestLab 11035 S-01: opens the support page on drafto.eu", async () => {
+      const { getByTestId } = render(<SettingsScreen />);
+
+      fireEvent.press(getByTestId("about-support"));
+
+      await waitFor(() => {
+        expect(mockOpenExternalUrl).toHaveBeenCalledWith(SUPPORT_URL);
+      });
+    });
+
+    it("PrimeTestLab 11035 S-01: tells the user when the page can't be opened", async () => {
+      mockOpenExternalUrl.mockResolvedValue(false);
+      const alert = jest.spyOn(Alert, "alert");
+      const { getByTestId } = render(<SettingsScreen />);
+
+      fireEvent.press(getByTestId("about-support"));
+
+      await waitFor(() => {
+        expect(alert).toHaveBeenCalledWith(
+          "Couldn't open the page",
+          `Open ${SUPPORT_URL} in your browser.`,
+        );
       });
     });
   });
