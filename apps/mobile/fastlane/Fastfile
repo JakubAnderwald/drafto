@@ -219,9 +219,14 @@ end
 # `track` is the Google Play track the Android lane uploaded to (nil for iOS).
 # Without it the script falls back to GOOGLE_PLAY_TRACK or "internal", which put
 # a closed-testing or production build's notes on the internal track instead.
-def post_release_notes(platform:, max_chars:, build: nil, track: nil)
+#
+# `tag_globs` are the release-tag globs the generator tries in order for the
+# range start (PlayRelease.notes_tag_globs). nil keeps its default, `mobile@*`.
+def post_release_notes(platform:, max_chars:, build: nil, track: nil, tag_globs: nil)
   Dir.chdir(PROJECT_ROOT) do
-    notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s).strip
+    gen = ["bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s]
+    Array(tag_globs).each { |glob| gen += ["--tag-glob", glob] }
+    notes = sh(*gen).strip
     next if notes.empty?
 
     cmd = ["node", "scripts/post-release-notes.mjs", "--platform", platform, "--notes", notes]
@@ -611,14 +616,19 @@ end
 # unmerged and may be rebased away, leaving a published tag as the only thing
 # keeping a dead commit alive — and starting the next real release's range on an
 # abandoned branch. Both happened to desktop before this guard existed.
-def tag_release(platform:, build:)
+#
+# `prefix` is `mobile@` for iOS, the Play internal track and production. Play
+# closed testing passes its own (PlayRelease.tag_prefix): a commit that only
+# closed-testing testers got must not start the next internal / TestFlight
+# range, which every `mobile@*` reader would otherwise take it as.
+def tag_release(platform:, build:, prefix: PlayRelease::SHARED_TAG_PREFIX)
   if !ENV["DRAFTO_INTEST_ISSUE"].to_s.empty?
     UI.message("Pre-merge test build (issue ##{ENV['DRAFTO_INTEST_ISSUE']}) — not tagging an unmerged commit")
     return
   end
   return if build.nil? || build.to_s.empty?
 
-  release_tag = "mobile@#{package_json_version}+#{platform}.#{build}"
+  release_tag = "#{prefix}#{package_json_version}+#{platform}.#{build}"
   if `git tag -l "#{release_tag}"`.strip.empty?
     sh("git", "tag", release_tag)
     sh("git", "push", "origin", release_tag)
@@ -659,18 +669,18 @@ end
 # The next Android version code: one above the highest code on ANY Play track
 # (PlayRelease::TRACKS). Play rejects a code that any track already used, so
 # taking the target track's max alone breaks as soon as two tracks diverge.
+# fastlane already returns [] for an empty or missing track, so any track that
+# raises stops the lane (PlayRelease::TrackUnreadable) — the caller runs this
+# before the build, so that costs seconds, not a prebuild and a Gradle bundle.
 def next_play_version_code
-  codes, errors = PlayRelease.collect_version_codes do |track|
+  codes = PlayRelease.collect_version_codes do |track|
     google_play_track_version_codes(package_name: PACKAGE_NAME, track: track, json_key: json_key_path)
   end
-  errors.each do |track, message|
-    UI.important("Google Play track '#{track}': no version codes read (#{message}) — treating it as empty")
-  end
-  next_code = PlayRelease.next_version_code(codes, errors)
+  next_code = PlayRelease.next_version_code(codes)
   summary = codes.map { |track, list| "#{track}=#{list.max || '-'}" }.join(", ")
   UI.message("Google Play version codes by track: #{summary} → next #{next_code}")
   next_code
-rescue PlayRelease::AllTracksUnreadable => e
+rescue PlayRelease::TrackUnreadable => e
   UI.user_error!(e.message)
 end
 
@@ -701,6 +711,10 @@ platform :android do
     # Load production Supabase credentials
     load_production_env
 
+    # Pick the version code from the store, across every track, before the
+    # (slow) build, so an unreadable track stops the lane straight away
+    next_code = next_play_version_code
+
     # Generate native project
     run_in_project("npx", "expo", "prebuild", "--platform", "android", "--clean")
 
@@ -714,8 +728,7 @@ platform :android do
     # without it (JEP 472). Every JDK in the supported range accepts the flag.
     ENV["_JAVA_OPTIONS"] = "--enable-native-access=ALL-UNNAMED"
 
-    # Auto-increment version code from the store, across every track
-    next_code = next_play_version_code
+    # Apply the version code picked above
     android_set_version_code(
       gradle_file: File.join(PROJECT_ROOT, "android", "app", "build.gradle"),
       version_code: next_code
@@ -739,8 +752,16 @@ platform :android do
       skip_upload_screenshots: true
     )
 
-    # Post release notes to the track this build went to
-    post_release_notes(platform: "android", max_chars: 500, track: track)
+    # Post release notes to the track this build went to. Not on production:
+    # see PlayRelease.posts_release_notes?.
+    if PlayRelease.posts_release_notes?(track)
+      post_release_notes(
+        platform: "android", max_chars: 500, track: track, tag_globs: PlayRelease.notes_tag_globs(track)
+      )
+    else
+      UI.important("Production 'What's new' is not generated: write it on the production " \
+                   "release in the Play Console")
+    end
 
     # Phase G: comment "Now live" on closed support issues for this build.
     # Track label distinguishes internal-track beta, closed testing and
@@ -754,8 +775,9 @@ platform :android do
       UI.message("#{track_label} — no customer 'now live' notice: closed-testing testers are a hand-picked list")
     end
     comment_intest_build(platform: "android", build: next_code, track: track_label)
-    # Tagged like every other release, so the next build's notes start here.
-    tag_release(platform: "android", build: next_code)
+    # Tagged so the next build's notes start here. Closed testing uses its own
+    # prefix (PlayRelease.tag_prefix) so it only anchors its own next notes.
+    tag_release(platform: "android", build: next_code, prefix: PlayRelease.tag_prefix(track))
   end
 end
 

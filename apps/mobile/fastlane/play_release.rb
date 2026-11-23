@@ -11,34 +11,39 @@ module PlayRelease
   # + 1" would have tried to reuse 83, which Play rejects.
   TRACKS = %w[internal alpha beta production].freeze
 
-  # Raised when no track could be read at all. Counting up from 0 would only
-  # fail later, at upload, with a less obvious "version code already used".
-  class AllTracksUnreadable < StandardError; end
+  # The tracks whose releases share the `mobile@` tag with iOS TestFlight. Their
+  # testers (and, for production, the public) see every build, so the next
+  # internal or TestFlight build's notes may start from one of their tags.
+  SHARED_TAG_TRACKS = %w[internal production].freeze
 
-  # Calls the block once per track and returns [codes_by_track, errors_by_track].
-  # A track the block raises for (one with no releases, or one never set up) is
-  # recorded as [] plus its error message, so one empty track cannot stop a
-  # release that the other tracks have enough information for.
+  # The tag prefix every iOS and internal-track build uses. The notes generator
+  # (apps/mobile/scripts/generate-release-notes.sh) and
+  # scripts/comment-released-issues.mjs take their range start from it.
+  SHARED_TAG_PREFIX = "mobile@"
+
+  # Raised when a track's version codes could not be read. fastlane's
+  # google_play_track_version_codes already returns [] for an empty or missing
+  # track (supply maps Play's 404 trackEmpty / "Track not found" to []), so a
+  # raise here is a real failure: network, a 5xx, auth. Guessing that track is
+  # empty could reuse a code it holds, which Play only rejects at upload, after
+  # the whole build.
+  class TrackUnreadable < StandardError; end
+
+  # Calls the block once per track and returns { track => [codes] }. The first
+  # track the block raises for stops the lot with TrackUnreadable.
   def self.collect_version_codes(tracks = TRACKS)
-    codes = {}
-    errors = {}
-    tracks.each do |track|
+    tracks.each_with_object({}) do |track, codes|
       codes[track] = Array(yield(track)).map(&:to_i)
     rescue StandardError => e
-      codes[track] = []
-      errors[track] = e.message
+      raise TrackUnreadable,
+            "Could not read version codes from Google Play track '#{track}' (#{e.message}). " \
+            "Every track is needed to pick a version code Play has not used; retry once the " \
+            "Play API answers."
     end
-    [codes, errors]
   end
 
   # One above the highest code on any track.
-  def self.next_version_code(codes, errors = {})
-    if codes.empty? || errors.size >= codes.size
-      raise AllTracksUnreadable,
-            "Could not read version codes from any Google Play track (#{errors.keys.join(', ')}). " \
-            "Check the service-account key and network before building."
-    end
-
+  def self.next_version_code(codes)
     (codes.values.flatten.max || 0) + 1
   end
 
@@ -64,5 +69,35 @@ module PlayRelease
   # internal-track or production one they could act on.
   def self.announces_release?(track)
     %w[internal production].include?(track)
+  end
+
+  # The prefix of this track's release tag (`<prefix><version>+android.<code>`).
+  # Closed and open testing get their own (`mobile-alpha@`, `mobile-beta@`):
+  # a commit that shipped only there must not become the range start for the
+  # next internal-track or TestFlight build's notes, or for its "Now live" walk,
+  # since those testers never got it. `mobile-alpha@*` does not match the
+  # `mobile@*` glob those readers list.
+  def self.tag_prefix(track)
+    SHARED_TAG_TRACKS.include?(track) ? SHARED_TAG_PREFIX : "mobile-#{track}@"
+  end
+
+  # The tag globs generate-release-notes.sh tries, in order, for this track's
+  # notes: the newest tag not on HEAD from the first glob that has one starts
+  # the range. Closed testing starts from its own previous release, and falls
+  # back to the newest shared release before it has one.
+  def self.notes_tag_globs(track)
+    prefix = tag_prefix(track)
+    globs = ["#{prefix}*"]
+    globs << "#{SHARED_TAG_PREFIX}*" unless prefix == SHARED_TAG_PREFIX
+    globs
+  end
+
+  # Whether the lane writes generated notes onto the track's releases. Not on
+  # production: there they become the public listing's "What's new", and the
+  # generator can only see commits since the last tagged build (usually the
+  # last internal beta), not since the last production release, which no tag
+  # marks apart. Production notes are written by hand in the Play Console.
+  def self.posts_release_notes?(track)
+    track != "production"
   end
 end

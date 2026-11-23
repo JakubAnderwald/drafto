@@ -39,24 +39,38 @@ describe(
     it("PrimeTestLab 11035 release: the next version code is one above the highest on ANY track", () => {
       const out = ruby(`
       codes = { "internal" => [87, 86], "alpha" => [82], "beta" => [], "production" => [80] }
-      puts JSON.generate(PlayRelease.next_version_code(codes, {}))
+      puts JSON.generate(PlayRelease.next_version_code(codes))
     `);
       assert.equal(out, 88);
     });
 
-    it("PrimeTestLab 11035 release: a track whose lookup raises counts as empty", () => {
+    it("PrimeTestLab 11035 release: an empty track (fastlane returns []) adds nothing", () => {
       const out = ruby(`
-      codes, errors = PlayRelease.collect_version_codes do |track|
-        raise "Track not found" if track == "beta"
-        { "internal" => [87], "alpha" => [82], "production" => [80] }.fetch(track)
+      codes = PlayRelease.collect_version_codes do |track|
+        { "internal" => [87], "alpha" => ["82"], "beta" => [], "production" => [80] }.fetch(track)
       end
-      puts JSON.generate(
-        codes: codes, errors: errors.keys, next: PlayRelease.next_version_code(codes, errors)
-      )
+      puts JSON.generate(codes: codes, next: PlayRelease.next_version_code(codes))
     `);
       assert.deepEqual(out.codes, { internal: [87], alpha: [82], beta: [], production: [80] });
-      assert.deepEqual(out.errors, ["beta"]);
       assert.equal(out.next, 88);
+    });
+
+    it("PrimeTestLab 11035 release: stops when any track's lookup fails, naming the track", () => {
+      // fastlane already maps Play's 404 trackEmpty / "Track not found" to [], so
+      // a raise is a real failure. Treating that track as empty could reuse its
+      // highest code, which Play only rejects at upload, after the whole build.
+      const out = ruby(`
+      begin
+        PlayRelease.collect_version_codes do |track|
+          raise "503 Service Unavailable" if track == "internal"
+          { "alpha" => [82], "beta" => [], "production" => [80] }.fetch(track)
+        end
+        puts JSON.generate("no error")
+      rescue PlayRelease::TrackUnreadable => e
+        puts JSON.generate(e.message)
+      end
+    `);
+      assert.match(out, /Google Play track 'internal' \(503 Service Unavailable\)/);
     });
 
     it("PrimeTestLab 11035 release: asks every Play track, internal through production", () => {
@@ -69,23 +83,10 @@ describe(
       assert.deepEqual(out, PLAY_TRACKS, "post-release-notes.mjs must know the same tracks");
     });
 
-    it("PrimeTestLab 11035 release: refuses to count from 0 when no track could be read", () => {
-      const out = ruby(`
-      codes, errors = PlayRelease.collect_version_codes { |_track| raise "401 Unauthorized" }
-      begin
-        PlayRelease.next_version_code(codes, errors)
-        puts JSON.generate("no error")
-      rescue PlayRelease::AllTracksUnreadable => e
-        puts JSON.generate(e.message)
-      end
-    `);
-      assert.match(out, /Could not read version codes from any Google Play track/);
-    });
-
     it("PrimeTestLab 11035 release: starts at 1 for an app with no uploads anywhere", () => {
       const out = ruby(`
-      codes, errors = PlayRelease.collect_version_codes { |_track| [] }
-      puts JSON.generate(PlayRelease.next_version_code(codes, errors))
+      codes = PlayRelease.collect_version_codes { |_track| [] }
+      puts JSON.generate(PlayRelease.next_version_code(codes))
     `);
       assert.equal(out, 1);
     });
@@ -107,6 +108,31 @@ describe(
       puts JSON.generate(%w[internal alpha production].map { |t| PlayRelease.announces_release?(t) })
     `);
       assert.deepEqual(out, [true, false, true]);
+    });
+
+    it("PrimeTestLab 11035 release: closed testing tags under its own prefix, outside mobile@*", () => {
+      const out = ruby(`
+      puts JSON.generate(%w[internal alpha beta production].map { |t| PlayRelease.tag_prefix(t) })
+    `);
+      assert.deepEqual(out, ["mobile@", "mobile-alpha@", "mobile-beta@", "mobile@"]);
+      // The notes generator and comment-released-issues.mjs list `mobile@*`.
+      for (const prefix of ["mobile-alpha@", "mobile-beta@"]) {
+        assert.ok(!prefix.startsWith("mobile@"), `${prefix} would match mobile@*`);
+      }
+    });
+
+    it("PrimeTestLab 11035 release: closed-testing notes start from its own release, else the shared one", () => {
+      const out = ruby(`
+      puts JSON.generate(%w[internal alpha].map { |t| PlayRelease.notes_tag_globs(t) })
+    `);
+      assert.deepEqual(out, [["mobile@*"], ["mobile-alpha@*", "mobile@*"]]);
+    });
+
+    it("PrimeTestLab 11035 release: never writes generated notes onto the production listing", () => {
+      const out = ruby(`
+      puts JSON.generate(%w[internal alpha beta production].map { |t| PlayRelease.posts_release_notes?(t) })
+    `);
+      assert.deepEqual(out, [true, true, true, false]);
     });
   },
 );
@@ -133,18 +159,28 @@ describe("mobile Fastfile alpha lane", () => {
   it("PrimeTestLab 11035 release: computes the version code across all tracks, not the target track", () => {
     assert.match(buildAndSubmit, /next_code = next_play_version_code/);
     assert.ok(
+      buildAndSubmit.indexOf("next_code = next_play_version_code") <
+        buildAndSubmit.indexOf('"expo", "prebuild"'),
+      "the version code must be read before the (slow) prebuild and Gradle build",
+    );
+    assert.match(src, /rescue PlayRelease::TrackUnreadable => e\r?\n\s*UI\.user_error!/);
+    assert.ok(
       !/google_play_track_version_codes\(/.test(buildAndSubmit),
       "build_and_submit must not read one track's codes directly",
     );
     assert.match(src, /PlayRelease\.collect_version_codes do \|track\|/);
   });
 
-  it("PrimeTestLab 11035 release: posts the notes to the track it uploaded to", () => {
+  it("PrimeTestLab 11035 release: posts the notes to the track it uploaded to, never production", () => {
+    const gate = buildAndSubmit.indexOf("if PlayRelease.posts_release_notes?(track)");
+    const post = buildAndSubmit.indexOf("post_release_notes(");
+    assert.ok(gate !== -1 && gate < post, "post_release_notes is not gated on the track");
     assert.match(
       buildAndSubmit,
-      /post_release_notes\(platform: "android", max_chars: 500, track: track\)/,
+      /post_release_notes\(\s*platform: "android", max_chars: 500, track: track, tag_globs: PlayRelease\.notes_tag_globs\(track\)\s*\)/,
     );
     assert.match(src, /cmd \+= \["--track", track\.to_s\]/);
+    assert.match(src, /gen \+= \["--tag-glob", glob\]/);
   });
 
   it("PrimeTestLab 11035 release: gates the 'Now live' comment on the track but still tags", () => {
@@ -155,6 +191,14 @@ describe("mobile Fastfile alpha lane", () => {
     assert.ok(gate < comment, "the gate must come before the comment");
     assert.ok(tag > comment, "every Android lane must still tag its release");
     assert.match(buildAndSubmit, /track_label = PlayRelease\.track_label\(track, next_code\)/);
+    assert.match(
+      buildAndSubmit,
+      /tag_release\(platform: "android", build: next_code, prefix: PlayRelease\.tag_prefix\(track\)\)/,
+    );
+    assert.match(
+      src,
+      /release_tag = "#\{prefix\}#\{package_json_version\}\+#\{platform\}\.#\{build\}"/,
+    );
   });
 
   it("PrimeTestLab 11035 release: exposes the lane as pnpm release:alpha:android", () => {
@@ -232,5 +276,79 @@ describe("generate-release-notes.sh (mobile) — several tags on HEAD", () => {
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /the change this release ships/);
     assert.ok(!/shipped in the previous release/.test(r.stdout), r.stdout);
+  });
+});
+
+// A closed-testing (alpha) build tags `mobile-alpha@…`. Internal-track and
+// TestFlight testers never got that commit, so their next notes must still start
+// from the last `mobile@` release; the alpha notes start from the last alpha.
+describe("generate-release-notes.sh (mobile) — closed-testing tags", () => {
+  let d;
+  const script = resolve(REPO, "apps/mobile/scripts/generate-release-notes.sh");
+  const g = (...args) => {
+    const r = spawnSync("git", args, { cwd: d, encoding: "utf8" });
+    assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout;
+  };
+  // Commit dates one minute apart: creatordate on a lightweight tag is the
+  // commit date, and same-second commits would tie.
+  let minute = 0;
+  const c = (msg) => {
+    mkdirSync(join(d, "apps/mobile"), { recursive: true });
+    writeFileSync(join(d, "apps/mobile/f.txt"), msg);
+    g("add", "-A");
+    minute += 1;
+    const date = `2026-11-01T10:${String(minute).padStart(2, "0")}:00Z`;
+    const r = spawnSync("git", ["commit", "-m", msg, "--no-verify"], {
+      cwd: d,
+      encoding: "utf8",
+      env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  const notes = (...globs) => {
+    const args = [script, "--max-chars", "4000"];
+    for (const glob of globs) args.push("--tag-glob", glob);
+    const r = spawnSync("bash", args, { cwd: d, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout;
+  };
+
+  before(() => {
+    d = mkdtempSync(join(tmpdir(), "drafto-relnotes-closed-"));
+    g("init", "-q", "-b", "main");
+    g("config", "user.email", "t@example.com");
+    g("config", "user.name", "T");
+    c("fix: shipped to internal as build 87");
+    g("tag", "mobile@1.6.0+android.87");
+    c("fix: the PrimeTestLab batch");
+    g("tag", "mobile-alpha@1.7.0+android.88");
+    c("feat: after the alpha build");
+  });
+
+  after(() => d && rmSync(d, { recursive: true, force: true }));
+
+  it("PrimeTestLab 11035 release: internal / TestFlight notes ignore an alpha-only tag", () => {
+    const out = notes();
+    assert.match(out, /the PrimeTestLab batch/, `alpha-only commits dropped:\n${out}`);
+    assert.match(out, /after the alpha build/);
+    assert.ok(!/shipped to internal as build 87/.test(out), out);
+  });
+
+  it("PrimeTestLab 11035 release: the next alpha's notes start from the last alpha", () => {
+    const out = notes("mobile-alpha@*", "mobile@*");
+    assert.match(out, /after the alpha build/);
+    assert.ok(!/the PrimeTestLab batch/.test(out), out);
+  });
+
+  it("PrimeTestLab 11035 release: the first alpha falls back to the newest shared release", () => {
+    g("tag", "-d", "mobile-alpha@1.7.0+android.88");
+    try {
+      const out = notes("mobile-alpha@*", "mobile@*");
+      assert.match(out, /the PrimeTestLab batch/);
+      assert.ok(!/shipped to internal as build 87/.test(out), out);
+    } finally {
+      g("tag", "mobile-alpha@1.7.0+android.88", "HEAD~1");
+    }
   });
 });

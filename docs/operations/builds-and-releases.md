@@ -199,24 +199,37 @@ What it does: the same build as the internal track (`expo prebuild` → Gradle
 Play Console calls **Closed testing**. Then:
 
 - **Release notes** go to the `alpha` track (`post-release-notes.mjs --track alpha`).
+  They cover the commits since the last closed-testing release (the newest
+  `mobile-alpha@*` tag), or, before there is one, since the newest `mobile@*` release.
 - **No "Now live" notice** on support issues. Closed-testing testers are a hand-picked
   list, and the people who reported an issue are generally not on it. An issue is
   announced only once per platform, so an alpha notice would also stop the
   internal-track or production one they can install. `PlayRelease.announces_release?`
   in `apps/mobile/fastlane/play_release.rb` decides this.
 - **The In Test build comment** is still posted when `DRAFTO_INTEST_ISSUE` is set.
-- **The build is tagged** `mobile@<version>+android.<code>` like every other release,
-  so the next build's notes start from it. The notes generator skips every tag on
-  `HEAD`, so an alpha build of a commit that iOS and the internal track already tagged
-  still gets notes from the release before it.
+- **The build is tagged** `mobile-alpha@<version>+android.<code>`, not `mobile@…`.
+  The notes generator and `comment-released-issues.mjs` start their range at the
+  newest `mobile@*` tag, and internal-track and TestFlight testers never got a commit
+  that shipped only to closed testing. With a `mobile@` tag, the next internal or
+  TestFlight build would leave everything up to that commit out of its notes and out
+  of its "Now live" walk. `PlayRelease.tag_prefix` picks the prefix.
+- The notes generator skips every tag on `HEAD`, so an alpha build of a commit that
+  iOS and the internal track already tagged still gets notes from the release before it.
+
+Closed testing held build 82 (1.5.0) before this lane existed, and that build is
+tagged `mobile@1.5.0+android.82`. To start the first alpha's notes there rather than
+at the newest internal build, add the alpha tag on the same commit before the first
+run: `git tag mobile-alpha@1.5.0+android.82 mobile@1.5.0+android.82 && git push origin mobile-alpha@1.5.0+android.82`.
 
 **Version code across tracks.** Play needs a version code that no track has used and
 that is higher than all of them. Every Android lane therefore takes the highest code
 on any of `internal`, `alpha`, `beta` and `production`, plus one (`next_play_version_code`
 in the Fastfile). Taking only the target track's highest code breaks once tracks
 diverge: internal was at 87 while alpha held 82, so an alpha build would have reused
-code 83. A track the API can't read (for example one with no releases yet) counts as
-empty and is logged. If no track can be read at all, the lane stops before building.
+code 83. fastlane already reads an empty or missing track as no codes. Any other
+failure to read a track (network, a 5xx, auth) stops the lane, because guessing that
+track is empty could reuse one of its codes. The codes are read before `expo prebuild`,
+so a failure costs seconds rather than a whole build.
 
 **Google review.** Unlike the internal track, a closed-testing release goes through
 Google's review before testers get it. That usually takes a few hours and can take
@@ -232,6 +245,13 @@ the user asks for it. The factory never runs it: `assertBetaOnly` in
 ```bash
 cd apps/mobile && pnpm release:prod:android
 ```
+
+The production lane does **not** write generated release notes. On production they
+would become the public listing's "What's new", and the generator only sees commits
+since the last tagged build (usually the last internal beta), not since the last
+production release. Write the production notes on the release in the Play Console.
+Earlier versions of the lane sent a production run's notes to the internal track by
+mistake, so the lane has never written the public listing.
 
 ### Android build prerequisites
 
@@ -716,7 +736,7 @@ Release notes are auto-generated from conventional commits and posted to both st
 
 ### How it works
 
-1. `apps/mobile/scripts/generate-release-notes.sh` extracts `feat:` and `fix:` commits since the newest `mobile@*` git tag that is not on `HEAD`. Tags on `HEAD` are other releases of the same commit (iOS, the Play internal track, Play closed testing).
+1. `apps/mobile/scripts/generate-release-notes.sh` extracts `feat:` and `fix:` commits since the newest `mobile@*` git tag that is not on `HEAD`. Tags on `HEAD` are other releases of the same commit (iOS, the Play internal track). `--tag-glob` (repeatable) replaces `mobile@*`; the first glob with a tag not on `HEAD` wins. Play closed testing passes `mobile-alpha@*` then `mobile@*` and tags its builds `mobile-alpha@…`, so its releases never start an internal-track or TestFlight range. The production Android lane posts no generated notes ([why](#release-to-google-play-production-track)).
 2. `apps/mobile/scripts/post-release-notes.mjs` posts notes to Google Play (via Publisher API) and TestFlight (via App Store Connect API). For Google Play, `--track internal|alpha|beta|production` picks the track; without it the script uses `GOOGLE_PLAY_TRACK`, else `internal`. The Android lanes pass the track they uploaded to.
 3. CI workflows (when functional) call both scripts after successful build+submit. Local Fastlane lanes invoke them directly.
 
