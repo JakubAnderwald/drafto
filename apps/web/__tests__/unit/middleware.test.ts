@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // Mock env before importing middleware
@@ -9,6 +9,12 @@ vi.mock("@/env", () => ({
   },
 }));
 
+const mockCaptureException = vi.fn();
+vi.mock("@sentry/nextjs", () => ({ captureException: mockCaptureException }));
+
+const mockGetClaims = vi.fn();
+// The middleware verifies the session locally with getClaims() (ADR-0097). getUser() is a call to
+// Supabase Auth per request, so every test checks it is never made.
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
 
@@ -24,7 +30,7 @@ vi.mock("@supabase/ssr", () => ({
   ) => {
     setAllCookies = options.cookies.setAll;
     return {
-      auth: { getUser: mockGetUser },
+      auth: { getClaims: mockGetClaims, getUser: mockGetUser },
       from: mockFrom,
     };
   },
@@ -35,6 +41,17 @@ const { updateSession } = await import("@/lib/supabase/middleware");
 
 // A Supabase auth cookie. Without one the middleware skips the session lookup entirely.
 const SESSION_COOKIE = "sb-test-auth-token=session";
+
+// What getClaims() resolves to for a verified access token with these claims.
+function signedIn(claims: Record<string, unknown> = { sub: "user-1", email: "test@test.com" }) {
+  return {
+    data: { claims, header: { alg: "ES256", kid: "test-kid" }, signature: new Uint8Array() },
+    error: null,
+  };
+}
+
+// No session, or a refresh that failed and cleared the cookies.
+const SIGNED_OUT = { data: null, error: null };
 
 function createRequest(path: string, { session = false } = {}): NextRequest {
   return new NextRequest(
@@ -48,8 +65,12 @@ describe("Auth middleware", () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    expect(mockGetUser).not.toHaveBeenCalled();
+  });
+
   it("allows access to public routes without auth", async () => {
-    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
     const publicRoutes = [
       "/login",
@@ -85,7 +106,7 @@ describe("Auth middleware", () => {
     "serves %s to a signed-out visitor instead of redirecting to /login",
     async (route) => {
       // The store listings link to these pages, and store reviewers open them signed out.
-      mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+      mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
       const response = await updateSession(createRequest(route));
 
@@ -96,7 +117,7 @@ describe("Auth middleware", () => {
   );
 
   it("does not treat a lookalike path as the public privacy page", async () => {
-    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
     const response = await updateSession(createRequest("/privacy-settings"));
 
@@ -107,7 +128,7 @@ describe("Auth middleware", () => {
   it("passes a cookie-less DELETE /api/account through to the route instead of redirecting", async () => {
     // Native apps authenticate this route with a bearer token and send no cookie.
     // A redirect would be followed by fetch and land on the login page's HTML.
-    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
     const response = await updateSession(
       new NextRequest(new URL("/api/account", "http://localhost:3000"), {
@@ -123,7 +144,7 @@ describe("Auth middleware", () => {
 
   it("passes Vercel Cron's cookie-less GET /api/cron/cleanup-trash through to the route", async () => {
     // Vercel Cron sends the cron secret as a bearer token and no cookie; the route checks it.
-    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
     const response = await updateSession(
       new NextRequest(new URL("/api/cron/cleanup-trash", "http://localhost:3000"), {
@@ -148,12 +169,12 @@ describe("Auth middleware", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("location")).toBeNull();
-    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(mockGetClaims).not.toHaveBeenCalled();
     expect(mockFrom).not.toHaveBeenCalled();
   });
 
   it("redirects unauthenticated users to /login", async () => {
-    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
     const response = await updateSession(createRequest("/settings"));
 
@@ -163,7 +184,7 @@ describe("Auth middleware", () => {
 
   it("serves signed-out / the landing page through a rewrite instead of redirecting", async () => {
     // A redirect to /login made Google index the login form under `/`.
-    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
     const response = await updateSession(createRequest("/?utm_source=store"));
 
@@ -176,14 +197,14 @@ describe("Auth middleware", () => {
   });
 
   it("passes refreshed session cookies and their no-cache headers on with the landing page rewrite", async () => {
-    // An expired session is cleared during getUser(). The browser must still get the cleared
+    // An expired session is cleared during getClaims(). The browser must still get the cleared
     // cookie, and no cache may store the static landing page together with it.
-    mockGetUser.mockImplementationOnce(async () => {
+    mockGetClaims.mockImplementationOnce(async () => {
       setAllCookies([{ name: "sb-test-auth-token", value: "", options: { maxAge: 0 } }], {
         "Cache-Control": "private, no-cache, no-store, must-revalidate, max-age=0",
         Expires: "0",
       });
-      return { data: { user: null }, error: null };
+      return SIGNED_OUT;
     });
 
     const response = await updateSession(createRequest("/", { session: true }));
@@ -227,7 +248,7 @@ describe("Auth middleware", () => {
       expect(response.status).toBe(status);
       const header = response.headers.get("location");
       expect(header && new URL(header).pathname).toBe(location);
-      expect(mockGetUser).not.toHaveBeenCalled();
+      expect(mockGetClaims).not.toHaveBeenCalled();
       expect(mockFrom).not.toHaveBeenCalled();
     },
   );
@@ -238,7 +259,7 @@ describe("Auth middleware", () => {
     const rewrite = new URL(response.headers.get("x-middleware-rewrite")!);
     expect(rewrite.pathname).toBe("/welcome");
     expect(rewrite.search).toBe("?utm_source=store");
-    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(mockGetClaims).not.toHaveBeenCalled();
   });
 
   it("refuses a cookie-less request to a protected API route even with a verified-user header", async () => {
@@ -253,35 +274,32 @@ describe("Auth middleware", () => {
     expect(response.headers.get("location")).toBeNull();
     // The forged header never reaches the route: nothing is forwarded on a refusal.
     expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBeNull();
-    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(mockGetClaims).not.toHaveBeenCalled();
   });
 
   it("still looks up the session when a Supabase cookie is present", async () => {
-    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
     const response = await updateSession(createRequest("/settings", { session: true }));
 
-    expect(mockGetUser).toHaveBeenCalledOnce();
+    expect(mockGetClaims).toHaveBeenCalledOnce();
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
   });
 
   it("serves a public route to a visitor whose session cookie is stale", async () => {
-    // getUser() finds no user for the cookie. /login must still answer, not redirect to itself.
-    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    // getClaims() finds no session for the cookie. /login must still answer, not redirect to itself.
+    mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
     const response = await updateSession(createRequest("/login", { session: true }));
 
-    expect(mockGetUser).toHaveBeenCalledOnce();
+    expect(mockGetClaims).toHaveBeenCalledOnce();
     expect(response.status).toBe(200);
     expect(response.headers.get("location")).toBeNull();
   });
 
   it("overwrites client-sent verified-user headers with the session's user", async () => {
-    mockGetUser.mockResolvedValue({
-      data: { user: { id: "user-1", email: "test@test.com" } },
-      error: null,
-    });
+    mockGetClaims.mockResolvedValue(signedIn());
     mockFrom.mockReturnValue({
       select: () => ({
         eq: () => ({
@@ -313,14 +331,11 @@ describe("Auth middleware", () => {
 
     expect(response.status).toBe(308);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/");
-    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(mockGetClaims).not.toHaveBeenCalled();
   });
 
   it("redirects unapproved users to /waiting-for-approval", async () => {
-    mockGetUser.mockResolvedValue({
-      data: { user: { id: "user-1", email: "test@test.com" } },
-      error: null,
-    });
+    mockGetClaims.mockResolvedValue(signedIn());
     mockFrom.mockReturnValue({
       select: () => ({
         eq: () => ({
@@ -336,10 +351,7 @@ describe("Auth middleware", () => {
   });
 
   it("allows approved users to access protected routes", async () => {
-    mockGetUser.mockResolvedValue({
-      data: { user: { id: "user-1", email: "test@test.com" } },
-      error: null,
-    });
+    mockGetClaims.mockResolvedValue(signedIn());
     mockFrom.mockReturnValue({
       select: () => ({
         eq: () => ({
@@ -356,10 +368,7 @@ describe("Auth middleware", () => {
   });
 
   it("allows unapproved users to see /waiting-for-approval", async () => {
-    mockGetUser.mockResolvedValue({
-      data: { user: { id: "user-1", email: "test@test.com" } },
-      error: null,
-    });
+    mockGetClaims.mockResolvedValue(signedIn());
     mockFrom.mockReturnValue({
       select: () => ({
         eq: () => ({
@@ -374,10 +383,7 @@ describe("Auth middleware", () => {
   });
 
   it("redirects to /login when profile query fails", async () => {
-    mockGetUser.mockResolvedValue({
-      data: { user: { id: "user-1", email: "test@test.com" } },
-      error: null,
-    });
+    mockGetClaims.mockResolvedValue(signedIn());
     mockFrom.mockReturnValue({
       select: () => ({
         eq: () => ({
@@ -393,10 +399,7 @@ describe("Auth middleware", () => {
   });
 
   it("redirects approved users away from /waiting-for-approval", async () => {
-    mockGetUser.mockResolvedValue({
-      data: { user: { id: "user-1", email: "test@test.com" } },
-      error: null,
-    });
+    mockGetClaims.mockResolvedValue(signedIn());
     mockFrom.mockReturnValue({
       select: () => ({
         eq: () => ({
@@ -418,10 +421,7 @@ describe("Auth middleware", () => {
       data: { is_approved: boolean } | null;
       error: { message: string } | null;
     }) {
-      mockGetUser.mockResolvedValue({
-        data: { user: { id: "user-1", email: "test@test.com" } },
-        error: null,
-      });
+      mockGetClaims.mockResolvedValue(signedIn());
       mockFrom.mockReturnValue({
         select: () => ({
           eq: () => ({
@@ -445,7 +445,7 @@ describe("Auth middleware", () => {
       ["without a session cookie", false],
       ["with a stale session cookie", true],
     ])("answers a signed-out API fetch %s with 401 JSON", async (_label, session) => {
-      mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+      mockGetClaims.mockResolvedValue(SIGNED_OUT);
 
       const response = await updateSession(apiRequest("/api/notebooks/abc/notes", { session }));
 
@@ -544,6 +544,185 @@ describe("Auth middleware", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("location")).toBeNull();
       expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBe("user-1");
+    });
+  });
+
+  // The session is verified locally with getClaims() (ADR-0097): anything it can't verify is
+  // signed out, and a verified token's claims become the forwarded user.
+  describe("session verification", () => {
+    function approvedProfile() {
+      const eq = vi.fn(() => ({
+        single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+      }));
+      mockFrom.mockReturnValue({ select: () => ({ eq }) });
+      return eq;
+    }
+
+    function apiFetch(path: string): NextRequest {
+      return new NextRequest(new URL(path, "http://localhost:3000"), {
+        headers: { cookie: SESSION_COOKIE, "sec-fetch-mode": "cors" },
+      });
+    }
+
+    it("calls getClaims() without a token, so an expiring session is refreshed first", async () => {
+      mockGetClaims.mockResolvedValue(signedIn());
+      approvedProfile();
+
+      await updateSession(createRequest("/settings", { session: true }));
+
+      expect(mockGetClaims).toHaveBeenCalledOnce();
+      expect(mockGetClaims).toHaveBeenCalledWith();
+    });
+
+    it("runs the profiles approval query once, for the verified sub", async () => {
+      mockGetClaims.mockResolvedValue(signedIn({ sub: "user-42", email: "a@b.c" }));
+      const eq = approvedProfile();
+
+      const response = await updateSession(createRequest("/settings", { session: true }));
+
+      expect(response.status).toBe(200);
+      expect(mockFrom).toHaveBeenCalledOnce();
+      expect(mockFrom).toHaveBeenCalledWith("profiles");
+      expect(eq).toHaveBeenCalledOnce();
+      expect(eq).toHaveBeenCalledWith("id", "user-42");
+      expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBe("user-42");
+      expect(response.headers.get("x-middleware-request-x-verified-user-email")).toBe("a@b.c");
+    });
+
+    // An invalid, tampered or expired-without-refresh token: getClaims() returns an auth error.
+    const INVALID_TOKEN = {
+      data: null,
+      error: { name: "AuthInvalidJwtError", message: "Invalid JWT signature", status: 400 },
+    };
+
+    it("sends a page request with an invalid token to /login", async () => {
+      mockGetClaims.mockResolvedValue(INVALID_TOKEN);
+
+      const response = await updateSession(createRequest("/settings", { session: true }));
+
+      expect(response.status).toBe(307);
+      expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+      expect(mockFrom).not.toHaveBeenCalled();
+    });
+
+    it("answers an API fetch with an invalid token with 401 JSON", async () => {
+      mockGetClaims.mockResolvedValue(INVALID_TOKEN);
+
+      const response = await updateSession(apiFetch("/api/notebooks"));
+
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: "Unauthorized" });
+      expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBeNull();
+      expect(mockFrom).not.toHaveBeenCalled();
+    });
+
+    it("rewrites / to the landing page for an invalid token", async () => {
+      mockGetClaims.mockResolvedValue(INVALID_TOKEN);
+
+      const response = await updateSession(createRequest("/", { session: true }));
+
+      expect(new URL(response.headers.get("x-middleware-rewrite")!).pathname).toBe("/welcome");
+    });
+
+    it("treats a getClaims() that throws as signed out instead of failing the request", async () => {
+      // auth-js re-throws errors that aren't auth errors. A tampered cookie can reach some, such
+      // as an unknown `alg` sent with a real `kid`.
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockGetClaims.mockRejectedValue(new Error("Invalid alg claim"));
+
+      const page = await updateSession(createRequest("/settings", { session: true }));
+      const api = await updateSession(apiFetch("/api/notebooks"));
+
+      expect(page.status).toBe(307);
+      expect(new URL(page.headers.get("location")!).pathname).toBe("/login");
+      expect(api.status).toBe(401);
+      expect(mockFrom).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledWith(
+        "[middleware] Session verification failed:",
+        expect.any(Error),
+      );
+      // Reported to Sentry, but at most once a minute: the second request isn't reported again.
+      expect(mockCaptureException).toHaveBeenCalledOnce();
+      expect(mockCaptureException).toHaveBeenCalledWith(expect.any(Error), {
+        extra: { where: "middleware:session-claims" },
+      });
+      consoleError.mockRestore();
+    });
+
+    it.each([
+      ["no sub claim", { role: "authenticated" }],
+      ["an empty sub claim", { sub: "", email: "test@test.com" }],
+      ["a sub claim that isn't a string", { sub: 42, email: "test@test.com" }],
+    ])("treats a token with %s as signed out", async (_label, claims) => {
+      mockGetClaims.mockResolvedValue(signedIn(claims));
+
+      const response = await updateSession(apiFetch("/api/notebooks"));
+
+      expect(response.status).toBe(401);
+      expect(mockFrom).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["no email claim", { sub: "user-1" }],
+      ["an email claim that isn't a string", { sub: "user-1", email: null }],
+    ])("forwards an empty verified email for a token with %s", async (_label, claims) => {
+      mockGetClaims.mockResolvedValue(signedIn(claims));
+      approvedProfile();
+
+      const response = await updateSession(apiFetch("/api/notes"));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBe("user-1");
+      expect(response.headers.get("x-middleware-request-x-verified-user-email")).toBe("");
+    });
+
+    // A refresh inside getClaims() writes the new session through the client's setAll hook.
+    function refreshDuringGetClaims(): void {
+      mockGetClaims.mockImplementationOnce(async () => {
+        setAllCookies(
+          [{ name: "sb-test-auth-token", value: "refreshed-session", options: { path: "/" } }],
+          { "Cache-Control": "private, no-cache, no-store, must-revalidate, max-age=0" },
+        );
+        return signedIn();
+      });
+    }
+
+    it("puts refreshed session cookies on an approved user's pass-through", async () => {
+      refreshDuringGetClaims();
+      approvedProfile();
+
+      const response = await updateSession(createRequest("/settings", { session: true }));
+
+      expect(response.status).toBe(200);
+      expect(response.cookies.get("sb-test-auth-token")?.value).toBe("refreshed-session");
+      expect(response.headers.get("x-middleware-request-x-verified-user-id")).toBe("user-1");
+    });
+
+    it("puts refreshed session cookies on the waiting page for an unapproved user", async () => {
+      refreshDuringGetClaims();
+      mockFrom.mockReturnValue({
+        select: () => ({
+          eq: () => ({
+            single: () => Promise.resolve({ data: { is_approved: false }, error: null }),
+          }),
+        }),
+      });
+
+      const response = await updateSession(
+        createRequest("/waiting-for-approval", { session: true }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.cookies.get("sb-test-auth-token")?.value).toBe("refreshed-session");
+    });
+
+    it("puts refreshed session cookies on a public route", async () => {
+      refreshDuringGetClaims();
+
+      const response = await updateSession(createRequest("/login", { session: true }));
+
+      expect(response.status).toBe(200);
+      expect(response.cookies.get("sb-test-auth-token")?.value).toBe("refreshed-session");
     });
   });
 });
