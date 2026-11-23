@@ -1,5 +1,7 @@
 import { after, type NextRequest } from "next/server";
+import { duplicateNotebookNameMessage } from "@drafto/shared";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
+import { findNotebookNameConflict } from "@/lib/api/notebook-name-conflict";
 import { removeUserOrphanedAttachments } from "@/lib/storage/remove-orphaned-attachments";
 
 interface RouteParams {
@@ -23,6 +25,16 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
   if (!name || typeof name !== "string" || name.trim().length === 0) {
     return errorResponse("name is required", 400);
+  }
+
+  // Names are unique per user, ignoring case and spacing (ADR-0097). A notebook never
+  // clashes with itself, so changing only the case of its name goes through.
+  const conflict = await findNotebookNameConflict(supabase, user.id, name, id);
+  if (conflict.error) {
+    return errorResponse("Failed to check notebook names", 500);
+  }
+  if (conflict.duplicate) {
+    return errorResponse(duplicateNotebookNameMessage(conflict.duplicate.name), 409);
   }
 
   const { data: notebook, error } = await supabase

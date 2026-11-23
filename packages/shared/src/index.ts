@@ -259,3 +259,12 @@ export {
   nextOfflineBannerVariant,
 } from "./network/offline-banner";
 export type { OfflineBannerEvent, OfflineBannerVariant } from "./network/offline-banner";
+
+// Notebook names and note counts (PrimeTestLab 11035 M-01, S-03; ADR-0097)
+export {
+  normalizeNotebookName,
+  findDuplicateNotebook,
+  duplicateNotebookNameMessage,
+  formatNoteCount,
+} from "./notebooks/notebook-name";
+export type { NamedNotebook } from "./notebooks/notebook-name";

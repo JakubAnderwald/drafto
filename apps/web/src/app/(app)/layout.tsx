@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { ActivityPing } from "@/components/layout/activity-ping";
+import { NOTE_COUNT_FILTER_COLUMN, withNoteCount } from "@/lib/api/notebook-note-count";
 
 async function ensureDefaultNotebook(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -71,8 +72,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // the client-side fetch waterfall (saves ~600ms of sequential API calls).
   const { data: notebooks, error: notebooksError } = await supabase
     .from("notebooks")
-    .select("id, name, created_at, updated_at")
+    .select("id, name, created_at, updated_at, notes(count)")
     .eq("user_id", userId)
+    .eq(NOTE_COUNT_FILTER_COLUMN, false)
     .order("updated_at", { ascending: false });
 
   if (notebooksError) {
@@ -101,7 +103,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       {/* Records today's activity day from the browser (ADR 0088); renders nothing. */}
       <ActivityPing userId={userId} />
       <AppShell
-        initialNotebooks={notebooks ?? []}
+        initialNotebooks={(notebooks ?? []).map(withNoteCount)}
         initialNotebookId={firstNotebookId}
         initialNotes={initialNotes}
         isAdmin={isAdmin}
