@@ -365,11 +365,15 @@ if [ -n "$E2E_NB_POS" ]; then
 else
   echo "  ℹ  Create note: '$E2E_NB_NAME' not found; TEST 5b will not delete anything"
 fi
-if has_element "New note"; then
+# Exact match: a substring lookup (has_element) also finds the sidebar's "New notebook", which
+# is there even when no notebook is selected and the note list has no "New note" button.
+if has_window_element_exact "New note"; then
   BEFORE_NOTE_COUNT=$(get_element_count)
   TEST5_UNTITLED_BEFORE=$(count_rows_in_area "$(scroll_area_under "New note")" "Untitled") || TEST5_UNTITLED_BEFORE=""
-  # Exact match: a substring lookup finds "New notebook" first.
-  click_window_element_exact "New note"
+  if ! click_window_element_exact "New note"; then
+    TEST5_UNTITLED_BEFORE=""
+    fail "Create note" "The 'New note' button went away before it could be clicked"
+  fi
   wait_for_ui
   sleep 1
 
@@ -404,6 +408,9 @@ if [ -z "$E2E_NB_POS" ] || [ "$TEST5_UNTITLED_BEFORE" != "0" ] || [ "$TEST5_UNTI
   fail "Keyboard delete" "TEST 5's note isn't provably the only Untitled row in '$E2E_NB_NAME' (${TEST5_UNTITLED_BEFORE:-?} -> ${TEST5_UNTITLED_AFTER:-?}); nothing deleted"
 elif ! UNTITLED_BEFORE=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
   fail "Keyboard delete" "Could not read the note list's rows (scroll area '$NOTE_AREA')"
+elif [ "$UNTITLED_BEFORE" != "1" ]; then
+  # Re-checked live: the row clicked below must still be the only Untitled one.
+  fail "Keyboard delete" "The note list has $UNTITLED_BEFORE Untitled rows before ⌫; nothing deleted"
 else
   ROW_POS=$(scroll_row_center "$NOTE_AREA" "Untitled")
   if [ -z "$ROW_POS" ]; then

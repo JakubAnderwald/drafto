@@ -237,11 +237,11 @@ click_element_by_desc() {
   cliclick "c:$pos"
 }
 
-# Click the direct child of window 1 described exactly $1 (not a substring, so "New note"
-# never hits "New notebook"). Returns 1 if there is none.
-click_window_element_exact() {
-  local desc=$1 pos
-  pos=$(osascript -e "
+# Print the center ("x,y") of the direct child of window 1 described exactly $1 (not a
+# substring, so "New note" never finds "New notebook"), or nothing if there is none.
+find_window_element_exact() {
+  local desc=$1
+  osascript -e "
   tell application \"System Events\"
     tell process \"Drafto\"
       repeat with el in (UI elements of window 1)
@@ -258,7 +258,18 @@ click_window_element_exact() {
       return \"\"
     end tell
   end tell
-  " 2>/dev/null || true)
+  " 2>/dev/null || true
+}
+
+# Whether window 1 has a direct child described exactly $1.
+has_window_element_exact() {
+  [ -n "$(find_window_element_exact "$1")" ]
+}
+
+# Click the direct child of window 1 described exactly $1. Returns 1 if there is none.
+click_window_element_exact() {
+  local pos
+  pos=$(find_window_element_exact "$1")
   [ -n "$pos" ] || return 1
   cliclick "c:$pos"
 }
