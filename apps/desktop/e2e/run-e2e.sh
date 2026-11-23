@@ -353,10 +353,18 @@ echo "TEST 5: Create a new note"
 cliclick kp:esc
 wait_for_ui
 
-# TEST 5b may delete only a note this test created: it runs only if the note list's
-# Untitled count went up here.
+# The note goes into this run's own notebook from TEST 4, which starts empty. TEST 5b may
+# delete only that note: it runs only if this notebook's list went from no Untitled row to
+# exactly one, so nothing else can be the row it deletes.
 TEST5_UNTITLED_BEFORE=""
 TEST5_UNTITLED_AFTER=""
+E2E_NB_POS=$(find_element_center_by_desc "$E2E_NB_NAME")
+if [ -n "$E2E_NB_POS" ]; then
+  cliclick "c:$E2E_NB_POS"
+  wait_for_ui
+else
+  echo "  ℹ  Create note: '$E2E_NB_NAME' not found; TEST 5b will not delete anything"
+fi
 if has_element "New note"; then
   BEFORE_NOTE_COUNT=$(get_element_count)
   TEST5_UNTITLED_BEFORE=$(count_rows_in_area "$(scroll_area_under "New note")" "Untitled") || TEST5_UNTITLED_BEFORE=""
@@ -389,12 +397,11 @@ echo "TEST 5b: Delete a note from the keyboard (#864)"
 # The row's × is hover-only; a click on the row focuses it, and the focused, selected row
 # takes ⌫. Everything here looks only inside the note list (the scroll area under "New
 # note"), so a notebook named Untitled never matches. It deletes only the note TEST 5 just
-# created (newest first, so the first Untitled row), and presses ⌫ only once the click has
-# given that row keyboard focus: a ⌫ anywhere else would edit a note.
+# created, the one Untitled row in this run's own notebook, and presses ⌫ only once the
+# click has given that row keyboard focus: a ⌫ anywhere else would edit a note.
 NOTE_AREA=$(scroll_area_under "New note")
-if [ -z "$TEST5_UNTITLED_BEFORE" ] || [ -z "$TEST5_UNTITLED_AFTER" ] ||
-  [ "$TEST5_UNTITLED_AFTER" -le "$TEST5_UNTITLED_BEFORE" ]; then
-  fail "Keyboard delete" "TEST 5 didn't add an Untitled note (${TEST5_UNTITLED_BEFORE:-?} -> ${TEST5_UNTITLED_AFTER:-?}); nothing safe to delete"
+if [ -z "$E2E_NB_POS" ] || [ "$TEST5_UNTITLED_BEFORE" != "0" ] || [ "$TEST5_UNTITLED_AFTER" != "1" ]; then
+  fail "Keyboard delete" "TEST 5's note isn't provably the only Untitled row in '$E2E_NB_NAME' (${TEST5_UNTITLED_BEFORE:-?} -> ${TEST5_UNTITLED_AFTER:-?}); nothing deleted"
 elif ! UNTITLED_BEFORE=$(count_rows_in_area "$NOTE_AREA" "Untitled"); then
   fail "Keyboard delete" "Could not read the note list's rows (scroll area '$NOTE_AREA')"
 else

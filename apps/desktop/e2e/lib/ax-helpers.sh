@@ -196,9 +196,10 @@ count_rows_in_area() {
     tell process \"Drafto\"
       set n to 0
       repeat with el in (UI elements of scroll area $area of window 1)
-        try
+        -- No try: a row that can't be read fails the whole count rather than being skipped.
+        if role of el is not \"AXScrollBar\" then
           if description of el is \"$desc\" then set n to n + 1
-        end try
+        end if
       end repeat
       return n
     end tell
