@@ -18,7 +18,7 @@ Drafto's shared visual language — a token layer (colors, shadows, radii, trans
 
 | Concern                          | Path                                                    |
 | -------------------------------- | ------------------------------------------------------- |
-| Web token source (CSS variables) | `apps/web/src/app/globals.css`                          |
+| Web token mirror (CSS variables) | `apps/web/src/app/globals.css`                          |
 | Web UI primitives                | `apps/web/src/components/ui/`                           |
 | Showcase page                    | `apps/web/src/app/design-system/page.tsx`               |
 | Showcase layout                  | `apps/web/src/app/design-system/layout.tsx`             |
