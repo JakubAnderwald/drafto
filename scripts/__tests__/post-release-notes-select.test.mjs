@@ -1,5 +1,6 @@
 import { describe, it, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -554,11 +555,11 @@ describe("App Store promote lanes", () => {
       }
     });
 
-    // fastlane 2.232.2 reads `phased_release` and `automatic_release` in exactly
+    // fastlane 2.242.0 reads `phased_release` and `automatic_release` in exactly
     // one place — Deliver::UploadMetadata#upload (releaseType at
-    // deliver/lib/deliver/upload_metadata.rb:181-196, the phased release at
-    // :313-331) — and that method returns on its first line when `skip_metadata`
-    // is set (:88-89). Passing them to `upload_to_app_store` alongside
+    // deliver/lib/deliver/upload_metadata.rb:187-202, the phased release at
+    // :319-337) — and that method returns on its first line when `skip_metadata`
+    // is set (:94-95). Passing them to `upload_to_app_store` alongside
     // `skip_metadata: true`, which a promote lane must set, therefore applies
     // NOTHING, while the lane prints "Phased release … on" and "Release: manual".
     // App Store Connect preselects "Automatically release this version", so a
@@ -599,6 +600,105 @@ describe("App Store promote lanes", () => {
       ]) {
         assert.match(src, bit, `apply_appstore_release_settings is missing ${bit}`);
       }
+    });
+
+    // upload_to_app_store returning normally does not prove deliver submitted:
+    // since fastlane 2.242.0 (fastlane#30438) a blocking precheck violation skips
+    // SubmitForReview WITHOUT raising. At deliver's default :warn rule level
+    // precheck never blocks, so this is defence in depth, not a precheck gate.
+    // Both submitting uploads must confirm App Store Connect holds a review
+    // submission before the lane reports one.
+    it(`${f.path} confirms a review submission exists after every submitting upload`, () => {
+      const src = read(f.path);
+      const lane = promoteLaneBody(src);
+
+      assert.match(
+        lane,
+        new RegExp(
+          `if submit\\r?\\n\\s+assert_submitted_for_review!\\(asc_platform: "${f.ascPlatform}", ` +
+            `app_identifier: ${f.appIdentifier},`,
+        ),
+        "promote must check the submission happened, only on a submitting run",
+      );
+      const uploadAt = lane.indexOf("upload_to_app_store(");
+      const assertAt = lane.indexOf("assert_submitted_for_review!(");
+      const successAt = lane.indexOf("UI.success(");
+      assert.ok(
+        uploadAt !== -1 && uploadAt < assertAt,
+        "the check must follow upload_to_app_store",
+      );
+      assert.ok(assertAt < successAt, "the check must run before the lane reports success");
+
+      // The production (hotfix) path: build_and_submit's App Store branch.
+      const buildStart = src.indexOf(
+        "private_lane :build_and_submit do",
+        src.indexOf("lane :promote do"),
+      );
+      assert.notEqual(buildStart, -1, "no build_and_submit lane after promote");
+      const build = src.slice(buildStart);
+      const prodUploadAt = build.indexOf("upload_to_app_store(");
+      assert.notEqual(prodUploadAt, -1, "build_and_submit has no upload_to_app_store call");
+      // Anchor on the upload's OWN closing paren (the first `)` line at the
+      // call's indentation), then require nothing but comments before the guard.
+      const lineStart = build.lastIndexOf("\n", prodUploadAt) + 1;
+      const indent = build.slice(lineStart, prodUploadAt);
+      assert.match(indent, /^[ \t]+$/, "upload_to_app_store( must start its own line");
+      const closeRe = new RegExp(`\\r?\\n${indent}\\)\\r?\\n`);
+      const closeMatch = closeRe.exec(build.slice(prodUploadAt));
+      assert.ok(closeMatch, "could not find the production upload's closing paren");
+      const afterClose = build.slice(prodUploadAt + closeMatch.index + closeMatch[0].length);
+      assert.match(
+        afterClose,
+        new RegExp(
+          `^(?:${indent}#.*\\r?\\n)*${indent}if submit_for_review\\r?\\n${indent}  ` +
+            `assert_submitted_for_review!\\(asc_platform: "${f.ascPlatform}", app_identifier: ${f.appIdentifier},` +
+            `[^\\n]*\\r?\\n${indent}end\\r?\\n`,
+        ),
+        "the submission check must come right after the production upload, in the same branch",
+      );
+
+      assert.match(
+        src,
+        /^def assert_submitted_for_review!\(asc_platform:, app_identifier:, app_version:\)$/m,
+        "assert_submitted_for_review! is not defined in this Fastfile",
+      );
+      const helper = src.slice(src.indexOf("def assert_submitted_for_review!("));
+      const helperBody = helper.slice(0, helper.indexOf("\nend\n"));
+      // Polls before deciding, warns (never fails) when it could not look, and
+      // fails only when App Store Connect answered without this version.
+      assert.match(helperBody, /attempts\.times do \|attempt\|/);
+      assert.match(helperBody, /sleep\(interval_seconds\) if attempt\.positive\?/);
+      assert.match(
+        helperBody,
+        /review_submission_for_version\(platform: platform, app_identifier: app_identifier, app_version: app_version\)/,
+      );
+      assert.match(helperBody, /if lookup\[:error\]\r?\n\s+UI\.important\(/);
+      assert.match(helperBody, /UI\.user_error!\(/);
+      assert.ok(
+        helperBody.indexOf("UI.important(") < helperBody.indexOf("UI.user_error!("),
+        "an unverifiable lookup must warn and return before the hard stop",
+      );
+
+      // Any in-progress submission is not enough (UNRESOLVED_ISSUES matches a
+      // stale rejected one): the lookup must match this version and platform,
+      // and count only a submission waiting for or in review.
+      const lookupStart = src.indexOf(
+        "def review_submission_for_version(platform:, app_identifier:, app_version:)",
+      );
+      assert.notEqual(lookupStart, -1, "review_submission_for_version is not defined");
+      const lookupFn = src.slice(lookupStart);
+      const lookupBody = lookupFn.slice(0, lookupFn.indexOf("\nend\n"));
+      assert.match(lookupBody, /includes: "appStoreVersionForReview"/);
+      assert.match(lookupBody, /submission\.app_store_version_for_review/);
+      assert.match(lookupBody, /v\.version_string == app_version && v\.platform == platform/);
+      assert.match(
+        lookupBody,
+        /\[state::WAITING_FOR_REVIEW, state::IN_REVIEW\]\.include\?\(submission\.state\)/,
+      );
+      assert.match(lookupBody, /submission\.platform == platform/);
+      assert.match(lookupBody, /return \{ error: .* \} unless app/);
+      assert.match(lookupBody, /rescue StandardError => e/);
+      assert.doesNotMatch(lookupBody, /get_in_progress_review_submission/);
     });
 
     it(`${f.path} answers the IDFA / encryption / content-rights questions`, () => {
@@ -664,3 +764,256 @@ describe("App Store promote lanes", () => {
     });
   }
 });
+
+// Behavioural tests for the review-submission guard. The structural checks above
+// pin where the helpers sit; these run them. A Fastfile cannot be loaded whole
+// (it needs fastlane), so each test lifts the two top-level `def ... end`
+// helpers out of the source text and runs them in a plain Ruby process with
+// Spaceship::ConnectAPI, UI and sleep stubbed.
+describe(
+  "App Store review-submission guard (behaviour)",
+  { skip: spawnSync("ruby", ["-v"], { encoding: "utf8" }).status !== 0 && "no ruby" },
+  () => {
+    const read = (p) => readFileSync(resolve(HERE, "..", "..", p), "utf8");
+    const APP_VERSION = "1.4.0";
+    const APP_ID = "eu.drafto.test";
+
+    // A top-level method: from `def <name>(` at column 0 to the first `end` at
+    // column 0 after it.
+    function extractDef(src, name) {
+      const start = src.search(new RegExp(`^def ${name.replace(/[!?]/g, "\\$&")}\\(`, "m"));
+      assert.notEqual(start, -1, `def ${name} not found`);
+      const endMatch = /\r?\nend\r?\n/.exec(src.slice(start));
+      assert.ok(endMatch, `no column-0 end after def ${name}`);
+      return src.slice(start, start + endMatch.index + endMatch[0].length);
+    }
+
+    const PRELUDE = String.raw`
+require "json"
+$log = []
+module Spaceship
+  module ConnectAPI
+    module Platform
+      def self.map(p)
+        { "ios" => "IOS", "osx" => "MAC_OS" }.fetch(p)
+      end
+    end
+    class ReviewSubmission
+      module ReviewSubmissionState
+        READY_FOR_REVIEW = "READY_FOR_REVIEW"
+        WAITING_FOR_REVIEW = "WAITING_FOR_REVIEW"
+        IN_REVIEW = "IN_REVIEW"
+        UNRESOLVED_ISSUES = "UNRESOLVED_ISSUES"
+        CANCELING = "CANCELING"
+        COMPLETING = "COMPLETING"
+        COMPLETE = "COMPLETE"
+      end
+    end
+    class ReviewSubmissionItem
+      def self.all(review_submission_id:, includes:)
+        $log << ["items", review_submission_id, includes]
+        $items.fetch(review_submission_id, [])
+      end
+    end
+    class App
+      def self.find(app_identifier)
+        $log << ["find", app_identifier]
+        $find.call(app_identifier)
+      end
+    end
+  end
+end
+Version = Struct.new(:version_string, :platform)
+Submission = Struct.new(:id, :state, :platform, :app_store_version_for_review)
+Item = Struct.new(:app_store_version)
+# get_review_submissions answers one entry of $responses per call, counted
+# across lookups (the last one repeats); a Proc entry is called, so it can raise.
+$get_calls = 0
+class FakeApp
+  def get_review_submissions(filter:, includes:)
+    $log << ["get", filter, includes]
+    r = $responses[[$get_calls, $responses.size - 1].min]
+    $get_calls += 1
+    r.respond_to?(:call) ? r.call : r
+  end
+end
+class FakeUserError < StandardError; end
+module UI
+  def self.message(m)
+    $log << ["message", m]
+  end
+
+  def self.success(m)
+    $log << ["success", m]
+  end
+
+  def self.important(m)
+    $log << ["important", m]
+  end
+
+  def self.user_error!(m)
+    $log << ["user_error", m]
+    raise FakeUserError, m
+  end
+end
+def sleep(seconds)
+  $log << ["sleep", seconds]
+end
+$items = {}
+$responses = [[]]
+$find = ->(_id) { FakeApp.new }
+`;
+
+    // Runs the guard once under `scenario` (Ruby that sets $find / $responses /
+    // $items) and returns { outcome: "returned" | "user_error", log }. Any other
+    // exception exits non-zero and fails the test.
+    function runGuard(f, scenario) {
+      const src = read(f.path);
+      const script = [
+        PRELUDE,
+        extractDef(src, "review_submission_for_version"),
+        extractDef(src, "assert_submitted_for_review!"),
+        `P = Spaceship::ConnectAPI::Platform.map(${JSON.stringify(f.ascPlatform)})`,
+        `OTHER_P = P == "IOS" ? "MAC_OS" : "IOS"`,
+        `V = ${JSON.stringify(APP_VERSION)}`,
+        scenario,
+        String.raw`
+outcome = begin
+  assert_submitted_for_review!(asc_platform: ${JSON.stringify(f.ascPlatform)}, app_identifier: ${JSON.stringify(APP_ID)}, app_version: V)
+  "returned"
+rescue FakeUserError
+  "user_error"
+end
+puts JSON.generate(outcome: outcome, log: $log)
+`,
+      ].join("\n");
+      const r = spawnSync("ruby", ["-e", script], { encoding: "utf8" });
+      assert.equal(r.status, 0, `ruby failed: ${r.stderr}`);
+      return JSON.parse(r.stdout);
+    }
+
+    const kinds = (log, kind) => log.filter(([k]) => k === kind);
+
+    for (const f of [
+      { path: "apps/mobile/fastlane/Fastfile", ascPlatform: "ios", platform: "IOS" },
+      { path: "apps/desktop/fastlane/Fastfile", ascPlatform: "osx", platform: "MAC_OS" },
+    ]) {
+      it(`${f.path}: a lookup that raises warns and returns without failing the lane`, () => {
+        const { outcome, log } = runGuard(f, `$find = ->(_id) { raise "503 Service Unavailable" }`);
+        assert.equal(outcome, "returned");
+        assert.equal(kinds(log, "user_error").length, 0);
+        const warnings = kinds(log, "important");
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0][1], /Could not verify .*503 Service Unavailable/);
+        assert.equal(kinds(log, "find").length, 4, "retries before deciding it cannot verify");
+      });
+
+      it(`${f.path}: App.find returning nil warns and returns without failing the lane`, () => {
+        const { outcome, log } = runGuard(f, `$find = ->(_id) { nil }`);
+        assert.equal(outcome, "returned");
+        assert.equal(kinds(log, "user_error").length, 0);
+        assert.match(kinds(log, "important")[0][1], /returned no app for eu\.drafto\.test/);
+      });
+
+      it(`${f.path}: get_review_submissions raising warns and returns`, () => {
+        const { outcome, log } = runGuard(f, `$responses = [-> { raise IOError, "timeout" }]`);
+        assert.equal(outcome, "returned");
+        assert.equal(kinds(log, "user_error").length, 0);
+        assert.match(kinds(log, "important")[0][1], /IOError: timeout/);
+      });
+
+      it(`${f.path}: four confirmed absences fail the lane, sleeping between attempts`, () => {
+        const { outcome, log } = runGuard(f, `$responses = [[]]`);
+        assert.equal(outcome, "user_error");
+        const gets = kinds(log, "get");
+        assert.equal(gets.length, 4);
+        assert.deepEqual(gets[0][1], {
+          state: "WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES",
+          platform: f.platform,
+        });
+        assert.equal(gets[0][2], "appStoreVersionForReview");
+        assert.deepEqual(kinds(log, "sleep"), [
+          ["sleep", 5],
+          ["sleep", 5],
+          ["sleep", 5],
+        ]);
+        // The sleeps fall between lookups, never before the first or after the last.
+        const order = log.filter(([k]) => k === "get" || k === "sleep").map(([k]) => k);
+        assert.deepEqual(order, ["get", "sleep", "get", "sleep", "get", "sleep", "get"]);
+        assert.equal(kinds(log, "important").length, 0);
+        assert.match(kinds(log, "user_error")[0][1], /was NOT submitted for review.*: none\)/);
+      });
+
+      it(`${f.path}: a match on a later attempt returns without failing`, () => {
+        const { outcome, log } = runGuard(
+          f,
+          `$responses = [[], [], [Submission.new("rs-3", "WAITING_FOR_REVIEW", P, Version.new(V, P))]]`,
+        );
+        assert.equal(outcome, "returned");
+        assert.equal(kinds(log, "get").length, 3);
+        assert.equal(kinds(log, "sleep").length, 2);
+        assert.equal(kinds(log, "user_error").length, 0);
+        assert.equal(kinds(log, "important").length, 0);
+        assert.match(kinds(log, "success")[0][1], /review submission rs-3 \(WAITING_FOR_REVIEW\)/);
+      });
+
+      it(`${f.path}: an IN_REVIEW submission for this version counts`, () => {
+        const { outcome, log } = runGuard(
+          f,
+          `$responses = [[Submission.new("rs-1", "IN_REVIEW", P, Version.new(V, P))]]`,
+        );
+        assert.equal(outcome, "returned");
+        // "returned" alone also fits the could-not-verify path, so pin the success entry.
+        assert.equal(kinds(log, "important").length, 0);
+        assert.match(kinds(log, "success")[0][1], /review submission rs-1 \(IN_REVIEW\)/);
+      });
+
+      it(`${f.path}: falls back to the submission items when appStoreVersionForReview is empty`, () => {
+        const { outcome, log } = runGuard(
+          f,
+          `$responses = [[Submission.new("rs-9", "WAITING_FOR_REVIEW", P, nil)]]
+$items = { "rs-9" => [Item.new(nil), Item.new(Version.new(V, P))] }`,
+        );
+        assert.equal(outcome, "returned");
+        assert.deepEqual(kinds(log, "items"), [["items", "rs-9", "appStoreVersion"]]);
+        assert.equal(kinds(log, "get").length, 1);
+        assert.equal(kinds(log, "important").length, 0);
+        assert.match(kinds(log, "success")[0][1], /review submission rs-9 \(WAITING_FOR_REVIEW\)/);
+      });
+
+      it(`${f.path}: the item fallback still requires this version on this platform`, () => {
+        const { outcome, log } = runGuard(
+          f,
+          `$responses = [[Submission.new("rs-9", "WAITING_FOR_REVIEW", P, nil)]]
+$items = { "rs-9" => [Item.new(Version.new(V, OTHER_P)), Item.new(Version.new("1.3.0", P))] }`,
+        );
+        assert.equal(outcome, "user_error");
+        assert.match(kinds(log, "user_error")[0][1], /: 1\.4\.0\/1\.3\.0 WAITING_FOR_REVIEW\)/);
+      });
+
+      it(`${f.path}: a stale submission (another version, or UNRESOLVED_ISSUES) does not count`, () => {
+        const { outcome, log } = runGuard(
+          f,
+          `$responses = [[
+  Submission.new("rs-old", "WAITING_FOR_REVIEW", P, Version.new("1.3.0", P)),
+  Submission.new("rs-rej", "UNRESOLVED_ISSUES", P, Version.new(V, P))
+]]`,
+        );
+        assert.equal(outcome, "user_error");
+        assert.equal(kinds(log, "get").length, 4);
+        assert.match(
+          kinds(log, "user_error")[0][1],
+          /: 1\.3\.0 WAITING_FOR_REVIEW, 1\.4\.0 UNRESOLVED_ISSUES\)/,
+        );
+      });
+
+      it(`${f.path}: a submission whose own platform differs does not count`, () => {
+        const { outcome } = runGuard(
+          f,
+          `$responses = [[Submission.new("rs-x", "WAITING_FOR_REVIEW", OTHER_P, Version.new(V, P))]]`,
+        );
+        assert.equal(outcome, "user_error");
+      });
+    }
+  },
+);

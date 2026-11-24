@@ -14,7 +14,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useNetworkStatus } from "@/hooks/use-network-status";
-import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
+import { fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import type { Attachment } from "@/db";
 
@@ -82,7 +82,7 @@ export function AttachmentPicker({ noteId, onAttachmentReady }: AttachmentPicker
   if (uploading) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="small" color={colors.primary[600]} />
+        <ActivityIndicator size="small" color={semantic.accentSubtleText} />
         <Text style={styles.uploadingText}>Saving...</Text>
       </View>
     );
@@ -131,7 +131,7 @@ const createStyles = (semantic: SemanticColors) =>
       paddingVertical: spacing.sm,
       paddingHorizontal: spacing.md,
       borderRadius: radii.md,
-      backgroundColor: colors.primary[50],
+      backgroundColor: semantic.accentSubtleBg,
     },
     buttonIcon: {
       fontSize: fontSizes.base,
@@ -139,7 +139,7 @@ const createStyles = (semantic: SemanticColors) =>
     buttonText: {
       fontSize: fontSizes.base,
       fontWeight: "500",
-      color: colors.primary[600],
+      color: semantic.accentSubtleText,
     },
     uploadingText: {
       fontSize: fontSizes.base,

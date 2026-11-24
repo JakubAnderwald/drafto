@@ -1,9 +1,11 @@
 import React from "react";
-import { Alert } from "react-native";
+import { ActivityIndicator, Alert, StyleSheet } from "react-native";
+import * as SecureStore from "expo-secure-store";
 import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage } from "@drafto/shared";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
+import { semanticDark, semanticLight } from "@/theme/tokens";
 import type { Attachment } from "@/db";
 
 const mockPickImage = jest.fn();
@@ -271,5 +273,73 @@ describe("AttachmentPicker", () => {
       expect(mockShowToast).toHaveBeenCalledWith("File size exceeds 50MB limit", "warning"),
     );
     expect(mockUploadAttachment).not.toHaveBeenCalled();
+  });
+
+  describe("theme", () => {
+    const mockSecureStore = SecureStore as jest.Mocked<typeof SecureStore>;
+
+    afterEach(() => {
+      mockSecureStore.getItemAsync.mockResolvedValue(null);
+    });
+
+    function buttonColors(utils: ReturnType<typeof render>) {
+      return {
+        background: StyleSheet.flatten(utils.getByLabelText("Attach image").props.style)
+          .backgroundColor,
+        text: StyleSheet.flatten(utils.getByText("Image").props.style).color,
+        icon: utils.getByText("image-outline").props.color,
+      };
+    }
+
+    it("tints the buttons with the subtle accent tokens in light mode", async () => {
+      mockSecureStore.getItemAsync.mockResolvedValue("light");
+      const utils = render(<AttachmentPicker noteId="note-1" />);
+
+      // Let the ThemeProvider's SecureStore read resolve and apply the stored
+      // preference (inside act) before asserting, as the dark-mode tests do.
+      await waitFor(() => expect(mockSecureStore.getItemAsync).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await mockSecureStore.getItemAsync.mock.results[0].value;
+      });
+
+      expect(buttonColors(utils)).toEqual({
+        background: semanticLight.accentSubtleBg,
+        text: semanticLight.accentSubtleText,
+        icon: semanticLight.accentSubtleText,
+      });
+    });
+
+    it("uses the dark subtle accent in dark mode, not the light lavender pill", async () => {
+      mockSecureStore.getItemAsync.mockResolvedValue("dark");
+      const utils = render(<AttachmentPicker noteId="note-1" />);
+
+      await waitFor(() =>
+        expect(buttonColors(utils)).toEqual({
+          background: semanticDark.accentSubtleBg,
+          text: semanticDark.accentSubtleText,
+          icon: semanticDark.accentSubtleText,
+        }),
+      );
+      expect(semanticDark.accentSubtleBg).not.toBe(semanticLight.accentSubtleBg);
+    });
+
+    it("colours the saving spinner with the dark subtle accent in dark mode", async () => {
+      mockSecureStore.getItemAsync.mockResolvedValue("dark");
+      const utils = render(
+        <AttachmentPicker noteId="note-1" onAttachmentReady={() => new Promise(() => {})} />,
+      );
+      await waitFor(() =>
+        expect(
+          StyleSheet.flatten(utils.getByLabelText("Attach image").props.style).backgroundColor,
+        ).toBe(semanticDark.accentSubtleBg),
+      );
+
+      fireEvent.press(utils.getByLabelText("Attach image"));
+
+      expect(await utils.findByText("Saving...")).toBeTruthy();
+      expect(utils.UNSAFE_getByType(ActivityIndicator).props.color).toBe(
+        semanticDark.accentSubtleText,
+      );
+    });
   });
 });

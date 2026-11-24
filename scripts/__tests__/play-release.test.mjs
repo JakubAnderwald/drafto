@@ -73,32 +73,28 @@ describe(
       assert.match(out, /Google Play track 'internal' \(503 Service Unavailable\)/);
     });
 
-    it("PrimeTestLab 11035 release: a track with no releases counts as empty (fastlane's nil releases)", () => {
-      // fastlane 2.232's supply calls result.releases.flat_map on a track that
-      // exists but never had a release, and Play sends no releases for it.
+    it("fastlane 2.242: a NoMethodError, nil.flat_map included, stops the lane like any other error", () => {
+      // fastlane 2.242.0 returns [] itself for a track that exists with no
+      // releases (2.232.2 raised `undefined method 'flat_map' for nil` there),
+      // so the lane no longer special-cases that error: every raise is a
+      // TrackUnreadable.
       const out = ruby(`
-      codes = PlayRelease.collect_version_codes do |track|
-        nil.flat_map(&:version_codes) if track == "beta"
-        { "internal" => [87], "alpha" => [82], "production" => [80] }.fetch(track)
+      failures = { "beta" => -> { nil.flat_map(&:version_codes) }, "alpha" => -> { nil.version_codes } }
+      messages = failures.map do |bad, fail|
+        PlayRelease.collect_version_codes { |track| track == bad ? fail.call : [] }
+        "no error"
+      rescue PlayRelease::TrackUnreadable => e
+        e.message
       end
-      puts JSON.generate([codes, PlayRelease.next_version_code(codes)])
+      puts JSON.generate(messages)
     `);
-      assert.deepEqual(out, [{ internal: [87], alpha: [82], beta: [], production: [80] }, 88]);
+      assert.match(out[0], /Google Play track 'beta'/);
+      assert.match(out[1], /Google Play track 'alpha'/);
     });
 
-    it("PrimeTestLab 11035 release: any other NoMethodError still stops the lane", () => {
-      const out = ruby(`
-      begin
-        PlayRelease.collect_version_codes do |track|
-          nil.version_codes if track == "alpha"
-          []
-        end
-        puts JSON.generate("no error")
-      rescue PlayRelease::TrackUnreadable => e
-        puts JSON.generate(e.message)
-      end
-    `);
-      assert.match(out, /Google Play track 'alpha'/);
+    it("PlayRelease no longer carries the fastlane 2.232 release-less-track workaround", () => {
+      const out = ruby(`puts JSON.generate(PlayRelease.respond_to?(:release_less_track?))`);
+      assert.equal(out, false);
     });
 
     it("PrimeTestLab 11035 release: asks every Play track, internal through production", () => {
