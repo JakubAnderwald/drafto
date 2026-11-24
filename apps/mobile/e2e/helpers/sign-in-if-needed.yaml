@@ -36,9 +36,13 @@ appId: eu.drafto.mobile
       # process and hides the app from Maestro, so a fixed wait and a restart
       # clear it; a restart that beats a slow sign-in lands back on Log In, and
       # the next attempt signs in again. Bounded: 3 attempts.
-      # Android doesn't restart, and a failed sign-in leaves its text in the
-      # fields, so each attempt finds them by id (their placeholders are gone
-      # once they hold text) and erases them before it types.
+      # A failed attempt can leave its text in the fields (Android doesn't
+      # restart after signing in), and typing adds to it. eraseText can't empty
+      # them: it deletes backwards from wherever the tap left the cursor. So an
+      # attempt that finds Log In restarts the app first, and the form comes
+      # back empty. On the first attempt that repeats the launch above, which
+      # costs one cold start on a signed-out device only. A restart that lands
+      # on Notebooks (a slow sign-in finished after all) skips the sign-in.
       - retry:
           maxRetries: 2
           commands:
@@ -46,14 +50,21 @@ appId: eu.drafto.mobile
                 when:
                   visible: "Log In"
                 commands:
+                  - stopApp
+                  - launchApp
+                  - extendedWaitUntil:
+                      visible: "Log In|Notebooks"
+                      timeout: 60000
+            - runFlow:
+                when:
+                  visible: "Log In"
+                commands:
                   - tapOn:
                       id: "email-input"
-                  - eraseText
                   - inputText: ${E2E_TEST_EMAIL}
                   - tapOn: "Sign in to your Drafto account"
                   - tapOn:
                       id: "password-input"
-                  - eraseText
                   - inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' && E2E_TEST_PASSWORD !== '' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
                   - tapOn: "Sign in to your Drafto account"
                   - tapOn:

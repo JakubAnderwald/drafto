@@ -191,16 +191,28 @@ describe(HELPER, () => {
     expect(lines[guard + 1]).toMatch(/E2E_TEST_EMAIL !== ''/);
   });
 
-  it("finds each field by id and erases it before typing, so a retry starts from empty fields", () => {
+  it("restarts the app at the start of each attempt, so a retry types into empty fields", () => {
+    // Maestro's eraseText deletes backwards from wherever the tap left the
+    // cursor, so it can't empty a field that a failed attempt filled.
+    expect(indexOf(/^\s*-\s*eraseText\b/)).toBe(-1);
+    const retry = indexOf(/^\s*-\s*retry:\s*$/);
+    const stop = lines.findIndex((line, i) => i > retry && /^\s*-\s*stopApp\s*$/.test(line));
+    const relaunch = lines.findIndex((line, i) => i > stop && LAUNCH.test(line));
+    const email = indexOf(/inputText:\s*\$\{E2E_TEST_EMAIL\}/);
+    expect(stop).toBeGreaterThan(retry);
+    expect(relaunch).toBeGreaterThan(stop);
+    expect(email).toBeGreaterThan(relaunch);
+  });
+
+  it("finds each field by id before typing into it", () => {
     const email = indexOf(/inputText:\s*\$\{E2E_TEST_EMAIL\}/);
     const password = indexOf(/inputText:\s*".*E2E_TEST_PASSWORD/);
     for (const [input, id] of [
       [email, "email-input"],
       [password, "password-input"],
     ] as const) {
-      expect(lines[input - 1]).toMatch(/^\s*-\s*eraseText\s*$/);
-      expect(lines[input - 2]).toMatch(new RegExp(`^\\s*id:\\s*"${id}"\\s*$`));
-      expect(lines[input - 3]).toMatch(/^\s*-\s*tapOn:\s*$/);
+      expect(lines[input - 1]).toMatch(new RegExp(`^\\s*id:\\s*"${id}"\\s*$`));
+      expect(lines[input - 2]).toMatch(/^\s*-\s*tapOn:\s*$/);
     }
   });
 
