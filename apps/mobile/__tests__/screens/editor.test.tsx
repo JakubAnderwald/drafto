@@ -184,6 +184,27 @@ describe("EditorScreen", () => {
     );
   });
 
+  it.each([
+    ["no content", null],
+    ["an empty BlockNote array", "[]"],
+    ["an empty TipTap doc", JSON.stringify({ type: "doc", content: [] })],
+  ])(
+    "PrimeTestLab 11035 E2E hands a note with %s to the editor as one empty paragraph",
+    (_case, content) => {
+      // A doc with no blocks left the editor's selection at 0, where no
+      // command applies: every toolbar button was disabled and iOS could not
+      // focus the body of a new note.
+      mockNoteLoading = false;
+      mockNote = { id: "note-1", title: "Test Note", content, updatedAt: new Date() };
+
+      render(<EditorScreen />);
+
+      const calls = mockUseEditorBridge.mock.calls;
+      const options = calls[calls.length - 1][0] as { initialContent: TipTapDoc };
+      expect(options.initialContent).toEqual({ type: "doc", content: [{ type: "paragraph" }] });
+    },
+  );
+
   it("shows error state when note is not found", () => {
     mockNoteLoading = false;
     mockNoteError = "Note not found";

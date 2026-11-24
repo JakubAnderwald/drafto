@@ -25,6 +25,9 @@ export const EDITOR_TOOLBAR_HEIGHT = 44;
  *   TenTap's white (light) or grey (dark), so the row reads as part of the
  *   window in both themes. Unlike mobile, the WebView keeps its own colours:
  *   the desktop note body is light only (editor-css.ts).
+ * - The icons use the theme's text colours. TenTap's grey icons (white in
+ *   dark mode) had a disabled look of a pale tint at 30% opacity, which read
+ *   as a toolbar switched off (PrimeTestLab 11035 S-02 follow-up).
  */
 export function buildEditorTheme(
   semantic: SemanticColors,
@@ -51,6 +54,7 @@ export function buildEditorTheme(
       toolbarBody: fixedRow,
       toolbarButton: { backgroundColor: semantic.bg },
       iconWrapper: { backgroundColor: semantic.bg },
+      ...toolbarIconStates(semantic),
       linkBarTheme: {
         ...baseToolbar?.linkBarTheme,
         addLinkContainer: fixedRow,
@@ -58,5 +62,25 @@ export function buildEditorTheme(
         placeholderTextColor: semantic.fgSubtle,
       },
     },
+  };
+}
+
+/**
+ * Icon colours for the toolbar's three button states: an available action in
+ * the muted text colour, the active one (bold on at the caret, say) in the
+ * full text colour on the muted surface, and one that can't apply (undo with
+ * nothing to undo) in the subtle text colour. TenTap's own disabled look
+ * stacked a pale tint with 30% opacity, so the opacity is reset: the colour
+ * alone marks a disabled button, and stays legible in both themes.
+ */
+export function toolbarIconStates(
+  semantic: SemanticColors,
+): NonNullable<RecursivePartial<EditorTheme>["toolbar"]> {
+  return {
+    icon: { tintColor: semantic.fgMuted },
+    iconActive: { tintColor: semantic.fg },
+    iconWrapperActive: { backgroundColor: semantic.bgMuted },
+    iconDisabled: { tintColor: semantic.fgSubtle },
+    iconWrapperDisabled: { opacity: 1 },
   };
 }

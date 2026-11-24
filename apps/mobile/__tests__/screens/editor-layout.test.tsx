@@ -166,7 +166,7 @@ describe("EditorScreen layout", () => {
     expect(theme.webview).toEqual({ backgroundColor: semanticLight.bg });
   });
 
-  it("uses the dark surface for the toolbar and keeps TenTap's dark icons", () => {
+  it("PrimeTestLab 11035 E2E uses the dark surface for the toolbar, with icons in the theme's text colour", () => {
     const colorSchemeSpy = jest.spyOn(ReactNative, "useColorScheme").mockReturnValue("dark");
     loadNote();
     render(<EditorScreen />);
@@ -175,7 +175,8 @@ describe("EditorScreen layout", () => {
     expect(theme.toolbar.toolbarBody).toEqual(
       expect.objectContaining({ flex: 0, flexGrow: 0, backgroundColor: semanticDark.bg }),
     );
-    expect(theme.toolbar.icon).toEqual({ tintColor: "white" });
+    // TenTap's white icons are replaced, so they don't glare on the dark row.
+    expect(theme.toolbar.icon).toEqual({ tintColor: semanticDark.fgMuted });
     expect(theme.webview).toEqual({ backgroundColor: semanticDark.bg });
     colorSchemeSpy.mockRestore();
   });

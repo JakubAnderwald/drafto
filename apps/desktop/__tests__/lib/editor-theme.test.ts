@@ -1,4 +1,4 @@
-import { buildEditorTheme, EDITOR_TOOLBAR_HEIGHT } from "@/lib/editor-theme";
+import { buildEditorTheme, EDITOR_TOOLBAR_HEIGHT, toolbarIconStates } from "@/lib/editor-theme";
 import { semanticDark, semanticLight } from "@/theme/tokens";
 
 // Mirrors apps/mobile/__tests__/lib/editor-theme.test.ts, except that desktop
@@ -37,16 +37,37 @@ describe("PrimeTestLab 11035 S-02 buildEditorTheme (desktop)", () => {
     expect(toolbar?.iconWrapper).toEqual({ backgroundColor: semantic.bg });
   });
 
-  it("keeps TenTap's light dark-mode icons, but not its dark WebView", () => {
+  it("keeps TenTap's dark link-bar styling, but not its dark WebView", () => {
     const theme = buildEditorTheme(semanticDark, true);
 
-    expect(theme.toolbar?.icon).toEqual({ tintColor: "white" });
     expect(theme.toolbar?.linkBarTheme?.doneButton).toEqual({ backgroundColor: "#0085FF" });
     expect(theme).not.toHaveProperty("webview");
     expect(theme).not.toHaveProperty("webviewContainer");
   });
 
-  it("leaves TenTap's light icons alone in light mode", () => {
-    expect(buildEditorTheme(semanticLight, false).toolbar?.icon).toBeUndefined();
+  it.each([
+    ["light", semanticLight, false],
+    ["dark", semanticDark, true],
+  ] as const)(
+    "PrimeTestLab 11035 E2E draws the toolbar icons in the theme's text colours in %s mode",
+    (_mode, semantic, isDark) => {
+      const { toolbar } = buildEditorTheme(semantic, isDark);
+
+      // Available, active and disabled each have their own colour; TenTap's
+      // grey (white in dark mode) icons are replaced.
+      expect(toolbar?.icon).toEqual({ tintColor: semantic.fgMuted });
+      expect(toolbar?.iconActive).toEqual({ tintColor: semantic.fg });
+      expect(toolbar?.iconWrapperActive).toEqual({ backgroundColor: semantic.bgMuted });
+      expect(toolbar?.iconDisabled).toEqual({ tintColor: semantic.fgSubtle });
+    },
+  );
+
+  it("PrimeTestLab 11035 E2E drops TenTap's 30% opacity on disabled buttons", () => {
+    // Stacked on a pale tint, it made every button look switched off while
+    // the editor's state said none applied (a new note's empty document).
+    expect(toolbarIconStates(semanticLight).iconWrapperDisabled).toEqual({ opacity: 1 });
+    expect(buildEditorTheme(semanticDark, true).toolbar?.iconWrapperDisabled).toEqual({
+      opacity: 1,
+    });
   });
 });

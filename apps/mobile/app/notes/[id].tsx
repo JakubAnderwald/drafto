@@ -42,6 +42,7 @@ import {
   isNoOpContentSave,
   rememberContentBaseline,
   serializeEditorContent,
+  toEditorDoc,
   serializeLoadedDoc,
   withResolveTimeout,
   withTimeout,
@@ -277,7 +278,10 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     // keyboard. TenTap's own avoidance would also pad the document by the
     // keyboard height, leaving a blank band above the toolbar.
     avoidIosKeyboard: false,
-    initialContent: resolvedContent,
+    // A new note's empty doc goes in as one empty paragraph: with no block at
+    // all the editor had nowhere to put the caret, so every toolbar button
+    // read as disabled and the body could not be focused on iOS.
+    initialContent: toEditorDoc(resolvedContent),
     // A file:// base URL lets the editor show cached attachment images
     // (ADR-0086); see NoteEditor for the WebView's file access.
     webviewBaseURL: editorWebViewBaseUrl(),

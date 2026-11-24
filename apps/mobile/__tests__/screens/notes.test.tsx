@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Animated, FlatList, StyleSheet } from "react-native";
+import { Alert, Animated, FlatList, Keyboard, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as SecureStore from "expo-secure-store";
 
@@ -351,6 +351,88 @@ describe("NotesListScreen", () => {
 
     await waitFor(() => {
       expect(mockDatabaseWrite).toHaveBeenCalled();
+    });
+  });
+
+  describe("✓ saves on the first tap (PrimeTestLab 11035 E2E)", () => {
+    beforeEach(() => {
+      mockNotes.push(
+        { id: "note-1", title: "First Note", updatedAt: new Date() },
+        { id: "note-2", title: "Second Note", updatedAt: new Date() },
+      );
+      mockDatabaseWrite.mockImplementation(async (fn: () => Promise<void>) => {
+        await fn();
+      });
+    });
+
+    it("lets taps on the rename row's buttons through while the keyboard is up", () => {
+      const { UNSAFE_getByType } = render(<NotesListScreen />);
+
+      // "never" (the default) spends the first tap closing the keyboard.
+      expect(UNSAFE_getByType(FlatList).props.keyboardShouldPersistTaps).toBe("handled");
+    });
+
+    it("renames on one tap of the checkmark, then puts the keyboard away", async () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const draft = { title: "Second Note" };
+      const update = jest.fn(async (fn: (record: { title: string }) => void) => fn(draft));
+      mockDatabaseGet.mockReturnValue({ find: jest.fn().mockResolvedValue({ update }) });
+      const utils = render(<NotesListScreen />);
+
+      fireEvent(utils.getByText("Second Note"), "longPress");
+      fireEvent.changeText(utils.getByDisplayValue("Second Note"), "Renamed Note");
+      await act(async () => {
+        fireEvent.press(utils.getByTestId("checkmark"));
+      });
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(draft.title).toBe("Renamed Note");
+      expect(utils.queryByDisplayValue("Renamed Note")).toBeNull();
+      expect(dismiss).toHaveBeenCalled();
+      expect(mockSync).toHaveBeenCalled();
+      dismiss.mockRestore();
+    });
+
+    it("puts the keyboard away when the rename is cancelled", () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const utils = render(<NotesListScreen />);
+
+      fireEvent(utils.getByText("Second Note"), "longPress");
+      fireEvent.press(utils.getByTestId("close"));
+
+      expect(utils.queryByDisplayValue("Second Note")).toBeNull();
+      expect(dismiss).toHaveBeenCalled();
+      dismiss.mockRestore();
+    });
+
+    it("closes the keyboard before opening another note mid-rename", () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const utils = render(<NotesListScreen />);
+
+      fireEvent(utils.getByText("Second Note"), "longPress");
+      fireEvent.press(utils.getByText("First Note"));
+
+      expect(dismiss).toHaveBeenCalled();
+      expect(mockPush).toHaveBeenCalledWith("/notes/note-1");
+      dismiss.mockRestore();
+    });
+
+    it("creates on one tap of the checkmark in the create bar", async () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const create = jest.fn();
+      mockDatabaseGet.mockReturnValue({ create });
+      const utils = render(<NotesListScreen />);
+
+      fireEvent.press(utils.getByTestId("add"));
+      fireEvent.changeText(utils.getByPlaceholderText("Note title (optional)"), "Packing list");
+      await act(async () => {
+        fireEvent.press(utils.getByTestId("checkmark"));
+      });
+
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(utils.queryByPlaceholderText("Note title (optional)")).toBeNull();
+      expect(dismiss).toHaveBeenCalled();
+      dismiss.mockRestore();
     });
   });
 

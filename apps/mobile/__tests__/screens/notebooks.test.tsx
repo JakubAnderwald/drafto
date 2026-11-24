@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, FlatList, StyleSheet } from "react-native";
+import { Alert, FlatList, Keyboard, StyleSheet } from "react-native";
 import { BottomTabBarHeightContext } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Q } from "@nozbe/watermelondb";
@@ -548,6 +548,108 @@ describe("NotebooksScreen", () => {
       expect(utils.queryByTestId("notebook-name-error")).toBeNull();
       expect(update).toHaveBeenCalledTimes(1);
       expect(draft.name).toBe("PROJECT IDEAS");
+    });
+  });
+
+  describe("✓ saves on the first tap (PrimeTestLab 11035 E2E)", () => {
+    beforeEach(() => {
+      mockNotebooks.push(
+        { id: "nb-1", name: "Project Ideas", updatedAt: new Date() },
+        { id: "nb-2", name: "Recipes", updatedAt: new Date() },
+      );
+      mockDatabaseWrite.mockImplementation(async (fn: () => Promise<void>) => {
+        await fn();
+      });
+    });
+
+    it("lets taps on the rename row's buttons through while the keyboard is up", () => {
+      const { UNSAFE_getByType } = render(<NotebooksScreen />);
+
+      // "never" (the default) spends the first tap closing the keyboard.
+      expect(UNSAFE_getByType(FlatList).props.keyboardShouldPersistTaps).toBe("handled");
+    });
+
+    it("renames on one tap of the checkmark, then puts the keyboard away", async () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const draft = { name: "Recipes" };
+      const update = jest.fn(async (fn: (record: { name: string }) => void) => fn(draft));
+      mockDatabaseGet.mockReturnValue({ find: jest.fn().mockResolvedValue({ update }) });
+      const utils = render(<NotebooksScreen />);
+
+      fireEvent(utils.getByText("Recipes"), "longPress");
+      fireEvent.changeText(utils.getByDisplayValue("Recipes"), "Cooking");
+      await act(async () => {
+        fireEvent.press(utils.getByTestId("checkmark"));
+      });
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(draft.name).toBe("Cooking");
+      expect(utils.queryByDisplayValue("Cooking")).toBeNull();
+      expect(dismiss).toHaveBeenCalled();
+      expect(mockSync).toHaveBeenCalled();
+      dismiss.mockRestore();
+    });
+
+    it("keeps the field and the keyboard up when the checkmark meets a taken name", async () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const find = jest.fn();
+      mockDatabaseGet.mockReturnValue({ find });
+      const utils = render(<NotebooksScreen />);
+
+      fireEvent(utils.getByText("Recipes"), "longPress");
+      fireEvent.changeText(utils.getByDisplayValue("Recipes"), "Project Ideas");
+      await act(async () => {
+        fireEvent.press(utils.getByTestId("checkmark"));
+      });
+
+      expect(utils.getByTestId("notebook-name-error")).toBeTruthy();
+      expect(utils.getByDisplayValue("Project Ideas")).toBeTruthy();
+      expect(find).not.toHaveBeenCalled();
+      expect(dismiss).not.toHaveBeenCalled();
+      dismiss.mockRestore();
+    });
+
+    it("puts the keyboard away when the rename is cancelled", () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const utils = render(<NotebooksScreen />);
+
+      fireEvent(utils.getByText("Recipes"), "longPress");
+      fireEvent.press(utils.getByTestId("close"));
+
+      expect(utils.queryByDisplayValue("Recipes")).toBeNull();
+      expect(utils.getByText("Recipes")).toBeTruthy();
+      expect(dismiss).toHaveBeenCalled();
+      dismiss.mockRestore();
+    });
+
+    it("closes the keyboard before opening another notebook mid-rename", () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const utils = render(<NotebooksScreen />);
+
+      fireEvent(utils.getByText("Recipes"), "longPress");
+      fireEvent.press(utils.getByText("Project Ideas"));
+
+      expect(dismiss).toHaveBeenCalled();
+      expect(mockPush).toHaveBeenCalledWith("/notebooks/nb-1");
+      dismiss.mockRestore();
+    });
+
+    it("creates on one tap of the checkmark in the create bar", async () => {
+      const dismiss = jest.spyOn(Keyboard, "dismiss");
+      const create = jest.fn();
+      mockDatabaseGet.mockReturnValue({ create });
+      const utils = render(<NotebooksScreen />);
+
+      fireEvent.press(utils.getByTestId("add"));
+      fireEvent.changeText(utils.getByTestId("notebook-name-input"), "Travel");
+      await act(async () => {
+        fireEvent.press(utils.getByTestId("checkmark"));
+      });
+
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(utils.queryByTestId("notebook-name-input")).toBeNull();
+      expect(dismiss).toHaveBeenCalled();
+      dismiss.mockRestore();
     });
   });
 

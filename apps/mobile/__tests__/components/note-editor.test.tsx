@@ -4,6 +4,7 @@ import type { EditorBridge } from "@10play/tentap-editor";
 
 import { render } from "../helpers/test-utils";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { NOTE_HEADING_ITEMS, NOTE_TOOLBAR_ITEMS } from "@/components/editor/toolbar-items";
 
 const mockRichTextProps = jest.fn();
 const mockToolbarProps = jest.fn();
@@ -19,6 +20,7 @@ jest.mock("@10play/tentap-editor", () => {
       return <MockText>toolbar</MockText>;
     },
     DEFAULT_TOOLBAR_ITEMS: [],
+    HEADING_ITEMS: [],
   };
 });
 
@@ -63,6 +65,16 @@ describe("NoteEditor", () => {
     // or the editor is blurred; false shows it always.
     expect(props.hidden).toBe(false);
     expect(props.editor).toBe(editor);
+  });
+
+  it("PrimeTestLab 11035 E2E gives the toolbar buttons that focus a blurred editor first", () => {
+    render(<NoteEditor editor={editor} />);
+
+    // With the keyboard down a press must bring it up (Android left the
+    // WebView unfocused); toolbar-items.test.ts covers the items themselves.
+    const props = mockToolbarProps.mock.calls[mockToolbarProps.mock.calls.length - 1][0];
+    expect(props.items).toBe(NOTE_TOOLBAR_ITEMS);
+    expect(props.headingItems).toBe(NOTE_HEADING_ITEMS);
   });
 
   it("renders without an accessory", () => {

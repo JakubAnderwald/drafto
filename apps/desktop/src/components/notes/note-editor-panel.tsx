@@ -19,6 +19,7 @@ import {
   rememberContentBaseline,
   serializeEditorContent,
   serializeLoadedDoc,
+  toEditorDoc,
   withResolveTimeout,
   withTimeout,
 } from "@drafto/shared";
@@ -439,7 +440,9 @@ export function NoteEditorPanel({ noteId, findSignal }: NoteEditorPanelProps) {
             withResolveTimeout(resolveAttachmentSrc, RESOLVE_TIMEOUT_MS),
           );
           if (cancelled || noteIdRef.current !== targetNoteId) return;
-          editorRef.current?.setContent(resolved);
+          // A doc with no blocks (a stored `{"type":"doc","content":[]}`) goes
+          // in as one empty paragraph, which is what the editor can hold.
+          editorRef.current?.setContent(toEditorDoc(resolved));
           refreshImageStatusRef.current();
           await seedBaselineAndMarkLoaded();
         } catch (err) {

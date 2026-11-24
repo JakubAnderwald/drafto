@@ -1,4 +1,4 @@
-import { buildEditorTheme, EDITOR_TOOLBAR_HEIGHT } from "@/lib/editor-theme";
+import { buildEditorTheme, EDITOR_TOOLBAR_HEIGHT, toolbarIconStates } from "@/lib/editor-theme";
 import { semanticDark, semanticLight } from "@/theme/tokens";
 
 jest.mock("@10play/tentap-editor", () => ({
@@ -59,16 +59,35 @@ describe("buildEditorTheme", () => {
     expect(theme.webview).toEqual({ backgroundColor: semantic.bg });
   });
 
-  it("keeps TenTap's dark icon and link-bar styling in dark mode", () => {
+  it("keeps TenTap's dark link-bar styling in dark mode", () => {
     const { toolbar } = buildEditorTheme(semanticDark, true);
 
-    expect(toolbar?.icon).toEqual({ tintColor: "white" });
     expect(toolbar?.linkBarTheme?.doneButton).toEqual({ backgroundColor: "#0085FF" });
   });
 
-  it("leaves TenTap's light icons alone in light mode", () => {
-    const { toolbar } = buildEditorTheme(semanticLight, false);
+  it.each([
+    ["light", semanticLight, false],
+    ["dark", semanticDark, true],
+  ] as const)(
+    "PrimeTestLab 11035 E2E draws the toolbar icons in the theme's text colours in %s mode",
+    (_mode, semantic, isDark) => {
+      const { toolbar } = buildEditorTheme(semantic, isDark);
 
-    expect(toolbar?.icon).toBeUndefined();
+      // Available, active and disabled each have their own colour; TenTap's
+      // grey (white in dark mode) icons are replaced.
+      expect(toolbar?.icon).toEqual({ tintColor: semantic.fgMuted });
+      expect(toolbar?.iconActive).toEqual({ tintColor: semantic.fg });
+      expect(toolbar?.iconWrapperActive).toEqual({ backgroundColor: semantic.bgMuted });
+      expect(toolbar?.iconDisabled).toEqual({ tintColor: semantic.fgSubtle });
+    },
+  );
+
+  it("PrimeTestLab 11035 E2E drops TenTap's 30% opacity on disabled buttons", () => {
+    // Stacked on a pale tint, it made every button look switched off while
+    // the editor's state said none applied (a new note's empty document).
+    expect(toolbarIconStates(semanticLight).iconWrapperDisabled).toEqual({ opacity: 1 });
+    expect(buildEditorTheme(semanticDark, true).toolbar?.iconWrapperDisabled).toEqual({
+      opacity: 1,
+    });
   });
 });

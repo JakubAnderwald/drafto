@@ -527,6 +527,20 @@ function isBlockNoteArray(value: unknown): value is BlockNoteBlock[] {
 const EMPTY_DOC: TipTapDoc = { type: "doc", content: [] };
 
 /**
+ * `doc` as the native editors hand it to TenTap: a document with no blocks
+ * gets one empty paragraph. ProseMirror's schema needs at least one block, but
+ * TipTap loads JSON without checking it, so an empty `content` array became a
+ * document of size 0 with its selection at 0, where no command applies. Every
+ * toolbar button then read as disabled and did nothing, and iOS could not
+ * place a caret in the body of a new note (PrimeTestLab 11035 follow-up).
+ * Content with blocks is returned as is.
+ */
+export function toEditorDoc(doc: TipTapDoc): TipTapDoc {
+  if (doc.content && doc.content.length > 0) return doc;
+  return { type: "doc", content: [{ type: "paragraph" }] };
+}
+
+/**
  * Convert any stored content to TipTap format for the mobile editor.
  * - TipTap doc → passthrough
  * - BlockNote array → convert

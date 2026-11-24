@@ -394,6 +394,20 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
     expect(writes(empty)).toBe(0);
   });
 
+  it("PrimeTestLab 11035 E2E sets an empty TipTap doc as one empty paragraph", async () => {
+    // A doc with no blocks left the editor's selection at 0, where no toolbar
+    // command applies, so every button read as disabled.
+    createRecord("tiptap", "TipTap", JSON.stringify({ type: "doc", content: [] }));
+
+    renderPanel("tiptap");
+    await flushAsync();
+
+    expect(web.bridge.setContent).toHaveBeenCalledWith({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+  });
+
   it("still saves a genuine edit after the debounce, with the edited content", async () => {
     const note = createRecord("a", "Welcome", webAuthoredContent("Hello"));
     renderPanel("a");

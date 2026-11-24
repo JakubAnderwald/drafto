@@ -180,6 +180,24 @@ appId: eu.drafto.mobile
 - assertVisible: "Italic"
 - takeScreenshot: editor-toolbar-keyboard-closed
 
+# --- Test: a toolbar button on a new, empty note (PrimeTestLab 11035 E2E) ---
+# The keyboard is still closed. Bold must turn enabled once the editor has
+# loaded (an empty note used to keep every button disabled), then focus the
+# body and bring up the keyboard, so the text lands in the body: "Saved" shows
+# and the title keeps its text (Android once left the WebView unfocused, and
+# the text went to the title field).
+- extendedWaitUntil:
+    visible:
+      text: "Bold"
+      enabled: true
+    timeout: 15000
+- tapOn: "Bold"
+- inputText: "Bold ${RUN_ID}"
+- extendedWaitUntil:
+    visible: "Saved"
+    timeout: 10000
+- assertVisible: "Note ${RUN_ID}"
+
 # --- Editor with the keyboard up (check the screenshot: body gutter, toolbar and
 # attachment row above the keyboard, nothing under the gesture bar) ---
 - tapOn:

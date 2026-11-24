@@ -110,6 +110,7 @@ export {
   tiptapToBlocknote,
   contentToTiptap,
   contentToBlocknote,
+  toEditorDoc,
 } from "./editor/format-converter";
 export { extractTextFromContent } from "./editor/extract-text";
 export { normalizeBlocks } from "./editor/normalize-blocks";

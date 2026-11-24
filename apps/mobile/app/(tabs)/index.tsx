@@ -6,6 +6,7 @@ import {
   Pressable,
   TextInput,
   Alert,
+  Keyboard,
   RefreshControl,
   StyleSheet,
 } from "react-native";
@@ -89,6 +90,7 @@ export default function NotebooksScreen() {
         });
       });
       haptics.success();
+      Keyboard.dismiss();
       setNewName("");
       setCreating(false);
       sync();
@@ -118,6 +120,8 @@ export default function NotebooksScreen() {
           record.name = trimmed;
         });
       });
+      // The list keeps taps while the keyboard is up, so the keyboard is put away here.
+      Keyboard.dismiss();
       setEditingId(null);
       setEditName("");
       sync();
@@ -257,6 +261,7 @@ export default function NotebooksScreen() {
             <Pressable
               testID="close"
               onPress={() => {
+                Keyboard.dismiss();
                 setEditingId(null);
                 setEditName("");
                 setRenameError(null);
@@ -293,7 +298,11 @@ export default function NotebooksScreen() {
             notebookId={item.id}
             name={item.name}
             accessibility={accessibility}
-            onPress={() => router.push(`/notebooks/${item.id}`)}
+            onPress={() => {
+              // A rename may still have the keyboard up; it shouldn't follow into the notebook.
+              Keyboard.dismiss();
+              router.push(`/notebooks/${item.id}`);
+            }}
             onLongPress={() => startEditing(item)}
           />
         )}
@@ -351,6 +360,10 @@ export default function NotebooksScreen() {
           data={notebooks}
           keyExtractor={(item) => item.id}
           renderItem={renderNotebook}
+          // The rename row's ✓ and ✗ sit inside the list. Without this the first tap
+          // on them only closes the keyboard and a second one saves (PrimeTestLab
+          // 11035). A tap on empty space still closes the keyboard.
+          keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             swipeHint.visible && notebooks.length > 0 ? (
               <SwipeHint text={SWIPE_HINT_TEXT.notebooks} onDismiss={swipeHint.dismiss} />

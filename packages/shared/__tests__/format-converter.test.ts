@@ -5,6 +5,7 @@ import {
   contentToTiptap,
   contentToBlocknote,
   markdownToBlockNote,
+  toEditorDoc,
 } from "../src";
 import type { BlockNoteBlock, TipTapDoc, TipTapNode } from "../src";
 
@@ -1772,5 +1773,35 @@ describe("nested blocks", () => {
         block("bulletListItem", "text", [block("bulletListItem", "child")]),
       ]);
     });
+  });
+});
+
+describe("PrimeTestLab 11035 E2E toEditorDoc", () => {
+  it("gives a doc with no blocks one empty paragraph, which the editor can put a caret in", () => {
+    expect(toEditorDoc({ type: "doc", content: [] })).toEqual({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+  });
+
+  it("fills a doc whose content is missing altogether", () => {
+    // What getJSON returns for an empty document.
+    expect(toEditorDoc({ type: "doc" } as TipTapDoc)).toEqual({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+  });
+
+  it("returns a doc with blocks as is", () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "Hi" }] }],
+    };
+    expect(toEditorDoc(doc)).toBe(doc);
+  });
+
+  it("fills the empty docs contentToTiptap makes of a new note's content", () => {
+    expect(toEditorDoc(contentToTiptap(null))).toEqual(toEditorDoc(contentToTiptap([])));
+    expect(toEditorDoc(contentToTiptap([])).content).toHaveLength(1);
   });
 });
