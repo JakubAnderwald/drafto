@@ -958,11 +958,14 @@ puts JSON.generate(outcome: outcome, log: $log)
       });
 
       it(`${f.path}: an IN_REVIEW submission for this version counts`, () => {
-        const { outcome } = runGuard(
+        const { outcome, log } = runGuard(
           f,
           `$responses = [[Submission.new("rs-1", "IN_REVIEW", P, Version.new(V, P))]]`,
         );
         assert.equal(outcome, "returned");
+        // "returned" alone also fits the could-not-verify path, so pin the success entry.
+        assert.equal(kinds(log, "important").length, 0);
+        assert.match(kinds(log, "success")[0][1], /review submission rs-1 \(IN_REVIEW\)/);
       });
 
       it(`${f.path}: falls back to the submission items when appStoreVersionForReview is empty`, () => {
@@ -974,6 +977,8 @@ $items = { "rs-9" => [Item.new(nil), Item.new(Version.new(V, P))] }`,
         assert.equal(outcome, "returned");
         assert.deepEqual(kinds(log, "items"), [["items", "rs-9", "appStoreVersion"]]);
         assert.equal(kinds(log, "get").length, 1);
+        assert.equal(kinds(log, "important").length, 0);
+        assert.match(kinds(log, "success")[0][1], /review submission rs-9 \(WAITING_FOR_REVIEW\)/);
       });
 
       it(`${f.path}: the item fallback still requires this version on this platform`, () => {
