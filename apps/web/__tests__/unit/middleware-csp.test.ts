@@ -10,12 +10,12 @@ vi.mock("@/env", () => ({
   },
 }));
 
-const mockGetUser = vi.fn();
+const mockGetClaims = vi.fn();
 const mockFrom = vi.fn();
 
 vi.mock("@supabase/ssr", () => ({
   createServerClient: () => ({
-    auth: { getUser: mockGetUser },
+    auth: { getClaims: mockGetClaims },
     from: mockFrom,
   }),
 }));
@@ -36,8 +36,12 @@ function request(
 }
 
 function signIn(isApproved: boolean): void {
-  mockGetUser.mockResolvedValue({
-    data: { user: { id: "user-1", email: "test@test.com" } },
+  mockGetClaims.mockResolvedValue({
+    data: {
+      claims: { sub: "user-1", email: "test@test.com" },
+      header: {},
+      signature: new Uint8Array(),
+    },
     error: null,
   });
   mockFrom.mockReturnValue({
@@ -50,7 +54,7 @@ function signIn(isApproved: boolean): void {
 }
 
 function signOut(): void {
-  mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+  mockGetClaims.mockResolvedValue({ data: null, error: null });
 }
 
 /** The nonce in a policy's `script-src`. */
@@ -186,7 +190,7 @@ describe("middleware CSP", () => {
       expect(response.headers.get("content-security-policy")).toBeNull();
       expect(response.headers.get("x-middleware-request-content-security-policy")).toBeNull();
       expect(response.headers.get("x-middleware-request-x-nonce")).toBeNull();
-      expect(mockGetUser).not.toHaveBeenCalled();
+      expect(mockGetClaims).not.toHaveBeenCalled();
     },
   );
 });
