@@ -83,17 +83,24 @@ type ReadFlow = (name: string) => string | null;
 function authSetup(source: string, readSibling: ReadFlow, seen = new Set<string>()): string | null {
   const lines = commandLines(source);
   const launch = firstIndex(lines, LAUNCH);
-  const before = (index: number) => index !== -1 && (launch === -1 || index < launch);
+  const firstUse = firstIndex(lines, USES_SESSION);
+  const aheadOfUse = (index: number) => firstUse === -1 || index < firstUse;
+  // Setup counts only ahead of both the first launch and the first step that
+  // needs a session: a flow without a launchApp can still wait for Notebooks.
+  const before = (index: number) =>
+    index !== -1 && (launch === -1 || index < launch) && aheadOfUse(index);
 
   if (before(firstIndex(lines, RUNS_HELPER))) return "runs the sign-in helper first";
-  if (before(firstIndex(lines, CLEAR_STATE)) || launchClearsState(lines, launch)) {
+  if (
+    before(firstIndex(lines, CLEAR_STATE)) ||
+    (launchClearsState(lines, launch) && aheadOfUse(launch))
+  ) {
     return "starts clean (clearState)";
   }
 
   // Its own sign-in: after the launch, before the first step that needs a session.
   const branch = signInBranchIndex(lines);
-  const firstUse = firstIndex(lines, USES_SESSION);
-  if (launch !== -1 && branch > launch && (firstUse === -1 || branch < firstUse)) {
+  if (launch !== -1 && branch > launch && aheadOfUse(branch)) {
     return "signs in on Log In itself";
   }
 
@@ -184,6 +191,19 @@ describe(HELPER, () => {
     expect(lines[guard + 1]).toMatch(/E2E_TEST_EMAIL !== ''/);
   });
 
+  it("finds each field by id and erases it before typing, so a retry starts from empty fields", () => {
+    const email = indexOf(/inputText:\s*\$\{E2E_TEST_EMAIL\}/);
+    const password = indexOf(/inputText:\s*".*E2E_TEST_PASSWORD/);
+    for (const [input, id] of [
+      [email, "email-input"],
+      [password, "password-input"],
+    ] as const) {
+      expect(lines[input - 1]).toMatch(/^\s*-\s*eraseText\s*$/);
+      expect(lines[input - 2]).toMatch(new RegExp(`^\\s*id:\\s*"${id}"\\s*$`));
+      expect(lines[input - 3]).toMatch(/^\s*-\s*tapOn:\s*$/);
+    }
+  });
+
   it("takes the password from -e or from MAESTRO_E2E_TEST_PASSWORD", () => {
     expect(source).toContain(
       "${typeof E2E_TEST_PASSWORD !== 'undefined' && E2E_TEST_PASSWORD !== '' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}",
@@ -256,6 +276,17 @@ describe("authSetup", () => {
     expect(authSetup(`---\n- runFlow:\n    file: ../${HELPER} # signs in`, noSiblings)).toBe(
       "runs the sign-in helper first",
     );
+  });
+
+  it("rejects setup that comes only after the app is used, in a flow without a launchApp", () => {
+    const waitThen = (setup: string) =>
+      ["---", "- extendedWaitUntil:", "    visible:", '      id: "search-button"', setup].join(
+        "\n",
+      );
+    expect(authSetup(waitThen(`- runFlow: ../${HELPER}`), noSiblings)).toBeNull();
+    expect(authSetup(waitThen("- clearState"), noSiblings)).toBeNull();
+    const cleanSibling: ReadFlow = () => "---\n- clearState\n- launchApp";
+    expect(authSetup(waitThen("- runFlow: a.yaml"), cleanSibling)).toBeNull();
   });
 
   it("rejects a helper that runs only after a bare launch", () => {

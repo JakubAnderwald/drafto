@@ -36,6 +36,9 @@ appId: eu.drafto.mobile
       # process and hides the app from Maestro, so a fixed wait and a restart
       # clear it; a restart that beats a slow sign-in lands back on Log In, and
       # the next attempt signs in again. Bounded: 3 attempts.
+      # Android doesn't restart, and a failed sign-in leaves its text in the
+      # fields, so each attempt finds them by id (their placeholders are gone
+      # once they hold text) and erases them before it types.
       - retry:
           maxRetries: 2
           commands:
@@ -43,10 +46,14 @@ appId: eu.drafto.mobile
                 when:
                   visible: "Log In"
                 commands:
-                  - tapOn: "you@example.com"
+                  - tapOn:
+                      id: "email-input"
+                  - eraseText
                   - inputText: ${E2E_TEST_EMAIL}
                   - tapOn: "Sign in to your Drafto account"
-                  - tapOn: "Your password"
+                  - tapOn:
+                      id: "password-input"
+                  - eraseText
                   - inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' && E2E_TEST_PASSWORD !== '' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
                   - tapOn: "Sign in to your Drafto account"
                   - tapOn:
