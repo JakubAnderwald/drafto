@@ -1,6 +1,6 @@
 # Design System
 
-**Status:** shipped **Updated:** 2026-11-18
+**Status:** shipped **Updated:** 2026-11-24
 
 ## What it is
 
@@ -8,7 +8,7 @@ Drafto's shared visual language — a token layer (colors, shadows, radii, trans
 
 ## Current state
 
-- **Platform coverage:** web (authoritative token source), mobile (mirrored tokens), desktop (reuses mobile tokens verbatim).
+- **Platform coverage:** one token source in `@drafto/shared` (`packages/shared/src/design-tokens.ts`); web mirrors it as CSS variables, mobile and desktop import it directly.
 - **Token layer:** semantic surface tokens (`--bg`, `--fg`, `--border`, etc.), scale tokens for five palettes (primary indigo, secondary amber, tertiary teal, neutral warm stone, plus status colors), shadow/radius/transition scales, and surface-architecture tokens for layered surfaces and glass effects.
 - **Primitives:** twelve components under `apps/web/src/components/ui/` — badge, button, card, confirm-dialog, dropdown-menu, icon-button, input, label, password-input, progress-bar, skeleton, theme-toggle.
 - **Dark mode:** `.dark` class on `<html>` overrides every semantic token. Preference cycles light → dark → system via `ThemeToggle`, persisted in `localStorage` under `"theme"`, with a pre-hydration inline script in `app/layout.tsx` to prevent a flash of wrong theme. The browser chrome follows the in-app theme, not the OS ([#865](https://github.com/JakubAnderwald/drafto/issues/865)): `color-scheme` is set on `:root` and `.dark` in `globals.css`, and `<meta name="theme-color">` (the `--bg` value) is created by that script and kept in step by `use-theme.ts`, both through `src/lib/theme/theme-chrome.ts`. The layout doesn't render that meta: React 19 hoists `<meta>` and, once the script had changed it, would add a second one at hydration. Tailwind's `dark:` variant follows the same `.dark` class, not the OS ([#901](https://github.com/JakubAnderwald/drafto/issues/901)): `globals.css` declares it with `@custom-variant dark (&:where(.dark, .dark *))`. So `dark:` is safe to use, and it never adds specificity. Reach for it only for what a semantic token doesn't switch on its own: a scale colour like `text-primary-600`, or artwork with a light and a dark variant (`.theme-light-only` / `.theme-dark-only`).
@@ -16,18 +16,20 @@ Drafto's shared visual language — a token layer (colors, shadows, radii, trans
 
 ## Code paths
 
-| Concern                          | Path                                          |
-| -------------------------------- | --------------------------------------------- |
-| Web token source (CSS variables) | `apps/web/src/app/globals.css`                |
-| Web UI primitives                | `apps/web/src/components/ui/`                 |
-| Showcase page                    | `apps/web/src/app/design-system/page.tsx`     |
-| Showcase layout                  | `apps/web/src/app/design-system/layout.tsx`   |
-| Theme hook (web)                 | `apps/web/src/hooks/use-theme.ts`             |
-| Theme toggle component           | `apps/web/src/components/ui/theme-toggle.tsx` |
-| Pre-hydration theme script       | `apps/web/src/app/layout.tsx`                 |
-| Mobile token mirror              | `apps/mobile/src/theme/tokens.ts`             |
-| Desktop token mirror (identical) | `apps/desktop/src/theme/tokens.ts`            |
-| Mobile UI primitives             | `apps/mobile/src/components/ui/`              |
+| Concern                          | Path                                                    |
+| -------------------------------- | ------------------------------------------------------- |
+| Web token mirror (CSS variables) | `apps/web/src/app/globals.css`                          |
+| Web UI primitives                | `apps/web/src/components/ui/`                           |
+| Showcase page                    | `apps/web/src/app/design-system/page.tsx`               |
+| Showcase layout                  | `apps/web/src/app/design-system/layout.tsx`             |
+| Theme hook (web)                 | `apps/web/src/hooks/use-theme.ts`                       |
+| Theme toggle component           | `apps/web/src/components/ui/theme-toggle.tsx`           |
+| Pre-hydration theme script       | `apps/web/src/app/layout.tsx`                           |
+| Shared token source (TS)         | `packages/shared/src/design-tokens.ts`                  |
+| Token drift test (TS vs CSS)     | `packages/shared/__tests__/design-tokens-drift.test.ts` |
+| Mobile token re-export           | `apps/mobile/src/theme/tokens.ts`                       |
+| Desktop token re-export          | `apps/desktop/src/theme/tokens.ts`                      |
+| Mobile UI primitives             | `apps/mobile/src/components/ui/`                        |
 
 ## Related ADRs
 
@@ -37,11 +39,13 @@ Drafto's shared visual language — a token layer (colors, shadows, radii, trans
 
 ## Cross-platform notes
 
-The web CSS variables in `globals.css` are the source of truth. `apps/mobile/src/theme/tokens.ts` mirrors those values as a plain TypeScript object (React Native has no CSS custom properties, so the map is hand-maintained). `apps/desktop/src/theme/tokens.ts` is byte-for-byte identical to the mobile file — the desktop app imports the same shape and does not maintain its own tokens. When palette values change on web, the mobile and desktop files must be updated in the same PR.
+The token values live once, in `packages/shared/src/design-tokens.ts` (`colors`, `semanticLight`, `semanticDark` and the `SemanticColors` type). React Native has no CSS custom properties, so mobile and desktop import that module through `@drafto/shared`; `apps/{mobile,desktop}/src/theme/tokens.ts` only re-export it, so existing `@/theme/tokens` imports keep working. Web mirrors the same values as CSS variables in `globals.css`. `packages/shared/__tests__/design-tokens-drift.test.ts` compares the two from a hand-kept list of `[css variable, TS value]` pairs for `:root` and `.dark`, so a new semantic token needs a row in both lists, or the test won't check it.
 
 Mobile has its own small primitive set in `apps/mobile/src/components/ui/` (badge, button, card, empty-state, fab, input, skeleton). The `Fab` (floating "+" button) lifts itself above the bottom system inset on screens with no bottom tab bar, such as the notebook screen: the app is edge-to-edge, so otherwise the Android navigation bar or iOS home indicator covers the button (PrimeTestLab report 10668, M-01). It tells the two cases apart by `BottomTabBarHeightContext` from `@react-navigation/bottom-tabs`, which only the tab navigator provides; on a tab screen the tab bar already takes that inset. Pad a list under a FAB with `useFabLayout(fabVisible).listPaddingBottom`, from the same hook the `Fab` uses, so its last row scrolls clear of the button; pass `false` while the screen hides the FAB (e.g. with its create bar open) to drop back to the resting padding.
 
-Semantic surface tokens (`--bg`, `--fg`, …) react to the `.dark` class on web; on mobile and desktop the consuming theme provider picks the correct variant from the mirror. Shadow/radius/transition tokens are web-only — mobile and desktop use platform-idiomatic values.
+Semantic surface tokens (`--bg`, `--fg`, …) react to the `.dark` class on web; on mobile and desktop the theme provider hands components `semantic` (`semanticLight` or `semanticDark`). Shadow/radius/transition tokens are web-only — mobile and desktop use platform-idiomatic values.
+
+**Subtle accent.** `--accent-subtle-bg` / `--accent-subtle-text` (Tailwind `bg-accent-subtle-bg text-accent-subtle-text`; React Native `semantic.accentSubtleBg` / `semantic.accentSubtleText`) colour a tinted secondary action, such as the note editor's "Image" / "File" attachment buttons on mobile and desktop. Light mode is the lavender `primary-50` fill with `primary-600` text. Dark mode is the deep purple and lavender text of the sidebar selection. A scale colour like `colors.primary[50]` doesn't switch with the theme, so on mobile and desktop it stays a light pill in dark mode. Use these tokens for that kind of fill instead.
 
 ## Modifying safely
 
@@ -50,7 +54,7 @@ Semantic surface tokens (`--bg`, `--fg`, …) react to the `.dark` class on web;
 - **Use system shadows, radii, and transitions** (`shadow-sm`, `rounded-lg`, `transition-fast`) — never hardcoded box-shadows or pixel radii.
 - **Check `apps/web/src/components/ui/` before building** a new button, input, card, badge, dialog, dropdown, or skeleton — a primitive likely already exists.
 - **Showcase-page rule:** when you add a new token to `globals.css` or a new primitive to `components/ui/`, you must add a corresponding example (all variants) to `apps/web/src/app/design-system/page.tsx`. This keeps the live reference in sync with the codebase.
-- **Cross-platform rule:** if you change a palette value or add a semantic token that mobile/desktop consume, update `apps/mobile/src/theme/tokens.ts` and `apps/desktop/src/theme/tokens.ts` in the same PR.
+- **Cross-platform rule:** change a palette value or add a semantic token in `packages/shared/src/design-tokens.ts` (`semanticLight`, `semanticDark` and the `SemanticColors` type), mirror it in `globals.css` (light block, `.dark` block and the `@theme` mapping), and add it to both lists in `packages/shared/__tests__/design-tokens-drift.test.ts`, all in the same PR. Mobile and desktop pick it up through `@drafto/shared`; their `theme/tokens.ts` files are re-exports and need no edit.
 
 ## Long-form documents
 

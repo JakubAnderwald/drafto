@@ -26,6 +26,8 @@
   --sidebar-hover: #f4e9e0;
   --sidebar-active: #e8e0ff;
   --sidebar-active-text: #3525cd;
+  --accent-subtle-bg: #ede8ff;
+  --accent-subtle-text: #3525cd;
   --fg-on-primary: #ffffff;
   --error-bg: #fceeee;
   --error-text: #ba1a1a;
@@ -70,6 +72,8 @@
   --sidebar-hover: #2e2822;
   --sidebar-active: #2a2250;
   --sidebar-active-text: #a5b4fc;
+  --accent-subtle-bg: #2a2250;
+  --accent-subtle-text: #a5b4fc;
   --fg-on-primary: #ffffff;
   --error-bg: #2d1414;
   --error-text: #ffb4ab;
@@ -172,6 +176,8 @@
   --color-sidebar-hover: var(--sidebar-hover);
   --color-sidebar-active: var(--sidebar-active);
   --color-sidebar-active-text: var(--sidebar-active-text);
+  --color-accent-subtle-bg: var(--accent-subtle-bg);
+  --color-accent-subtle-text: var(--accent-subtle-text);
 
   /* Shadows (warm-tinted, large blur, zero spread) */
   --shadow-xs: 0 1px 3px 0 rgba(31, 27, 23, 0.06);

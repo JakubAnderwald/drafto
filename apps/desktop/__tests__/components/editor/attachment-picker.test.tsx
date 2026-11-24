@@ -1,9 +1,10 @@
-import { Alert } from "react-native";
+import { ActivityIndicator, Alert, StyleSheet } from "react-native";
 import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage } from "@drafto/shared";
 
 import { render, fireEvent, waitFor } from "../../helpers/test-utils";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { STORAGE_FULL_ALERT_TITLE } from "@/lib/storage-full-alert";
+import { semanticDark, semanticLight } from "@/theme/tokens";
 
 const mockPickImage = jest.fn();
 const mockQueueAttachment = jest.fn();
@@ -30,6 +31,22 @@ let mockIsConnected = true;
 jest.mock("@/hooks/use-network-status", () => ({
   useNetworkStatus: () => ({ isConnected: mockIsConnected }),
 }));
+
+// jest.setup.js stubs the theme provider with a fixed light palette; this one serves the
+// real tokens for either theme, so the tests can check what the buttons look like in dark mode.
+let mockIsDark = false;
+jest.mock("@/providers/theme-provider", () => {
+  const { getSemanticColors } = jest.requireActual("@drafto/shared");
+  return {
+    ThemeProvider: ({ children }: { children: React.ReactNode }) => children,
+    useTheme: () => ({
+      semantic: getSemanticColors(mockIsDark),
+      isDark: mockIsDark,
+      theme: mockIsDark ? "dark" : "light",
+      setTheme: jest.fn(),
+    }),
+  };
+});
 
 const QUOTA = DEFAULT_STORAGE_QUOTA_BYTES;
 const FILE = {
@@ -147,5 +164,56 @@ describe("AttachmentPicker storage quota (issue #794)", () => {
     expect(mockDiscardRefusedAttachment).toHaveBeenCalledWith(attachment);
     // DatabaseProvider alerts for the sync's refusals, so the picker adds no second one.
     expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
+describe("AttachmentPicker theme", () => {
+  afterEach(() => {
+    mockIsDark = false;
+  });
+
+  function buttonColors(utils: ReturnType<typeof render>) {
+    return {
+      background: StyleSheet.flatten(utils.getByLabelText("Attach image").props.style)
+        .backgroundColor,
+      text: StyleSheet.flatten(utils.getByText("Image").props.style).color,
+    };
+  }
+
+  it("tints the buttons with the subtle accent tokens in light mode", () => {
+    mockIsDark = false;
+    const utils = render(<AttachmentPicker noteId="note-1" />);
+
+    expect(buttonColors(utils)).toEqual({
+      background: semanticLight.accentSubtleBg,
+      text: semanticLight.accentSubtleText,
+    });
+  });
+
+  it("uses the dark subtle accent in dark mode, not the light lavender pill", () => {
+    mockIsDark = true;
+    const utils = render(<AttachmentPicker noteId="note-1" />);
+
+    expect(buttonColors(utils)).toEqual({
+      background: semanticDark.accentSubtleBg,
+      text: semanticDark.accentSubtleText,
+    });
+    expect(semanticDark.accentSubtleBg).not.toBe(semanticLight.accentSubtleBg);
+  });
+
+  it("colours the saving spinner with the dark subtle accent in dark mode", async () => {
+    mockIsDark = true;
+    mockPickImage.mockResolvedValue(FILE);
+    mockIsConnected = true;
+    // Usage never arrives, so the picker stays on "Saving...".
+    mockFetchStorageUsage.mockReturnValue(new Promise(() => {}));
+    const utils = render(<AttachmentPicker noteId="note-1" />);
+
+    fireEvent.press(utils.getByLabelText("Attach image"));
+
+    expect(await utils.findByText("Saving...")).toBeTruthy();
+    expect(utils.UNSAFE_getByType(ActivityIndicator).props.color).toBe(
+      semanticDark.accentSubtleText,
+    );
   });
 });

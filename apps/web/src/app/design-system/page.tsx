@@ -108,6 +108,8 @@ const SEMANTIC_SWATCHES = [
   { name: "Sidebar BG", cssVar: "--sidebar-bg" },
   { name: "Sidebar Hover", cssVar: "--sidebar-hover" },
   { name: "Sidebar Active", cssVar: "--sidebar-active" },
+  { name: "Accent Subtle BG", cssVar: "--accent-subtle-bg" },
+  { name: "Accent Subtle Text", cssVar: "--accent-subtle-text" },
 ] as const;
 
 const SURFACE_SWATCHES = [

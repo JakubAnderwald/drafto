@@ -114,6 +114,8 @@ jest.mock("@/providers/theme-provider", () => {
         border: "#e5e7eb",
         borderStrong: "#d1d5db",
         ring: "#4f46e5",
+        accentSubtleBg: "#ede8ff",
+        accentSubtleText: "#3525cd",
         surfaceLowest: "#ffffff",
         surfaceHigh: "#ececec",
         surfaceHighest: "#dddddd",

@@ -89,6 +89,10 @@ export const semanticLight = {
   sidebarActive: "#E8E0FF",
   sidebarActiveText: colors.primary[600],
 
+  // Subtle accent: tinted secondary actions, such as the editor's attachment buttons
+  accentSubtleBg: colors.primary[50],
+  accentSubtleText: colors.primary[600],
+
   // Surface architecture
   surfaceLowest: colors.white,
   surfaceHigh: colors.neutral[200],
@@ -134,6 +138,11 @@ export const semanticDark = {
   sidebarActive: "#2A2250",
   sidebarActiveText: "#A5B4FC",
 
+  // Subtle accent: the same deep purple + lavender as the sidebar selection, so a
+  // tinted button doesn't stay a light lavender pill on a dark surface.
+  accentSubtleBg: "#2A2250",
+  accentSubtleText: "#A5B4FC",
+
   // Surface architecture
   surfaceLowest: "#171310",
   surfaceHigh: "#2E2822",
@@ -173,6 +182,8 @@ export type SemanticColors = {
   readonly sidebarHover: string;
   readonly sidebarActive: string;
   readonly sidebarActiveText: string;
+  readonly accentSubtleBg: string;
+  readonly accentSubtleText: string;
   readonly surfaceLowest: string;
   readonly surfaceHigh: string;
   readonly surfaceHighest: string;
