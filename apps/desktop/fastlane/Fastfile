@@ -15,10 +15,11 @@ PROJECT_ROOT = File.expand_path("..", __dir__)
 #
 # Passed on every App Store upload, but deliver reads the hash only inside
 # Deliver::SubmitForReview, which Runner#run reaches only when submit_for_review
-# is true — and it reads only two of the three keys: update_export_compliance
-# sends export_compliance_uses_encryption, update_submission_information sends
+# is true (precheck never stops it at our settings; see
+# assert_submitted_for_review!) — and it reads only two of the three keys: update_export_compliance sends
+# export_compliance_uses_encryption, update_submission_information sends
 # content_rights_contains_third_party_content. `add_id_info_uses_idfa` appears
-# nowhere in fastlane 2.232.2 (Apple retired the IDFA submission question), so it
+# nowhere in fastlane 2.242.0 (Apple retired the IDFA submission question), so it
 # is kept as a declaration of intent, not because it travels anywhere. An
 # upload-only `production` run sends none of them and leaves the questionnaire to
 # whoever presses Submit in App Store Connect.
@@ -504,11 +505,11 @@ end
 # Apply the App Store release settings `deliver` silently drops, and return the
 # editable version it configured.
 #
-# In fastlane 2.232.2 `phased_release` and `automatic_release` are read in exactly
+# In fastlane 2.242.0 `phased_release` and `automatic_release` are read in exactly
 # ONE place: Deliver::UploadMetadata#upload derives `releaseType` from
-# automatic_release (deliver/lib/deliver/upload_metadata.rb:181-196) and creates
-# or deletes the phased release (:313-331). That method returns on its first line
-# when skip_metadata is set (:88-89), and nothing else under deliver/lib touches
+# automatic_release (deliver/lib/deliver/upload_metadata.rb:187-202) and creates
+# or deletes the phased release (:319-337). That method returns on its first line
+# when skip_metadata is set (:94-95), and nothing else under deliver/lib touches
 # either option. A promote lane MUST skip metadata — the repo keeps no `deliver`
 # metadata directory, so uploading it would blank the App Store Connect version
 # page — and therefore cannot get these applied by passing them to
@@ -556,9 +557,9 @@ def apply_appstore_release_settings(asc_platform:, app_identifier:, app_version:
   # (`raise "No data"`, spaceship/connect_api/model.rb:82), so ABSENCE ITSELF
   # arrives as an exception — and so do a 401, a 429 and a 5xx, by which point the
   # HTTP status and Apple's error code are gone (ConnectAPI::APIClient#format_errors
-  # keeps only "title - detail", api_client.rb:340-355), leaving nothing to
+  # keeps only "title - detail", api_client.rb:346-361), leaving nothing to
   # discriminate on. deliver rescues the call regardless
-  # (deliver/upload_metadata.rb:315-319); copying that rescue here would let a
+  # (deliver/upload_metadata.rb:321-325); copying that rescue here would let a
   # transient failure look like absence, so `phased_release: false` would skip the
   # deletion while the lane went on to report phasing off — exactly the unverified
   # claim about App Store Connect this helper exists to prevent.
@@ -613,6 +614,49 @@ def apply_appstore_release_settings(asc_platform:, app_identifier:, app_version:
   end
 
   version
+end
+
+# Hard stop unless App Store Connect now holds a review submission for this
+# platform. Call it right after an upload_to_app_store that asked to submit.
+#
+# A defence-in-depth postcondition: upload_to_app_store returning normally does
+# not by itself prove deliver submitted anything. Runner#run ends with
+# `submit_for_review if options[:submit_for_review] && precheck_success`
+# (deliver/lib/deliver/runner.rb:74-75), and since fastlane 2.242.0
+# (fastlane#30438) Runner#precheck_app rescues
+# Precheck::Runner::BlockingViolationError and returns false (:113-115), so a
+# blocking precheck violation skips SubmitForReview without raising.
+#
+# At this repo's settings precheck never blocks. deliver hands precheck its own
+# precheck_default_rule_level, which defaults to :warn
+# (deliver/lib/deliver/options.rb:350-355); no lane overrides it and there is no
+# Precheckfile, so every failed rule lands in warning_results
+# (precheck/lib/precheck/rule_processor.rb:95-96), BlockingViolationError is never
+# raised, and precheck's findings print as warnings while the submission goes
+# ahead (2.232.2 behaved the same). The check matters only if someone raises the
+# rule level to :error, or if deliver ever returns without submitting for another
+# reason: without it the lane would then report "submitted for review" and exit
+# 0 for a version still sitting in Prepare for Submission.
+#
+# With an API key deliver passes precheck no platform (runner.rb:95-105), so
+# precheck falls back to "ios" (precheck/lib/precheck/options.rb:80-88): on the
+# shared eu.drafto.mobile App Store Connect app, these mac lanes' precheck
+# warnings are about the iOS version, not the macOS one.
+#
+# get_in_progress_review_submission is the call deliver's own SubmitForReview
+# makes (WAITING_FOR_REVIEW, IN_REVIEW or UNRESOLVED_ISSUES), and
+# ReviewSubmission#submit_for_review is synchronous, so a submission deliver
+# made is already visible here.
+def assert_submitted_for_review!(asc_platform:, app_identifier:, app_version:)
+  platform = Spaceship::ConnectAPI::Platform.map(asc_platform)
+  app = Spaceship::ConnectAPI::App.find(app_identifier)
+  return if app&.get_in_progress_review_submission(platform: platform)
+
+  UI.user_error!(
+    "#{app_identifier} #{app_version} (#{asc_platform}) was NOT submitted for review: App Store " \
+    "Connect has no review submission waiting for or in review after upload_to_app_store returned. " \
+    "Check the deliver output above for why the submission did not happen, then re-run."
+  )
 end
 
 # Uploads ./fastlane/screenshots/<locale>/*.png to the App Store version that is
@@ -722,6 +766,13 @@ platform :mac do
       precheck_include_in_app_purchases: false,
       submission_information: APPSTORE_SUBMISSION_INFORMATION
     )
+
+    # upload_to_app_store returning normally does not prove a submission was made
+    # (see assert_submitted_for_review!), so confirm App Store Connect holds one
+    # before the lane reports "submitted for review".
+    if submit
+      assert_submitted_for_review!(asc_platform: "osx", app_identifier: BUNDLE_ID, app_version: app_version)
+    end
 
     # No comment_released_issues / release tag here: submitting for review is not
     # a release. The build was already announced when it went to TestFlight, and
@@ -952,6 +1003,12 @@ platform :mac do
         precheck_include_in_app_purchases: false,
         submission_information: APPSTORE_SUBMISSION_INFORMATION
       )
+      # upload_to_app_store returning normally does not prove a submission was
+      # made (see assert_submitted_for_review!): never let a submit:true run end
+      # green without one.
+      if submit_for_review
+        assert_submitted_for_review!(asc_platform: "osx", app_identifier: BUNDLE_ID, app_version: version)
+      end
     end
 
     # Post release notes
