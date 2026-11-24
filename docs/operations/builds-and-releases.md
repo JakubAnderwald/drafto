@@ -226,7 +226,7 @@ that is higher than all of them. Every Android lane therefore takes the highest 
 on any of `internal`, `alpha`, `beta` and `production`, plus one (`next_play_version_code`
 in the Fastfile). Taking only the target track's highest code breaks once tracks
 diverge: internal was at 87 while alpha held 82, so an alpha build would have reused
-code 83. fastlane already reads an empty or missing track as no codes. Any other
+code 83. fastlane already reads an empty or missing track as no codes. A track that exists but has never had a release (our open-testing `beta` track) makes fastlane 2.232 raise `undefined method 'flat_map' for nil`; `PlayRelease.release_less_track?` counts exactly that error as an empty track. Any other
 failure to read a track (network, a 5xx, auth) stops the lane, because guessing that
 track is empty could reuse one of its codes. The codes are read after `expo prebuild`
 and right before Gradle, so a failure costs the prebuild rather than a whole build.

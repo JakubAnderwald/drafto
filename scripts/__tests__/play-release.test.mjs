@@ -73,6 +73,34 @@ describe(
       assert.match(out, /Google Play track 'internal' \(503 Service Unavailable\)/);
     });
 
+    it("PrimeTestLab 11035 release: a track with no releases counts as empty (fastlane's nil releases)", () => {
+      // fastlane 2.232's supply calls result.releases.flat_map on a track that
+      // exists but never had a release, and Play sends no releases for it.
+      const out = ruby(`
+      codes = PlayRelease.collect_version_codes do |track|
+        nil.flat_map(&:version_codes) if track == "beta"
+        { "internal" => [87], "alpha" => [82], "production" => [80] }.fetch(track)
+      end
+      puts JSON.generate([codes, PlayRelease.next_version_code(codes)])
+    `);
+      assert.deepEqual(out, [{ internal: [87], alpha: [82], beta: [], production: [80] }, 88]);
+    });
+
+    it("PrimeTestLab 11035 release: any other NoMethodError still stops the lane", () => {
+      const out = ruby(`
+      begin
+        PlayRelease.collect_version_codes do |track|
+          nil.version_codes if track == "alpha"
+          []
+        end
+        puts JSON.generate("no error")
+      rescue PlayRelease::TrackUnreadable => e
+        puts JSON.generate(e.message)
+      end
+    `);
+      assert.match(out, /Google Play track 'alpha'/);
+    });
+
     it("PrimeTestLab 11035 release: asks every Play track, internal through production", () => {
       const out = ruby(`
       asked = []
