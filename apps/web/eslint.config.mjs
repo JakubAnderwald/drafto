@@ -17,12 +17,14 @@ import prettier from "eslint-config-prettier";
 // variant-prefixed uses (`hover:text-primary-600`), the lookahead other shades (`-6000`).
 const BARE_PRIMARY_600 = "(?<![\\w:-])text-primary-600(?![\\w-])";
 // A `dark:text-*` colour that applies at rest. The lookbehind wants the token to start there, so a
-// longer variant chain (`hover:dark:text-*`, `md:dark:text-*`) doesn't count. The lookahead leaves
-// out the `text-*` utilities that aren't colours (size, alignment, wrapping, overflow, shadow), and
-// an arbitrary value unless it reads as a colour, so `dark:text-sm` and `dark:text-[14px]` don't
-// count as a partner either.
+// longer variant chain (`hover:dark:text-*`, `md:dark:text-*`) doesn't count. The value must be
+// written out: a template chunk that ends in `dark:text-` before a `${…}` doesn't count, since the
+// expression may be a size (`dark:text-${on ? "sm" : "center"}`). The last lookahead leaves out the
+// `text-*` utilities that aren't colours (size, alignment, wrapping, overflow, shadow), and an
+// arbitrary value unless it reads as a colour, so `dark:text-sm` and `dark:text-[14px]` don't count
+// as a partner either.
 const DARK_TEXT_COLOUR =
-  "(?<!\\S)dark:text-(?!(?:xs|sm|base|lg|[0-9]?xl|left|center|right|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip|shadow)\\b|\\[(?!color:|var\\(|#|rgb|hsl|oklch|oklab)|\\((?!color:|--))";
+  "(?<!\\S)dark:text-(?=[\\w[(])(?!(?:xs|sm|base|lg|[0-9]?xl|left|center|right|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip|shadow)\\b|\\[(?!color:|var\\(|#|rgb|hsl|oklch|oklab)|\\((?!color:|--))";
 const DARK_LINK_MESSAGE =
   "text-primary-600 is unreadable on the dark surfaces. Use the `ui-link` class for a link (or `doc-link` for one that always underlines), or pair it with a dark:text-* colour. See docs/features/design-system.md.";
 
