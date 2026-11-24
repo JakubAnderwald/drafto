@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
+import { reportError } from "@/lib/report-error";
 
 interface SearchNoteResult {
   id: string;
@@ -36,7 +37,9 @@ export async function GET(request: NextRequest) {
   )) as { data: SearchNoteResult[] | null; error: { message: string } | null };
 
   if (error) {
-    console.error("search_notes RPC failed", error);
+    // No `extra`: the query is the user's search text, so the report doesn't add it. (The server
+    // SDK still attaches the request URL to the event, as it already does to sampled traces.)
+    reportError(error, "api:notes-search");
     return errorResponse("Failed to search notes", 500);
   }
 

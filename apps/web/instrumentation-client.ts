@@ -10,7 +10,13 @@ Sentry.init({
   tracesSampleRate: 1,
   replaysSessionSampleRate: 0.1,
   replaysOnErrorSampleRate: 1.0,
-  integrations: [Sentry.replayIntegration()],
+  // captureConsoleIntegration is a backstop (ADR-0099): a console.error that no reportError call
+  // replaced still reaches Sentry. reportError never logs in the browser while Sentry is on, so a
+  // reported error isn't captured twice.
+  integrations: [
+    Sentry.replayIntegration(),
+    Sentry.captureConsoleIntegration({ levels: ["error"] }),
+  ],
   debug: false,
   // Expected user-input validation, not bugs — keep these out of Sentry.
   ignoreErrors: [FILE_TOO_LARGE_MESSAGE, FILE_EMPTY_MESSAGE],

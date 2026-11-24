@@ -338,6 +338,7 @@ The recipes below are for interactive sessions. Unattended factory, support and 
 - Client config: `instrumentation-client.ts` (NOT `sentry.client.config.ts` — Turbopack ignores the old webpack convention)
 - Server/edge configs: `sentry.server.config.ts`, `sentry.edge.config.ts` (loaded via `instrumentation.ts`)
 - Do not swallow errors silently — let them propagate to Sentry
+- A caught-and-continued error in `apps/web` goes through `reportError` from `@/lib/report-error` (never a bare `console.error`): it reports to Sentry with a `where` tag and logs only where nothing captures the console ([ADR-0099](./docs/adr/0099-web-reports-caught-errors-through-report-error.md))
 - To read Sentry data from a session, use the read-only token in [Local Secrets](#local-secrets-drafto-secrets)
 
 ## MCP Server (Claude Cowork Integration)

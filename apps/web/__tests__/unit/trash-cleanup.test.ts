@@ -48,6 +48,11 @@ vi.mock("@sentry/nextjs", () => ({
   captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
 }));
 
+const mockReportError = vi.fn();
+vi.mock("@/lib/report-error", () => ({
+  reportError: (...args: unknown[]) => mockReportError(...args),
+}));
+
 vi.mock("next/headers", () => ({
   cookies: () => ({
     getAll: () => [],
@@ -182,6 +187,27 @@ describe("POST /api/cron/cleanup-trash", () => {
     expect(body.error).toBe("Failed to cleanup trashed notes");
     expect(mockRemoveOrphanedAttachments).not.toHaveBeenCalled();
     expect(mockReportStorageOverruns).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed purge (no longer just a log line) and still answers 500", async () => {
+    mockEnv.CRON_SECRET = "cron-secret";
+    const rpcError = { message: "DB error", code: "57014" };
+    mockAdminRpc.mockResolvedValue({ data: null, error: rpcError });
+
+    const response = await POST(createRequest("POST", { authorization: "Bearer cron-secret" }));
+    expect(response.status).toBe(500);
+    expect((await response.json()).error).toBe("Failed to cleanup trashed notes");
+    expect(mockReportError).toHaveBeenCalledTimes(1);
+    expect(mockReportError).toHaveBeenCalledWith(rpcError, "cron:cleanup-trash");
+  });
+
+  it("reports nothing when the purge succeeds", async () => {
+    mockEnv.CRON_SECRET = "cron-secret";
+    mockAdminRpc.mockResolvedValue({ data: 3, error: null });
+
+    const response = await POST(createRequest("POST", { authorization: "Bearer cron-secret" }));
+    expect(response.status).toBe(200);
+    expect(mockReportError).not.toHaveBeenCalled();
   });
 
   it("returns 500 and reports to Sentry when the service-role key is missing", async () => {

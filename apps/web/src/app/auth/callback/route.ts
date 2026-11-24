@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { sanitizeRedirectPath } from "@/lib/auth/redirect-path";
 import { createClient } from "@/lib/supabase/server";
+import { reportError } from "@/lib/report-error";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -17,9 +18,10 @@ export async function GET(request: NextRequest) {
         return NextResponse.redirect(new URL(next, request.url));
       }
 
-      console.error("[auth/callback] exchangeCodeForSession failed:", error.message);
+      // A returned AuthError is usually an expired or reused link: routine, so a warning.
+      reportError(error, "auth:callback", { level: "warning" });
     } catch (err) {
-      console.error("[auth/callback] exchangeCodeForSession threw unexpectedly:", err);
+      reportError(err, "auth:callback");
     }
   }
 

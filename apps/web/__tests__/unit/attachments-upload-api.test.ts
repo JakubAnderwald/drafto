@@ -18,6 +18,9 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
 }));
 
+const { mockReportError } = vi.hoisted(() => ({ mockReportError: vi.fn() }));
+vi.mock("@/lib/report-error", () => ({ reportError: mockReportError }));
+
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
 const mockStorageFrom = vi.fn();
@@ -276,6 +279,56 @@ describe("POST /api/notes/[id]/attachments/upload-url", () => {
     const body = await response.json();
     expect(body.filePath).not.toContain("..");
     expect(body.filePath).toMatch(/^user-1\/note-1\//);
+  });
+
+  it("reports a failed signed upload URL with the note id only and answers 500", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+    const urlError = { message: "Bucket not found" };
+    mockStorageFrom.mockReturnValue({
+      createSignedUploadUrl: vi.fn().mockResolvedValue({ data: null, error: urlError }),
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const response = await POST(
+      createUploadUrlRequest({
+        fileName: "secret-plans.png",
+        fileSize: 1024,
+        mimeType: "image/png",
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(500);
+    expect((await response.json()).error).toBe("Failed to create upload URL");
+    expect(mockReportError).toHaveBeenCalledOnce();
+    expect(mockReportError).toHaveBeenCalledWith(
+      urlError,
+      "api:attachments-upload-url:signed-url",
+      { extra: { noteId: "note-1" } },
+    );
+    expect(JSON.stringify(mockReportError.mock.calls)).not.toContain("secret-plans");
+  });
+
+  it("reports a signed upload URL call that returns no data", async () => {
+    authenticateAs("user-1");
+    mockNoteExists();
+    mockStorageFrom.mockReturnValue({
+      createSignedUploadUrl: vi.fn().mockResolvedValue({ data: null, error: null }),
+    });
+
+    const { POST } = await import("@/app/api/notes/[id]/attachments/upload-url/route");
+    const response = await POST(
+      createUploadUrlRequest({ fileName: "photo.png", fileSize: 1024, mimeType: "image/png" }),
+      { params },
+    );
+
+    expect(response.status).toBe(500);
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.any(Error),
+      "api:attachments-upload-url:signed-url",
+      { extra: { noteId: "note-1" } },
+    );
   });
 });
 
@@ -622,6 +675,14 @@ describe("POST /api/notes/[id]/attachments/confirm", () => {
     expect(response.status).toBe(500);
     expect(mockDelete).toHaveBeenCalledWith("id", "att-1");
     expect(mockRemove).toHaveBeenCalledWith(["user-1/note-1/test.png"]);
+    // Reported with the note id only, never the file path.
+    expect(mockReportError).toHaveBeenCalledOnce();
+    expect(mockReportError).toHaveBeenCalledWith(
+      { message: "Signing error" },
+      "api:attachments-confirm:signed-url",
+      { extra: { noteId: "note-1" } },
+    );
+    expect(JSON.stringify(mockReportError.mock.calls)).not.toContain("test.png");
   });
 
   function mockAttachmentInsertFails(error: { message: string; code?: string }) {

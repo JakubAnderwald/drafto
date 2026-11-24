@@ -7,6 +7,7 @@ import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { reportError } from "@/lib/report-error";
 
 interface SearchResult {
   id: string;
@@ -43,6 +44,9 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  // Set when the last search failed (a non-OK response or a network error), so the overlay says so
+  // instead of claiming there are no matching notes. A new query clears it.
+  const [searchError, setSearchError] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -69,11 +73,13 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
       /* eslint-disable react-hooks/set-state-in-effect */
       setResults([]);
       setLoading(false);
+      setSearchError(false);
       /* eslint-enable react-hooks/set-state-in-effect */
       return;
     }
 
     setLoading(true);
+    setSearchError(false);
 
     timerRef.current = setTimeout(async () => {
       try {
@@ -82,17 +88,23 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
         });
         if (handleAuthError(res)) return;
         if (!res.ok) {
-          console.error("Search failed:", res.status);
+          // Never the query text: it is the user's own words.
+          reportError(new Error(`Search failed: ${res.status}`), "search-overlay", {
+            extra: { status: res.status },
+          });
           setResults([]);
+          setSearchError(true);
           return;
         }
         const data: SearchResult[] = await res.json();
         setResults(data);
         setHighlightedIndex(0);
       } catch (err) {
+        // An abort is the normal end of a search the user typed past, not a failure.
         if (err instanceof DOMException && err.name === "AbortError") return;
-        console.error("Search failed:", err);
+        reportError(err, "search-overlay");
         setResults([]);
+        setSearchError(true);
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
@@ -178,7 +190,13 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
         <div className="max-h-80 overflow-y-auto p-2" data-testid="search-results">
           {loading && <p className="text-fg-muted px-3 py-4 text-center text-sm">Searching...</p>}
 
-          {!loading && trimmed && results.length === 0 && (
+          {!loading && trimmed && searchError && (
+            <p role="alert" className="text-error-text px-3 py-4 text-center text-sm">
+              Search failed — try again
+            </p>
+          )}
+
+          {!loading && trimmed && !searchError && results.length === 0 && (
             <p className="text-fg-muted px-3 py-4 text-center text-sm">No notes found</p>
           )}
 

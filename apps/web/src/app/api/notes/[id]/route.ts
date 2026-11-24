@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 import { contentQuotaResponseFor } from "@/lib/api/content-quota";
+import { reportError } from "@/lib/report-error";
 import {
   contentToBlocknote,
   resolveBlockNoteImageUrls,
@@ -59,7 +60,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       .eq("user_id", user.id)
       .then(({ error: updateError }) => {
         if (updateError) {
-          console.error("[notes] Failed to persist converted content:", updateError);
+          reportError(updateError, "api:notes-get:persist-converted", { extra: { noteId: id } });
         }
       });
   }
@@ -67,16 +68,26 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   // Resolve attachment:// URLs to fresh signed URLs
   if (Array.isArray(noteRecord.content)) {
     const blocks = noteRecord.content as BlockNoteBlock[];
+    // Signing failures are counted and reported once per request, without the file path (it
+    // carries the attachment's file name): a storage outage must not send one event per image.
+    let failedCount = 0;
+    let firstSignError: unknown = null;
     noteRecord.content = await resolveBlockNoteImageUrls(blocks, async (filePath) => {
       const { data, error } = await supabase.storage
         .from(BUCKET_NAME)
         .createSignedUrl(filePath, SIGNED_URL_EXPIRY_SECONDS);
       if (error || !data?.signedUrl) {
-        console.error("[notes] Failed to sign URL for:", filePath, error);
+        failedCount += 1;
+        firstSignError ??= error ?? new Error("createSignedUrl returned no URL");
         return `attachment://${filePath}`;
       }
       return data.signedUrl;
     });
+    if (failedCount > 0) {
+      reportError(firstSignError, "api:notes-get:sign-attachments", {
+        extra: { noteId: id, failedCount },
+      });
+    }
   }
 
   return successResponse(noteRecord);

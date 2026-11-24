@@ -7,6 +7,10 @@ vi.mock("@/lib/handle-auth-error", () => ({
   handleAuthError: () => false,
 }));
 
+vi.mock("@/lib/report-error", () => ({ reportError: vi.fn() }));
+
+const { reportError } = await import("@/lib/report-error");
+
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
 
@@ -217,11 +221,12 @@ describe("SearchOverlay", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("handles fetch error gracefully", async () => {
+  it("says the search failed and reports it when the request throws", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockFetch.mockRejectedValue(new Error("Network error"));
+    const networkError = new Error("Network error");
+    mockFetch.mockRejectedValue(networkError);
 
     render(
       <SearchOverlay
@@ -236,13 +241,15 @@ describe("SearchOverlay", () => {
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
-      expect(screen.getByText("No notes found")).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("Search failed — try again");
     });
+    expect(screen.queryByText("No notes found")).not.toBeInTheDocument();
+    expect(reportError).toHaveBeenCalledWith(networkError, "search-overlay");
 
     vi.useRealTimers();
   });
 
-  it("handles non-ok response gracefully", async () => {
+  it("says the search failed and reports the status on a non-OK response", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
@@ -264,8 +271,74 @@ describe("SearchOverlay", () => {
     vi.advanceTimersByTime(300);
 
     await waitFor(() => {
-      expect(screen.getByText("No notes found")).toBeInTheDocument();
+      expect(screen.getByText("Search failed — try again")).toBeInTheDocument();
     });
+    expect(screen.queryByText("No notes found")).not.toBeInTheDocument();
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), "search-overlay", {
+      extra: { status: 500 },
+    });
+    // The report carries the status, never the query text: not in `extra`, not in the message.
+    expect(JSON.stringify(vi.mocked(reportError).mock.calls)).not.toContain("test");
+    expect((vi.mocked(reportError).mock.calls[0][0] as Error).message).not.toContain("test");
+
+    vi.useRealTimers();
+  });
+
+  it("clears the failure once a later search succeeds", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText("Search notes and notebooks...");
+    await user.type(input, "meet");
+    vi.advanceTimersByTime(300);
+    await waitFor(() => {
+      expect(screen.getByText("Search failed — try again")).toBeInTheDocument();
+    });
+
+    await user.type(input, "ing");
+    vi.advanceTimersByTime(300);
+    await waitFor(() => {
+      expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Search failed — try again")).not.toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it("does not report or show a failure for an aborted search", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    mockFetch.mockRejectedValue(new DOMException("The operation was aborted.", "AbortError"));
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "test");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalled();
+    });
+    expect(reportError).not.toHaveBeenCalled();
+    expect(screen.queryByText("Search failed — try again")).not.toBeInTheDocument();
 
     vi.useRealTimers();
   });

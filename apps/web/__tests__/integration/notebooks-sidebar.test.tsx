@@ -10,6 +10,8 @@ vi.mock("@/env", () => ({
   },
 }));
 
+vi.mock("@/lib/report-error", () => ({ reportError: vi.fn() }));
+
 const mockNotebooks = [
   { id: "nb-1", name: "Notes", created_at: "2026-01-01", updated_at: "2026-01-01", note_count: 3 },
   { id: "nb-2", name: "Work", created_at: "2026-01-02", updated_at: "2026-01-02", note_count: 1 },
@@ -93,6 +95,7 @@ async function openDeleteConfirmForNotes(onSelect = vi.fn()) {
 // The component guards fetching with `if (hasFetched.current) return;` so a
 // single import shares that ref across all tests.
 let NotebooksSidebar: typeof import("@/components/notebooks/notebooks-sidebar").NotebooksSidebar;
+let reportError: typeof import("@/lib/report-error").reportError;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -107,6 +110,8 @@ beforeEach(async () => {
   // Re-import to get a fresh module with a new hasFetched ref
   const mod = await import("@/components/notebooks/notebooks-sidebar");
   NotebooksSidebar = mod.NotebooksSidebar;
+  // resetModules gives the sidebar a fresh report-error mock too; assert against that one.
+  ({ reportError } = await import("@/lib/report-error"));
 });
 
 describe("NotebooksSidebar", () => {
@@ -1053,6 +1058,105 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
       ]);
     });
     expect(mockFetch).toHaveBeenCalledWith("/api/notebooks");
+  });
+
+  it("shows an error with Retry when the notebooks fail to load, and Retry loads them", async () => {
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />);
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't load your notebooks.");
+    expect(screen.queryByText(/No notebooks yet/)).not.toBeInTheDocument();
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), "notebooks-sidebar:load", {
+      extra: { status: 500 },
+    });
+
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Notes")).toBeInTheDocument();
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenCalledWith("nb-1");
+  });
+
+  it("doesn't move a user out of Trash when a Retry succeeds", async () => {
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    let rerender: ReturnType<typeof render>["rerender"] = () => {};
+    await act(async () => {
+      ({ rerender } = render(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />,
+      ));
+    });
+    const alert = await screen.findByRole("alert");
+
+    // The user opens Trash, then retries.
+    await act(async () => {
+      rerender(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} isTrashSelected />,
+      );
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("shows the error state and reports when the notebooks request throws", async () => {
+    const networkError = new TypeError("Failed to fetch");
+    mockFetch.mockRejectedValueOnce(networkError);
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load your notebooks.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(reportError).toHaveBeenCalledWith(networkError, "notebooks-sidebar:load");
+  });
+
+  it("keeps the list on show and only reports when a refresh fails", async () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={onSelect}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 503));
+
+    rerender(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={onSelect}
+        initialNotebooks={mockNotebooks}
+        refreshTrigger={1}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(reportError).toHaveBeenCalledWith(expect.any(Error), "notebooks-sidebar:load", {
+        extra: { status: 503 },
+      });
+    });
+    expect(screen.getByText("Notes")).toBeInTheDocument();
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load your notebooks.")).not.toBeInTheDocument();
   });
 
   it("starts a new notebook at 0 notes", async () => {
