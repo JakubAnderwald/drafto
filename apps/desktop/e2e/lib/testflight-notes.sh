@@ -101,10 +101,10 @@ EOF
 # (at most 5), both the ones blocking Drafto's launch and any left over from an earlier launch
 # once Drafto is up (they sit over its window, where a click would land on them). Then wait for
 # Drafto's window, all within timeout_s (default 30) of elapsed time. Prints a line for each page
-# it dismisses. Returns 0 when there is nothing of TestFlight's to dismiss (or Drafto isn't
-# running) or Drafto's window is up afterwards. Returns 1 when Drafto still has no window at the
-# deadline, or when Drafto has no window and a CoreServicesUIAgent dialog that doesn't name
-# Drafto is up: that one is left for a person.
+# it dismisses. Returns 0 when Drafto isn't running, or once Drafto's window is up and nothing
+# of TestFlight's is left over it. Returns 1 when Drafto still has no window at the deadline; if
+# a CoreServicesUIAgent dialog that never named Drafto is what's up, it says so and leaves that
+# dialog for a person.
 dismiss_testflight_notes() {
   local timeout=${1:-30} deadline pages=0 frame="" last_press=0 result count
   pgrep -x Drafto > /dev/null || return 0
@@ -122,12 +122,13 @@ dismiss_testflight_notes() {
       fi
     fi
     if [ "$pages" -eq 0 ]; then
+      # Drafto is up (or its windows can't be read): nothing of TestFlight's blocks it.
       count=$(drafto_window_count "$(limit_to "$deadline" 10)")
-      if [ "$count" = 0 ] && [ "$(agent_window_count "$(limit_to "$deadline" 10)")" -gt 0 ] 2> /dev/null; then
-        echo "  ⚠  Drafto has no window and a system dialog that doesn't name Drafto is up; dismiss it by hand"
-        return 1
-      fi
-      return 0
+      [ "$count" = 0 ] || return 0
+      # Drafto has no window yet. Right after a launch the first page may not be up, or its
+      # text not loaded, so keep looking until the deadline rather than judging it now.
+      sleep 1
+      continue
     fi
     # The next page of a flow can take a moment to appear: look for one for 5 s after a press
     # before settling for Drafto's window.
@@ -137,6 +138,12 @@ dismiss_testflight_notes() {
     fi
     sleep 1
   done
-  echo "  ⚠  Drafto still has no window ${timeout}s after TestFlight's first-launch pages"
+  if [ "$pages" -eq 0 ] && [ "$(agent_window_count 5)" -gt 0 ] 2> /dev/null; then
+    echo "  ⚠  Drafto has no window and a system dialog that doesn't name Drafto is up; dismiss it by hand"
+  elif [ "$pages" -eq 0 ]; then
+    echo "  ⚠  Drafto has had no window for ${timeout}s"
+  else
+    echo "  ⚠  Drafto still has no window ${timeout}s after TestFlight's first-launch pages"
+  fi
   return 1
 }
