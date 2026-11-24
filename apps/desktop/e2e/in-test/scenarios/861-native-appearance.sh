@@ -211,6 +211,7 @@ preflight() {
     pf fail "Drafto is not running (open $APP first)"
   else
     pf ok "screen unlocked"
+    preflight_testflight_pages
     # The running process must be the installed bundle, started after that
     # bundle was last written: a TestFlight update replaces the bundle under a
     # still-running old process (same check as harness.sh).
