@@ -10,7 +10,7 @@ interface FieldErrorProps {
  * field already has focus and the form's focus() call changes nothing. The field also points at
  * it with `aria-describedby` and sets `aria-invalid`, so it is read again with the field.
  */
-export function FieldError({ id, message }: FieldErrorProps) {
+export function FieldError({ id, message }: Readonly<FieldErrorProps>) {
   if (!message) return null;
   return (
     <p id={id} data-testid={id} role="alert" className="text-error mt-1 text-sm">

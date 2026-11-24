@@ -36,7 +36,7 @@ async function errorMessageFrom(res: Response, fallback: string): Promise<string
 }
 
 /** Why a typed name was refused (PrimeTestLab 11035 M-01), under its field. */
-function NameError({ id, message }: { id: string; message: string }) {
+function NameError({ id, message }: Readonly<{ id: string; message: string }>) {
   return (
     <p
       id={id}
@@ -366,10 +366,10 @@ export function NotebooksSidebar({
                     }}
                     // Leaving a refused name doesn't send it again; Escape or a new name does.
                     onBlur={() => {
-                      if (!renameError) handleRename(notebook.id);
+                      if (!renameError) void handleRename(notebook.id);
                     }}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") handleRename(notebook.id);
+                      if (e.key === "Enter") void handleRename(notebook.id);
                       if (e.key === "Escape") closeRename();
                     }}
                     maxLength={MAX_NOTEBOOK_NAME_LENGTH}
@@ -459,10 +459,10 @@ export function NotebooksSidebar({
                 }}
                 // Leaving a refused name doesn't send it again; Escape or a new name does.
                 onBlur={() => {
-                  if (!createError) handleCreate();
+                  if (!createError) void handleCreate();
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleCreate();
+                  if (e.key === "Enter") void handleCreate();
                   if (e.key === "Escape") closeCreate();
                 }}
                 maxLength={MAX_NOTEBOOK_NAME_LENGTH}

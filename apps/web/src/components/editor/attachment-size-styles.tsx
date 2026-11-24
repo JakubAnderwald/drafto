@@ -11,7 +11,7 @@ interface AttachmentSizeStylesProps {
  * block's stored URL; the label's look is in globals.css. The block schema
  * and stored content are untouched.
  */
-export function AttachmentSizeStyles({ attachments }: AttachmentSizeStylesProps) {
+export function AttachmentSizeStyles({ attachments }: Readonly<AttachmentSizeStylesProps>) {
   const css = useMemo(() => buildFileBlockSizeCss(attachments), [attachments]);
   if (!css) return null;
   return <style data-testid="attachment-size-styles">{css}</style>;
