@@ -450,3 +450,13 @@ body {
   --bn-font-family: var(--font-sans, Arial, Helvetica, sans-serif);
   --bn-border-radius: 8px;
 }
+
+/* File size after a file block's name (PrimeTestLab 11035 S-04). The text
+   comes from per-note rules (AttachmentSizeStyles); a block with no known
+   size has no ::after content, so shows nothing. */
+.bn-block-content[data-content-type="file"] .bn-file-name-with-icon::after {
+  margin-left: 8px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  font-size: 0.875em;
+}

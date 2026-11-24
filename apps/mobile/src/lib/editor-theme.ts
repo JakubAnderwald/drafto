@@ -3,6 +3,8 @@ import type { EditorTheme, RecursivePartial } from "@10play/tentap-editor";
 
 import type { SemanticColors } from "@/theme/tokens";
 
+// Mirrored in apps/desktop/src/lib/editor-theme.ts.
+
 /** TenTap's toolbar row height (its RichText assumes 44 too). */
 export const EDITOR_TOOLBAR_HEIGHT = 44;
 
@@ -20,6 +22,9 @@ export const EDITOR_TOOLBAR_HEIGHT = 44;
  * - The toolbar, its buttons and the WebView use the app's surface colour
  *   rather than TenTap's white (light) or grey (dark), so the row reads as part
  *   of the screen in both themes.
+ * - The icons use the theme's text colours. TenTap's grey icons (white in
+ *   dark mode) had a disabled look of a pale tint at 30% opacity, which read
+ *   as a toolbar switched off (PrimeTestLab 11035 S-02 follow-up).
  */
 export function buildEditorTheme(
   semantic: SemanticColors,
@@ -43,6 +48,7 @@ export function buildEditorTheme(
       toolbarBody: fixedRow,
       toolbarButton: { backgroundColor: semantic.bg },
       iconWrapper: { backgroundColor: semantic.bg },
+      ...toolbarIconStates(semantic),
       linkBarTheme: {
         ...base.toolbar?.linkBarTheme,
         addLinkContainer: fixedRow,
@@ -51,5 +57,25 @@ export function buildEditorTheme(
       },
     },
     webview: { backgroundColor: semantic.bg },
+  };
+}
+
+/**
+ * Icon colours for the toolbar's three button states: an available action in
+ * the muted text colour, the active one (bold on at the caret, say) in the
+ * full text colour on the muted surface, and one that can't apply (undo with
+ * nothing to undo) in the subtle text colour. TenTap's own disabled look
+ * stacked a pale tint with 30% opacity, so the opacity is reset: the colour
+ * alone marks a disabled button, and stays legible in both themes.
+ */
+export function toolbarIconStates(
+  semantic: SemanticColors,
+): NonNullable<RecursivePartial<EditorTheme>["toolbar"]> {
+  return {
+    icon: { tintColor: semantic.fgMuted },
+    iconActive: { tintColor: semantic.fg },
+    iconWrapperActive: { backgroundColor: semantic.bgMuted },
+    iconDisabled: { tintColor: semantic.fgSubtle },
+    iconWrapperDisabled: { opacity: 1 },
   };
 }

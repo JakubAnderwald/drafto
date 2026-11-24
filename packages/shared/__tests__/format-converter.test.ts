@@ -5,6 +5,7 @@ import {
   contentToTiptap,
   contentToBlocknote,
   markdownToBlockNote,
+  toEditorDoc,
 } from "../src";
 import type { BlockNoteBlock, TipTapDoc, TipTapNode } from "../src";
 
@@ -968,6 +969,133 @@ describe("round-trip fidelity", () => {
     expect(roundTripped).toEqual(original);
   });
 
+  it("PrimeTestLab 11035 S-04 restores a file block from a file link shown with its signed URL", () => {
+    const tiptap: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "my report.pdf",
+              marks: [
+                {
+                  type: "link",
+                  attrs: {
+                    href: "https://x.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/my%20report.pdf?token=t",
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(tiptapToBlocknote(tiptap)).toEqual([
+      {
+        type: "file",
+        props: { url: "attachment://user-1/note-1/my report.pdf", name: "my report.pdf" },
+        children: [],
+      },
+    ]);
+  });
+
+  it("PrimeTestLab 11035 S-04 keeps a lone link to another site a paragraph", () => {
+    const tiptap: TipTapDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "site",
+              marks: [{ type: "link", attrs: { href: "https://example.com/report.pdf" } }],
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(tiptapToBlocknote(tiptap)[0].type).toBe("paragraph");
+  });
+
+  describe("PrimeTestLab 11035 review: which lone attachment links become file blocks", () => {
+    const KEY = "user-1/note-1/Quarterly report-1700000000000-0a1b2c3d.pdf";
+    const SIGNED = `https://x.supabase.co/storage/v1/object/sign/attachments/${encodeURI(KEY)}?token=t`;
+    const IMAGE_KEY = "user-1/note-1/IMG_0001-1700000000000-0a1b2c3d.jpg";
+    const IMAGE_SIGNED = `https://x.supabase.co/storage/v1/object/sign/attachments/${IMAGE_KEY}?token=t`;
+
+    function lonelyLink(text: string, href: string): TipTapDoc {
+      return {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text, marks: [{ type: "link", attrs: { href } }] }],
+          },
+        ],
+      };
+    }
+
+    it("restores a file block from a signed URL worded as the file's name", () => {
+      expect(tiptapToBlocknote(lonelyLink("Quarterly report.pdf", SIGNED))).toEqual([
+        {
+          type: "file",
+          props: { url: `attachment://${KEY}`, name: "Quarterly report.pdf" },
+          children: [],
+        },
+      ]);
+    });
+
+    it("restores a file block from a local cached src worded as the file's name", () => {
+      const local = `file:///cache/x.pdf#drafto-attachment=${encodeURIComponent(KEY)}`;
+      expect(tiptapToBlocknote(lonelyLink("Quarterly report.pdf", local))[0]).toEqual({
+        type: "file",
+        props: { url: `attachment://${KEY}`, name: "Quarterly report.pdf" },
+        children: [],
+      });
+    });
+
+    it("restores a file block whose key kept only 20 characters of a long extension", () => {
+      const longKey = "user-1/note-1/Dr-1700000000000-0a1b2c3d. Smith referral let";
+      const longSigned = `https://x.supabase.co/storage/v1/object/sign/attachments/${encodeURI(longKey)}?token=t`;
+      expect(tiptapToBlocknote(lonelyLink("Dr. Smith referral letter scan", longSigned))).toEqual([
+        {
+          type: "file",
+          props: { url: `attachment://${longKey}`, name: "Dr. Smith referral letter scan" },
+          children: [],
+        },
+      ]);
+    });
+
+    it("keeps an image file block (an image uploaded as a file) a file block", () => {
+      expect(tiptapToBlocknote(lonelyLink("IMG_0001.jpg", IMAGE_SIGNED))[0].type).toBe("file");
+    });
+
+    it("keeps a pasted signed URL a paragraph with a link", () => {
+      const blocks = tiptapToBlocknote(lonelyLink(SIGNED, SIGNED));
+      expect(blocks[0].type).toBe("paragraph");
+    });
+
+    it("keeps a signed link worded as anything else a paragraph with a link", () => {
+      expect(tiptapToBlocknote(lonelyLink("see the report", SIGNED))[0].type).toBe("paragraph");
+      expect(tiptapToBlocknote(lonelyLink("my holiday", IMAGE_SIGNED))[0].type).toBe("paragraph");
+    });
+
+    it("still restores any lone attachment:// link as a file block, whatever its text", () => {
+      expect(tiptapToBlocknote(lonelyLink("see the report", `attachment://${KEY}`))).toEqual([
+        {
+          type: "file",
+          props: { url: `attachment://${KEY}`, name: "see the report" },
+          children: [],
+        },
+      ]);
+    });
+  });
+
   it("image without optional props round-trips", () => {
     const original: BlockNoteBlock[] = [
       {
@@ -1645,5 +1773,35 @@ describe("nested blocks", () => {
         block("bulletListItem", "text", [block("bulletListItem", "child")]),
       ]);
     });
+  });
+});
+
+describe("PrimeTestLab 11035 E2E toEditorDoc", () => {
+  it("gives a doc with no blocks one empty paragraph, which the editor can put a caret in", () => {
+    expect(toEditorDoc({ type: "doc", content: [] })).toEqual({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+  });
+
+  it("fills a doc whose content is missing altogether", () => {
+    // What getJSON returns for an empty document.
+    expect(toEditorDoc({ type: "doc" } as TipTapDoc)).toEqual({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+  });
+
+  it("returns a doc with blocks as is", () => {
+    const doc: TipTapDoc = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "Hi" }] }],
+    };
+    expect(toEditorDoc(doc)).toBe(doc);
+  });
+
+  it("fills the empty docs contentToTiptap makes of a new note's content", () => {
+    expect(toEditorDoc(contentToTiptap(null))).toEqual(toEditorDoc(contentToTiptap([])));
+    expect(toEditorDoc(contentToTiptap([])).content).toHaveLength(1);
   });
 });

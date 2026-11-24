@@ -1,33 +1,59 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { SIGNUP_CONFIRMATION_SENT } from "@drafto/shared";
+import {
+  MIN_PASSWORD_LENGTH,
+  SIGNUP_CONFIRMATION_SENT,
+  describeAuthError,
+  hasFieldErrors,
+  validateCredentials,
+  type AuthFieldErrors,
+} from "@drafto/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
+import { FieldError } from "@/components/auth/field-error";
 
 export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [loading, setLoading] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+
+  function showFieldErrors(errors: AuthFieldErrors) {
+    setFieldErrors(errors);
+    if (errors.email) emailRef.current?.focus();
+    else if (errors.password) passwordRef.current?.focus();
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+
+    // The form is `noValidate`, so this check runs instead of the browser's own: it reports both
+    // fields at once, in Drafto's words, and a malformed address never reaches Supabase
+    // (PrimeTestLab 11035 M-02).
+    const validation = validateCredentials({ email, password }, "signup");
+    showFieldErrors(validation);
+    if (hasFieldErrors(validation)) return;
+
+    const trimmedEmail = email.trim();
     setLoading(true);
 
     try {
       const supabase = createClient();
       const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
+        email: trimmedEmail,
         password,
         options: {
           // Same browser: the callback exchanges the PKCE code and signs the user in. Another
@@ -38,13 +64,15 @@ export default function SignupPage() {
       });
 
       if (signUpError) {
-        setError(signUpError.message);
+        const copy = describeAuthError(signUpError);
+        if (copy.field) showFieldErrors({ [copy.field]: copy.message });
+        else setError(copy.message);
         return;
       }
 
       // With email confirmation on there is no session yet, so say what happens next instead.
       if (!data.session) {
-        setSentTo(email);
+        setSentTo(trimmedEmail);
         return;
       }
 
@@ -75,34 +103,50 @@ export default function SignupPage() {
     <>
       <h1 className="text-fg mb-6 text-center text-2xl font-bold">Create Account</h1>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} noValidate className="space-y-4">
         <div>
           <Label htmlFor="email">Email</Label>
           <Input
+            ref={emailRef}
             id="email"
             type="email"
             autoComplete="email"
             required
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setFieldErrors((current) => ({ ...current, email: undefined }));
+            }}
             placeholder="you@example.com"
             className="mt-1"
+            error={Boolean(fieldErrors.email)}
+            aria-invalid={fieldErrors.email ? true : undefined}
+            aria-describedby={fieldErrors.email ? "signup-email-error" : undefined}
           />
+          <FieldError id="signup-email-error" message={fieldErrors.email} />
         </div>
 
         <div>
           <Label htmlFor="password">Password</Label>
           <PasswordInput
+            ref={passwordRef}
             id="password"
             name="password"
             autoComplete="new-password"
             required
-            minLength={6}
+            minLength={MIN_PASSWORD_LENGTH}
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              setFieldErrors((current) => ({ ...current, password: undefined }));
+            }}
             placeholder="Min. 6 characters"
             wrapperClassName="mt-1"
+            error={Boolean(fieldErrors.password)}
+            aria-invalid={fieldErrors.password ? true : undefined}
+            aria-describedby={fieldErrors.password ? "signup-password-error" : undefined}
           />
+          <FieldError id="signup-password-error" message={fieldErrors.password} />
         </div>
 
         {error && (

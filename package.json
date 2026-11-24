@@ -60,12 +60,12 @@
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
     "@commitlint/config-conventional": "^21.2.4",
-    "@electric-sql/pglite": "^0.5.16",
+    "@electric-sql/pglite": "^0.5.17",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "prettier": "^3.10.1",
     "prettier-plugin-tailwindcss": "^0.8.1",
     "tsx": "^4.23.15",
-    "turbo": "^2.11.11"
+    "turbo": "^2.11.13"
   }
 }

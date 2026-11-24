@@ -114,6 +114,43 @@ for System, and setting `nil` gives the OS scheme back to it. Until AsyncStorage
 stored preference at launch, the chrome follows macOS. See
 [ADR-0089](../adr/0089-macos-native-appearance-follows-in-app-theme.md).
 
+**Settings → About (PrimeTestLab 11035 S-01):** the report asked for the app
+version and links to the privacy policy and support. Each platform shows them:
+
+- **iOS and Android.** The Settings tab ends with an "About" section
+  (`apps/mobile/src/components/about-section.tsx`): a Version row
+  (`about-version`) and two link rows, Privacy policy (`about-privacy`) and
+  Support (`about-support`). The version comes from `getAppVersionLabel()`
+  (`apps/mobile/src/lib/app-version.ts`): `Constants.expoConfig.version`
+  (`app.config.ts` takes it from `package.json`), plus the binary's build number
+  in parentheses, e.g. "1.7.0 (82)". expo-constants reads the build number
+  (`CFBundleVersion`) only on iOS. On Android it exposes no `versionCode`, and
+  `expo-application` isn't a dependency, so Android shows the version alone.
+  The rows open `PRIVACY_POLICY_URL` and `SUPPORT_URL` from `@drafto/shared`
+  (always `https://drafto.eu/...`, even in dev builds) through
+  `openExternalUrl()` (`apps/mobile/src/lib/open-external-url.ts`): the in-app
+  browser, then `Linking.openURL`, then an alert with the address when both fail.
+  `openAttachment()` uses the same helper.
+- **Web.** `/settings` ends with an About card
+  (`apps/web/src/components/settings/about-section.tsx`) below Delete account.
+  It links `/privacy` and `/support` on the current origin, so a preview links
+  its own copy, and holds the "Build <sha>" line, which used to sit below the
+  Delete account card. The links come from `LEGAL_PAGES`
+  (`apps/web/src/components/legal/legal-pages.ts`), the same list the
+  signed-out `LegalLinks` renders, built on `PRIVACY_POLICY_PATH` and
+  `SUPPORT_PATH` from `@drafto/shared`. The mobile URLs use those paths too, on
+  `DRAFTO_WEB_ORIGIN` (`packages/shared/src/web-origin.ts`), which the sign-up
+  redirect and the Apple revocation origin also derive from.
+- **macOS: no change.** The desktop app has no settings window. The standard
+  Drafto → About Drafto panel already shows the version and build, and
+  Help → Drafto Help opens the support page (`supportUrl` in
+  `apps/desktop/src/lib/config.ts`). The support page links the privacy policy.
+  So the app already gives everything the About section shows, in the places
+  macOS users look for it. A Settings… item would need a new settings window
+  for three rows that would only repeat those menus.
+
+No new data leaves the app, so the privacy policy needs no update.
+
 **Backend routing (from `CLAUDE.md` "Mobile Build Environment Mapping"):**
 
 | Build              | Env file          | Supabase project | Project ref            |

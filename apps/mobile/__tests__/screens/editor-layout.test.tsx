@@ -86,6 +86,10 @@ jest.mock("@/lib/data/attachment-resolver", () => ({
   localAttachmentSrcFor: jest.fn(),
 }));
 
+jest.mock("@/hooks/use-note-attachment-sizes", () => ({
+  useNoteAttachmentSizes: () => [],
+}));
+
 jest.mock("@/hooks/use-auto-save", () => ({
   useAutoSave: () => ({ trigger: jest.fn(), cancel: jest.fn(), flush: jest.fn(), status: "idle" }),
 }));
@@ -162,7 +166,7 @@ describe("EditorScreen layout", () => {
     expect(theme.webview).toEqual({ backgroundColor: semanticLight.bg });
   });
 
-  it("uses the dark surface for the toolbar and keeps TenTap's dark icons", () => {
+  it("PrimeTestLab 11035 E2E uses the dark surface for the toolbar, with icons in the theme's text colour", () => {
     const colorSchemeSpy = jest.spyOn(ReactNative, "useColorScheme").mockReturnValue("dark");
     loadNote();
     render(<EditorScreen />);
@@ -171,7 +175,8 @@ describe("EditorScreen layout", () => {
     expect(theme.toolbar.toolbarBody).toEqual(
       expect.objectContaining({ flex: 0, flexGrow: 0, backgroundColor: semanticDark.bg }),
     );
-    expect(theme.toolbar.icon).toEqual({ tintColor: "white" });
+    // TenTap's white icons are replaced, so they don't glare on the dark row.
+    expect(theme.toolbar.icon).toEqual({ tintColor: semanticDark.fgMuted });
     expect(theme.webview).toEqual({ backgroundColor: semanticDark.bg });
     colorSchemeSpy.mockRestore();
   });
@@ -230,7 +235,7 @@ describe("EditorScreen layout", () => {
     expect(props.accessory.props.noteId).toBe("note-1");
   });
 
-  it("keeps the attachment row above the home indicator with the keyboard down", () => {
+  it("PrimeTestLab 11035 S-02 keeps the always-shown toolbar above the home indicator with the keyboard down", () => {
     loadNote();
     const { getByTestId } = render(<EditorScreen />);
 

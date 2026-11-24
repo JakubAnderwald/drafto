@@ -273,25 +273,39 @@ if ! net_wait_idle 600; then
 else
   net_off || fail_step "could not disable the network services"
   wait_help 20 '^Offline$' || fail_step "indicator never showed Offline (now '$(sync_help)')"
+  # #872: the banner must be in the AX tree. A miss fails the step (and ends
+  # the run, like any FAIL) only after the sync checks below have run.
+  banner_off=yes
+  poll 10 banner_is "You are offline" || banner_off="no (read '$(banner_text)')"
   type_marker "$M3" || fail_step "the offline edit never reached the local DB"
   sleep 2
   t_on=$(date +%s)
   net_on
   synced=no
+  saw_back=no
   end=$((t_on + 60))
   while [ "$(date +%s)" -lt "$end" ]; do
-    if [ "$(sync_help)" = Synced ] && [ "$(db_pending)" = 0 ]; then
+    # "Back online — syncing..." shows for only 2 s: one shallow dump per pass
+    # serves both the banner and the indicator.
+    dump=$(ax_dump 1)
+    [ "$(banner_text_in "$dump")" = "Back online — syncing..." ] && saw_back=yes
+    if [ "$(sync_help_in "$dump")" = Synced ] && [ "$(db_pending)" = 0 ]; then
       synced=yes
       break
     fi
     sleep 0.3
   done
   secs=$(($(date +%s) - t_on))
+  # Synced can come before NetInfo reports the network back, and so before the banner.
+  [ "$saw_back" = yes ] || { poll 5 banner_is "Back online — syncing..." && saw_back=yes; }
   [ "$synced" = yes ] || fail_step "not Synced within 60 s of the network returning (now '$(sync_help)')"
   net_wait_online 60 || fail_step "Supabase unreachable after re-enabling the network"
   poll 30 sb_has_marker "$M3" || fail_step "the offline edit is not on the server"
   if [ "$secs" -le 10 ]; then st=PASS; elif [ "$secs" -le 30 ]; then st=WARN; else st=FAIL; fi
-  step_end "$st" "Offline shown; Synced ${secs}s after the network returned (scenario: ~10 s), edit on the server"
+  # Missing the 2 s "Back online" banner is a WARN; a missing offline banner fails.
+  [ "$st" = PASS ] && [ "$saw_back" = no ] && st=WARN
+  [ "$banner_off" = yes ] || st=FAIL
+  step_end "$st" "Offline shown; 'You are offline' banner in the AX tree: $banner_off; 'Back online' banner seen: $saw_back; Synced ${secs}s after the network returned (scenario: ~10 s), edit on the server"
   [ "$st" = FAIL ] && exit 1
 fi
 

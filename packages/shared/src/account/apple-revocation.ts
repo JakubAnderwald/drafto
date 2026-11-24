@@ -11,11 +11,13 @@
  * which posts the result back to the page, so it never reaches the relay.
  */
 
+import { DRAFTO_WEB_ORIGIN } from "../web-origin";
+
 /** The Services ID that Supabase's Apple OAuth flow and every revocation code here use. */
 export const APPLE_SERVICES_ID = "eu.drafto.web.auth";
 
 /** Only origin whose pages Apple will hand a Services ID code to (registered on the Services ID). */
-export const APPLE_REVOCATION_ORIGIN = "https://drafto.eu";
+export const APPLE_REVOCATION_ORIGIN = DRAFTO_WEB_ORIGIN;
 
 /**
  * The return URL registered on the Services ID. Apple binds each code to it, so the

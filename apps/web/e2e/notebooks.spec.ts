@@ -127,6 +127,45 @@ test.describe("Notebook management lifecycle", () => {
     expect(trashed.map((note) => note.id)).not.toContain(noteId);
   });
 
+  test("PrimeTestLab 11035 M-01: a taken notebook name is refused, in the API and the sidebar", async ({
+    page,
+  }, testInfo) => {
+    const notebookName = `Test Notebook ${Date.now()}`;
+    const notebookRes = await page.request.post("/api/notebooks", { data: { name: notebookName } });
+    expect(notebookRes.ok()).toBe(true);
+    recordRunNotebook(testInfo, ((await notebookRes.json()) as { id: string }).id);
+
+    // The API refuses the same name in another case with a 409 that names the notebook.
+    const duplicateMessage = `A notebook named "${notebookName}" already exists. Choose a different name.`;
+    const duplicateRes = await page.request.post("/api/notebooks", {
+      data: { name: notebookName.toUpperCase() },
+    });
+    expect(duplicateRes.status()).toBe(409);
+    expect(((await duplicateRes.json()) as { error: string }).error).toBe(duplicateMessage);
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+    const notebookItem = page.locator("nav li").filter({ hasText: notebookName });
+    await expect(notebookItem).toBeVisible({ timeout: 10000 });
+
+    // PrimeTestLab 11035 S-03: the row shows its note count. Other workers may add notes to
+    // the newest notebook, so only the shape is checked.
+    await expect(notebookItem.getByTestId("notebook-note-count")).toHaveText(/^\d+ notes?$/);
+
+    // The sidebar refuses it too, keeps the field open, and creates nothing.
+    await page.getByRole("button", { name: "New notebook" }).click();
+    const createInput = page.getByPlaceholder("Notebook name");
+    await createInput.fill(` ${notebookName.toLowerCase()} `);
+    await createInput.press("Enter");
+    await expect(page.getByTestId("notebook-name-error")).toHaveText(duplicateMessage);
+    await expect(createInput).toBeVisible();
+
+    await createInput.press("Escape");
+    await expect(createInput).not.toBeVisible();
+    await expect(page.getByTestId("notebook-name-error")).toHaveCount(0);
+    await expect(page.locator("nav li").filter({ hasText: notebookName })).toHaveCount(1);
+  });
+
   test("default notebook exists on first visit", async ({ page }) => {
     await page.goto("/");
 

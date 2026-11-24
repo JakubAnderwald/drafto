@@ -1,4 +1,4 @@
-import { tiptapToBlocknote } from "./format-converter";
+import { tiptapToBlocknote, toEditorDoc } from "./format-converter";
 import { migrateSignedUrlsToAttachmentUrls } from "./resolve-urls";
 import type { TipTapDoc } from "./types";
 
@@ -46,14 +46,12 @@ export function serializeEditorContent(doc: TipTapDoc): string {
 }
 
 /**
- * `serializeEditorContent` of `doc` as the editor holds it once loaded:
- * ProseMirror never keeps an empty document, it fills it with one empty
- * paragraph, so that is what reading the editor back would serialise.
+ * `serializeEditorContent` of `doc` as the editor holds it once loaded: the
+ * editors load an empty document as one empty paragraph (`toEditorDoc`), so
+ * that is what reading the editor back would serialise.
  */
 export function serializeLoadedDoc(doc: TipTapDoc): string {
-  return serializeEditorContent(
-    doc.content.length > 0 ? doc : { type: "doc", content: [{ type: "paragraph" }] },
-  );
+  return serializeEditorContent(toEditorDoc(doc));
 }
 
 function parseJson(value: string): unknown {

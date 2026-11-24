@@ -81,7 +81,7 @@ describe("serializeEditorContent", () => {
 });
 
 describe("serializeLoadedDoc", () => {
-  it("serialises an empty doc as the one empty paragraph ProseMirror fills it with", () => {
+  it("serialises an empty doc as the one empty paragraph the editors load it as", () => {
     expect(serializeLoadedDoc({ type: "doc", content: [] })).toBe(
       serializeEditorContent({ type: "doc", content: [{ type: "paragraph" }] }),
     );

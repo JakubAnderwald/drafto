@@ -62,6 +62,15 @@ jest.mock("@/db", () => ({
 
 jest.mock("@/hooks/use-note", () => ({ useNote: jest.fn() }));
 
+const mockAttachmentSizes: { current: { filePath: string; fileSize: number; mimeType: string }[] } =
+  { current: [] };
+const mockUseNoteAttachmentSizes = jest.fn(
+  (_noteId: string | undefined) => mockAttachmentSizes.current,
+);
+jest.mock("@/hooks/use-note-attachment-sizes", () => ({
+  useNoteAttachmentSizes: (noteId: string | undefined) => mockUseNoteAttachmentSizes(noteId),
+}));
+
 const mockGetSignedUrl = jest.fn(async (filePath: string) => `https://signed.example/${filePath}`);
 const mockResolveAttachmentSrc = jest.fn(
   async (filePath: string, _kind?: string): Promise<string> => `https://signed.example/${filePath}`,
@@ -169,6 +178,7 @@ function createFakeWebEditor() {
     getEditorState: () => ({ isReady: true }),
     _subscribeToEditorStateUpdate: () => () => {},
     webviewRef: { current: { injectJavaScript: jest.fn() } },
+    injectCSS: jest.fn(),
     setContent: jest.fn((content: unknown) => {
       doc = webEditorParse(content);
       // The web editor answers setContent with a content-update. It is posted
@@ -382,6 +392,20 @@ describe("NoteEditorPanel — no writes from merely opening a note (#654)", () =
     expect(writes(tiptapEmpty)).toBe(0);
     expect(writes(plain)).toBe(0);
     expect(writes(empty)).toBe(0);
+  });
+
+  it("PrimeTestLab 11035 E2E sets an empty TipTap doc as one empty paragraph", async () => {
+    // A doc with no blocks left the editor's selection at 0, where no toolbar
+    // command applies, so every button read as disabled.
+    createRecord("tiptap", "TipTap", JSON.stringify({ type: "doc", content: [] }));
+
+    renderPanel("tiptap");
+    await flushAsync();
+
+    expect(web.bridge.setContent).toHaveBeenCalledWith({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
   });
 
   it("still saves a genuine edit after the debounce, with the edited content", async () => {
@@ -1005,5 +1029,114 @@ describe("NoteEditorPanel — offline attachment images (ADR-0086)", () => {
     expect(web.bridge.webviewRef.current.injectJavaScript).toHaveBeenCalledWith(
       IMAGE_RENDER_STATUS_SCRIPT,
     );
+  });
+});
+
+// PrimeTestLab 11035 S-02 / S-04: the formatting toolbar's theme, file cards
+// that show at once after an upload, and their size labels.
+describe("NoteEditorPanel — PrimeTestLab 11035 toolbar and file cards", () => {
+  const LINK_PATH = "user-1/a/report-1700000000000-0a1b2c3d.pdf";
+  const SIGNED = `https://x.supabase.co/storage/v1/object/sign/attachments/${LINK_PATH}?token=t`;
+  let web: ReturnType<typeof createFakeWebEditor>;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.clearAllMocks();
+    mockRecords.clear();
+    mockWriteQueue.tail = Promise.resolve();
+    mockAttachmentPicker.onAttachmentReady = undefined;
+    mockAttachmentSizes.current = [];
+    web = createFakeWebEditor();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("PrimeTestLab 11035 S-02 gives the toolbar a fixed row in the window's colours", () => {
+    createRecord("a", "Report", null);
+    renderPanel("a");
+    const options = mockedUseEditorBridge.mock.calls[0][0] as {
+      theme?: { toolbar?: { toolbarBody?: Record<string, unknown> } };
+    };
+    expect(options.theme?.toolbar?.toolbarBody).toEqual(
+      expect.objectContaining({ flex: 0, height: 44 }),
+    );
+  });
+
+  it("PrimeTestLab 11035 S-04 injects the open note's file sizes", async () => {
+    mockAttachmentSizes.current = [
+      { filePath: LINK_PATH, fileSize: 812 * 1024, mimeType: "application/pdf" },
+    ];
+    createRecord("a", "Report", null);
+    renderPanel("a");
+    await flushAsync();
+
+    expect(mockUseNoteAttachmentSizes).toHaveBeenCalledWith("a");
+    expect(web.bridge.injectCSS).toHaveBeenCalledWith(
+      expect.stringContaining('[href*="-1700000000000-0a1b2c3d"]::after { content: "812 KB"; }'),
+      "attachment-sizes",
+    );
+  });
+
+  it("PrimeTestLab 11035 S-04 shows an uploaded file with its signed URL and stores a file block", async () => {
+    mockResolveAttachmentSrc.mockResolvedValue(SIGNED);
+    const note = createRecord("a", "Report", webAuthoredContent("Hello"));
+    renderPanel("a");
+    await flushAsync();
+
+    await act(async () => {
+      mockAttachmentPicker.onAttachmentReady?.({
+        filePath: LINK_PATH,
+        fileName: "report.pdf",
+        mimeType: "application/pdf",
+        uploadStatus: "uploaded",
+      } as Attachment);
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await flushAsync(DEBOUNCE_MS * 2);
+
+    expect(mockResolveAttachmentSrc).toHaveBeenCalledWith(LINK_PATH, "link");
+    const shown = web.currentDoc();
+    expect(JSON.stringify(shown.content[shown.content.length - 1])).toContain(SIGNED);
+    const stored = JSON.parse(note.content ?? "[]") as { type: string; props?: unknown }[];
+    expect(stored[stored.length - 1]).toEqual({
+      type: "file",
+      props: { url: toAttachmentUrl(LINK_PATH), name: "report.pdf" },
+      children: [],
+    });
+    // The setContent echo of the insertion adds no second write.
+    expect(writes(note)).toBe(1);
+  });
+
+  it("PrimeTestLab 11035 review: inserts a file after 1.5 s, not 8 s, when its signed URL stalls", async () => {
+    const note = createRecord("a", "Report", webAuthoredContent("Hello"));
+    renderPanel("a");
+    await flushAsync();
+    mockResolveAttachmentSrc.mockImplementation(() => new Promise<string>(() => {}));
+
+    await act(async () => {
+      mockAttachmentPicker.onAttachmentReady?.({
+        filePath: LINK_PATH,
+        fileName: "report.pdf",
+        mimeType: "application/pdf",
+        uploadStatus: "uploaded",
+      } as Attachment);
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    expect(JSON.stringify(web.currentDoc())).not.toContain("report.pdf");
+
+    await flushAsync(500);
+    const shown = web.currentDoc();
+    expect(JSON.stringify(shown.content[shown.content.length - 1])).toContain(
+      toAttachmentUrl(LINK_PATH),
+    );
+    await flushAsync(DEBOUNCE_MS * 2);
+    const stored = JSON.parse(note.content ?? "[]") as { type: string; props?: unknown }[];
+    expect(stored[stored.length - 1]).toEqual({
+      type: "file",
+      props: { url: toAttachmentUrl(LINK_PATH), name: "report.pdf" },
+      children: [],
+    });
   });
 });

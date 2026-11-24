@@ -1,10 +1,12 @@
 import { useState, useMemo } from "react";
 import { Text, View, Pressable, StyleSheet } from "react-native";
+import { describeAuthError, validateEmailField } from "@drafto/shared";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { RECOVERY_REDIRECT_URL } from "@/lib/auth-recovery";
+import { useAccessibilityAnnouncement } from "@/hooks/use-accessibility-announcement";
 import { cryptoReady, supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -22,16 +24,32 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
   const { isConnected } = useNetworkStatus();
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | undefined>(undefined);
   const [retryable, setRetryable] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Bumped by every submit, so an error that repeats the last one's words is still announced
+  // to VoiceOver (PrimeTestLab 11035 review).
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  useAccessibilityAnnouncement(error, { queue: true, attempt: submitAttempt });
+
+  const handleEmailChange = (value: string) => {
+    setEmail(value);
+    setEmailError(undefined);
+  };
 
   const handleSubmit = async () => {
+    setSubmitAttempt((attempt) => attempt + 1);
     const trimmed = email.trim();
 
-    if (!trimmed) {
+    // An empty or malformed address is refused here, under the field (PrimeTestLab 11035 M-02).
+    // Set in the same batch as the attempt bump, so a field error left by the last try (one the
+    // server sent) is cleared now rather than spoken again while this request is in flight.
+    const invalid = validateEmailField(email);
+    setEmailError(invalid);
+    if (invalid) {
       setRetryable(false);
-      setError("Please enter your email address.");
+      setError(null);
       return;
     }
 
@@ -54,7 +72,9 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
       });
 
       if (resetError) {
-        setError(resetError.message);
+        const copy = describeAuthError(resetError);
+        if (copy.field === "email") setEmailError(copy.message);
+        else setError(copy.message);
         return;
       }
 
@@ -91,7 +111,11 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
       <Text style={styles.subtitle}>We&apos;ll email you a link to set a new password</Text>
 
       {error && (
-        <View style={styles.errorContainer}>
+        <View
+          style={styles.errorContainer}
+          accessibilityRole="alert"
+          testID="forgot-password-error"
+        >
           <Text style={styles.errorText}>{error}</Text>
         </View>
       )}
@@ -103,7 +127,9 @@ export function ForgotPasswordScreen({ onNavigateToLogin }: ForgotPasswordScreen
             label="Email"
             placeholder="you@example.com"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={handleEmailChange}
+            errorText={emailError}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"

@@ -13,11 +13,11 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@tiptap/core": "3.34.0",
-    "@tiptap/extension-image": "3.34.0",
+    "@tiptap/core": "3.35.0",
+    "@tiptap/extension-image": "3.35.0",
     "@tiptap/extension-list": "3.34.0",
     "@tiptap/pm": "3.34.0",
-    "@tiptap/starter-kit": "3.34.0",
+    "@tiptap/starter-kit": "3.35.0",
     "@types/node": "^24",
     "typescript": "^6",
     "vitest": "^4.1.11"

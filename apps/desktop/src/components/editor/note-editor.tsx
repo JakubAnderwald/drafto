@@ -67,7 +67,10 @@ export function NoteEditor({ editor, onMessage }: NoteEditorProps) {
         // which installs every bridge's CSS. The editor's stylesheet ships
         // through the core bridge instead (see editor-bridge-extensions.ts).
       />
-      <Toolbar editor={editor} items={DEFAULT_TOOLBAR_ITEMS} />
+      {/* Always shown (PrimeTestLab 11035 S-02). TenTap's default shows the
+        toolbar only while a soft keyboard is up, which never happens on
+        macOS, so the formatting buttons were never reachable. */}
+      <Toolbar editor={editor} items={DEFAULT_TOOLBAR_ITEMS} hidden={false} />
     </>
   );
 }

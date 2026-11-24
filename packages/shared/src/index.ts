@@ -110,6 +110,7 @@ export {
   tiptapToBlocknote,
   contentToTiptap,
   contentToBlocknote,
+  toEditorDoc,
 } from "./editor/format-converter";
 export { extractTextFromContent } from "./editor/extract-text";
 export { normalizeBlocks } from "./editor/normalize-blocks";
@@ -259,3 +260,63 @@ export {
   nextOfflineBannerVariant,
 } from "./network/offline-banner";
 export type { OfflineBannerEvent, OfflineBannerVariant } from "./network/offline-banner";
+
+// Auth form validation and error copy (PrimeTestLab 11035 M-02, M-03)
+export {
+  EMAIL_REQUIRED_MESSAGE,
+  INVALID_EMAIL_MESSAGE,
+  isValidEmail,
+  validateEmailField,
+} from "./auth/email";
+export {
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_REQUIRED_MESSAGE,
+  PASSWORD_TOO_SHORT_MESSAGE,
+  validateCredentials,
+  hasFieldErrors,
+} from "./auth/credentials";
+export type { AuthField, AuthFieldErrors, Credentials, CredentialsMode } from "./auth/credentials";
+export {
+  INVALID_CREDENTIALS_MESSAGE,
+  USER_ALREADY_EXISTS_MESSAGE,
+  EMAIL_NOT_CONFIRMED_MESSAGE,
+  AUTH_RATE_LIMITED_MESSAGE,
+  WEAK_PASSWORD_MESSAGE,
+  AUTH_GENERIC_ERROR_MESSAGE,
+  describeAuthError,
+} from "./auth/auth-error-copy";
+export type { AuthErrorLike, AuthErrorCopy } from "./auth/auth-error-copy";
+export { oauthQueryParams } from "./auth/oauth-query-params";
+
+// Notebook names and note counts (PrimeTestLab 11035 M-01, S-03; ADR-0097)
+export {
+  normalizeNotebookName,
+  findDuplicateNotebook,
+  duplicateNotebookNameMessage,
+  formatNoteCount,
+} from "./notebooks/notebook-name";
+export type { NamedNotebook } from "./notebooks/notebook-name";
+
+// Public drafto.eu pages linked from Settings → About (PrimeTestLab 11035 S-01)
+export {
+  DRAFTO_WEB_ORIGIN,
+  PRIVACY_POLICY_PATH,
+  PRIVACY_POLICY_URL,
+  SUPPORT_PATH,
+  SUPPORT_URL,
+} from "./constants";
+
+// --- PrimeTestLab 11035 S-04: file attachment card + size in the editors ---
+export { formatFileSize } from "./formatters/file-size";
+export { canonicalAttachmentUrl } from "./editor/attachment-url";
+export { hasTipTapAttachmentRefs } from "./editor/resolve-urls";
+export {
+  ATTACHMENT_SIZES_CSS_TAG,
+  ATTACHMENT_LINK_SELECTORS,
+  attachmentHrefFragments,
+  buildAttachmentCardCss,
+  buildAttachmentSizeCss,
+  buildFileBlockSizeCss,
+  cssString,
+} from "./editor/attachment-link-css";
+export type { AttachmentSizeInfo } from "./editor/attachment-link-css";

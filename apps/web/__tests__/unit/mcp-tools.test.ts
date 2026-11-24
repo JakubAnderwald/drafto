@@ -219,11 +219,68 @@ describe("searchNotes", () => {
 describe("createNotebook", () => {
   it("creates notebook successfully", async () => {
     const nb = { id: "nb-new", name: "New" };
-    const supabase = createMockSupabase(vi.fn(() => chainOk(nb)));
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        // The paged name read finds no other notebooks.
+        select: () => ({
+          eq: () => ({
+            order: () => ({ limit: () => Promise.resolve({ data: [], error: null }) }),
+          }),
+        }),
+        insert: () => ({
+          select: () => ({ single: () => Promise.resolve({ data: nb, error: null }) }),
+        }),
+      })),
+    );
 
     const result = await createNotebook(supabase, "user-1", "New");
     expect(result.isError).toBeUndefined();
     expect(JSON.parse(result.content[0].text)).toEqual(nb);
+  });
+
+  it("PrimeTestLab 11035 M-01: refuses a name the user already has, ignoring case", async () => {
+    const insert = vi.fn();
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        select: () => ({
+          eq: () => ({
+            order: () => ({
+              limit: () =>
+                Promise.resolve({ data: [{ id: "nb-1", name: "Project Ideas" }], error: null }),
+            }),
+          }),
+        }),
+        insert,
+      })),
+    );
+
+    const result = await createNotebook(supabase, "user-1", " project ideas ");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      'Error: A notebook named "Project Ideas" already exists. Choose a different name.',
+    );
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-01: reports a failure to read the names instead of creating", async () => {
+    const insert = vi.fn();
+    const supabase = createMockSupabase(
+      vi.fn(() => ({
+        select: () => ({
+          eq: () => ({
+            order: () => ({
+              limit: () => Promise.resolve({ data: null, error: { message: "db down" } }),
+            }),
+          }),
+        }),
+        insert,
+      })),
+    );
+
+    const result = await createNotebook(supabase, "user-1", "New");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("Error: db down");
+    expect(insert).not.toHaveBeenCalled();
   });
 });
 
@@ -410,10 +467,15 @@ describe("renameNotebook", () => {
     }));
     const supabase = createMockSupabase(
       vi.fn(() => ({
+        // The existence check (select → eq → eq → single), then the paged name read
+        // (select → eq → order → limit).
         select: () => ({
           eq: () => ({
             eq: () => ({
               single: () => Promise.resolve({ data: { id: "nb-1" }, error: null }),
+            }),
+            order: () => ({
+              limit: () => Promise.resolve({ data: [{ id: "nb-1", name: "Old" }], error: null }),
             }),
           }),
         }),
@@ -451,6 +513,61 @@ describe("renameNotebook", () => {
     const result = await renameNotebook(supabase, "user-1", "bad-nb", "New");
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Notebook not found");
+  });
+
+  describe("PrimeTestLab 11035 M-01: duplicate names", () => {
+    const names = [
+      { id: "nb-1", name: "Project Ideas" },
+      { id: "nb-2", name: "Recipes" },
+    ];
+
+    // The existence check (select → eq → eq → single), then the paged name read
+    // (select → eq → order → limit).
+    function buildSupabase(update: ReturnType<typeof vi.fn>) {
+      return createMockSupabase(
+        vi.fn(() => ({
+          select: (columns: string) => ({
+            eq: () =>
+              columns === "id, name"
+                ? { order: () => ({ limit: () => Promise.resolve({ data: names, error: null }) }) }
+                : {
+                    eq: () => ({
+                      single: () => Promise.resolve({ data: { id: "nb-1" }, error: null }),
+                    }),
+                  },
+          }),
+          update,
+        })),
+      );
+    }
+
+    it("refuses another notebook's name", async () => {
+      const update = vi.fn();
+
+      const result = await renameNotebook(buildSupabase(update), "user-1", "nb-1", "recipes");
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe(
+        'Error: A notebook named "Recipes" already exists. Choose a different name.',
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it("lets a notebook change only the case of its own name", async () => {
+      const update = vi.fn(() => ({
+        eq: () => ({
+          eq: () => ({
+            select: () => ({
+              single: () =>
+                Promise.resolve({ data: { id: "nb-1", name: "PROJECT IDEAS" }, error: null }),
+            }),
+          }),
+        }),
+      }));
+
+      const result = await renameNotebook(buildSupabase(update), "user-1", "nb-1", "PROJECT IDEAS");
+      expect(result.isError).toBeUndefined();
+      expect(update).toHaveBeenCalledWith({ name: "PROJECT IDEAS" });
+    });
   });
 });
 

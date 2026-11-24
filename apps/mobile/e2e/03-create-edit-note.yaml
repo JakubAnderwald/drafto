@@ -66,6 +66,33 @@ appId: eu.drafto.mobile
     visible: ".*Note ${RUN_ID}.*"
     timeout: 10000
 
+# --- Test: formatting toolbar with the keyboard closed (PrimeTestLab 11035 S-02) ---
+# The editor opens without focus, so the keyboard is down. The toolbar must
+# still be shown; its buttons carry TenTap's accessibility labels.
+- extendedWaitUntil:
+    visible: "Bold"
+    timeout: 10000
+- assertVisible: "Italic"
+- takeScreenshot: editor-toolbar-keyboard-closed
+
+# --- Test: a toolbar button on a new, empty note (PrimeTestLab 11035 E2E) ---
+# The keyboard is still closed. Bold must turn enabled once the editor has
+# loaded (an empty note used to keep every button disabled), then focus the
+# body and bring up the keyboard, so the text lands in the body: "Saved" shows
+# and the title keeps its text (Android once left the WebView unfocused, and
+# the text went to the title field).
+- extendedWaitUntil:
+    visible:
+      text: "Bold"
+      enabled: true
+    timeout: 15000
+- tapOn: "Bold"
+- inputText: "Bold ${RUN_ID}"
+- extendedWaitUntil:
+    visible: "Saved"
+    timeout: 10000
+- assertVisible: "Note ${RUN_ID}"
+
 # --- Test: editor with the keyboard up ---
 # The body is a WebView, so tap it by position, then type a line so the gutter
 # shows. The screenshot records the layout to check by eye: a gutter around the
@@ -78,9 +105,21 @@ appId: eu.drafto.mobile
 - takeScreenshot: editor-keyboard-up
 
 # --- Test: rename via long press on notes list ---
-# The editor's back button keeps the label "Notes" (the header shows the
-# notebook's name on the list itself).
-- tapOn: "Notes"
+# iOS: the editor's back button keeps the label "Notes" (the header shows the
+# notebook's name on the list itself). Android's header back button is an
+# unlabelled arrow, so go back with the back key, after closing the keyboard
+# (otherwise the back press only dismisses it), as android-all.yaml does.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: "Notes"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - hideKeyboard
+      - pressKey: back
 
 # Verify the title shows in the list
 - extendedWaitUntil:

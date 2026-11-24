@@ -9,6 +9,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
+import { useAccessibilityAnnouncement } from "@/hooks/use-accessibility-announcement";
 import { useTheme } from "@/providers/theme-provider";
 import { fontSizes, radii, spacing, type SemanticColors } from "@/theme/tokens";
 
@@ -17,7 +18,18 @@ export interface InputProps extends Omit<TextInputProps, "style"> {
   onChangeText: (text: string) => void;
   placeholder?: string;
   label?: string;
+  /**
+   * Shown under the field, which turns its border red. Its testID is `${testID}-error`. VoiceOver
+   * announces it as it appears (a queued announcement: the alert role alone maps to no macOS role
+   * and says nothing), and the field carries it as its accessibility hint, so VoiceOver reads it
+   * again when the field gets focus.
+   */
   errorText?: string;
+  /**
+   * The form's submit counter. When it changes, the error is announced again even if its words
+   * are the same, so every submit that fails is heard.
+   */
+  submitAttempt?: number;
   leftIcon?: React.ReactNode;
   rightIcon?: React.ReactNode;
   secureTextEntry?: boolean;
@@ -32,6 +44,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
     placeholder,
     label,
     errorText,
+    submitAttempt,
     leftIcon,
     rightIcon,
     secureTextEntry,
@@ -39,6 +52,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
     testID,
     onFocus,
     onBlur,
+    accessibilityHint,
     ...rest
   },
   ref,
@@ -46,6 +60,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
   const { semantic } = useTheme();
   const styles = useMemo(() => createStyles(semantic), [semantic]);
   const [focused, setFocused] = useState(false);
+  useAccessibilityAnnouncement(errorText || null, { queue: true, attempt: submitAttempt });
 
   const hasError = Boolean(errorText);
 
@@ -71,6 +86,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
           placeholderTextColor={semantic.fgSubtle}
           secureTextEntry={secureTextEntry}
           accessibilityLabel={label}
+          accessibilityHint={errorText || accessibilityHint}
           onFocus={(e) => {
             setFocused(true);
             onFocus?.(e);
@@ -83,7 +99,15 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
         />
         {rightIcon ? <View style={styles.rightIcon}>{rightIcon}</View> : null}
       </View>
-      {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
+      {errorText ? (
+        <Text
+          style={styles.errorText}
+          testID={testID ? `${testID}-error` : undefined}
+          accessibilityRole="alert"
+        >
+          {errorText}
+        </Text>
+      ) : null}
     </View>
   );
 });

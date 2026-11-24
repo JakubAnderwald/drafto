@@ -1,5 +1,12 @@
 import React from "react";
-import { ACCOUNT_DELETED_MESSAGE } from "@drafto/shared";
+import { AccessibilityInfo } from "react-native";
+import {
+  ACCOUNT_DELETED_MESSAGE,
+  EMAIL_REQUIRED_MESSAGE,
+  INVALID_CREDENTIALS_MESSAGE,
+  INVALID_EMAIL_MESSAGE,
+  PASSWORD_REQUIRED_MESSAGE,
+} from "@drafto/shared";
 
 import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import { LoginScreen } from "../../src/screens/login";
@@ -35,15 +42,52 @@ describe("LoginScreen", () => {
   });
 
   it("shows error when submitting empty form", async () => {
-    const { getByText } = render(<LoginScreen />);
+    const { getByText, getByTestId } = render(<LoginScreen />);
 
     fireEvent.press(getByText("Log in"));
 
     await waitFor(() => {
-      expect(getByText("Please enter your email and password.")).toBeTruthy();
+      expect(getByTestId("email-input-error")).toHaveTextContent(EMAIL_REQUIRED_MESSAGE);
     });
+    expect(getByTestId("password-input-error")).toHaveTextContent(PASSWORD_REQUIRED_MESSAGE);
 
     expect(mockSignInWithPassword).not.toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-02: refuses a malformed email without calling Supabase, under the field", () => {
+    const { getByText, getByTestId, queryByTestId } = render(<LoginScreen />);
+
+    fireEvent.changeText(getByTestId("email-input"), "planner.com");
+    fireEvent.changeText(getByTestId("password-input"), "abc");
+    fireEvent.press(getByText("Log in"));
+
+    expect(mockSignInWithPassword).not.toHaveBeenCalled();
+    expect(getByTestId("email-input-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+    // Log-in never checks a password's length: older accounts may have shorter ones.
+    expect(queryByTestId("password-input-error")).toBeNull();
+    expect(queryByTestId("login-error")).toBeNull();
+    // VoiceOver reads the error again when the field gets focus.
+    expect(getByTestId("email-input").props.accessibilityHint).toBe(INVALID_EMAIL_MESSAGE);
+    expect(getByTestId("email-input-error").props.accessibilityRole).toBe("alert");
+
+    fireEvent.changeText(getByTestId("email-input"), "planner@example.com");
+    expect(queryByTestId("email-input-error")).toBeNull();
+  });
+
+  it("PrimeTestLab 11035 M-02: puts Supabase's format error under the email field", async () => {
+    mockSignInWithPassword.mockResolvedValue({
+      error: { message: "Unable to validate email address: invalid format" },
+    });
+    const { getByText, getByTestId, queryByText } = render(<LoginScreen />);
+
+    fireEvent.changeText(getByTestId("email-input"), "name@example.com");
+    fireEvent.changeText(getByTestId("password-input"), "password123");
+    fireEvent.press(getByText("Log in"));
+
+    await waitFor(() => {
+      expect(getByTestId("email-input-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+    });
+    expect(queryByText(/Unable to validate/)).toBeNull();
   });
 
   it("calls signInWithPassword with email and password", async () => {
@@ -73,7 +117,7 @@ describe("LoginScreen", () => {
     fireEvent.press(getByText("Log in"));
 
     await waitFor(() => {
-      expect(getByText("Invalid login credentials")).toBeTruthy();
+      expect(getByText(INVALID_CREDENTIALS_MESSAGE)).toBeTruthy();
     });
   });
 
@@ -148,5 +192,57 @@ describe("LoginScreen", () => {
 
     fireEvent.press(getByTestId("password-input-toggle"));
     expect(field().props.secureTextEntry).toBe(true);
+  });
+});
+
+describe("LoginScreen — VoiceOver announcements (PrimeTestLab 11035 review)", () => {
+  let announce: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    announce = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    announce.mockRestore();
+  });
+
+  /** How many times VoiceOver was asked to speak `message`. */
+  const announced = (message: string) =>
+    announce.mock.calls.filter(([spoken]) => spoken === message).length;
+
+  it("PrimeTestLab 11035 review: announces the error banner, and again when a resubmit fails the same way", async () => {
+    mockSignInWithPassword.mockResolvedValue({ error: { message: "Invalid login credentials" } });
+    const { getByText, getByTestId } = render(<LoginScreen />);
+
+    fireEvent.changeText(getByTestId("email-input"), "test@example.com");
+    fireEvent.changeText(getByTestId("password-input"), "wrongpassword");
+    fireEvent.press(getByText("Log in"));
+
+    await waitFor(() => {
+      expect(getByTestId("login-error")).toHaveTextContent(INVALID_CREDENTIALS_MESSAGE);
+    });
+    expect(announced(INVALID_CREDENTIALS_MESSAGE)).toBe(1);
+
+    fireEvent.press(getByText("Log in"));
+
+    await waitFor(() => {
+      expect(announced(INVALID_CREDENTIALS_MESSAGE)).toBe(2);
+    });
+    expect(mockSignInWithPassword).toHaveBeenCalledTimes(2);
+  });
+
+  it("PrimeTestLab 11035 review: announces unchanged field errors again on each submit", () => {
+    const { getByText } = render(<LoginScreen />);
+
+    fireEvent.press(getByText("Log in"));
+    expect(announced(EMAIL_REQUIRED_MESSAGE)).toBe(1);
+    expect(announced(PASSWORD_REQUIRED_MESSAGE)).toBe(1);
+
+    fireEvent.press(getByText("Log in"));
+    expect(announced(EMAIL_REQUIRED_MESSAGE)).toBe(2);
+    expect(announced(PASSWORD_REQUIRED_MESSAGE)).toBe(2);
   });
 });

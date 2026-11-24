@@ -123,6 +123,11 @@ jest.mock("@/lib/data/attachment-resolver", () => ({
   localAttachmentSrcFor: (...args: unknown[]) => mockLocalAttachmentSrcFor(...args),
 }));
 
+let mockAttachmentSizes: { filePath: string; fileSize: number; mimeType: string }[] = [];
+jest.mock("@/hooks/use-note-attachment-sizes", () => ({
+  useNoteAttachmentSizes: () => mockAttachmentSizes,
+}));
+
 type SaveHandler = (value: unknown) => Promise<boolean | void>;
 const mockAutoSaveHandlers: SaveHandler[] = [];
 
@@ -156,8 +161,49 @@ describe("EditorScreen", () => {
     mockEditorFocused = false;
     mockStateSubscribers.length = 0;
     mockAutoSaveHandlers.length = 0;
+    mockAttachmentSizes = [];
     mockGetJSON.mockResolvedValue({ type: "doc", content: [] });
   });
+
+  it("PrimeTestLab 11035 S-04 injects the note's file sizes as a stylesheet", () => {
+    mockAttachmentSizes = [
+      {
+        filePath: "user-1/note-1/report-1700000000000-0a1b2c3d.pdf",
+        fileSize: 1.2 * 1024 * 1024,
+        mimeType: "application/pdf",
+      },
+    ];
+    mockNoteLoading = false;
+    mockNote = { id: "note-1", title: "Test Note", content: null, updatedAt: new Date() };
+
+    render(<EditorScreen />);
+
+    expect(mockInjectCSS).toHaveBeenCalledWith(
+      expect.stringContaining('[href*="-1700000000000-0a1b2c3d"]::after { content: "1.2 MB"; }'),
+      "attachment-sizes",
+    );
+  });
+
+  it.each([
+    ["no content", null],
+    ["an empty BlockNote array", "[]"],
+    ["an empty TipTap doc", JSON.stringify({ type: "doc", content: [] })],
+  ])(
+    "PrimeTestLab 11035 E2E hands a note with %s to the editor as one empty paragraph",
+    (_case, content) => {
+      // A doc with no blocks left the editor's selection at 0, where no
+      // command applies: every toolbar button was disabled and iOS could not
+      // focus the body of a new note.
+      mockNoteLoading = false;
+      mockNote = { id: "note-1", title: "Test Note", content, updatedAt: new Date() };
+
+      render(<EditorScreen />);
+
+      const calls = mockUseEditorBridge.mock.calls;
+      const options = calls[calls.length - 1][0] as { initialContent: TipTapDoc };
+      expect(options.initialContent).toEqual({ type: "doc", content: [{ type: "paragraph" }] });
+    },
+  );
 
   it("shows error state when note is not found", () => {
     mockNoteLoading = false;
@@ -518,6 +564,7 @@ describe("EditorScreen offline attachment images (ADR-0086)", () => {
     mockResolveAttachmentSrc.mockResolvedValue(LOCAL_SRC);
     mockLocalAttachmentSrcFor.mockReturnValue(LOCAL_SRC);
     mockProbesEnabled = true;
+    mockAttachmentSizes = [];
   });
 
   it("gives the editor a file:// base URL so cached images can load", () => {
@@ -623,6 +670,207 @@ describe("EditorScreen offline attachment images (ADR-0086)", () => {
     expect(record.content).toContain(toAttachmentUrl(FILE_PATH));
     expect(record.content).not.toContain("file://");
     expect(record.content).not.toContain("#drafto-attachment=");
+  });
+
+  it("PrimeTestLab 11035 S-04 resolves a note with only a file link, so it opens and shows as a card", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    const SIGNED =
+      "https://x.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/report.pdf?token=t";
+    mockResolveAttachmentSrc.mockResolvedValue(SIGNED);
+    storeNote(
+      JSON.stringify([
+        {
+          type: "file",
+          props: { url: toAttachmentUrl(LINK_PATH), name: "report.pdf" },
+          children: [],
+        },
+      ]),
+    );
+    render(<EditorScreen />);
+    await settle();
+
+    expect(mockResolveAttachmentSrc).toHaveBeenCalledWith(LINK_PATH, "link");
+    expect(JSON.stringify(lastBridgeOptions().initialContent)).toContain(SIGNED);
+  });
+
+  it("PrimeTestLab 11035 CodeRabbit: resolves a note whose only attachment is an inline text link", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    const SIGNED =
+      "https://x.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/report.pdf?token=t";
+    mockResolveAttachmentSrc.mockResolvedValue(SIGNED);
+    storeNote(
+      JSON.stringify([
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "link",
+              href: toAttachmentUrl(LINK_PATH),
+              content: [{ type: "text", text: "the report", styles: {} }],
+            },
+          ],
+          children: [],
+        },
+      ]),
+    );
+    render(<EditorScreen />);
+    await settle();
+
+    expect(mockResolveAttachmentSrc).toHaveBeenCalledWith(LINK_PATH, "link");
+    const initial = JSON.stringify(lastBridgeOptions().initialContent);
+    expect(initial).toContain(SIGNED);
+    expect(initial).not.toContain(toAttachmentUrl(LINK_PATH));
+  });
+
+  it("PrimeTestLab 11035 S-04 inserts an uploaded file with its signed URL and stores a file block", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    const SIGNED =
+      "https://x.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/report.pdf?token=t";
+    mockResolveAttachmentSrc.mockResolvedValue(SIGNED);
+    const record = storeNote(null);
+    mockGetJSON.mockResolvedValue({ type: "doc", content: [{ type: "paragraph" }] });
+    render(<EditorScreen />);
+    await settle();
+
+    await act(async () => {
+      await mockOnAttachmentReady?.({
+        filePath: LINK_PATH,
+        fileName: "report.pdf",
+        mimeType: "application/pdf",
+        uploadStatus: "uploaded",
+        localUri: null,
+      });
+    });
+
+    expect(mockResolveAttachmentSrc).toHaveBeenCalledWith(LINK_PATH, "link");
+    const shown = mockSetContent.mock.calls[mockSetContent.mock.calls.length - 1][0] as TipTapDoc;
+    expect(JSON.stringify(shown.content[shown.content.length - 1])).toContain(SIGNED);
+    const stored = JSON.parse(record.content ?? "[]") as { type: string; props?: unknown }[];
+    expect(stored[stored.length - 1]).toEqual({
+      type: "file",
+      props: { url: toAttachmentUrl(LINK_PATH), name: "report.pdf" },
+      children: [],
+    });
+  });
+
+  it("PrimeTestLab 11035 CodeRabbit: a later edit stores the inserted file's signed link as attachment://", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    const SIGNED =
+      "https://x.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/report.pdf?token=t";
+    mockResolveAttachmentSrc.mockResolvedValue(SIGNED);
+    const record = storeNote(null);
+    mockGetJSON.mockResolvedValue({ type: "doc", content: [{ type: "paragraph" }] });
+    render(<EditorScreen />);
+    await settle();
+
+    await act(async () => {
+      await mockOnAttachmentReady?.({
+        filePath: LINK_PATH,
+        fileName: "report.pdf",
+        mimeType: "application/pdf",
+        uploadStatus: "uploaded",
+        localUri: null,
+      });
+    });
+
+    // The editor now holds the signed href; the user types, and the autosave reads it back,
+    // with the same link also used inline under other text.
+    const shown = mockSetContent.mock.calls[mockSetContent.mock.calls.length - 1][0] as TipTapDoc;
+    mockGetJSON.mockResolvedValue({
+      type: "doc",
+      content: [
+        ...shown.content,
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "See " },
+            {
+              type: "text",
+              text: "the report",
+              marks: [{ type: "link", attrs: { href: SIGNED } }],
+            },
+          ],
+        },
+      ],
+    });
+    const { saveContent } = latestSaveHandlers();
+    await act(async () => {
+      await expect(saveContent(undefined)).resolves.toBe(true);
+    });
+
+    expect(record.content).not.toContain(SIGNED);
+    expect(record.content).not.toContain("token=");
+    expect(record.content?.split(toAttachmentUrl(LINK_PATH)).length).toBe(3);
+  });
+
+  it("PrimeTestLab 11035 review: inserts a file after 1.5 s, not 8 s, when its signed URL stalls", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    const record = storeNote(null);
+    mockGetJSON.mockResolvedValue({ type: "doc", content: [{ type: "paragraph" }] });
+    render(<EditorScreen />);
+    await settle();
+    mockResolveAttachmentSrc.mockImplementation(() => new Promise<string>(() => {}));
+    mockSetContent.mockClear();
+
+    jest.useFakeTimers();
+    try {
+      let inserted: Promise<void> | undefined;
+      act(() => {
+        inserted = mockOnAttachmentReady?.({
+          filePath: LINK_PATH,
+          fileName: "report.pdf",
+          mimeType: "application/pdf",
+          uploadStatus: "uploaded",
+          localUri: null,
+        });
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1000);
+      });
+      expect(mockSetContent).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(500);
+        await inserted;
+      });
+      const shown = mockSetContent.mock.calls[mockSetContent.mock.calls.length - 1][0] as TipTapDoc;
+      expect(JSON.stringify(shown.content[shown.content.length - 1])).toContain(
+        toAttachmentUrl(LINK_PATH),
+      );
+      const stored = JSON.parse(record.content ?? "[]") as { type: string; props?: unknown }[];
+      expect(stored[stored.length - 1]).toEqual({
+        type: "file",
+        props: { url: toAttachmentUrl(LINK_PATH), name: "report.pdf" },
+        children: [],
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("PrimeTestLab 11035 S-04 inserts a file still waiting to upload with attachment://", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    storeNote(null);
+    mockGetJSON.mockResolvedValue({ type: "doc", content: [{ type: "paragraph" }] });
+    render(<EditorScreen />);
+    await settle();
+    mockResolveAttachmentSrc.mockClear();
+
+    await act(async () => {
+      await mockOnAttachmentReady?.({
+        filePath: LINK_PATH,
+        fileName: "report.pdf",
+        mimeType: "application/pdf",
+        uploadStatus: "pending",
+        localUri: null,
+      });
+    });
+
+    expect(mockResolveAttachmentSrc).not.toHaveBeenCalled();
+    const shown = mockSetContent.mock.calls[mockSetContent.mock.calls.length - 1][0] as TipTapDoc;
+    expect(JSON.stringify(shown.content[shown.content.length - 1])).toContain(
+      toAttachmentUrl(LINK_PATH),
+    );
   });
 
   it("mirrors the WebView's image report in accessible status views", async () => {

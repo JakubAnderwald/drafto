@@ -41,8 +41,13 @@ export function isStorageSafeFileName(name: string): boolean {
   return name.length > 0 && toStorageSafeFileName(name) === name;
 }
 
-/** Split off the extension (last `.` not at the start), capped at 20 characters. */
-function splitExtension(name: string): { base: string; extension: string } {
+/**
+ * Split off the extension (last `.` not at the start), capped at 20 characters.
+ * The characters past the cap are dropped, so a storage key keeps only the
+ * first 20 characters of a long "extension" (`Dr. Smith referral letter scan`
+ * keeps `. Smith referral let`).
+ */
+export function splitExtension(name: string): { base: string; extension: string } {
   const dotIndex = name.lastIndexOf(".");
   if (dotIndex <= 0) return { base: name, extension: "" };
   return {
