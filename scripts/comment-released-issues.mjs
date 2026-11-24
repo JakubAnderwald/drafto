@@ -109,9 +109,10 @@ export async function findLastReleaseTag({ globs, cwd } = {}) {
       .map((s) => s.trim())
       .filter(Boolean);
     for (const tag of tags) {
-      // An unresolvable tag counts as "not on HEAD", as in the shell script.
+      // A tag that doesn't resolve to a commit can't start a range (`git log`
+      // would fail on it and the walk would quietly find nothing), so skip it.
       const commit = await gitOrNull(["rev-parse", `${tag}^{commit}`], cwd);
-      if (commit !== head) return { tag, glob };
+      if (commit && commit !== head) return { tag, glob };
     }
   }
   return { tag: "", glob: null };
@@ -241,13 +242,27 @@ export async function main(argv, env = process.env) {
     .filter(Boolean);
   if (paths.length === 0) throw new Error("--paths must list at least one path");
 
+  // Run git from the repository root. Fastlane starts this script inside
+  // apps/mobile or apps/desktop, where `git log -- apps/mobile/` looks for
+  // apps/mobile/apps/mobile/ and matches no commit at all: the tag range then
+  // announced nothing, and only $DRAFTO_RELEASE_ISSUES produced notices.
+  const root = (await gitOrNull(["rev-parse", "--show-toplevel"])) || undefined;
+
   // The platform glob first, then the whole prefix (e.g. the first release of
   // a platform). De-duplicated so a glob equal to `<prefix>*` is listed once.
   const globs = [...new Set([flags["tag-glob"], `${tagPrefix}*`].filter(Boolean))];
-  const { tag, glob } = await findLastReleaseTag({ globs });
+  const { tag, glob } = await findLastReleaseTag({ globs, cwd: root });
   process.stderr.write(
     `comment-released-issues: range ${tag ? `${tag}..HEAD (from ${glob})` : "(no tag)..HEAD"}\n`,
   );
+  if (flags["tag-glob"] && tag && glob !== flags["tag-glob"]) {
+    // Expected before a platform's first release; otherwise this platform's
+    // tags are missing from this checkout (fetch them), and the range may start
+    // at another platform's release and skip fixes this one never shipped.
+    process.stderr.write(
+      `comment-released-issues: warning: no ${flags["tag-glob"]} tag off HEAD, fell back to ${glob}\n`,
+    );
+  }
 
   const envRefs = parseReleaseIssuesEnv(env.DRAFTO_RELEASE_ISSUES);
   if (envRefs.length > 0) {
@@ -255,7 +270,10 @@ export async function main(argv, env = process.env) {
       `comment-released-issues: DRAFTO_RELEASE_ISSUES adds #${envRefs.join(", #")}\n`,
     );
   }
-  const candidates = unionCandidates(await findClosedIssueNumbers({ tag, paths }), envRefs);
+  const candidates = unionCandidates(
+    await findClosedIssueNumbers({ tag, paths, cwd: root }),
+    envRefs,
+  );
   if (candidates.length === 0) {
     process.stderr.write("comment-released-issues: no Closes #N refs in this range\n");
     return { commented: [], skipped: [], skippedNonSupport: [] };

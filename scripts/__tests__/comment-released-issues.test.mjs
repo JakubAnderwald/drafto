@@ -57,9 +57,11 @@ function harness({
 }) {
   const posted = [];
   const calls = [];
-  _setExecFileForTests(async (cmd, args) => {
+  const gitCwds = [];
+  _setExecFileForTests(async (cmd, args, opts = {}) => {
     const line = `${cmd} ${args.join(" ")}`;
     calls.push(line);
+    if (cmd === "git") gitCwds.push({ line, cwd: opts.cwd });
     if (cmd === "git" && args[0] === "tag" && args[1] === "--list") {
       const listed = tags[args[2]] ?? [];
       if (listed instanceof Error) throw listed;
@@ -67,7 +69,9 @@ function harness({
     }
     if (cmd === "git" && args[0] === "rev-parse") {
       if (args[1] === "HEAD") return { stdout: "head\n" };
+      if (args[1] === "--show-toplevel") return { stdout: "/repo-root\n" };
       const tag = args[1].replace(/\^\{commit\}$/, "");
+      if (commits[tag] instanceof Error) throw commits[tag];
       return { stdout: `${commits[tag] ?? `sha-of-${tag}`}\n` };
     }
     if (line.startsWith("git log")) return { stdout: logBodies };
@@ -80,7 +84,7 @@ function harness({
     }
     throw new Error(`unmocked: ${line}`);
   });
-  return { posted, calls };
+  return { posted, calls, gitCwds };
 }
 
 describe("parseReleaseIssuesEnv / unionCandidates", () => {
@@ -249,6 +253,45 @@ describe("comment-released-issues tag walk", () => {
     assert.equal(logRange(h.calls), "mobile@1.6.0+ios.70..HEAD");
   });
 
+  it("skips a tag that does not resolve to a commit", async () => {
+    const h = harness({
+      tags: { "mobile@*+android.*": ["mobile@1.7.0+android.89", "mobile@1.7.0+android.88"] },
+      commits: { "mobile@1.7.0+android.89": new Error("not a commit") },
+    });
+    await main(ANDROID, {});
+    assert.equal(logRange(h.calls), "mobile@1.7.0+android.88..HEAD");
+  });
+
+  it("runs every git call after --show-toplevel from the repository root", async () => {
+    const h = harness({ tags: { "mobile@*+android.*": ["mobile@1.7.0+android.88"] } });
+    await main(ANDROID, {});
+    assert.equal(h.gitCwds[0].line, "git rev-parse --show-toplevel");
+    const rest = h.gitCwds.slice(1);
+    assert.ok(rest.some((c) => c.line.startsWith("git log")));
+    for (const c of rest) assert.equal(c.cwd, "/repo-root", c.line);
+  });
+
+  it("warns when the --tag-glob falls through to <tag-prefix>*", async () => {
+    harness({ tags: { "mobile@*": ["mobile@1.6.0+ios.70"] } });
+    const written = [];
+    const original = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      written.push(String(chunk));
+      return true;
+    };
+    try {
+      await main(ANDROID, {});
+    } finally {
+      process.stderr.write = original;
+    }
+    assert.ok(
+      written.some((w) =>
+        w.includes("warning: no mobile@*+android.* tag off HEAD, fell back to mobile@*"),
+      ),
+      written.join(""),
+    );
+  });
+
   it("walks all of HEAD when no glob leaves a tag", async () => {
     const h = harness({ tags: {} });
     await main(ANDROID, {});
@@ -393,6 +436,36 @@ describe("findLastReleaseTag against a real repo", () => {
     const out = await findLastReleaseTag({ globs: ["mobile@*+ios.*", "mobile@*"], cwd: d });
     assert.deepEqual(out, { tag: "mobile@1.7.0+ios.81", glob: "mobile@*+ios.*" });
     assert.deepEqual(await findClosedIssueNumbers({ tag: out.tag, paths: PATHS, cwd: d }), []);
+  });
+
+  it("main finds #700 when started inside apps/mobile, as Fastlane runs it", async () => {
+    // Real git, run from the subdirectory unless main passes a cwd; gh mocked.
+    const sub = join(d, "apps/mobile");
+    const posted = [];
+    _setExecFileForTests(async (cmd, args, opts = {}) => {
+      if (cmd === "git") {
+        const r = spawnSync(cmd, args, { cwd: opts.cwd ?? sub, encoding: "utf8" });
+        if (r.status !== 0) throw new Error(r.stderr);
+        return { stdout: r.stdout };
+      }
+      const line = `${cmd} ${args.join(" ")}`;
+      if (line.includes("issues?labels=support")) {
+        return { stdout: JSON.stringify([{ number: 700, closed_at: "2026-01-02T12:00:00Z" }]) };
+      }
+      if (/issues\/700\/comments/.test(line)) return { stdout: "[]" };
+      if (line.startsWith("gh issue comment")) {
+        posted.push(Number(args[2]));
+        return { stdout: "" };
+      }
+      throw new Error(`unmocked: ${line}`);
+    });
+    try {
+      const out = await main([...ARGV, "--tag-glob", "mobile@*+android.*"], {});
+      assert.deepEqual(out.commented, [700]);
+      assert.deepEqual(posted, [700]);
+    } finally {
+      _setExecFileForTests(null);
+    }
   });
 
   it("skips tags on HEAD and orders by date, not version", async () => {
