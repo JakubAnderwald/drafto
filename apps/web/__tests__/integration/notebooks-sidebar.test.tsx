@@ -301,6 +301,39 @@ describe("NotebooksSidebar", () => {
     });
   });
 
+  it("gives the delete button a 44 px tap target on a touch-only pointer, keeping the small one otherwise", async () => {
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
+    });
+
+    // jsdom applies no CSS, so this checks the classes (#899); the Playwright touch
+    // projects (e2e/responsive.spec.ts) check the bounding boxes.
+    const deleteButton = await screen.findByLabelText("Delete Work");
+    expect(deleteButton).toHaveClass(
+      "[@media(hover:none)]:inline-flex",
+      "[@media(hover:none)]:items-center",
+      "[@media(hover:none)]:justify-center",
+      "[@media(hover:none)]:h-11",
+      "[@media(hover:none)]:w-11",
+      "[@media(hover:none)]:shrink-0",
+    );
+    // A hover-capable pointer keeps the small button: no unconditional size.
+    expect(deleteButton).toHaveClass("p-0.5");
+    expect(deleteButton.className).not.toMatch(/(?:^|\s)[hw]-\d/);
+    // The icon stays small; only the button's box grows.
+    expect(deleteButton.querySelector("svg")).toHaveClass("h-3.5", "w-3.5");
+
+    // The row loses its vertical and right padding on touch, so it is exactly the
+    // target's height and the target ends at the row's right edge.
+    const row = deleteButton.closest('[role="button"]');
+    expect(row).toHaveClass(
+      "px-2",
+      "py-1.5",
+      "[@media(hover:none)]:py-0",
+      "[@media(hover:none)]:pr-0",
+    );
+  });
+
   it("deletes a notebook after confirmation", async () => {
     routeFetch();
     const onSelect = vi.fn();
