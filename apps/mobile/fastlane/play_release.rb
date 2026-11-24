@@ -24,8 +24,9 @@ module PlayRelease
   # Raised when a track's version codes could not be read. fastlane's
   # google_play_track_version_codes already returns [] for an empty, missing or
   # release-less track (supply maps Play's 404 trackEmpty / "Track not found" to
-  # [], and since 2.235.0 a track with no `releases`, such as our open-testing
-  # `beta`, too), so a raise here is a real failure: network, a 5xx, auth.
+  # [], and in 2.242.0 a track with no `releases`, such as our open-testing
+  # `beta`, too; 2.232.2 raised on it), so a raise here is a real failure:
+  # network, a 5xx, auth.
   # Guessing that track is empty could reuse a code it holds, which Play only
   # rejects at upload, after the whole build.
   class TrackUnreadable < StandardError; end

@@ -15,8 +15,8 @@ PROJECT_ROOT = File.expand_path("..", __dir__)
 #
 # Passed on every App Store upload, but deliver reads the hash only inside
 # Deliver::SubmitForReview, which Runner#run reaches only when submit_for_review
-# is true and precheck passes (see assert_submitted_for_review!) — and it reads
-# only two of the three keys: update_export_compliance sends
+# is true (precheck never stops it at our settings; see
+# assert_submitted_for_review!) — and it reads only two of the three keys: update_export_compliance sends
 # export_compliance_uses_encryption, update_submission_information sends
 # content_rights_contains_third_party_content. `add_id_info_uses_idfa` appears
 # nowhere in fastlane 2.242.0 (Apple retired the IDFA submission question), so it
@@ -619,18 +619,30 @@ end
 # Hard stop unless App Store Connect now holds a review submission for this
 # platform. Call it right after an upload_to_app_store that asked to submit.
 #
-# fastlane 2.242.0 (fastlane#30438) changed what a failing precheck does. deliver's
-# Runner#run ends with `submit_for_review if options[:submit_for_review] &&
-# precheck_success` (deliver/lib/deliver/runner.rb:74-75), and Runner#precheck_app
-# now rescues Precheck::Runner::BlockingViolationError and returns false
-# (:113-115): precheck prints its table of problems, SubmitForReview is skipped,
-# and upload_to_app_store returns normally — nothing submitted, no exception. In
-# 2.232.2 the same violation was swallowed by precheck_app's generic rescue and
-# the submission went ahead anyway. Without this check the lane would report
-# "submitted for review" and exit 0 for a version that is still sitting in
-# Prepare for Submission.
+# A defence-in-depth postcondition: upload_to_app_store returning normally does
+# not by itself prove deliver submitted anything. Runner#run ends with
+# `submit_for_review if options[:submit_for_review] && precheck_success`
+# (deliver/lib/deliver/runner.rb:74-75), and since fastlane 2.242.0
+# (fastlane#30438) Runner#precheck_app rescues
+# Precheck::Runner::BlockingViolationError and returns false (:113-115), so a
+# blocking precheck violation skips SubmitForReview without raising.
 #
-# Precheck stays on: a blocking violation is a listing App Review would reject.
+# At this repo's settings precheck never blocks. deliver hands precheck its own
+# precheck_default_rule_level, which defaults to :warn
+# (deliver/lib/deliver/options.rb:350-355); no lane overrides it and there is no
+# Precheckfile, so every failed rule lands in warning_results
+# (precheck/lib/precheck/rule_processor.rb:95-96), BlockingViolationError is never
+# raised, and precheck's findings print as warnings while the submission goes
+# ahead (2.232.2 behaved the same). The check matters only if someone raises the
+# rule level to :error, or if deliver ever returns without submitting for another
+# reason: without it the lane would then report "submitted for review" and exit
+# 0 for a version still sitting in Prepare for Submission.
+#
+# With an API key deliver passes precheck no platform (runner.rb:95-105), so
+# precheck falls back to "ios" (precheck/lib/precheck/options.rb:80-88): on the
+# shared eu.drafto.mobile App Store Connect app, these mac lanes' precheck
+# warnings are about the iOS version, not the macOS one.
+#
 # get_in_progress_review_submission is the call deliver's own SubmitForReview
 # makes (WAITING_FOR_REVIEW, IN_REVIEW or UNRESOLVED_ISSUES), and
 # ReviewSubmission#submit_for_review is synchronous, so a submission deliver
@@ -642,8 +654,8 @@ def assert_submitted_for_review!(asc_platform:, app_identifier:, app_version:)
 
   UI.user_error!(
     "#{app_identifier} #{app_version} (#{asc_platform}) was NOT submitted for review: App Store " \
-    "Connect has no review submission waiting for or in review. deliver skips the submission when " \
-    "precheck finds a blocking problem — see precheck's table above, fix the listing, and re-run."
+    "Connect has no review submission waiting for or in review after upload_to_app_store returned. " \
+    "Check the deliver output above for why the submission did not happen, then re-run."
   )
 end
 
@@ -755,8 +767,8 @@ platform :mac do
       submission_information: APPSTORE_SUBMISSION_INFORMATION
     )
 
-    # upload_to_app_store returns normally when precheck blocks the submission
-    # (see assert_submitted_for_review!), so confirm App Store Connect holds it
+    # upload_to_app_store returning normally does not prove a submission was made
+    # (see assert_submitted_for_review!), so confirm App Store Connect holds one
     # before the lane reports "submitted for review".
     if submit
       assert_submitted_for_review!(asc_platform: "osx", app_identifier: BUNDLE_ID, app_version: app_version)
@@ -991,9 +1003,9 @@ platform :mac do
         precheck_include_in_app_purchases: false,
         submission_information: APPSTORE_SUBMISSION_INFORMATION
       )
-      # deliver returns normally when precheck blocks the submission (see
-      # assert_submitted_for_review!): never let a submit:true run end green
-      # without one.
+      # upload_to_app_store returning normally does not prove a submission was
+      # made (see assert_submitted_for_review!): never let a submit:true run end
+      # green without one.
       if submit_for_review
         assert_submitted_for_review!(asc_platform: "osx", app_identifier: BUNDLE_ID, app_version: version)
       end

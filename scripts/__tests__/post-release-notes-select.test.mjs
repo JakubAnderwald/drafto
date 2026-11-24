@@ -601,11 +601,12 @@ describe("App Store promote lanes", () => {
       }
     });
 
-    // fastlane 2.242.0 (fastlane#30438): when precheck finds a blocking problem,
-    // deliver prints it and skips SubmitForReview WITHOUT raising, so
-    // upload_to_app_store "succeeds" with nothing submitted (2.232.2 swallowed
-    // the violation and submitted anyway). Both submitting uploads must confirm
-    // App Store Connect holds a review submission before the lane reports one.
+    // upload_to_app_store returning normally does not prove deliver submitted:
+    // since fastlane 2.242.0 (fastlane#30438) a blocking precheck violation skips
+    // SubmitForReview WITHOUT raising. At deliver's default :warn rule level
+    // precheck never blocks, so this is defence in depth, not a precheck gate.
+    // Both submitting uploads must confirm App Store Connect holds a review
+    // submission before the lane reports one.
     it(`${f.path} confirms a review submission exists after every submitting upload`, () => {
       const src = read(f.path);
       const lane = promoteLaneBody(src);
@@ -636,15 +637,23 @@ describe("App Store promote lanes", () => {
       const build = src.slice(buildStart);
       const prodUploadAt = build.indexOf("upload_to_app_store(");
       assert.notEqual(prodUploadAt, -1, "build_and_submit has no upload_to_app_store call");
-      const afterUpload = build.slice(prodUploadAt);
+      // Anchor on the upload's OWN closing paren (the first `)` line at the
+      // call's indentation), then require nothing but comments before the guard.
+      const lineStart = build.lastIndexOf("\n", prodUploadAt) + 1;
+      const indent = build.slice(lineStart, prodUploadAt);
+      assert.match(indent, /^[ \t]+$/, "upload_to_app_store( must start its own line");
+      const closeRe = new RegExp(`\\r?\\n${indent}\\)\\r?\\n`);
+      const closeMatch = closeRe.exec(build.slice(prodUploadAt));
+      assert.ok(closeMatch, "could not find the production upload's closing paren");
+      const afterClose = build.slice(prodUploadAt + closeMatch.index + closeMatch[0].length);
       assert.match(
-        afterUpload,
+        afterClose,
         new RegExp(
-          `^[ \\t]*\\)\\r?\\n(?:[ \\t]*#.*\\r?\\n)*[ \\t]*if submit_for_review\\r?\\n\\s+` +
-            `assert_submitted_for_review!\\(asc_platform: "${f.ascPlatform}", app_identifier: ${f.appIdentifier},`,
-          "m",
+          `^(?:${indent}#.*\\r?\\n)*${indent}if submit_for_review\\r?\\n${indent}  ` +
+            `assert_submitted_for_review!\\(asc_platform: "${f.ascPlatform}", app_identifier: ${f.appIdentifier},` +
+            `[^\\n]*\\r?\\n${indent}end\\r?\\n`,
         ),
-        "the production upload must be followed by the submission check when submit:true",
+        "the submission check must come right after the production upload, in the same branch",
       );
 
       assert.match(

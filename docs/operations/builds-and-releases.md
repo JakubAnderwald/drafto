@@ -226,7 +226,8 @@ that is higher than all of them. Every Android lane therefore takes the highest 
 on any of `internal`, `alpha`, `beta` and `production`, plus one (`next_play_version_code`
 in the Fastfile). Taking only the target track's highest code breaks once tracks
 diverge: internal was at 87 while alpha held 82, so an alpha build would have reused
-code 83. fastlane (2.235+) reads an empty, missing or release-less track (our open-testing `beta`) as no codes. Any other
+code 83. fastlane 2.242.0 reads an empty, missing or release-less track (our
+open-testing `beta`) as no codes; 2.232.2 raised on a release-less one. Any other
 failure to read a track (network, a 5xx, auth) stops the lane, because guessing that
 track is empty could reuse one of its codes. The codes are read after `expo prebuild`
 and right before Gradle, so a failure costs the prebuild rather than a whole build.
@@ -505,13 +506,17 @@ in valid state` and `You must provide a value for the attribute 'whatsNew'`.
 > Nothing has been submitted then. Fill it in on the version page (or through the
 > App Store Connect API) and re-run. A `submit:false` dry run doesn't catch it.
 
-> **A precheck problem stops the submission.** `deliver` runs fastlane precheck
-> before it submits. Since fastlane 2.242.0, a blocking precheck violation makes
-> `deliver` print precheck's table and skip the submission without raising, so the
-> lane then checks App Store Connect for a review submission
-> (`assert_submitted_for_review!`) and fails with "was NOT submitted for review" if
-> there is none. Fix the listing problem precheck names and re-run. The same check
-> follows `production submit:true`, on iOS and macOS.
+> **Precheck warns; the lane confirms the submission.** `deliver` runs fastlane
+> precheck before it submits, at `deliver`'s default `:warn` rule level, so
+> precheck's findings print as warnings and never stop the submission. Since
+> fastlane 2.242.0, `deliver` skips the submission without raising if precheck
+> does block, which only happens if someone raises the rule level to `:error`.
+> So after every submitting upload (`promote`, and `production submit:true`, on
+> iOS and macOS) the lane asks App Store Connect for the review submission
+> (`assert_submitted_for_review!`). If there is none, it fails with "was NOT
+> submitted for review"; the `deliver` output above that line says why. On
+> macOS, precheck checks the iOS version of the shared `eu.drafto.mobile` app,
+> because `deliver` passes it no platform when it signs in with an API key.
 
 > **`submit:false` is a dry run, not a way to stage a build.** `deliver` uses
 > `build_number` only when it submits (`Deliver::SubmitForReview#select_build` is

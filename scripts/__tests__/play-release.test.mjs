@@ -74,7 +74,7 @@ describe(
     });
 
     it("fastlane 2.242: a NoMethodError, nil.flat_map included, stops the lane like any other error", () => {
-      // fastlane 2.235+ returns [] itself for a track that exists with no
+      // fastlane 2.242.0 returns [] itself for a track that exists with no
       // releases (2.232.2 raised `undefined method 'flat_map' for nil` there),
       // so the lane no longer special-cases that error: every raise is a
       // TrackUnreadable.
