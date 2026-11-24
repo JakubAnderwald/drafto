@@ -18,31 +18,52 @@ type SaveSource = "autosave" | "unmount" | "page-hide";
 
 type SaveFailure = { error: unknown } | { status: number };
 
-// Browsers cap the bodies of all keepalive requests in flight at 64 KiB combined, and reject
-// one that would go over it outright. Stay under it, with headroom for the headers.
+// Browsers cap the bodies of all keepalive requests in flight in a page at 64 KiB combined,
+// and reject one that would go over it outright. This budget keeps autosave's own keepalive
+// bodies under it, with headroom for the headers. It can't see the page's other keepalive
+// requests (Sentry's fetch transport sends its envelopes with keepalive too), so a send
+// inside it can still be refused: `sendPatch` retries that one as a plain fetch.
 const KEEPALIVE_BUDGET_BYTES = 60 * 1024;
 let keepaliveBytesInFlight = 0;
 
+function patchNote(noteId: string, body: string, keepalive: boolean): Promise<Response> {
+  return fetch(`/api/notes/${noteId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body,
+    keepalive,
+  });
+}
+
+async function patchNoteKeepalive(noteId: string, body: string, bytes: number) {
+  keepaliveBytesInFlight += bytes;
+  try {
+    return await patchNote(noteId, body, true);
+  } finally {
+    keepaliveBytesInFlight -= bytes;
+  }
+}
+
 /**
  * PATCH a note. `keepalive` lets the request outlive the page (tab close, reload, a
- * full-page navigation), but only while every keepalive body in flight fits the browser's
- * cap: past it, a plain fetch is sent, which still works for everything but a closing page.
- * The fetch starts synchronously, before this returns.
+ * full-page navigation). Past autosave's keepalive budget a plain fetch is sent, which
+ * still works for everything but a closing page. A keepalive send the browser refuses
+ * looks like any network failure, so it is sent once more, straight away, as a plain
+ * fetch; only a closing page loses it. The first fetch starts synchronously, before this
+ * returns.
  */
 async function sendPatch(noteId: string, data: SaveData): Promise<Response> {
   const body = JSON.stringify(data);
   const bytes = new TextEncoder().encode(body).byteLength;
-  const keepalive = keepaliveBytesInFlight + bytes <= KEEPALIVE_BUDGET_BYTES;
-  if (keepalive) keepaliveBytesInFlight += bytes;
+  if (keepaliveBytesInFlight + bytes > KEEPALIVE_BUDGET_BYTES) {
+    return patchNote(noteId, body, false);
+  }
   try {
-    return await fetch(`/api/notes/${noteId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body,
-      keepalive,
-    });
-  } finally {
-    if (keepalive) keepaliveBytesInFlight -= bytes;
+    return await patchNoteKeepalive(noteId, body, bytes);
+  } catch {
+    // Other keepalive requests may hold the rest of the browser's quota. If this one was
+    // refused for being offline instead, the retry fails too, and that failure is reported.
+    return patchNote(noteId, body, false);
   }
 }
 
@@ -165,7 +186,15 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
       failure: SaveFailure | null,
       quotaMessage: string | null,
     ) => {
-      if (cancelGen !== cancelGenRef.current) return;
+      if (cancelGen !== cancelGenRef.current) {
+        // The edit was discarded while in flight, so nothing is restored, but the badge
+        // must not stay on "saving" (a flush that settled since keeps its status). Edits
+        // typed after the discard stay queued and the drain loop stops here, so they show
+        // as unsaved.
+        const next: SaveStatus = pendingData.current ? "error" : "idle";
+        setSaveStatus((status) => (status === "saving" ? next : status));
+        return;
+      }
       if (supersededRef.current) {
         // A flush re-sent this payload; that request's outcome decides the status.
         if (failure) reportFailure(failure, "autosave");

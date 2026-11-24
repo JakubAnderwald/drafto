@@ -53,6 +53,14 @@ function deferredFetch() {
   };
 }
 
+/**
+ * Fail the next send the way a real network failure does: the keepalive PATCH rejects, and
+ * so does the plain-fetch retry `sendPatch` makes for a refused keepalive send.
+ */
+function failNextSend(error: unknown = new Error("offline")) {
+  mockFetch.mockRejectedValueOnce(error).mockRejectedValueOnce(error);
+}
+
 function setVisibility(state: DocumentVisibilityState) {
   Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
 }
@@ -293,7 +301,8 @@ describe("useAutoSave", () => {
     });
 
     it("clears the notes-full message when a later save fails for another reason", async () => {
-      mockFetch.mockResolvedValueOnce(quotaRefusal).mockRejectedValueOnce(new Error("offline"));
+      mockFetch.mockResolvedValueOnce(quotaRefusal);
+      failNextSend();
       const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
 
       await saveAndFlush(result, { content: ["big"] });
@@ -390,9 +399,51 @@ describe("useAutoSave", () => {
       });
     });
 
-    it("reports a failed unmount flush to Sentry", async () => {
+    it("sends a refused keepalive PATCH again at once as a plain fetch", async () => {
+      // The browser's keepalive quota is shared with the page's other requests (Sentry's
+      // transport among them), so it can refuse a send that fits autosave's own budget.
+      mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      act(() => {
+        result.current.debouncedSave({ title: "Refused" });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(fetchInit(0).keepalive).toBe(true);
+      expect(fetchInit(1).keepalive).toBe(false);
+      expect(sentBody(1)).toEqual({ title: "Refused" });
+      expect(result.current.saveStatus).toBe("saved");
+      expect(result.current.hasPendingChanges).toBe(false);
+      expect(sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it("doesn't retry a plain fetch that fails", async () => {
       const error = new Error("offline");
       mockFetch.mockRejectedValueOnce(error);
+      const { result, unmount } = renderHook(() =>
+        useAutoSave({ noteId: "note-1", debounceMs: 1000 }),
+      );
+      act(() => {
+        result.current.debouncedSave({ content: "x".repeat(70 * 1024) });
+      });
+      unmount();
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(fetchInit(0).keepalive).toBe(false);
+      expect(sentry.captureException).toHaveBeenCalledWith(error, {
+        extra: { where: "unmount", noteId: "note-1" },
+      });
+    });
+
+    it("reports a failed unmount flush to Sentry", async () => {
+      const error = new Error("offline");
+      failNextSend(error);
       const { result, unmount } = renderHook(() =>
         useAutoSave({ noteId: "note-1", debounceMs: 1000 }),
       );
@@ -566,12 +617,17 @@ describe("useAutoSave", () => {
       // The flush carries the payload in flight under the newer edit.
       expect(sentBody(1)).toEqual({ title: "New", content: ["old"] });
 
+      // Each keepalive send's plain-fetch retry fails too.
+      mockFetch
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockRejectedValueOnce(new Error("offline"));
       await act(async () => {
         inFlight.reject(new Error("offline"));
       });
       await act(async () => {
         flush.reject(new Error("offline"));
       });
+      expect(mockFetch).toHaveBeenCalledTimes(4);
 
       act(() => {
         result.current.debouncedSave({ content: ["newest"] });
@@ -579,7 +635,7 @@ describe("useAutoSave", () => {
       await act(async () => {
         vi.advanceTimersByTime(200);
       });
-      expect(sentBody(2)).toEqual({ title: "New", content: ["newest"] });
+      expect(sentBody(4)).toEqual({ title: "New", content: ["newest"] });
     });
 
     it("restores nothing when the save in flight fails but the flush that re-sent it lands", async () => {
@@ -611,7 +667,7 @@ describe("useAutoSave", () => {
 
     it("requeues a page-hide flush that fails while the note is still open", async () => {
       const inFlight = deferredFetch();
-      mockFetch.mockRejectedValueOnce(new Error("offline"));
+      failNextSend();
       const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
       act(() => {
         result.current.debouncedSave({ title: "First" });
@@ -633,8 +689,8 @@ describe("useAutoSave", () => {
       await act(async () => {
         inFlight.resolve(okResponse);
       });
-      expect(mockFetch).toHaveBeenCalledTimes(3);
-      expect(sentBody(2)).toEqual({ title: "Second" });
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(sentBody(3)).toEqual({ title: "Second" });
       expect(result.current.hasPendingChanges).toBe(false);
     });
   });
@@ -653,7 +709,7 @@ describe("useAutoSave", () => {
     }
 
     it("restores a payload whose fetch threw, and the next debounced save retries it", async () => {
-      mockFetch.mockRejectedValueOnce(new Error("offline"));
+      failNextSend();
       const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
 
       await saveAndFlush(result, { title: "Typed offline" });
@@ -661,8 +717,8 @@ describe("useAutoSave", () => {
       expect(result.current.hasPendingChanges).toBe(true);
 
       await saveAndFlush(result, { content: ["more"] });
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(sentBody(1)).toEqual({ title: "Typed offline", content: ["more"] });
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(sentBody(2)).toEqual({ title: "Typed offline", content: ["more"] });
       expect(result.current.saveStatus).toBe("saved");
       expect(result.current.hasPendingChanges).toBe(false);
     });
@@ -679,13 +735,13 @@ describe("useAutoSave", () => {
     });
 
     it("lets newer edits win over the restored payload", async () => {
-      mockFetch.mockRejectedValueOnce(new Error("offline"));
+      failNextSend();
       const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
 
       await saveAndFlush(result, { title: "Old", content: ["kept"] });
       await saveAndFlush(result, { title: "New" });
 
-      expect(sentBody(1)).toEqual({ title: "New", content: ["kept"] });
+      expect(sentBody(2)).toEqual({ title: "New", content: ["kept"] });
     });
 
     it("lets edits typed while the failed save was in flight win too", async () => {
@@ -694,18 +750,20 @@ describe("useAutoSave", () => {
 
       await saveAndFlush(result, { title: "Old", content: ["kept"] });
       await saveAndFlush(result, { title: "Typed meanwhile" });
+      mockFetch.mockRejectedValueOnce(new Error("offline"));
       await act(async () => {
         inFlight.reject(new Error("offline"));
       });
 
-      // The drain loop stops after a failure rather than retrying straight away.
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      // Past the plain-fetch retry of the refused keepalive send, the drain loop stops
+      // after a failure rather than sending the queued edit straight away.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(result.current.hasPendingChanges).toBe(true);
 
       act(() => {
         window.dispatchEvent(new Event("pagehide"));
       });
-      expect(sentBody(1)).toEqual({ title: "Typed meanwhile", content: ["kept"] });
+      expect(sentBody(2)).toEqual({ title: "Typed meanwhile", content: ["kept"] });
     });
 
     it("doesn't retry a failed save in a loop", async () => {
@@ -717,11 +775,12 @@ describe("useAutoSave", () => {
         vi.advanceTimersByTime(10000);
       });
 
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      // The keepalive send and its one plain-fetch retry, then nothing until the next edit.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it("flushes a restored payload on unmount", async () => {
-      mockFetch.mockRejectedValueOnce(new Error("offline"));
+      failNextSend();
       const { result, unmount } = renderHook(() =>
         useAutoSave({ noteId: "note-1", debounceMs: 100 }),
       );
@@ -729,14 +788,15 @@ describe("useAutoSave", () => {
       await saveAndFlush(result, { title: "Retry me" });
       unmount();
 
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(sentBody(1)).toEqual({ title: "Retry me" });
-      expect(fetchInit(1).keepalive).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(sentBody(2)).toEqual({ title: "Retry me" });
+      expect(fetchInit(2).keepalive).toBe(true);
     });
 
     it("reports a thrown error to Sentry once per failure streak, without the payload", async () => {
       const error = new Error("offline");
-      mockFetch.mockRejectedValueOnce(error).mockRejectedValueOnce(error);
+      failNextSend(error);
+      failNextSend(error);
       const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
 
       await saveAndFlush(result, { title: "Private text" });
@@ -750,7 +810,7 @@ describe("useAutoSave", () => {
 
       // A success ends the streak; the next failure is reported again.
       await saveAndFlush(result, { title: "Online" });
-      mockFetch.mockRejectedValueOnce(error);
+      failNextSend(error);
       await saveAndFlush(result, { title: "Offline again" });
       expect(sentry.captureException).toHaveBeenCalledTimes(2);
     });
@@ -788,7 +848,7 @@ describe("useAutoSave", () => {
       expect(sentry.captureMessage).not.toHaveBeenCalled();
     });
 
-    it("reports a save that fails after unmount, and doesn't retry it", async () => {
+    it("reports a save that fails after unmount, and doesn't requeue it", async () => {
       const inFlight = deferredFetch();
       const error = new Error("offline");
       const { result, unmount } = renderHook(() =>
@@ -797,11 +857,13 @@ describe("useAutoSave", () => {
 
       await saveAndFlush(result, { title: "T" });
       unmount();
+      mockFetch.mockRejectedValueOnce(error);
       await act(async () => {
         inFlight.reject(error);
       });
 
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      // The keepalive send and its plain-fetch retry; no hook is left to send it again.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(sentry.captureException).toHaveBeenCalledWith(error, {
         extra: { where: "autosave", noteId: "note-1" },
       });
@@ -991,9 +1053,49 @@ describe("useAutoSave", () => {
       });
 
       expect(result.current.hasPendingChanges).toBe(false);
+      // The badge doesn't stay on "Saving" for a request whose edit was discarded.
+      expect(result.current.saveStatus).toBe("idle");
       unmount();
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it("shows edits typed after the cancel as unsaved when the cancelled save fails", async () => {
+      const inFlight = deferredFetch();
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      act(() => {
+        result.current.debouncedSave({ content: ["local"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      act(() => {
+        result.current.cancelPendingSave();
+      });
+      // A new edit, debounced while the discarded save is still in flight, waits in the queue.
+      act(() => {
+        result.current.debouncedSave({ title: "After the reload" });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      await act(async () => {
+        inFlight.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+      });
+
+      expect(result.current.saveStatus).toBe("error");
+      expect(result.current.hasPendingChanges).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      // The next edit sends it, without the discarded one.
+      act(() => {
+        result.current.debouncedSave({ content: ["new"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(sentBody(1)).toEqual({ title: "After the reload", content: ["new"] });
+      expect(result.current.saveStatus).toBe("saved");
     });
 
     it("does not flush the cancelled edit on unmount", async () => {
