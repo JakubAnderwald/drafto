@@ -19,22 +19,31 @@ type SaveSource = "autosave" | "unmount" | "page-hide";
 type SaveFailure = { error: unknown } | { status: number };
 
 // Browsers cap the bodies of all keepalive requests in flight at 64 KiB combined, and reject
-// a larger one outright. Leave headroom for a second request sent at the same moment.
-const KEEPALIVE_MAX_BYTES = 60 * 1024;
+// one that would go over it outright. Stay under it, with headroom for the headers.
+const KEEPALIVE_BUDGET_BYTES = 60 * 1024;
+let keepaliveBytesInFlight = 0;
 
 /**
- * The PATCH for a save. `keepalive` lets the request outlive the page (tab close, reload,
- * a full-page navigation), but only for a body under the browser's cap: a larger note uses
- * a plain fetch, which still works for everything but a closing page.
+ * PATCH a note. `keepalive` lets the request outlive the page (tab close, reload, a
+ * full-page navigation), but only while every keepalive body in flight fits the browser's
+ * cap: past it, a plain fetch is sent, which still works for everything but a closing page.
+ * The fetch starts synchronously, before this returns.
  */
-function patchRequestInit(data: SaveData): RequestInit {
+async function sendPatch(noteId: string, data: SaveData): Promise<Response> {
   const body = JSON.stringify(data);
-  return {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body,
-    keepalive: new TextEncoder().encode(body).byteLength <= KEEPALIVE_MAX_BYTES,
-  };
+  const bytes = new TextEncoder().encode(body).byteLength;
+  const keepalive = keepaliveBytesInFlight + bytes <= KEEPALIVE_BUDGET_BYTES;
+  if (keepalive) keepaliveBytesInFlight += bytes;
+  try {
+    return await fetch(`/api/notes/${noteId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive,
+    });
+  } finally {
+    if (keepalive) keepaliveBytesInFlight -= bytes;
+  }
 }
 
 /** Report a failed save to Sentry. The payload is note content, so it is never attached. */
@@ -93,6 +102,14 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   // The newest `updated_at` recorded, so an older response landing late (a page-hide
   // flush overtook it) doesn't roll `lastSavedAt` back.
   const lastSavedAtRef = useRef<string | null>(null);
+  // The payload the drain loop has in flight, and whether a flush has since re-sent it
+  // (with newer edits on top). A superseded request's failure restores nothing: the newer
+  // request carries everything it did.
+  const inFlightRef = useRef<SaveData | null>(null);
+  const supersededRef = useRef(false);
+  // Bumped by `cancelPendingSave`. A request sent before a cancel carries discarded edits,
+  // so its failure must not bring them back.
+  const cancelGenRef = useRef(0);
 
   const recordSaved = useCallback((updated: unknown) => {
     if (typeof updated !== "object" || updated === null) return;
@@ -140,6 +157,32 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
     [noteId, reportFailure, restorePending],
   );
 
+  /** A failed drain-loop request: requeue it, unless it was cancelled or superseded. */
+  const settleDrainFailure = useCallback(
+    (
+      data: SaveData,
+      cancelGen: number,
+      failure: SaveFailure | null,
+      quotaMessage: string | null,
+    ) => {
+      if (cancelGen !== cancelGenRef.current) return;
+      if (supersededRef.current) {
+        // A flush re-sent this payload; that request's outcome decides the status.
+        if (failure) reportFailure(failure, "autosave");
+        return;
+      }
+      setSaveStatus("error");
+      setSaveError(quotaMessage);
+      // Keep the edit queued, under anything typed meanwhile, so the next edit, the
+      // unmount flush or a page-hide flush sends it again.
+      if (failure) handleFailure(data, failure, "autosave");
+      // A content-quota refusal (ADR 0090) is an expected state the editor already
+      // shows, not an error worth a Sentry event.
+      else restorePending(data);
+    },
+    [handleFailure, reportFailure, restorePending],
+  );
+
   const expireSession = useCallback(() => {
     sessionExpiredRef.current = true;
     if (timerRef.current) {
@@ -158,9 +201,13 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
         let toSave: SaveData | null = data;
         while (toSave) {
           setSaveStatus("saving");
+          const sent: SaveData = toSave;
+          const cancelGen = cancelGenRef.current;
+          inFlightRef.current = sent;
+          supersededRef.current = false;
 
           try {
-            const res = await fetch(`/api/notes/${noteId}`, patchRequestInit(toSave));
+            const res = await sendPatch(noteId, sent);
 
             if (handleAuthError(res)) {
               // The session has expired and the redirect is under way. The edit can't be
@@ -176,23 +223,19 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
               // The save landed even if its response can't be read.
               recordSaved(await readJson(res));
             } else {
-              setSaveStatus("error");
               const body: unknown = await readJson(res);
               const quotaError = contentQuotaErrorFromResponse(res.status, body);
-              setSaveError(quotaError?.message ?? null);
-              // Keep the edit queued, under anything typed meanwhile, so the next edit,
-              // the unmount flush or a page-hide flush sends it again. Stop draining: an
-              // immediate retry would most likely fail too.
-              // A content-quota refusal (ADR 0090) is an expected state the editor
-              // already shows, not an error worth a Sentry event.
-              if (quotaError) restorePending(toSave);
-              else handleFailure(toSave, { status: res.status }, "autosave");
+              settleDrainFailure(
+                sent,
+                cancelGen,
+                quotaError ? null : { status: res.status },
+                quotaError?.message ?? null,
+              );
+              // Stop draining: an immediate retry would most likely fail too.
               break;
             }
           } catch (error) {
-            setSaveStatus("error");
-            setSaveError(null);
-            handleFailure(toSave, { error }, "autosave");
+            settleDrainFailure(sent, cancelGen, { error }, null);
             break;
           }
 
@@ -203,12 +246,14 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
       } finally {
         savingRef.current = false;
         drainRef.current = null;
+        inFlightRef.current = null;
+        supersededRef.current = false;
         // The drain loop empties `pendingData`, but a debounce timer scheduled while
         // this save was in flight may have re-filled it — re-read rather than assume.
         setHasPendingChanges(pendingData.current !== null);
       }
     },
-    [noteId, expireSession, recordSaved, handleFailure, restorePending],
+    [noteId, expireSession, recordSaved, settleDrainFailure],
   );
 
   const save = useCallback(
@@ -236,9 +281,10 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   const sendDetached = useCallback(
     async (data: SaveData, where: SaveSource) => {
       if (!noteId) return;
+      const cancelGen = cancelGenRef.current;
       let failure: SaveFailure | null = null;
       try {
-        const res = await fetch(`/api/notes/${noteId}`, patchRequestInit(data));
+        const res = await sendPatch(noteId, data);
         if (handleAuthError(res)) {
           expireSession();
           return;
@@ -246,10 +292,14 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
         if (res.ok) {
           if (activeNoteIdRef.current === noteId) {
             failureReportedRef.current = false;
+            setSaveStatus("saved");
+            setSaveError(null);
             recordSaved(await readJson(res));
           }
           return;
         }
+        // Discarded by `cancelPendingSave` while in flight: let it go.
+        if (cancelGen !== cancelGenRef.current) return;
         const body: unknown = await readJson(res);
         const quotaError = contentQuotaErrorFromResponse(res.status, body);
         if (quotaError) {
@@ -261,6 +311,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
         }
         failure = { status: res.status };
       } catch (error) {
+        if (cancelGen !== cancelGenRef.current) return;
         failure = { error };
       }
 
@@ -272,6 +323,16 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
     },
     [noteId, expireSession, recordSaved, handleFailure, restorePending],
   );
+
+  /**
+   * The payload to send outside the drain loop: pending edits over the one in flight, if
+   * any. Marks the request in flight superseded, so its failure restores nothing.
+   */
+  const takeOverInFlight = useCallback((pending: SaveData): SaveData => {
+    if (!inFlightRef.current) return pending;
+    supersededRef.current = true;
+    return { ...inFlightRef.current, ...pending };
+  }, []);
 
   /**
    * Send pending edits now instead of waiting for the debounce: the page is being hidden
@@ -286,19 +347,20 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
 
     const waits: Promise<void>[] = [];
     if (noteId && !sessionExpiredRef.current && pendingData.current) {
-      const data = pendingData.current;
+      const pending = pendingData.current;
       pendingData.current = null;
       if (savingRef.current) {
         // The drain loop would hold this until the save in flight answers, which a
-        // closing page never sees. Send it now.
-        waits.push(sendDetached(data, "page-hide"));
+        // closing page never sees. Send it now, over the payload in flight, so this
+        // request alone settles both.
+        waits.push(sendDetached(takeOverInFlight(pending), "page-hide"));
       } else {
-        save(data);
+        save(pending);
       }
     }
     if (drainRef.current) waits.push(drainRef.current);
     return Promise.all(waits).then(() => undefined);
-  }, [noteId, save, sendDetached]);
+  }, [noteId, save, sendDetached, takeOverInFlight]);
 
   const debouncedSave = useCallback(
     (data: SaveData) => {
@@ -327,9 +389,11 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
    * arrived from another device — without this, the queued PATCH would land straight
    * after the reload and clobber the remote content again.
    *
-   * A save already in flight is not cancellable; only queued work is dropped.
+   * A save already in flight is not cancellable, but if it fails its payload is not
+   * queued again.
    */
   const cancelPendingSave = useCallback(() => {
+    cancelGenRef.current += 1;
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -376,12 +440,12 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
         timerRef.current = null;
       }
       if (pendingData.current && noteId && !sessionExpiredRef.current) {
-        const data = pendingData.current;
+        const data = takeOverInFlight(pendingData.current);
         pendingData.current = null;
         void sendDetached(data, "unmount");
       }
     };
-  }, [noteId, sendDetached]);
+  }, [noteId, sendDetached, takeOverInFlight]);
 
   return {
     saveStatus,

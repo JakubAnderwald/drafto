@@ -363,6 +363,33 @@ describe("useAutoSave", () => {
       expect(fetchInit(0).keepalive).toBe(false);
     });
 
+    it("keeps every keepalive body in flight under the browser's combined cap", async () => {
+      const inFlight = deferredFetch();
+      const { result, unmount } = renderHook(() =>
+        useAutoSave({ noteId: "note-1", debounceMs: 100 }),
+      );
+      act(() => {
+        result.current.debouncedSave({ content: "x".repeat(35 * 1024) });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(fetchInit(0).keepalive).toBe(true);
+
+      // Switching notes while that save is in flight: a second 35 KB keepalive body would
+      // take the total past 64 KiB, and the browser would reject it.
+      act(() => {
+        result.current.debouncedSave({ title: "T" });
+      });
+      unmount();
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(fetchInit(1).keepalive).toBe(false);
+      await act(async () => {
+        inFlight.resolve(okResponse);
+      });
+    });
+
     it("reports a failed unmount flush to Sentry", async () => {
       const error = new Error("offline");
       mockFetch.mockRejectedValueOnce(error);
@@ -517,6 +544,68 @@ describe("useAutoSave", () => {
       await act(async () => {
         inFlight.resolve(okResponse);
       });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the newer edits when both the save in flight and the flush fail", async () => {
+      const inFlight = deferredFetch();
+      const flush = deferredFetch();
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      act(() => {
+        result.current.debouncedSave({ title: "Old", content: ["old"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      act(() => {
+        result.current.debouncedSave({ title: "New" });
+      });
+      act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      // The flush carries the payload in flight under the newer edit.
+      expect(sentBody(1)).toEqual({ title: "New", content: ["old"] });
+
+      await act(async () => {
+        inFlight.reject(new Error("offline"));
+      });
+      await act(async () => {
+        flush.reject(new Error("offline"));
+      });
+
+      act(() => {
+        result.current.debouncedSave({ content: ["newest"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(sentBody(2)).toEqual({ title: "New", content: ["newest"] });
+    });
+
+    it("restores nothing when the save in flight fails but the flush that re-sent it lands", async () => {
+      const inFlight = deferredFetch();
+      const { result, unmount } = renderHook(() =>
+        useAutoSave({ noteId: "note-1", debounceMs: 100 }),
+      );
+      act(() => {
+        result.current.debouncedSave({ content: ["old"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      act(() => {
+        result.current.debouncedSave({ title: "New" });
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      await act(async () => {
+        inFlight.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+      });
+
+      expect(result.current.saveStatus).toBe("saved");
+      expect(result.current.hasPendingChanges).toBe(false);
+      unmount();
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
@@ -881,6 +970,30 @@ describe("useAutoSave", () => {
       });
 
       expect(result.current.hasPendingChanges).toBe(false);
+    });
+
+    it("doesn't bring a cancelled edit back when the save in flight fails", async () => {
+      const inFlight = deferredFetch();
+      const { result, unmount } = renderHook(() =>
+        useAutoSave({ noteId: "note-1", debounceMs: 100 }),
+      );
+      act(() => {
+        result.current.debouncedSave({ content: ["local"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      act(() => {
+        result.current.cancelPendingSave();
+      });
+      await act(async () => {
+        inFlight.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      });
+
+      expect(result.current.hasPendingChanges).toBe(false);
+      unmount();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(sentry.captureMessage).not.toHaveBeenCalled();
     });
 
     it("does not flush the cancelled edit on unmount", async () => {
