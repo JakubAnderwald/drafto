@@ -127,6 +127,11 @@ const PROD_DENYLIST = [
   // Store-listing screenshots replace what App Store Connect shows publicly.
   /store:screenshots:upload\b/i,
   /fastlane\s+\w+\s+upload_screenshots\b/i,
+  // Google Play closed testing goes through Google's review and reaches a wider
+  // tester list than the internal track. It is not a pre-authorized beta lane,
+  // so only an operator who asked for it runs it.
+  /release:alpha\b/i,
+  /fastlane\s+(\w+\s+)?alpha\b/i,
 ];
 
 let _spawnForTests = null;

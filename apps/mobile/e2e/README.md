@@ -101,16 +101,17 @@ bash apps/mobile/e2e/run-nested-lists-e2e.sh
 | Flow                          | Description                                                    |
 | ----------------------------- | -------------------------------------------------------------- |
 | `01-login.yaml`               | Login with email/password, verify Notebooks screen             |
-| `02-create-notebook.yaml`     | Create, rename, cancel notebooks                               |
+| `02-create-notebook.yaml`     | Create, rename, cancel notebooks; a taken name is refused      |
 | `03-create-edit-note.yaml`    | Create notes, open editor, rename via long press               |
 | `04-trash-restore.yaml`       | Tab navigation between Notebooks and Trash                     |
 | `05-cross-platform-sync.yaml` | Open a note created by web E2E, edit on mobile                 |
 | `06-forgot-password.yaml`     | Request a reset link, open the recovery deep link              |
-| `07-delete-account.yaml`      | Open Delete account, check DELETE gating, cancel               |
+| `07-delete-account.yaml`      | Delete account gating + cancel; About section (11035 S-01)     |
 | `08-nested-lists.yaml`        | Open a web note with nested to-dos, edit the deepest one       |
 | `09-password-visibility.yaml` | Show/hide password toggle on Log In and Sign up (S-01)         |
 | `10-swipe-hint.yaml`          | One-time swipe hints on each list, Trash tap menu (S-03)       |
 | `11-sign-out-confirm.yaml`    | Sign Out asks first; Cancel (and Android back) stays in (S-02) |
+| `12-signup-email.yaml`        | Sign-up checks the email first, errors inline (11035 M-02)     |
 | `search.yaml`                 | Open search, type query, dismiss                               |
 
 ### Android-only
@@ -169,8 +170,8 @@ The main navigation difference between platforms:
   `SIGN_OUT_CONFIRM=1` is set (and for `--before`, where a build without the fix signs out at the first
   tap) and refuses without them. The device ends signed out, so run `01-login.yaml` before other flows.
   Don't run the confirm leg on two devices at once: they share the dedicated account, and one's sign-out
-  ends the other's session. `09-password-visibility.yaml` runs signed out, so both combined
-  flows run it first
+  ends the other's session. `09-password-visibility.yaml` and `12-signup-email.yaml` run signed
+  out, so both combined flows run them first
 - Flow 07 only ever **cancels** the account-deletion dialog — it must never tap an enabled
   confirm, because the flows share one real E2E account. It is also inlined at the end of
   `ios-all.yaml` and `android-all.yaml`

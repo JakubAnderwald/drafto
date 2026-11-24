@@ -11,8 +11,8 @@ vi.mock("@/env", () => ({
 }));
 
 const mockNotebooks = [
-  { id: "nb-1", name: "Notes", created_at: "2026-01-01", updated_at: "2026-01-01" },
-  { id: "nb-2", name: "Work", created_at: "2026-01-02", updated_at: "2026-01-02" },
+  { id: "nb-1", name: "Notes", created_at: "2026-01-01", updated_at: "2026-01-01", note_count: 3 },
+  { id: "nb-2", name: "Work", created_at: "2026-01-02", updated_at: "2026-01-02", note_count: 1 },
 ];
 
 const mockFetch = vi.fn();
@@ -671,5 +671,415 @@ describe("NotebooksSidebar", () => {
 
     // Should show notebooks heading immediately (no skeleton)
     expect(screen.getByRole("heading", { name: /notebooks/i })).toBeInTheDocument();
+  });
+});
+
+describe("NotebooksSidebar — duplicate names (PrimeTestLab 11035 M-01)", () => {
+  const DUPLICATE_WORK = 'A notebook named "Work" already exists. Choose a different name.';
+
+  async function renderSidebar() {
+    const user = userEvent.setup();
+    await act(async () => {
+      render(
+        <NotebooksSidebar
+          selectedNotebookId="nb-1"
+          onSelectNotebook={vi.fn()}
+          initialNotebooks={mockNotebooks}
+        />,
+      );
+    });
+    return user;
+  }
+
+  it("refuses a taken name before sending it, ignoring case, and keeps the field open", async () => {
+    const user = await renderSidebar();
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const input = screen.getByPlaceholderText("Notebook name");
+    await user.type(input, "  work {Enter}");
+
+    expect(screen.getByRole("alert")).toHaveTextContent(DUPLICATE_WORK);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAttribute("aria-describedby", "notebook-create-name-error");
+    expect(document.getElementById("notebook-create-name-error")).toHaveTextContent(DUPLICATE_WORK);
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    // Leaving the field doesn't send the refused name or close it.
+    await act(async () => {
+      input.blur();
+    });
+    expect(screen.getByPlaceholderText("Notebook name")).toBeInTheDocument();
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    // Editing the name clears the error.
+    await user.type(input, "s");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows the API's 409 under the field and keeps it open", async () => {
+    const user = await renderSidebar();
+    const message = 'A notebook named "Ideas" already exists. Choose a different name.';
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: message, status: 409 }, 409));
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Ideas{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("notebook-name-error")).toHaveTextContent(message);
+    });
+    expect(screen.getByPlaceholderText("Notebook name")).toHaveValue("Ideas");
+    expect(screen.queryByText("Ideas")).not.toBeInTheDocument();
+  });
+
+  it("shows a generic error when the create fails without a message", async () => {
+    const user = await renderSidebar();
+    mockFetch.mockResolvedValueOnce(jsonResponse(null, 500));
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Ideas{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("notebook-name-error")).toHaveTextContent(
+        "Failed to create notebook",
+      );
+    });
+  });
+
+  it("refuses to rename a notebook to another notebook's name", async () => {
+    const user = await renderSidebar();
+
+    await user.dblClick(screen.getByText("Notes"));
+    const input = screen.getByDisplayValue("Notes");
+    await user.clear(input);
+    await user.type(input, "WORK{Enter}");
+
+    expect(screen.getByRole("alert")).toHaveTextContent(DUPLICATE_WORK);
+    expect(screen.getByDisplayValue("WORK")).toBeInTheDocument();
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("Notes")).toBeInTheDocument();
+  });
+
+  it("shows the API's rename refusal under the field and keeps it open", async () => {
+    const user = await renderSidebar();
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ error: "Failed to update notebook", status: 404 }, 404),
+    );
+
+    await user.dblClick(screen.getByText("Notes"));
+    const input = screen.getByDisplayValue("Notes");
+    await user.clear(input);
+    await user.type(input, "Journal{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("notebook-name-error")).toHaveTextContent(
+        "Failed to update notebook",
+      );
+    });
+    expect(screen.getByDisplayValue("Journal")).toBeInTheDocument();
+  });
+
+  it("opens the next rename without the last one's error, and saves it on blur", async () => {
+    const user = await renderSidebar();
+
+    await user.dblClick(screen.getByText("Notes"));
+    const input = screen.getByDisplayValue("Notes");
+    await user.clear(input);
+    await user.type(input, "WORK{Enter}");
+    expect(screen.getByRole("alert")).toHaveTextContent(DUPLICATE_WORK);
+
+    // Double-clicking another notebook leaves the refused field and opens a clean one.
+    await user.dblClick(screen.getByText("Work"));
+    const workInput = screen.getByDisplayValue("Work");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(workInput).not.toHaveAttribute("aria-invalid");
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    mockFetch.mockResolvedValueOnce(jsonResponse({ ...mockNotebooks[1], name: "Office" }));
+    await user.clear(workInput);
+    await user.type(workInput, "Office");
+    await act(async () => {
+      workInput.blur();
+    });
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/notebooks/nb-2",
+        expect.objectContaining({ method: "PATCH", body: JSON.stringify({ name: "Office" }) }),
+      );
+    });
+  });
+
+  it("gives a refused create and a refused rename their own error ids", async () => {
+    const user = await renderSidebar();
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const createInput = screen.getByPlaceholderText("Notebook name");
+    await user.type(createInput, "Work{Enter}");
+
+    await user.dblClick(screen.getByText("Notes"));
+    const renameInput = screen.getByDisplayValue("Notes");
+    await user.clear(renameInput);
+    await user.type(renameInput, "Work{Enter}");
+
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    const createErrorId = createInput.getAttribute("aria-describedby");
+    const renameErrorId = renameInput.getAttribute("aria-describedby");
+    expect(createErrorId).toBeTruthy();
+    expect(renameErrorId).toBeTruthy();
+    expect(createErrorId).not.toBe(renameErrorId);
+    expect(document.querySelectorAll(`[id="${createErrorId}"]`)).toHaveLength(1);
+    expect(document.querySelectorAll(`[id="${renameErrorId}"]`)).toHaveLength(1);
+  });
+
+  it("PrimeTestLab 11035 review: renames while a create is still pending, and never sends a create twice", async () => {
+    const user = await renderSidebar();
+    let finishCreate: (response: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishCreate = resolve;
+        });
+      }
+      if (init?.method === "PATCH" && url === "/api/notebooks/nb-1") {
+        return Promise.resolve(jsonResponse({ ...mockNotebooks[0], name: "Journal" }));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const createInput = screen.getByPlaceholderText("Notebook name");
+    await user.type(createInput, "Ideas{Enter}");
+    // A second Enter on the pending create is ignored.
+    await user.type(createInput, "{Enter}");
+
+    await user.dblClick(screen.getByText("Notes"));
+    const renameInput = screen.getByDisplayValue("Notes");
+    await user.clear(renameInput);
+    await user.type(renameInput, "Journal{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByText("Journal")).toBeInTheDocument();
+    });
+    const methods = mockFetch.mock.calls.map(([, init]) => (init as RequestInit).method);
+    expect(methods.filter((method) => method === "POST")).toHaveLength(1);
+    expect(methods.filter((method) => method === "PATCH")).toHaveLength(1);
+
+    await act(async () => {
+      finishCreate(
+        jsonResponse({
+          id: "nb-3",
+          name: "Ideas",
+          created_at: "2026-03-01",
+          updated_at: "2026-03-01",
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Ideas")).toBeInTheDocument();
+    });
+  });
+
+  it("PrimeTestLab 11035 CodeRabbit: a pending rename's answer stays with its own field", async () => {
+    const user = await renderSidebar();
+    let finishNotes: (response: FakeResponse) => void = () => {};
+    let finishWork: (response: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH" && url === "/api/notebooks/nb-1") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishNotes = resolve;
+        });
+      }
+      if (init?.method === "PATCH" && url === "/api/notebooks/nb-2") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishWork = resolve;
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.dblClick(screen.getByText("Notes"));
+    const notesInput = screen.getByDisplayValue("Notes");
+    await user.clear(notesInput);
+    await user.type(notesInput, "Journal{Enter}");
+
+    // While the first rename is pending, another notebook's rename is opened and submitted.
+    await user.dblClick(screen.getByText("Work"));
+    const workInput = screen.getByDisplayValue("Work");
+    await user.clear(workInput);
+    await user.type(workInput, "Office{Enter}");
+
+    const patched = mockFetch.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === "PATCH")
+      .map(([url]) => url);
+    expect(patched).toEqual(["/api/notebooks/nb-1", "/api/notebooks/nb-2"]);
+
+    // The first rename's refusal is not shown under the second field, which stays open.
+    await act(async () => {
+      finishNotes(jsonResponse({ error: "Failed to update notebook", status: 404 }, 404));
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("Office")).toBeInTheDocument();
+
+    await act(async () => {
+      finishWork(jsonResponse({ ...mockNotebooks[1], name: "Office" }));
+    });
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("Office")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Office")).toBeInTheDocument();
+  });
+
+  it("PrimeTestLab 11035 CodeRabbit: a create refused after its field was reopened leaves the new field alone", async () => {
+    const user = await renderSidebar();
+    const finishCreates: Array<(response: FakeResponse) => void> = [];
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url === "/api/notebooks") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishCreates.push(resolve);
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Ideas{Enter}");
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByLabelText("New notebook"));
+    const reopened = screen.getByPlaceholderText("Notebook name");
+    expect(reopened).toHaveValue("");
+
+    await act(async () => {
+      finishCreates[0](jsonResponse(null, 500));
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(reopened).not.toHaveAttribute("aria-invalid");
+
+    // The reopened field still submits on blur: no stale error holds it back.
+    await user.type(reopened, "Plans");
+    await act(async () => {
+      reopened.blur();
+    });
+    expect(finishCreates).toHaveLength(2);
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/api/notebooks",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ name: "Plans" }) }),
+    );
+  });
+
+  it("lets a notebook change only the case of its own name, keeping its count", async () => {
+    const user = await renderSidebar();
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ ...mockNotebooks[0], name: "NOTES", updated_at: "2026-02-25" }),
+    );
+
+    await user.dblClick(screen.getByText("Notes"));
+    const input = screen.getByDisplayValue("Notes");
+    await user.clear(input);
+    await user.type(input, "NOTES{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByText("NOTES")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("NOTES").closest("[role='button']")).toHaveTextContent("3 notes");
+  });
+});
+
+describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
+  it("shows each notebook's note count from the server prefetch", async () => {
+    await act(async () => {
+      render(
+        <NotebooksSidebar
+          selectedNotebookId="nb-1"
+          onSelectNotebook={vi.fn()}
+          initialNotebooks={mockNotebooks}
+        />,
+      );
+    });
+
+    const counts = screen.getAllByTestId("notebook-note-count").map((el) => el.textContent);
+    expect(counts).toEqual(["3 notes", "1 note"]);
+  });
+
+  it("keeps the name in its own element, apart from the count", async () => {
+    // E2E helpers read the active notebook's name from it (apps/web/e2e/notes.spec.ts).
+    await act(async () => {
+      render(
+        <NotebooksSidebar
+          selectedNotebookId="nb-1"
+          onSelectNotebook={vi.fn()}
+          initialNotebooks={mockNotebooks}
+        />,
+      );
+    });
+
+    const active = screen.getByTestId("notebook-item-active");
+    expect(active).toHaveTextContent("3 notes");
+    expect(within(active).getByTestId("notebook-name").textContent).toBe("Notes");
+  });
+
+  it("refetches the counts when the lists refresh", async () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={onSelect}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse([
+        { ...mockNotebooks[0], note_count: 4 },
+        { ...mockNotebooks[1], note_count: 0 },
+      ]),
+    );
+
+    rerender(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={onSelect}
+        initialNotebooks={mockNotebooks}
+        refreshTrigger={1}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("notebook-note-count").map((el) => el.textContent)).toEqual([
+        "4 notes",
+        "0 notes",
+      ]);
+    });
+    expect(mockFetch).toHaveBeenCalledWith("/api/notebooks");
+  });
+
+  it("starts a new notebook at 0 notes", async () => {
+    const user = userEvent.setup();
+    await act(async () => {
+      render(
+        <NotebooksSidebar
+          selectedNotebookId="nb-1"
+          onSelectNotebook={vi.fn()}
+          initialNotebooks={mockNotebooks}
+        />,
+      );
+    });
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        id: "nb-3",
+        name: "Ideas",
+        created_at: "2026-03-01",
+        updated_at: "2026-03-01",
+      }),
+    );
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Ideas{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByText("Ideas").closest("[role='button']")).toHaveTextContent("0 notes");
+    });
   });
 });

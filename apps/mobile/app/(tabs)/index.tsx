@@ -6,6 +6,7 @@ import {
   Pressable,
   TextInput,
   Alert,
+  Keyboard,
   RefreshControl,
   StyleSheet,
 } from "react-native";
@@ -13,6 +14,11 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { Q } from "@nozbe/watermelondb";
+import {
+  MAX_NOTEBOOK_NAME_LENGTH,
+  duplicateNotebookNameMessage,
+  findDuplicateNotebook,
+} from "@drafto/shared";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useDatabase } from "@/providers/database-provider";
@@ -22,7 +28,9 @@ import { useHaptics } from "@/hooks/use-haptics";
 import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
 import { useSwipeHint } from "@/hooks/use-swipe-hint";
 import { generateId } from "@/lib/generate-id";
+import { DuplicateNotebookNameError, assertNotebookNameFree } from "@/lib/data/notebook-name-guard";
 import { SwipeableRow } from "@/components/swipeable-row";
+import { NotebookListRow } from "@/components/notebook-list-row";
 import { SwipeHint, SWIPE_HINT_TEXT } from "@/components/swipe-hint";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -48,6 +56,9 @@ export default function NotebooksScreen() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // A taken name (PrimeTestLab 11035 M-01): shown under the open field, which stays open.
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
   // The FAB hides while the create bar is open; the list then drops back to
   // its resting padding. useFabLayout adds the system-bar inset only off the
   // tab navigator, whose tab bar already takes it.
@@ -61,10 +72,19 @@ export default function NotebooksScreen() {
     const trimmed = newName.trim();
     if (!trimmed || !user || submitting) return;
 
+    const duplicate = findDuplicateNotebook(trimmed, notebooks);
+    if (duplicate) {
+      haptics.error();
+      setCreateError(duplicateNotebookNameMessage(duplicate.name));
+      return;
+    }
+
     try {
       setSubmitting(true);
       const id = generateId();
       await database.write(async () => {
+        // The list above may be stale (a sync, a double tap); this check sees what is stored.
+        await assertNotebookNameFree(database, trimmed);
         await database.get<Notebook>("notebooks").create((record) => {
           record._raw.id = id;
           record.remoteId = id;
@@ -73,10 +93,16 @@ export default function NotebooksScreen() {
         });
       });
       haptics.success();
+      Keyboard.dismiss();
       setNewName("");
       setCreating(false);
       sync();
     } catch (err) {
+      if (err instanceof DuplicateNotebookNameError) {
+        haptics.error();
+        setCreateError(err.message);
+        return;
+      }
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to create notebook");
     } finally {
       setSubmitting(false);
@@ -87,18 +113,33 @@ export default function NotebooksScreen() {
     const trimmed = editName.trim();
     if (!trimmed || submitting) return;
 
+    const duplicate = findDuplicateNotebook(trimmed, notebooks, id);
+    if (duplicate) {
+      haptics.error();
+      setRenameError(duplicateNotebookNameMessage(duplicate.name));
+      return;
+    }
+
     try {
       setSubmitting(true);
       const notebook = await database.get<Notebook>("notebooks").find(id);
       await database.write(async () => {
+        await assertNotebookNameFree(database, trimmed, id);
         await notebook.update((record) => {
           record.name = trimmed;
         });
       });
+      // The list keeps taps while the keyboard is up, so the keyboard is put away here.
+      Keyboard.dismiss();
       setEditingId(null);
       setEditName("");
       sync();
     } catch (err) {
+      if (err instanceof DuplicateNotebookNameError) {
+        haptics.error();
+        setRenameError(err.message);
+        return;
+      }
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to rename notebook");
     } finally {
       setSubmitting(false);
@@ -187,39 +228,64 @@ export default function NotebooksScreen() {
     haptics.medium();
     setEditingId(notebook.id);
     setEditName(notebook.name);
+    setRenameError(null);
   };
+
+  const changeNewName = (text: string) => {
+    setNewName(text);
+    setCreateError(null);
+  };
+
+  const changeEditName = (text: string) => {
+    setEditName(text);
+    setRenameError(null);
+  };
+
+  const renderNameError = (message: string | null) =>
+    message ? (
+      <Text testID="notebook-name-error" accessibilityRole="alert" style={styles.nameError}>
+        {message}
+      </Text>
+    ) : null;
 
   const renderNotebook = ({ item }: { item: Notebook }) => {
     if (editingId === item.id) {
       return (
-        <View style={styles.row}>
-          <TextInput
-            style={[styles.input, styles.editInput]}
-            defaultValue={editName}
-            onChangeText={setEditName}
-            autoFocus
-            autoCorrect={false}
-            autoComplete="off"
-            onSubmitEditing={() => handleRename(item.id)}
-            returnKeyType="done"
-          />
-          <Pressable
-            testID="checkmark"
-            onPress={() => handleRename(item.id)}
-            style={styles.iconButton}
-          >
-            <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
-          </Pressable>
-          <Pressable
-            testID="close"
-            onPress={() => {
-              setEditingId(null);
-              setEditName("");
-            }}
-            style={styles.iconButton}
-          >
-            <Ionicons name="close" size={22} color={semantic.fgMuted} />
-          </Pressable>
+        <View style={styles.editRow}>
+          <View style={styles.inputRow}>
+            <TextInput
+              style={[styles.input, styles.editInput]}
+              defaultValue={editName}
+              onChangeText={changeEditName}
+              autoFocus
+              autoCorrect={false}
+              autoComplete="off"
+              maxLength={MAX_NOTEBOOK_NAME_LENGTH}
+              onSubmitEditing={() => handleRename(item.id)}
+              submitBehavior="submit"
+              returnKeyType="done"
+            />
+            <Pressable
+              testID="checkmark"
+              onPress={() => handleRename(item.id)}
+              style={styles.iconButton}
+            >
+              <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
+            </Pressable>
+            <Pressable
+              testID="close"
+              onPress={() => {
+                Keyboard.dismiss();
+                setEditingId(null);
+                setEditName("");
+                setRenameError(null);
+              }}
+              style={styles.iconButton}
+            >
+              <Ionicons name="close" size={22} color={semantic.fgMuted} />
+            </Pressable>
+          </View>
+          {renderNameError(renameError)}
         </View>
       );
     }
@@ -242,22 +308,17 @@ export default function NotebooksScreen() {
         onOpen={swipeHint.dismiss}
       >
         {(accessibility) => (
-          <Pressable
-            {...accessibility}
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-            onPress={() => router.push(`/notebooks/${item.id}`)}
+          <NotebookListRow
+            notebookId={item.id}
+            name={item.name}
+            accessibility={accessibility}
+            onPress={() => {
+              // A rename may still have the keyboard up; it shouldn't follow into the notebook.
+              Keyboard.dismiss();
+              router.push(`/notebooks/${item.id}`);
+            }}
             onLongPress={() => startEditing(item)}
-          >
-            <Ionicons
-              name="book-outline"
-              size={20}
-              color={colors.primary[600]}
-              style={styles.rowIcon}
-            />
-            <Text style={styles.rowText} numberOfLines={1}>
-              {item.name}
-            </Text>
-          </Pressable>
+          />
         )}
       </SwipeableRow>
     );
@@ -271,32 +332,38 @@ export default function NotebooksScreen() {
     <View style={styles.container}>
       {creating && (
         <View style={styles.createBar}>
-          <TextInput
-            testID="notebook-name-input"
-            style={[styles.input, styles.createInput]}
-            placeholder="Notebook name"
-            placeholderTextColor={semantic.fgSubtle}
-            value={newName}
-            onChangeText={setNewName}
-            autoFocus
-            autoCorrect={false}
-            autoComplete="off"
-            onSubmitEditing={handleCreate}
-            returnKeyType="done"
-          />
-          <Pressable testID="checkmark" onPress={handleCreate} style={styles.iconButton}>
-            <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
-          </Pressable>
-          <Pressable
-            testID="close"
-            onPress={() => {
-              setCreating(false);
-              setNewName("");
-            }}
-            style={styles.iconButton}
-          >
-            <Ionicons name="close" size={22} color={semantic.fgMuted} />
-          </Pressable>
+          <View style={styles.inputRow}>
+            <TextInput
+              testID="notebook-name-input"
+              style={[styles.input, styles.createInput]}
+              placeholder="Notebook name"
+              placeholderTextColor={semantic.fgSubtle}
+              value={newName}
+              onChangeText={changeNewName}
+              autoFocus
+              autoCorrect={false}
+              autoComplete="off"
+              maxLength={MAX_NOTEBOOK_NAME_LENGTH}
+              onSubmitEditing={handleCreate}
+              submitBehavior="submit"
+              returnKeyType="done"
+            />
+            <Pressable testID="checkmark" onPress={handleCreate} style={styles.iconButton}>
+              <Ionicons name="checkmark" size={22} color={colors.primary[600]} />
+            </Pressable>
+            <Pressable
+              testID="close"
+              onPress={() => {
+                setCreating(false);
+                setNewName("");
+                setCreateError(null);
+              }}
+              style={styles.iconButton}
+            >
+              <Ionicons name="close" size={22} color={semantic.fgMuted} />
+            </Pressable>
+          </View>
+          {renderNameError(createError)}
         </View>
       )}
 
@@ -307,6 +374,10 @@ export default function NotebooksScreen() {
           data={notebooks}
           keyExtractor={(item) => item.id}
           renderItem={renderNotebook}
+          // The rename row's ✓ and ✗ sit inside the list. Without this the first tap
+          // on them only closes the keyboard and a second one saves (PrimeTestLab
+          // 11035). A tap on empty space still closes the keyboard.
+          keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             swipeHint.visible && notebooks.length > 0 ? (
               <SwipeHint text={SWIPE_HINT_TEXT.notebooks} onDismiss={swipeHint.dismiss} />
@@ -330,6 +401,7 @@ export default function NotebooksScreen() {
           accessibilityLabel="New notebook"
           onPress={() => {
             haptics.light();
+            setCreateError(null);
             setCreating(true);
           }}
         />
@@ -347,25 +419,21 @@ const createStyles = (semantic: SemanticColors) =>
     list: {
       paddingVertical: spacing.sm,
     },
-    row: {
-      flexDirection: "row",
-      alignItems: "center",
+    editRow: {
       paddingVertical: spacing.lg,
       paddingHorizontal: spacing.lg,
       backgroundColor: semantic.bg,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: semantic.border,
     },
-    rowPressed: {
-      backgroundColor: semantic.bgMuted,
+    inputRow: {
+      flexDirection: "row",
+      alignItems: "center",
     },
-    rowIcon: {
-      marginRight: spacing.md,
-    },
-    rowText: {
-      flex: 1,
-      fontSize: fontSizes.xl,
-      color: semantic.fg,
+    nameError: {
+      marginTop: spacing.xs,
+      fontSize: fontSizes.sm,
+      color: semantic.errorText,
     },
     iconButton: {
       padding: spacing.sm,
@@ -380,8 +448,6 @@ const createStyles = (semantic: SemanticColors) =>
       color: semantic.fg,
     },
     createBar: {
-      flexDirection: "row",
-      alignItems: "center",
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
       backgroundColor: semantic.bg,

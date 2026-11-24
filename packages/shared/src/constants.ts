@@ -1,3 +1,5 @@
+import { DRAFTO_WEB_ORIGIN } from "./web-origin";
+
 export const MAX_TITLE_LENGTH = 255;
 export const MAX_NOTEBOOK_NAME_LENGTH = 100;
 export const MAX_FILE_SIZE = 52428800; // 50MB in bytes
@@ -40,7 +42,7 @@ export const ACCOUNT_DELETED_MESSAGE = "Your account has been deleted.";
 // Where the sign-up confirmation email sends mobile and desktop users. Both apps run PKCE, so
 // the code Supabase appends is useless in a browser: the web login page only reads
 // `confirmed=1` and says the address is confirmed. Web signs up through its own `/auth/callback`.
-export const SIGNUP_EMAIL_REDIRECT_URL = "https://drafto.eu/login?confirmed=1";
+export const SIGNUP_EMAIL_REDIRECT_URL = `${DRAFTO_WEB_ORIGIN}/login?confirmed=1`;
 // Shown after a sign-up that returned no session, i.e. email confirmation is required. Neutral
 // on purpose: for an address that already has an account Supabase sends no email and answers
 // exactly as for a new one, so the copy must not claim that an account was just created.
@@ -109,3 +111,13 @@ export const PASSWORD_VISIBILITY_LABELS = {
   show: "Show password",
   hide: "Hide password",
 } as const;
+
+// --- Public drafto.eu pages (PrimeTestLab 11035 S-01) ---
+// The About section of mobile and web Settings links these. Always the prod site: the
+// privacy policy and support page are not per-environment, so a dev or preview build still
+// links drafto.eu. The web links the paths on its own origin, so a preview links its own copy.
+export { DRAFTO_WEB_ORIGIN };
+export const PRIVACY_POLICY_PATH = "/privacy";
+export const SUPPORT_PATH = "/support";
+export const PRIVACY_POLICY_URL = `${DRAFTO_WEB_ORIGIN}${PRIVACY_POLICY_PATH}`;
+export const SUPPORT_URL = `${DRAFTO_WEB_ORIGIN}${SUPPORT_PATH}`;

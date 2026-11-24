@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardBody } from "@/components/ui/card";
+import { AboutSection } from "@/components/settings/about-section";
 import { DeleteAccountSection } from "@/components/settings/delete-account-section";
 import { StorageUsageSection } from "@/components/settings/storage-usage-section";
 import { ContentUsageSection } from "@/components/settings/content-usage-section";
@@ -215,12 +216,7 @@ export function SettingsContent({ buildCommit }: Readonly<SettingsContentProps>)
 
       <DeleteAccountSection className="mt-6" />
 
-      {/* Which deployment is running, so a preview tester can match it to the commit under test */}
-      {buildCommit && (
-        <p data-testid="build-commit" className="text-fg-muted mt-6 font-mono text-xs">
-          Build {buildCommit}
-        </p>
-      )}
+      <AboutSection className="mt-6" buildCommit={buildCommit} />
     </div>
   );
 }

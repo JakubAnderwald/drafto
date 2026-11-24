@@ -31,7 +31,7 @@ import type { ToolResult } from "@/lib/api/mcp-tools";
 import { removeUserOrphanedAttachments } from "@/lib/storage/remove-orphaned-attachments";
 
 /** Keep in step with `version` in the repo-root `server.json` (the MCP Registry entry). */
-const SERVER_VERSION = "1.2.0";
+const SERVER_VERSION = "1.2.1";
 
 /**
  * The MCP server for one request. <auth> is the API key's owner, or null for a key-less
@@ -86,7 +86,7 @@ function createMcpServer(auth: McpAuthResult | null): McpServer {
 
   server.tool(
     "create_notebook",
-    "Create a new notebook",
+    "Create a new notebook (refuses a name the user already has, ignoring case and spacing)",
     { name: z.string().min(1).max(100).describe("Notebook name") },
     ({ name }) => withAuth(({ supabase, userId }) => createNotebook(supabase, userId, name)),
   );
@@ -139,7 +139,7 @@ function createMcpServer(auth: McpAuthResult | null): McpServer {
 
   server.tool(
     "rename_notebook",
-    "Rename a notebook (trims the name; rejects an empty name)",
+    "Rename a notebook (trims the name; rejects an empty name or one another notebook has)",
     {
       notebook_id: z.string().uuid().describe("The notebook ID to rename"),
       name: z.string().min(1).max(100).describe("New notebook name"),

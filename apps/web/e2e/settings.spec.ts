@@ -33,6 +33,28 @@ test("settings page renders, with a well-formed build line when the commit is kn
 });
 
 /**
+ * PrimeTestLab 11035 S-01: Settings ends with an About card that links the privacy policy and the
+ * support page, and both links open those public pages.
+ */
+test("PrimeTestLab 11035 S-01: the About section links the privacy policy and support pages", async ({
+  page,
+}) => {
+  await page.goto("/settings");
+
+  const about = page.getByTestId("about-section");
+  await expect(about.getByRole("heading", { name: "About" })).toBeVisible({ timeout: 10000 });
+  await expect(about.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute(
+    "href",
+    "/privacy",
+  );
+  await expect(about.getByRole("link", { name: "Support" })).toHaveAttribute("href", "/support");
+
+  await about.getByRole("link", { name: "Privacy Policy" }).click();
+  await expect(page).toHaveURL(/\/privacy$/);
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(/privacy/i);
+});
+
+/**
  * The "Connect to Claude" snippet points at the origin the page is served from (#748). The
  * server renders drafto.eu's origin and the browser hydrates that before switching to its own,
  * so the page loads without a hydration error on localhost and on previews too.

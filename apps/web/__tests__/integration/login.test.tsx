@@ -2,7 +2,14 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
-import { ACCOUNT_DELETED_MESSAGE, EMAIL_CONFIRMED } from "@drafto/shared";
+import {
+  ACCOUNT_DELETED_MESSAGE,
+  EMAIL_CONFIRMED,
+  EMAIL_REQUIRED_MESSAGE,
+  INVALID_CREDENTIALS_MESSAGE,
+  INVALID_EMAIL_MESSAGE,
+  PASSWORD_REQUIRED_MESSAGE,
+} from "@drafto/shared";
 
 // Mock next/navigation
 let mockSearchParams = new URLSearchParams();
@@ -156,7 +163,7 @@ describe("Login page", () => {
       await user.type(screen.getByLabelText("Password"), "wrong");
       await user.click(screen.getByRole("button", { name: "Log in" }));
 
-      expect(await screen.findByRole("alert")).toHaveTextContent("Invalid login credentials");
+      expect(await screen.findByRole("alert")).toHaveTextContent(INVALID_CREDENTIALS_MESSAGE);
       expect(screen.queryByText(/That link couldn't sign you in/)).not.toBeInTheDocument();
     });
   });
@@ -207,8 +214,58 @@ describe("Login page", () => {
     await user.type(screen.getByLabelText("Password"), "wrong");
     await user.click(screen.getByRole("button", { name: "Log in" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid login credentials");
+    expect(await screen.findByRole("alert")).toHaveTextContent(INVALID_CREDENTIALS_MESSAGE);
     expect(mockEnterApp).not.toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-02: refuses a malformed email without calling Supabase, inline", async () => {
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    await user.type(screen.getByLabelText("Email"), "planner.com");
+    await user.type(screen.getByLabelText("Password"), "abc");
+    await user.click(screen.getByRole("button", { name: "Log in" }));
+
+    expect(mockSignIn).not.toHaveBeenCalled();
+    const email = screen.getByLabelText("Email");
+    expect(screen.getByTestId("login-email-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+    expect(email).toHaveAttribute("aria-invalid", "true");
+    expect(email).toHaveAccessibleDescription(INVALID_EMAIL_MESSAGE);
+    expect(email).toHaveFocus();
+    // Log-in never checks a password's length: older accounts may have shorter ones.
+    expect(screen.queryByTestId("login-password-error")).not.toBeInTheDocument();
+  });
+
+  it("PrimeTestLab 11035 M-02: asks for both fields on an empty submit", async () => {
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Log in" }));
+
+    expect(screen.getByTestId("login-email-error")).toHaveTextContent(EMAIL_REQUIRED_MESSAGE);
+    expect(screen.getByTestId("login-password-error")).toHaveTextContent(PASSWORD_REQUIRED_MESSAGE);
+    expect(mockSignIn).not.toHaveBeenCalled();
+  });
+
+  it("PrimeTestLab 11035 M-02: puts Supabase's format error under the email field", async () => {
+    mockSignIn.mockResolvedValueOnce({
+      error: { message: "Unable to validate email address: invalid format" },
+    });
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<LoginPage />);
+    });
+
+    await user.type(screen.getByLabelText("Email"), "name@example.com");
+    await user.type(screen.getByLabelText("Password"), "password123");
+    await user.click(screen.getByRole("button", { name: "Log in" }));
+
+    expect(await screen.findByTestId("login-email-error")).toHaveTextContent(INVALID_EMAIL_MESSAGE);
+    expect(screen.queryByText(/Unable to validate/)).not.toBeInTheDocument();
   });
 
   it("shows loading state while submitting", async () => {
@@ -245,9 +302,13 @@ describe("Login page", () => {
 
     await user.click(screen.getByRole("button", { name: "Google" }));
 
+    // PrimeTestLab 11035 M-03: Google always shows its account chooser.
     expect(mockSignInWithOAuth).toHaveBeenCalledWith({
       provider: "google",
-      options: { redirectTo: expect.stringContaining("/auth/callback") },
+      options: {
+        redirectTo: expect.stringContaining("/auth/callback"),
+        queryParams: { prompt: "select_account" },
+      },
     });
   });
 

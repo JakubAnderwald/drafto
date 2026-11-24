@@ -1,6 +1,12 @@
 #!/bin/bash
 # Generate release notes from conventional commits since the last mobile release tag.
-# Usage: ./generate-release-notes.sh [--max-chars N]
+# Usage: ./generate-release-notes.sh [--max-chars N] [--tag-glob GLOB]...
+#
+# --tag-glob picks which release tags may start the range (default 'mobile@*').
+# Repeat it to give fallbacks: the first glob with a tag that is not on HEAD
+# wins. Play closed testing passes 'mobile-alpha@*' then 'mobile@*', so its notes
+# start from its own previous release, and from the newest shared release before
+# it has one (PlayRelease.notes_tag_globs in apps/mobile/fastlane/play_release.rb).
 #
 # Output: plain text release notes suitable for Google Play (500 char limit)
 # and TestFlight (4000 char limit).
@@ -8,12 +14,17 @@
 set -euo pipefail
 
 MAX_CHARS=500
+TAG_GLOBS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --max-chars) MAX_CHARS="${2:-500}"; shift 2 ;;
+    --tag-glob) [[ -n "${2:-}" ]] && TAG_GLOBS+=("$2"); shift 2 ;;
     *) shift ;;
   esac
 done
+if [[ ${#TAG_GLOBS[@]} -eq 0 ]]; then
+  TAG_GLOBS=('mobile@*')
+fi
 
 # Run from repo root so `git log -- apps/mobile/ packages/shared/` pathspecs
 # resolve correctly regardless of where fastlane invoked us (it calls this
@@ -21,9 +32,12 @@ done
 # `apps/mobile/apps/mobile/` and silently match nothing).
 cd "$(git rev-parse --show-toplevel)"
 
-# Find the latest mobile release tag.
-# If the latest tag points to HEAD (just created by the tag job), use the
-# previous tag so the range covers the actual changes in this release.
+# Find the latest release tag (per glob, in order) that does NOT point at HEAD.
+# A tag on HEAD is a release of this very commit (just created by the tag job,
+# or another lane that already shipped it), so the range has to start from the
+# release before it. There can be several: iOS TestFlight, the Play internal
+# track and Play closed testing (alpha) can all ship one commit, and stepping
+# back only one tag then left an empty range and no notes at all.
 # Newest by date, not by version sort. iOS and Android ship the same version
 # under two independent build counters, so the tags are `mobile@1.3.0+ios.32`
 # and `mobile@1.3.0+android.41` — ordering those by refname compares the string
@@ -31,15 +45,23 @@ cd "$(git rev-parse --show-toplevel)"
 # (These are lightweight tags, so `creatordate` resolves to the TAGGED COMMIT's
 # date — which is exactly the ordering we want: whichever release is later in
 # history wins.)
-LAST_TAG=$(git tag --list 'mobile@*' --sort=-creatordate | head -1)
-
-if [[ -n "$LAST_TAG" ]]; then
-  TAG_COMMIT=$(git rev-parse "$LAST_TAG" 2>/dev/null || true)
-  HEAD_COMMIT=$(git rev-parse HEAD)
-  if [[ "$TAG_COMMIT" == "$HEAD_COMMIT" ]]; then
-    LAST_TAG=$(git tag --list 'mobile@*' --sort=-creatordate | sed -n '2p')
-  fi
-fi
+#
+# Closed-testing builds are tagged `mobile-alpha@…`, which the default
+# 'mobile@*' glob does not match: a commit only closed-testing testers got must
+# not start the next internal-track or TestFlight build's notes.
+HEAD_COMMIT=$(git rev-parse HEAD)
+LAST_TAG=""
+for GLOB in "${TAG_GLOBS[@]}"; do
+  while IFS= read -r TAG; do
+    [[ -z "$TAG" ]] && continue
+    TAG_COMMIT=$(git rev-parse "${TAG}^{commit}" 2>/dev/null || true)
+    if [[ "$TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+      LAST_TAG="$TAG"
+      break
+    fi
+  done < <(git tag --list "$GLOB" --sort=-creatordate)
+  [[ -n "$LAST_TAG" ]] && break
+done
 
 if [[ -z "$LAST_TAG" ]]; then
   RANGE="HEAD"

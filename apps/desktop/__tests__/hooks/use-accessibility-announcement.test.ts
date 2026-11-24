@@ -55,3 +55,67 @@ describe("useAccessibilityAnnouncement", () => {
     ]);
   });
 });
+
+describe("useAccessibilityAnnouncement with queue", () => {
+  it("PrimeTestLab 11035 M-02: queues the announcement behind current speech", () => {
+    const announce = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibility")
+      .mockImplementation(() => {});
+    const announceWithOptions = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+    announceWithOptions.mockClear();
+
+    renderHook(() => useAccessibilityAnnouncement("Enter a valid email address.", { queue: true }));
+
+    expect(announceWithOptions).toHaveBeenCalledWith("Enter a valid email address.", {
+      queue: true,
+    });
+    expect(announce).not.toHaveBeenCalled();
+    announce.mockRestore();
+    announceWithOptions.mockRestore();
+  });
+});
+
+describe("useAccessibilityAnnouncement with attempt", () => {
+  let announceWithOptions: jest.SpyInstance;
+
+  beforeEach(() => {
+    announceWithOptions = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+    announceWithOptions.mockClear();
+  });
+
+  afterEach(() => {
+    announceWithOptions.mockRestore();
+  });
+
+  it("PrimeTestLab 11035 review: announces the same message again for each new attempt", () => {
+    const { rerender } = renderHook(
+      ({ attempt }: { attempt: number }) =>
+        useAccessibilityAnnouncement("Email or password is incorrect.", { queue: true, attempt }),
+      { initialProps: { attempt: 1 } },
+    );
+    // A re-render within the same attempt stays quiet.
+    rerender({ attempt: 1 });
+    // The next submit fails with the same words: heard again.
+    rerender({ attempt: 2 });
+
+    expect(announceWithOptions.mock.calls).toEqual([
+      ["Email or password is incorrect.", { queue: true }],
+      ["Email or password is incorrect.", { queue: true }],
+    ]);
+  });
+
+  it("PrimeTestLab 11035 review: a new attempt without a message stays silent", () => {
+    const { rerender } = renderHook(
+      ({ attempt }: { attempt: number }) =>
+        useAccessibilityAnnouncement(null, { queue: true, attempt }),
+      { initialProps: { attempt: 1 } },
+    );
+    rerender({ attempt: 2 });
+
+    expect(announceWithOptions).not.toHaveBeenCalled();
+  });
+});

@@ -234,6 +234,22 @@ describe("assertBetaOnly (prod-never invariant)", () => {
     );
   });
 
+  it("PrimeTestLab 11035 release: throws on the Play closed-testing (alpha) lane", () => {
+    assert.throws(
+      () => assertBetaOnly({ command: "pnpm", args: ["release:alpha:android"] }),
+      /non-beta/,
+    );
+    assert.throws(
+      () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "android", "alpha"] }),
+      /non-beta/,
+    );
+    // Android is the mobile Fastfile's default_platform.
+    assert.throws(
+      () => assertBetaOnly({ command: "bundle", args: ["exec", "fastlane", "alpha"] }),
+      /non-beta/,
+    );
+  });
+
   // `promote` submits an ALREADY-UPLOADED TestFlight build for App Review. It
   // does not build, so it is fast and cheap to invoke — and it is the single most
   // consequential lane in the repo, because it puts the app in front of Apple's

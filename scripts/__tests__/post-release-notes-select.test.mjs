@@ -77,6 +77,7 @@ describe("parseArgs", () => {
       platform: "ios",
       notes: "Fixed things",
       build: "29",
+      track: "",
     });
   });
 
@@ -88,7 +89,7 @@ describe("parseArgs", () => {
   });
 
   it("defaults platform to all and leaves notes/build empty when absent", () => {
-    assert.deepEqual(parseArgs([]), { platform: "all", notes: "", build: "" });
+    assert.deepEqual(parseArgs([]), { platform: "all", notes: "", build: "", track: "" });
   });
 
   it("treats a trailing flag with no value as empty", () => {

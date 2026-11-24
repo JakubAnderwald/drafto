@@ -10,16 +10,24 @@ import {
   Alert,
 } from "react-native";
 import { Q } from "@nozbe/watermelondb";
-import type { AppleRevocationGrant } from "@drafto/shared";
+import {
+  MAX_NOTEBOOK_NAME_LENGTH,
+  duplicateNotebookNameMessage,
+  findDuplicateNotebook,
+  formatNoteCount,
+  type AppleRevocationGrant,
+} from "@drafto/shared";
 
 import { useNetworkStatus } from "@/hooks/use-network-status";
 import { useNotebooks } from "@/hooks/use-notebooks";
+import { useNotebookNoteCount } from "@/hooks/use-notebook-note-count";
 import { useRowDeleteAction } from "@/hooks/use-row-delete-action";
 import { useSafeSignOut } from "@/hooks/use-safe-sign-out";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { database, Notebook, Note, Attachment } from "@/db";
 import { generateId } from "@/lib/generate-id";
+import { DuplicateNotebookNameError, assertNotebookNameFree } from "@/lib/data/notebook-name-guard";
 import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { SyncStatus } from "@/components/sync-status";
@@ -62,6 +70,9 @@ export function NotebooksSidebar({
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  // A taken name (PrimeTestLab 11035 M-01): shown under the open field, which stays open.
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   // Allow programmatic trigger of create mode (from menu shortcut)
@@ -76,9 +87,17 @@ export function NotebooksSidebar({
     const name = newName.trim();
     if (!name || !user) return;
 
+    const duplicate = findDuplicateNotebook(name, notebooks);
+    if (duplicate) {
+      setCreateError(duplicateNotebookNameMessage(duplicate.name));
+      return;
+    }
+
     try {
       const id = generateId();
       await database.write(async () => {
+        // The list above may still be loading or stale; this check sees what is stored.
+        await assertNotebookNameFree(database, name);
         await database.get<Notebook>("notebooks").create((nb) => {
           nb._raw.id = id;
           nb.remoteId = id;
@@ -90,17 +109,29 @@ export function NotebooksSidebar({
       setNewName("");
       setIsCreating(false);
     } catch (err) {
+      if (err instanceof DuplicateNotebookNameError) {
+        setCreateError(err.message);
+        return;
+      }
       console.error("Failed to create notebook:", err);
+      setCreateError(err instanceof Error ? err.message : "Failed to create notebook");
     }
-  }, [newName, user]);
+  }, [newName, notebooks, user]);
 
   const handleRename = useCallback(
     async (notebook: Notebook) => {
       const name = editName.trim();
       if (!name) return;
 
+      const duplicate = findDuplicateNotebook(name, notebooks, notebook.id);
+      if (duplicate) {
+        setRenameError(duplicateNotebookNameMessage(duplicate.name));
+        return;
+      }
+
       try {
         await database.write(async () => {
+          await assertNotebookNameFree(database, name, notebook.id);
           await notebook.update((nb) => {
             nb.name = name;
           });
@@ -109,11 +140,32 @@ export function NotebooksSidebar({
         setEditingId(null);
         setEditName("");
       } catch (err) {
+        if (err instanceof DuplicateNotebookNameError) {
+          setRenameError(err.message);
+          return;
+        }
         console.error("Failed to rename notebook:", err);
+        setRenameError(err instanceof Error ? err.message : "Failed to rename notebook");
       }
     },
-    [editName],
+    [editName, notebooks],
   );
+
+  const closeCreate = useCallback(() => {
+    setIsCreating(false);
+    setNewName("");
+    setCreateError(null);
+  }, []);
+
+  const changeNewName = useCallback((text: string) => {
+    setNewName(text);
+    setCreateError(null);
+  }, []);
+
+  const changeEditName = useCallback((text: string) => {
+    setEditName(text);
+    setRenameError(null);
+  }, []);
 
   const handleDelete = useCallback(async (notebook: Notebook) => {
     try {
@@ -241,21 +293,31 @@ export function NotebooksSidebar({
             {isCreating && (
               <View style={styles.createRow}>
                 <TextInput
+                  testID="notebook-name-input"
                   style={styles.input}
                   value={newName}
-                  onChangeText={setNewName}
+                  onChangeText={changeNewName}
                   placeholder="Notebook name"
                   placeholderTextColor={semantic.fgSubtle}
                   autoFocus
+                  maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                   onSubmitEditing={handleCreate}
+                  // Keeps the field focused after Return, so a refused name can be fixed in place.
+                  submitBehavior="submit"
                   // @ts-expect-error -- RN macOS supports onKeyDown but types are incomplete
                   onKeyDown={(e: { nativeEvent: { key: string } }) => {
-                    if (e.nativeEvent.key === "Escape") {
-                      setIsCreating(false);
-                      setNewName("");
-                    }
+                    if (e.nativeEvent.key === "Escape") closeCreate();
                   }}
                 />
+                {createError ? (
+                  <Text
+                    testID="notebook-name-error"
+                    accessibilityRole="alert"
+                    style={styles.nameError}
+                  >
+                    {createError}
+                  </Text>
+                ) : null}
               </View>
             )}
 
@@ -281,15 +343,18 @@ export function NotebooksSidebar({
                     isRenaming={editingId !== null}
                     editName={editName}
                     onSelect={() => onSelectNotebook(nb.id)}
+                    renameError={editingId === nb.id ? renameError : null}
                     onStartEdit={() => {
                       setEditingId(nb.id);
                       setEditName(nb.name);
+                      setRenameError(null);
                     }}
-                    onEditNameChange={setEditName}
+                    onEditNameChange={changeEditName}
                     onSubmitRename={() => handleRename(nb)}
                     onCancelEdit={() => {
                       setEditingId(null);
                       setEditName("");
+                      setRenameError(null);
                     }}
                     onDelete={() => handleDelete(nb)}
                     styles={styles}
@@ -365,6 +430,8 @@ interface NotebookRowProps {
   /** Whether any notebook's rename field is open, this row's or another's. */
   isRenaming: boolean;
   editName: string;
+  /** Why the typed name was refused (PrimeTestLab 11035 M-01), under the rename field. */
+  renameError: string | null;
   onSelect: () => void;
   onStartEdit: () => void;
   onEditNameChange: (name: string) => void;
@@ -380,6 +447,7 @@ function NotebookRow({
   isEditing,
   isRenaming,
   editName,
+  renameError,
   onSelect,
   onStartEdit,
   onEditNameChange,
@@ -400,6 +468,9 @@ function NotebookRow({
     isSelected,
     enabled: !isRenaming,
   });
+  // How many notes it holds (PrimeTestLab 11035 S-03); null until counted.
+  const count = useNotebookNoteCount(notebook.id);
+  const countText = count === null ? null : formatNoteCount(count);
 
   return (
     <Pressable
@@ -412,22 +483,44 @@ function NotebookRow({
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       accessibilityLabel={notebook.name}
+      // Read after the name: "Project Ideas, 3 notes".
+      accessibilityValue={countText === null ? undefined : { text: countText }}
       onLongPress={onStartEdit}
     >
       {isEditing ? (
-        <TextInput
-          style={styles.editInput}
-          value={editName}
-          onChangeText={onEditNameChange}
-          autoFocus
-          onSubmitEditing={onSubmitRename}
-          onBlur={onCancelEdit}
-        />
+        <View>
+          <TextInput
+            style={styles.editInput}
+            value={editName}
+            onChangeText={onEditNameChange}
+            autoFocus
+            maxLength={MAX_NOTEBOOK_NAME_LENGTH}
+            onSubmitEditing={onSubmitRename}
+            // Return keeps the field focused, so a refused name stays on screen to fix.
+            // Clicking away still cancels the rename, and clears the error with it.
+            submitBehavior="submit"
+            onBlur={onCancelEdit}
+          />
+          {renameError ? (
+            <Text testID="notebook-name-error" accessibilityRole="alert" style={styles.nameError}>
+              {renameError}
+            </Text>
+          ) : null}
+        </View>
       ) : (
         <View style={styles.itemRow}>
           <Text style={[styles.itemText, isSelected && styles.itemTextSelected]} numberOfLines={1}>
             {notebook.name}
           </Text>
+          {/* The count stays put on hover: the × appears in its own slot beside it. */}
+          {countText !== null ? (
+            <Text
+              testID="notebook-note-count"
+              style={[styles.countText, isSelected && styles.countTextSelected]}
+            >
+              {countText}
+            </Text>
+          ) : null}
           <Pressable
             style={[styles.deleteButton, !hovered && styles.deleteButtonHidden]}
             onPress={onDelete}
@@ -557,6 +650,22 @@ const createStyles = (semantic: SemanticColors) =>
       opacity: 0,
       // Prevent the invisible button from intercepting taps on the row body.
       pointerEvents: "none",
+      // Still in the flow: its slot keeps every row the same height, hovered or not.
+    },
+    countText: {
+      marginLeft: spacing.xs,
+      fontSize: fontSizes.sm,
+      color: semantic.fgMuted,
+      fontFamily: fontFamily.sans,
+    },
+    countTextSelected: {
+      color: semantic.sidebarActiveText,
+    },
+    nameError: {
+      marginTop: spacing.xs,
+      fontSize: fontSizes.sm,
+      color: semantic.errorText,
+      fontFamily: fontFamily.sans,
     },
     deleteButtonText: {
       fontSize: fontSizes.xl,
