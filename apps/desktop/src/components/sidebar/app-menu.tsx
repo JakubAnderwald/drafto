@@ -12,6 +12,7 @@ import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react
 import { DELETE_ACCOUNT_OFFLINE_NOTE } from "@/components/sidebar/delete-account-panel";
 import { IconButton } from "@/components/ui/icon-button";
 import { EllipsisIcon } from "@/components/ui/icons/ellipsis-icon";
+import { focusView } from "@/lib/focus-view";
 import { useTheme } from "@/providers/theme-provider";
 import { fontFamily, fontSizes, radii, spacing, type SemanticColors } from "@/theme/tokens";
 
@@ -71,11 +72,12 @@ export function AppMenu({ onSignOut, onDeleteAccount, isOffline, children }: App
   );
 
   // Give the open menu keyboard focus, as a native menu has, so Escape reaches its onKeyDown.
-  // Deferred like the app's other focus calls: a focus command sent before the native view is
-  // mounted is dropped.
+  // Through the native focus command: `View#focus()` does nothing for a plain view on
+  // react-native-macos 0.83. Deferred like the app's other focus calls: a focus command sent
+  // before the native view is mounted is dropped.
   useEffect(() => {
     if (!isOpen) return;
-    const timer = setTimeout(() => menuRef.current?.focus(), FOCUS_DELAY_MS);
+    const timer = setTimeout(() => focusView(menuRef.current), FOCUS_DELAY_MS);
     return () => clearTimeout(timer);
   }, [isOpen]);
 
