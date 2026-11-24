@@ -368,6 +368,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   // Flush on unmount (switching notes, or a client-side navigation away from the editor)
   useEffect(() => {
     activeNoteIdRef.current = noteId;
+    lastSavedAtRef.current = null;
     return () => {
       activeNoteIdRef.current = null;
       if (timerRef.current) {
