@@ -22,42 +22,26 @@ module PlayRelease
   SHARED_TAG_PREFIX = "mobile@"
 
   # Raised when a track's version codes could not be read. fastlane's
-  # google_play_track_version_codes already returns [] for an empty or missing
-  # track (supply maps Play's 404 trackEmpty / "Track not found" to []), so a
-  # raise here is a real failure: network, a 5xx, auth. Guessing that track is
-  # empty could reuse a code it holds, which Play only rejects at upload, after
-  # the whole build.
+  # google_play_track_version_codes already returns [] for an empty, missing or
+  # release-less track (supply maps Play's 404 trackEmpty / "Track not found" to
+  # [], and since 2.235.0 a track with no `releases`, such as our open-testing
+  # `beta`, too), so a raise here is a real failure: network, a 5xx, auth.
+  # Guessing that track is empty could reuse a code it holds, which Play only
+  # rejects at upload, after the whole build.
   class TrackUnreadable < StandardError; end
 
   # Calls the block once per track and returns { track => [codes] }. The first
-  # track the block raises for stops the lot with TrackUnreadable, except a
-  # track that exists with no releases (see release_less_track?), which holds
-  # no codes and counts as empty.
+  # track the block raises for stops the lot with TrackUnreadable — no
+  # exception counts as an empty track.
   def self.collect_version_codes(tracks = TRACKS)
     tracks.each_with_object({}) do |track, codes|
       codes[track] = Array(yield(track)).map(&:to_i)
     rescue StandardError => e
-      if release_less_track?(e)
-        codes[track] = []
-        next
-      end
-
       raise TrackUnreadable,
             "Could not read version codes from Google Play track '#{track}' (#{e.message}). " \
             "Every track is needed to pick a version code Play has not used; retry once the " \
             "Play API answers."
     end
-  end
-
-  # fastlane 2.232's supply reads a track's codes with
-  # `result.releases.flat_map(&:version_codes)`. For a track that exists but has
-  # never had a release (our open-testing `beta` track), Play returns no
-  # `releases`, so that line raises NoMethodError on nil instead of returning
-  # []. Such a track holds no version codes, so it is as empty as the 404 case
-  # fastlane already maps to []. Newer fastlane (2.242+) does this itself.
-  # Only this exact error counts: anything else still stops the lane.
-  def self.release_less_track?(error)
-    error.is_a?(NoMethodError) && error.name == :flat_map && error.receiver.nil?
   end
 
   # One above the highest code on any track.

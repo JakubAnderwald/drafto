@@ -554,11 +554,11 @@ describe("App Store promote lanes", () => {
       }
     });
 
-    // fastlane 2.232.2 reads `phased_release` and `automatic_release` in exactly
+    // fastlane 2.242.0 reads `phased_release` and `automatic_release` in exactly
     // one place — Deliver::UploadMetadata#upload (releaseType at
-    // deliver/lib/deliver/upload_metadata.rb:181-196, the phased release at
-    // :313-331) — and that method returns on its first line when `skip_metadata`
-    // is set (:88-89). Passing them to `upload_to_app_store` alongside
+    // deliver/lib/deliver/upload_metadata.rb:187-202, the phased release at
+    // :319-337) — and that method returns on its first line when `skip_metadata`
+    // is set (:94-95). Passing them to `upload_to_app_store` alongside
     // `skip_metadata: true`, which a promote lane must set, therefore applies
     // NOTHING, while the lane prints "Phased release … on" and "Release: manual".
     // App Store Connect preselects "Automatically release this version", so a
@@ -599,6 +599,63 @@ describe("App Store promote lanes", () => {
       ]) {
         assert.match(src, bit, `apply_appstore_release_settings is missing ${bit}`);
       }
+    });
+
+    // fastlane 2.242.0 (fastlane#30438): when precheck finds a blocking problem,
+    // deliver prints it and skips SubmitForReview WITHOUT raising, so
+    // upload_to_app_store "succeeds" with nothing submitted (2.232.2 swallowed
+    // the violation and submitted anyway). Both submitting uploads must confirm
+    // App Store Connect holds a review submission before the lane reports one.
+    it(`${f.path} confirms a review submission exists after every submitting upload`, () => {
+      const src = read(f.path);
+      const lane = promoteLaneBody(src);
+
+      assert.match(
+        lane,
+        new RegExp(
+          `if submit\\r?\\n\\s+assert_submitted_for_review!\\(asc_platform: "${f.ascPlatform}", ` +
+            `app_identifier: ${f.appIdentifier},`,
+        ),
+        "promote must check the submission happened, only on a submitting run",
+      );
+      const uploadAt = lane.indexOf("upload_to_app_store(");
+      const assertAt = lane.indexOf("assert_submitted_for_review!(");
+      const successAt = lane.indexOf("UI.success(");
+      assert.ok(
+        uploadAt !== -1 && uploadAt < assertAt,
+        "the check must follow upload_to_app_store",
+      );
+      assert.ok(assertAt < successAt, "the check must run before the lane reports success");
+
+      // The production (hotfix) path: build_and_submit's App Store branch.
+      const buildStart = src.indexOf(
+        "private_lane :build_and_submit do",
+        src.indexOf("lane :promote do"),
+      );
+      assert.notEqual(buildStart, -1, "no build_and_submit lane after promote");
+      const build = src.slice(buildStart);
+      const prodUploadAt = build.indexOf("upload_to_app_store(");
+      assert.notEqual(prodUploadAt, -1, "build_and_submit has no upload_to_app_store call");
+      const afterUpload = build.slice(prodUploadAt);
+      assert.match(
+        afterUpload,
+        new RegExp(
+          `^[ \\t]*\\)\\r?\\n(?:[ \\t]*#.*\\r?\\n)*[ \\t]*if submit_for_review\\r?\\n\\s+` +
+            `assert_submitted_for_review!\\(asc_platform: "${f.ascPlatform}", app_identifier: ${f.appIdentifier},`,
+          "m",
+        ),
+        "the production upload must be followed by the submission check when submit:true",
+      );
+
+      assert.match(
+        src,
+        /^def assert_submitted_for_review!\(asc_platform:, app_identifier:, app_version:\)$/m,
+        "assert_submitted_for_review! is not defined in this Fastfile",
+      );
+      const helper = src.slice(src.indexOf("def assert_submitted_for_review!("));
+      const helperBody = helper.slice(0, helper.indexOf("\nend\n"));
+      assert.match(helperBody, /get_in_progress_review_submission\(platform: platform\)/);
+      assert.match(helperBody, /UI\.user_error!\(/);
     });
 
     it(`${f.path} answers the IDFA / encryption / content-rights questions`, () => {

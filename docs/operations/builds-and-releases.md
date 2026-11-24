@@ -226,7 +226,7 @@ that is higher than all of them. Every Android lane therefore takes the highest 
 on any of `internal`, `alpha`, `beta` and `production`, plus one (`next_play_version_code`
 in the Fastfile). Taking only the target track's highest code breaks once tracks
 diverge: internal was at 87 while alpha held 82, so an alpha build would have reused
-code 83. fastlane already reads an empty or missing track as no codes. A track that exists but has never had a release (our open-testing `beta` track) makes fastlane 2.232 raise `undefined method 'flat_map' for nil`; `PlayRelease.release_less_track?` counts exactly that error as an empty track. Any other
+code 83. fastlane (2.235+) reads an empty, missing or release-less track (our open-testing `beta`) as no codes. Any other
 failure to read a track (network, a 5xx, auth) stops the lane, because guessing that
 track is empty could reuse one of its codes. The codes are read after `expo prebuild`
 and right before Gradle, so a failure costs the prebuild rather than a whole build.
@@ -505,6 +505,14 @@ in valid state` and `You must provide a value for the attribute 'whatsNew'`.
 > Nothing has been submitted then. Fill it in on the version page (or through the
 > App Store Connect API) and re-run. A `submit:false` dry run doesn't catch it.
 
+> **A precheck problem stops the submission.** `deliver` runs fastlane precheck
+> before it submits. Since fastlane 2.242.0, a blocking precheck violation makes
+> `deliver` print precheck's table and skip the submission without raising, so the
+> lane then checks App Store Connect for a review submission
+> (`assert_submitted_for_review!`) and fails with "was NOT submitted for review" if
+> there is none. Fix the listing problem precheck names and re-run. The same check
+> follows `production submit:true`, on iOS and macOS.
+
 > **`submit:false` is a dry run, not a way to stage a build.** `deliver` uses
 > `build_number` only when it submits (`Deliver::SubmitForReview#select_build` is
 > the only caller of `select_build`), so with `submit:false` the lane resolves and
@@ -535,7 +543,7 @@ The lane passes the export-compliance and content-rights answers, but `deliver`
 sends them as part of a submission, so on the default upload-only run they never
 reach App Store Connect — answer them there when you submit by hand, or run with
 `submit:true`. (`add_id_info_uses_idfa` is declared alongside them but is dead in
-fastlane 2.232.2, which never sends it; Apple retired that submission question.)
+fastlane 2.242.0, which never sends it; Apple retired that submission question.)
 Unlike `promote`, this lane does **not** set the release type or phased release —
 `submit:true` submits under whatever App Store Connect holds, which defaults to
 _Automatically release this version_. Check that on the version page, or use
