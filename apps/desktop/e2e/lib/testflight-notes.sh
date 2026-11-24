@@ -8,7 +8,7 @@
 # Continue is pressed, the Drafto process runs with no window at all, so a script that waits for
 # Drafto's window, or reads `window 1` of it, waits forever or reads nothing.
 #
-# Sourced by run-e2e.sh and by the In-Test harness (in-test/lib/harness.sh).
+# Sourced by run-e2e.sh and by the In-Test preflights (in-test/lib/app.sh).
 
 # Run a command, killing it after $1 seconds: an AX query can hang while a modal is up.
 with_time_limit() {
@@ -17,46 +17,70 @@ with_time_limit() {
   perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
 }
 
+# limit_to <deadline> <max> — seconds left before <deadline> (a $SECONDS value), capped at <max>
+# and at least 1: the time limit for one AX query, so no query outlasts the deadline.
+limit_to() {
+  local left=$(($1 - SECONDS))
+  [ "$left" -lt "$2" ] || left=$2
+  [ "$left" -ge 1 ] || left=1
+  echo "$left"
+}
+
+# drafto_window_count [limit_s] — Drafto's window count, or nothing if it can't be read.
 drafto_window_count() {
-  with_time_limit 10 osascript -e \
+  with_time_limit "${1:-10}" osascript -e \
     'tell application "System Events" to if exists process "Drafto" then tell process "Drafto" to return count of windows' \
     2> /dev/null || true
 }
 
-# press_testflight_page_continue [named] — press Continue on the front TestFlight first-launch
-# page. Prints "pressed-named" (the page names Drafto), "pressed" or "none". With "named", only
-# a page that names Drafto is pressed.
+# agent_window_count [limit_s] — how many windows CoreServicesUIAgent has up.
+agent_window_count() {
+  with_time_limit "${1:-10}" osascript -e \
+    'tell application "System Events" to if exists process "CoreServicesUIAgent" then tell process "CoreServicesUIAgent" to return count of windows' \
+    2> /dev/null || true
+}
+
+# press_testflight_page_continue <limit_s> [frame] — press Continue on the front TestFlight
+# first-launch page. Prints "pressed <x>,<y>,<w>,<h>" (the page's window frame) or "none".
 #
-# The page is the front CoreServicesUIAgent window whose content group holds exactly two
-# buttons. Its button titles aren't exposed to accessibility and are localized anyway
-# ("Continue", "Dalej"), so Continue is found by position: the right-hand one. Only the first
-# page (the "What to Test" notes) names the app, in a line reading exactly "Drafto", so
-# dismiss_testflight_notes presses an unnamed page only while it is inside the flow: Drafto
-# has no window yet, or the page right before was a Drafto page. That keeps it off any other
-# CoreServicesUIAgent dialog (Gatekeeper and the like).
+# Without a frame, the page must name Drafto: the first page (the "What to Test" notes) has a
+# line reading exactly "Drafto", and it starts a flow. The later pages never name the app, so
+# with a frame (the one the previous page of the flow had) a page is pressed only if it sits
+# exactly there. That keeps the helper off any other CoreServicesUIAgent dialog (Gatekeeper and
+# the like). A page is the front window's content group with exactly two buttons. Their titles
+# aren't exposed to accessibility and are localized anyway ("Continue", "Dalej"), so Continue is
+# found by position: the right-hand one.
 press_testflight_page_continue() {
-  with_time_limit 20 osascript - "${1:-any}" << 'EOF' 2> /dev/null || echo none
+  with_time_limit "$1" osascript - "${2:-}" << 'EOF' 2> /dev/null || echo none
 on run argv
-  set pressMode to item 1 of argv
+  set wantFrame to item 1 of argv
   tell application "System Events"
     if not (exists process "CoreServicesUIAgent") then return "none"
     tell process "CoreServicesUIAgent"
       if (count of windows) is 0 then return "none"
       try
-        set g to UI element 1 of window 1
+        set w to window 1
+        -- Read each position and size into a variable first: `item 1 of (position of x)`
+        -- is not a valid specifier inside a tell block.
+        set wp to position of w
+        set ws to size of w
+        set frameText to ((item 1 of wp) as text) & "," & ((item 2 of wp) as text) & "," & ((item 1 of ws) as text) & "," & ((item 2 of ws) as text)
+        set g to UI element 1 of w
         set btns to buttons of g
         if (count of btns) is not 2 then return "none"
-        set namesDrafto to false
-        repeat with t in (static texts of g)
-          try
-            if ((value of t) as text) is "Drafto" then set namesDrafto to true
-          end try
-        end repeat
-        if pressMode is "named" and not namesDrafto then return "none"
+        if wantFrame is "" then
+          set namesDrafto to false
+          repeat with t in (static texts of g)
+            try
+              if ((value of t) as text) is "Drafto" then set namesDrafto to true
+            end try
+          end repeat
+          if not namesDrafto then return "none"
+        else if frameText is not wantFrame then
+          return "none"
+        end if
         set b1 to item 1 of btns
         set b2 to item 2 of btns
-        -- Read each position into a variable first: `item 1 of (position of b)` is not a
-        -- valid specifier inside a tell block.
         set p1 to position of b1
         set p2 to position of b2
         if (item 1 of p2) > (item 1 of p1) then
@@ -64,8 +88,7 @@ on run argv
         else
           perform action "AXPress" of b1
         end if
-        if namesDrafto then return "pressed-named"
-        return "pressed"
+        return "pressed " & frameText
       end try
     end tell
   end tell
@@ -75,32 +98,44 @@ EOF
 }
 
 # dismiss_testflight_notes [timeout_s] — press Continue through TestFlight's first-launch pages
-# (at most 5): the ones blocking Drafto's launch, and any left over from an earlier launch once
-# Drafto is up (they sit over its window, where a click would land on them). Then wait up to
-# timeout_s (default 30) for Drafto's window. Prints a line for each page it dismisses. Returns 1
-# if it pressed something and Drafto still has no window when the time is up, 0 otherwise
-# (nothing to dismiss, Drafto not running, or Drafto's window is up).
+# (at most 5), both the ones blocking Drafto's launch and any left over from an earlier launch
+# once Drafto is up (they sit over its window, where a click would land on them). Then wait for
+# Drafto's window, all within timeout_s (default 30) of elapsed time. Prints a line for each page
+# it dismisses. Returns 0 when there is nothing of TestFlight's to dismiss (or Drafto isn't
+# running) or Drafto's window is up afterwards. Returns 1 when Drafto still has no window at the
+# deadline, or when Drafto has no window and a CoreServicesUIAgent dialog that doesn't name
+# Drafto is up: that one is left for a person.
 dismiss_testflight_notes() {
-  local timeout=${1:-30} pages=0 waited=0 in_flow=false result
+  local timeout=${1:-30} deadline pages=0 frame="" last_press=0 result count
   pgrep -x Drafto > /dev/null || return 0
-  while [ "$pages" -lt 5 ]; do
-    if [ "$(drafto_window_count)" = 0 ] || [ "$in_flow" = true ]; then
-      result=$(press_testflight_page_continue any)
-    else
-      result=$(press_testflight_page_continue named)
+  deadline=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ "$pages" -lt 5 ]; then
+      result=$(press_testflight_page_continue "$(limit_to "$deadline" 20)" "$frame")
+      if [ "${result%% *}" = pressed ]; then
+        frame=${result#pressed }
+        pages=$((pages + 1))
+        last_press=$SECONDS
+        echo "  ℹ  Pressed Continue on a TestFlight first-launch page ($pages)"
+        sleep 1
+        continue
+      fi
     fi
-    [ "$result" != none ] || break
-    # A Drafto page starts a flow; the pages after it don't name the app.
-    in_flow=true
-    pages=$((pages + 1))
-    echo "  ℹ  Pressed Continue on a TestFlight first-launch page ($pages)"
-    sleep 1.5
-  done
-  [ "$pages" -gt 0 ] || return 0
-  while [ "$waited" -lt "$timeout" ]; do
-    [ "$(drafto_window_count)" -gt 0 ] 2> /dev/null && return 0
+    if [ "$pages" -eq 0 ]; then
+      count=$(drafto_window_count "$(limit_to "$deadline" 10)")
+      if [ "$count" = 0 ] && [ "$(agent_window_count "$(limit_to "$deadline" 10)")" -gt 0 ] 2> /dev/null; then
+        echo "  ⚠  Drafto has no window and a system dialog that doesn't name Drafto is up; dismiss it by hand"
+        return 1
+      fi
+      return 0
+    fi
+    # The next page of a flow can take a moment to appear: look for one for 5 s after a press
+    # before settling for Drafto's window.
+    if [ $((SECONDS - last_press)) -ge 5 ] || [ "$pages" -ge 5 ]; then
+      count=$(drafto_window_count "$(limit_to "$deadline" 10)")
+      [ "${count:-0}" -gt 0 ] 2> /dev/null && return 0
+    fi
     sleep 1
-    waited=$((waited + 1))
   done
   echo "  ⚠  Drafto still has no window ${timeout}s after TestFlight's first-launch pages"
   return 1
