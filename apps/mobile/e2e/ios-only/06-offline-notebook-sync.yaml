@@ -15,8 +15,10 @@ tags:
 #   QA_PHASE=offline    the Mac is offline: a notebook and a note in it
 #   QA_PHASE=reconnect  online again: both sync
 #
-# Assumes the user is logged in. Pass -e RUN_ID=<timestamp>, the same for all
-# phases. To skip it in a folder run:
+# The prepare phase signs in when the app shows Log In
+# (helpers/sign-in-if-needed.yaml): pass -e E2E_TEST_EMAIL / E2E_TEST_PASSWORD.
+# Pass -e RUN_ID=<timestamp>, the same for all phases. To skip it in a folder
+# run:
 #   maestro test apps/mobile/e2e/ios-only/ --exclude-tags requires-host-offline
 
 - assertTrue:
@@ -28,11 +30,7 @@ tags:
     when:
       true: ${QA_PHASE == 'prepare'}
     commands:
-      - launchApp
-      - extendedWaitUntil:
-          visible:
-            id: "search-button"
-          timeout: 30000
+      - runFlow: ../helpers/sign-in-if-needed.yaml
 
 # --- Phase: offline (the runner has taken the Mac offline) ---
 - runFlow:
