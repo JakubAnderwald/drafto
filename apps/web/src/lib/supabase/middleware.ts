@@ -2,6 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { env } from "@/env";
 import type { Database } from "@/lib/supabase/database.types";
+import { getVerifiedSessionUser } from "@/lib/supabase/session-claims";
 
 const PUBLIC_ROUTES = [
   "/login",
@@ -112,7 +113,7 @@ export async function updateSession(request: NextRequest) {
     request,
   });
 
-  // Without a Supabase cookie there is no session, so getUser() could only return no user. Skip
+  // Without a Supabase cookie there is no session, so getClaims() could only return no user. Skip
   // building the client: crawlers, bot probes and signed-out visitors take this path, and each
   // middleware run bills Vercel Active CPU. They then take the same signed-out branches below.
   const supabase = hasSupabaseCookie(request)
@@ -145,7 +146,11 @@ export async function updateSession(request: NextRequest) {
       )
     : null;
 
-  const user = supabase ? (await supabase.auth.getUser()).data.user : null;
+  // The session is verified locally against the project's cached JWKS, not with a call to
+  // Supabase Auth per request (ADR-0098). A session about to expire is still refreshed, and the
+  // new cookies go through `setAll` above. A bad, tampered or expired-and-unrefreshable token
+  // reads as signed out.
+  const user = supabase ? await getVerifiedSessionUser(supabase.auth) : null;
 
   // Public routes: allow access regardless of auth state
   if (isPublicRoute(pathname)) {
@@ -208,12 +213,13 @@ export async function updateSession(request: NextRequest) {
   }
 
   // Forward verified auth state to route handlers so they can skip
-  // the redundant getUser() + profiles query (already validated above).
+  // the redundant getUser() + profiles query (the token's signature and the profile were
+  // checked above, so the id is the verified `sub` claim).
   // Safe: Next.js middleware controls the request object — clients cannot
   // forge these headers because middleware overwrites them before forwarding.
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-verified-user-id", user.id);
-  requestHeaders.set("x-verified-user-email", user.email ?? "");
+  requestHeaders.set("x-verified-user-email", user.email);
   supabaseResponse = NextResponse.next({
     request: { headers: requestHeaders },
   });

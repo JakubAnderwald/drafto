@@ -1,4 +1,11 @@
-import { test, expect } from "@playwright/test";
+import {
+  test,
+  expect,
+  type Browser,
+  type BrowserContext,
+  type Cookie,
+  type Page,
+} from "@playwright/test";
 
 /**
  * Security-focused E2E tests (Phase 7.1)
@@ -203,5 +210,193 @@ test.describe("Security: admin pages for a signed-in non-admin", () => {
     // landing page at / has no notebooks pane.
     await expect(page.getByTestId("notebooks-pane")).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole("heading", { name: "Product metrics" })).toBeHidden();
+  });
+});
+
+// --- Tampered session cookie -------------------------------------------------------------------
+//
+// The middleware verifies the session's access token itself with `getClaims()` (ADR-0098), so a
+// token with a broken signature must read as signed out. These helpers copy the signed-in E2E
+// user's Supabase auth cookie into a fresh browser context, optionally with the token tampered.
+
+// @supabase/ssr names the cookie `sb-<project ref>-auth-token`, split into `.0`, `.1`… chunks once
+// the value passes 3180 characters. The value is `base64-` + base64url(JSON session).
+const AUTH_COOKIE_NAME = /^(sb-.+-auth-token)(?:\.(0|[1-9]\d*))?$/;
+const SESSION_ENCODING_PREFIX = "base64-";
+const MAX_COOKIE_CHUNK_LENGTH = 3180;
+
+type StoredSession = {
+  access_token: string;
+  refresh_token: string;
+  expires_at?: number;
+  [field: string]: unknown;
+};
+
+type AuthCookie = { key: string; chunks: Cookie[] };
+
+function findAuthCookie(cookies: Cookie[]): AuthCookie {
+  const parts = cookies.flatMap((cookie) => {
+    const match = AUTH_COOKIE_NAME.exec(cookie.name);
+    if (!match) return [];
+    return [{ cookie, key: match[1], index: match[2] === undefined ? -1 : Number(match[2]) }];
+  });
+  if (parts.length === 0) {
+    throw new Error("The signed-in storage state has no sb-<ref>-auth-token cookie");
+  }
+  const key = parts[0].key;
+  const ofKey = parts.filter((part) => part.key === key);
+  // Like @supabase/ssr's combineChunks: an unchunked cookie wins over chunks.
+  const whole = ofKey.find((part) => part.index === -1);
+  const chunks = whole
+    ? [whole.cookie]
+    : ofKey.sort((a, b) => a.index - b.index).map((part) => part.cookie);
+  return { key, chunks };
+}
+
+function decodeSession(chunks: Cookie[]): StoredSession {
+  const raw = chunks.map((chunk) => chunk.value).join("");
+  if (!raw.startsWith(SESSION_ENCODING_PREFIX)) {
+    throw new Error("Expected the auth cookie in @supabase/ssr's base64- encoding");
+  }
+  const json = Buffer.from(raw.slice(SESSION_ENCODING_PREFIX.length), "base64url").toString("utf8");
+  const parsed: unknown = JSON.parse(json);
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("The auth cookie does not hold a session object");
+  }
+  const record = parsed as Record<string, unknown>;
+  const { access_token: accessToken, refresh_token: refreshToken, expires_at: expiresAt } = record;
+  if (typeof accessToken !== "string" || typeof refreshToken !== "string") {
+    throw new Error("The auth cookie's session has no access_token / refresh_token");
+  }
+  return {
+    ...record,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_at: typeof expiresAt === "number" ? expiresAt : undefined,
+  };
+}
+
+// Same name scheme and chunk size as @supabase/ssr. base64url characters need no URI escaping,
+// so the string length is the length the chunker measures.
+function encodeSessionCookies(key: string, template: Cookie, session: StoredSession): Cookie[] {
+  const value =
+    SESSION_ENCODING_PREFIX + Buffer.from(JSON.stringify(session), "utf8").toString("base64url");
+  if (value.length <= MAX_COOKIE_CHUNK_LENGTH) {
+    return [{ ...template, name: key, value }];
+  }
+  const chunks: Cookie[] = [];
+  for (let start = 0; start < value.length; start += MAX_COOKIE_CHUNK_LENGTH) {
+    chunks.push({
+      ...template,
+      name: `${key}.${chunks.length}`,
+      value: value.slice(start, start + MAX_COOKIE_CHUNK_LENGTH),
+    });
+  }
+  return chunks;
+}
+
+// An hour ahead, so neither the middleware nor the browser client tries a refresh: the request
+// must stand or fall on the access token alone.
+function withFutureExpiry(session: StoredSession): StoredSession {
+  const inAnHour = Math.floor(Date.now() / 1000) + 3600;
+  return { ...session, expires_at: Math.max(session.expires_at ?? 0, inAnHour) };
+}
+
+// Changes the signature's first characters, not its last: the final base64url character can carry
+// unused padding bits, so editing it may decode to the very same signature bytes.
+function tamperSignature(jwt: string): string {
+  const [header, payload, signature] = jwt.split(".");
+  if (!header || !payload || !signature || signature.length < 8) {
+    throw new Error("The access token is not a signed JWT");
+  }
+  // An access token already past its `exp` reads as signed out without any signature check, and
+  // the test would pass for the wrong reason. auth.setup.ts signs in fresh on every run.
+  const { exp } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+    exp?: unknown;
+  };
+  if (typeof exp !== "number" || exp <= Math.floor(Date.now() / 1000) + 60) {
+    throw new Error("The signed-in access token has expired: re-run the setup project");
+  }
+  const changed = [...signature.slice(0, 4)].map((char) => (char === "A" ? "B" : "A")).join("");
+  return `${header}.${payload}.${changed}${signature.slice(4)}`;
+}
+
+function tamperedSession(session: StoredSession): StoredSession {
+  return {
+    ...withFutureExpiry(session),
+    access_token: tamperSignature(session.access_token),
+    // A refresh can't rescue the session either.
+    refresh_token: "tampered-refresh-token",
+  };
+}
+
+// A fresh context holding only the (transformed) auth cookie, not the original chunks.
+async function contextWithSessionCookie(
+  browser: Browser,
+  signedIn: BrowserContext,
+  transform: (session: StoredSession) => StoredSession,
+): Promise<{ context: BrowserContext; cookies: Cookie[] }> {
+  const { key, chunks } = findAuthCookie(await signedIn.cookies());
+  const cookies = encodeSessionCookies(key, chunks[0], transform(decodeSession(chunks)));
+  const context = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  await context.addCookies(cookies);
+  return { context, cookies };
+}
+
+type FetchResult = { status: number; location: string | null; errorType: string };
+
+async function fetchNotebooksFromPage(page: Page): Promise<FetchResult> {
+  return page.evaluate(async () => {
+    const response = await fetch("/api/notebooks", { redirect: "manual" });
+    const body: unknown = await response.json().catch(() => null);
+    const error =
+      typeof body === "object" && body !== null ? (body as { error?: unknown }).error : undefined;
+    return {
+      status: response.status,
+      location: response.headers.get("location"),
+      errorType: typeof error,
+    };
+  });
+}
+
+test.describe("Security: tampered session cookie", () => {
+  // The default context is the signed-in E2E user (`e2e/.auth/user.json` from auth.setup.ts).
+  test("an access token with a broken signature is treated as signed out", async ({
+    browser,
+    context: signedIn,
+  }) => {
+    const { context, cookies } = await contextWithSessionCookie(browser, signedIn, tamperedSession);
+    try {
+      const page = await context.newPage();
+      await page.goto("/settings");
+      await page.waitForURL((url) => url.pathname === "/login", { timeout: 15000 });
+
+      // Put the tampered cookie back in case the redirect cleared it, so the API call below is
+      // judged on the tampered token and not on a missing cookie.
+      await context.addCookies(cookies);
+      const result = await fetchNotebooksFromPage(page);
+      expect(result).toEqual({ status: 401, location: null, errorType: "string" });
+    } finally {
+      await context.close();
+    }
+  });
+
+  // Control: the same copy without the tampering still signs in, so the test above fails for the
+  // signature and not because the cookie was copied wrong.
+  test("an untampered copy of the same session cookie stays signed in", async ({
+    browser,
+    context: signedIn,
+  }) => {
+    const { context } = await contextWithSessionCookie(browser, signedIn, withFutureExpiry);
+    try {
+      const page = await context.newPage();
+      await page.goto("/settings");
+      expect(new URL(page.url()).pathname).toBe("/settings");
+
+      const result = await fetchNotebooksFromPage(page);
+      expect(result.status).toBe(200);
+    } finally {
+      await context.close();
+    }
   });
 });
