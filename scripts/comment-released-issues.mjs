@@ -17,7 +17,15 @@
 //        --build <identifier> \
 //        --track "<customer-facing label, e.g. 'TestFlight build 145'>" \
 //        --tag-prefix mobile@|desktop@ \
+//        [--tag-glob 'mobile@*+android.*'] \
 //        --paths apps/mobile/,packages/shared/
+//
+// The range starts at the newest release tag that is not on HEAD, by the rule
+// apps/mobile/scripts/generate-release-notes.sh uses: `--tag-glob` first, then
+// `<tag-prefix>*`. iOS and Android share the `mobile@` prefix, so the mobile
+// Fastfile passes `--tag-glob 'mobile@*+<platform>.*'` and each platform's walk
+// starts at that platform's previous release. Desktop has one platform and
+// needs no glob.
 //
 // `--track` is the customer-facing label that appears in the email — it
 // should encode both the channel ("TestFlight" vs "App Store" vs "Google
@@ -40,11 +48,10 @@
 // Candidates are the tag-range `Closes #N` refs UNIONED with
 // $DRAFTO_RELEASE_ISSUES (comma-separated issue numbers), which
 // scripts/nightly-support.sh passes through dispatch-release.mjs
-// --release-issues for the support fixes a lane was dispatched to ship
-// (ADR-0042). The tag walk alone can miss them: `mobile@` is shared by the
-// `+ios.` and `+android.` tags and `-v:refname` sorts the iOS tag first, so an
-// Android build can start its range past a fix it never shipped. Either source
-// is still intersected with the support-labelled issues.
+// --release-issues for the support fixes a lane was dispatched to ship. That
+// is the nightly support runner's dispatch contract (ADR-0042): the lane
+// announces what it was sent to ship, whatever the tag range holds. Either
+// source is still intersected with the support-labelled issues.
 //
 // Best-effort: any individual comment failure is logged but does not abort
 // the run — the rest of the release pipeline shouldn't fail because GitHub
@@ -65,54 +72,63 @@ let _execFileForTests = null;
 export function _setExecFileForTests(impl) {
   _execFileForTests = impl;
 }
-async function run(cmd, args) {
+async function run(cmd, args, { cwd } = {}) {
   const fn = _execFileForTests ?? execFileP;
-  const { stdout } = await fn(cmd, args, { maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await fn(cmd, args, { maxBuffer: 16 * 1024 * 1024, cwd });
   return stdout;
 }
 
-// Find the most recent tag matching `<prefix>*`, falling back to "" (caller
-// treats that as "walk the full HEAD history").
-async function findLastReleaseTag(prefix) {
-  let stdout;
+// Runs git and returns its trimmed stdout, or null if git failed.
+async function gitOrNull(args, cwd) {
   try {
-    stdout = await run("git", ["tag", "--list", `${prefix}*`, "--sort=-v:refname"]);
+    return (await run("git", args, { cwd })).trim();
   } catch {
-    return "";
+    return null;
   }
-  const lines = stdout.split("\n").filter((s) => s.length > 0);
-  if (lines.length === 0) return "";
-  // If the latest tag points at HEAD (the release just tagged itself), step
-  // back one — otherwise the range `<tag>..HEAD` is empty and we'd never
-  // comment on anything. Mirrors apps/mobile/scripts/generate-release-notes.sh.
-  let tag = lines[0];
-  let tagSha;
-  let headSha;
-  try {
-    [tagSha, headSha] = await Promise.all([
-      run("git", ["rev-parse", tag]).then((s) => s.trim()),
-      run("git", ["rev-parse", "HEAD"]).then((s) => s.trim()),
-    ]);
-  } catch {
-    return tag;
+}
+
+// The newest release tag that is not on HEAD, trying each glob in order — the
+// rule apps/mobile/scripts/generate-release-notes.sh uses:
+//   - newest by `-creatordate`, not by version: `mobile@1.7.0+ios.80` and
+//     `mobile@1.7.0+android.88` compare "ios" against "android" under a version
+//     sort, which says nothing about which shipped last. These are lightweight
+//     tags, so creatordate is the tagged commit's date.
+//   - every tag on HEAD is skipped, not just one: iOS TestFlight and the Play
+//     tracks can all tag one commit, and `<HEAD tag>..HEAD` is empty.
+// The first glob that leaves a tag wins. Returns { tag, glob }, or
+// { tag: "", glob: null } when none does (the caller then walks all of HEAD).
+// Best-effort: a failing git call reads as "no tags for that glob". `cwd` is
+// the repository to run git in (default: the process's; the tests pass a
+// temporary repo).
+export async function findLastReleaseTag({ globs, cwd } = {}) {
+  const head = await gitOrNull(["rev-parse", "HEAD"], cwd);
+  for (const glob of globs ?? []) {
+    const listed = await gitOrNull(["tag", "--list", glob, "--sort=-creatordate"], cwd);
+    const tags = (listed ?? "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const tag of tags) {
+      // A tag that doesn't resolve to a commit can't start a range (`git log`
+      // would fail on it and the walk would quietly find nothing), so skip it.
+      const commit = await gitOrNull(["rev-parse", `${tag}^{commit}`], cwd);
+      if (commit && commit !== head) return { tag, glob };
+    }
   }
-  if (tagSha === headSha && lines.length >= 2) {
-    tag = lines[1];
-  }
-  return tag;
+  return { tag: "", glob: null };
 }
 
 // Collect issue numbers referenced by `Closes #N` etc. in commits between
 // `tag..HEAD`, restricted to the given paths so a desktop release doesn't
 // claim mobile-only PRs as "now live".
-export async function findClosedIssueNumbers({ tag, paths }) {
+export async function findClosedIssueNumbers({ tag, paths, cwd }) {
   const range = tag ? `${tag}..HEAD` : "HEAD";
   // Use a unique record separator (NUL) so multi-line commit bodies don't
   // confuse parsing.
   const args = ["log", range, "--no-merges", "--format=%B%x00", "--", ...paths];
   let stdout;
   try {
-    stdout = await run("git", args);
+    stdout = await run("git", args, { cwd });
   } catch {
     return [];
   }
@@ -226,8 +242,27 @@ export async function main(argv, env = process.env) {
     .filter(Boolean);
   if (paths.length === 0) throw new Error("--paths must list at least one path");
 
-  const tag = await findLastReleaseTag(tagPrefix);
-  process.stderr.write(`comment-released-issues: range ${tag || "(no tag)"}..HEAD\n`);
+  // Run git from the repository root. Fastlane starts this script inside
+  // apps/mobile or apps/desktop, where `git log -- apps/mobile/` looks for
+  // apps/mobile/apps/mobile/ and matches no commit at all: the tag range then
+  // announced nothing, and only $DRAFTO_RELEASE_ISSUES produced notices.
+  const root = (await gitOrNull(["rev-parse", "--show-toplevel"])) || undefined;
+
+  // The platform glob first, then the whole prefix (e.g. the first release of
+  // a platform). De-duplicated so a glob equal to `<prefix>*` is listed once.
+  const globs = [...new Set([flags["tag-glob"], `${tagPrefix}*`].filter(Boolean))];
+  const { tag, glob } = await findLastReleaseTag({ globs, cwd: root });
+  process.stderr.write(
+    `comment-released-issues: range ${tag ? `${tag}..HEAD (from ${glob})` : "(no tag)..HEAD"}\n`,
+  );
+  if (flags["tag-glob"] && tag && glob !== flags["tag-glob"]) {
+    // Expected before a platform's first release; otherwise this platform's
+    // tags are missing from this checkout (fetch them), and the range may start
+    // at another platform's release and skip fixes this one never shipped.
+    process.stderr.write(
+      `comment-released-issues: warning: no ${flags["tag-glob"]} tag off HEAD, fell back to ${glob}\n`,
+    );
+  }
 
   const envRefs = parseReleaseIssuesEnv(env.DRAFTO_RELEASE_ISSUES);
   if (envRefs.length > 0) {
@@ -235,7 +270,10 @@ export async function main(argv, env = process.env) {
       `comment-released-issues: DRAFTO_RELEASE_ISSUES adds #${envRefs.join(", #")}\n`,
     );
   }
-  const candidates = unionCandidates(await findClosedIssueNumbers({ tag, paths }), envRefs);
+  const candidates = unionCandidates(
+    await findClosedIssueNumbers({ tag, paths, cwd: root }),
+    envRefs,
+  );
   if (candidates.length === 0) {
     process.stderr.write("comment-released-issues: no Closes #N refs in this range\n");
     return { commented: [], skipped: [], skippedNonSupport: [] };
