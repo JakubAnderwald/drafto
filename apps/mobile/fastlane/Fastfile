@@ -239,8 +239,12 @@ rescue StandardError => e
   UI.important("Release notes posting failed (non-fatal): #{e.message}")
 end
 
-# Phase G: walk PRs merged since the last `mobile@*` tag, find `Closes #N`
-# refs, and comment "Now live in <track>." on each linked support issue.
+# Phase G: walk PRs merged since this platform's last release tag
+# (`mobile@*+<platform>.*`, falling back to `mobile@*` when this platform has
+# no tag off HEAD, e.g. before its first release), find `Closes #N` refs, and
+# comment "Now live in <track>." on each linked support issue. iOS and Android share the `mobile@` prefix, so without
+# the platform glob one platform's walk could start at the other's tag and skip
+# a fix it never shipped. Closed-testing tags (`mobile-alpha@`) match neither.
 # `track` is the customer-facing label (e.g. "TestFlight build 145"),
 # composed by the caller because Fastlane has direct access to the lane
 # and build identifier. Best-effort — a comment failure shouldn't fail
@@ -256,6 +260,7 @@ def comment_released_issues(platform:, build:, track:)
        "--build", build.to_s,
        "--track", track,
        "--tag-prefix", "mobile@",
+       "--tag-glob", "mobile@*+#{platform}.*",
        "--paths", "apps/mobile/,packages/shared/")
   end
 rescue StandardError => e

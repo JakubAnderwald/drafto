@@ -208,11 +208,14 @@ Play Console calls **Closed testing**. Then:
   in `apps/mobile/fastlane/play_release.rb` decides this.
 - **The In Test build comment** is still posted when `DRAFTO_INTEST_ISSUE` is set.
 - **The build is tagged** `mobile-alpha@<version>+android.<code>`, not `mobile@…`.
-  The notes generator and `comment-released-issues.mjs` start their range at the
-  newest `mobile@*` tag, and internal-track and TestFlight testers never got a commit
-  that shipped only to closed testing. With a `mobile@` tag, the next internal or
-  TestFlight build would leave everything up to that commit out of its notes and out
-  of its "Now live" walk. `PlayRelease.tag_prefix` picks the prefix.
+  The notes generator starts its range at the newest `mobile@*` tag, and
+  internal-track and TestFlight testers never got a commit that shipped only to
+  closed testing. With a `mobile@` tag, the next internal or TestFlight build would
+  leave everything up to that commit out of its notes. The "Now live" walk
+  (`comment-released-issues.mjs`) starts at the newest `mobile@*+<platform>.*` tag
+  instead, so a `mobile@…+android.N` alpha tag would shift only the Android walk,
+  and the iOS one only when iOS has no tag off `HEAD`. `PlayRelease.tag_prefix`
+  picks the prefix.
 - The notes generator skips every tag on `HEAD`, so an alpha build of a commit that
   iOS and the internal track already tagged still gets notes from the release before it.
 
@@ -763,6 +766,7 @@ Release notes are auto-generated from conventional commits and posted to both st
 1. `apps/mobile/scripts/generate-release-notes.sh` extracts `feat:` and `fix:` commits since the newest `mobile@*` git tag that is not on `HEAD`. Tags on `HEAD` are other releases of the same commit (iOS, the Play internal track). `--tag-glob` (repeatable) replaces `mobile@*`; the first glob with a tag not on `HEAD` wins. Play closed testing passes `mobile-alpha@*` then `mobile@*` and tags its builds `mobile-alpha@…`, so its releases never start an internal-track or TestFlight range. The production Android lane posts no generated notes ([why](#release-to-google-play-production-track)).
 2. `apps/mobile/scripts/post-release-notes.mjs` posts notes to Google Play (via Publisher API) and TestFlight (via App Store Connect API). For Google Play, `--track internal|alpha|beta|production` picks the track; without it the script uses `GOOGLE_PLAY_TRACK`, else `internal`. The Android lanes pass the track they uploaded to.
 3. CI workflows (when functional) call both scripts after successful build+submit. Local Fastlane lanes invoke them directly.
+4. After the notes, the Fastlane hook `scripts/comment-released-issues.mjs` posts "Now live" on the support issues closed in this platform's range. It uses the same tag rule, with `--tag-glob 'mobile@*+<platform>.*'` and `mobile@*` as the fallback when this platform has no tag off `HEAD`, so an Android build starts at the last Android release even when an iOS tag is newer. Desktop uses `desktop@*`, newest by creation date and skipping every tag on `HEAD`.
 
 ### Character limits
 

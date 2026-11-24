@@ -139,7 +139,8 @@ describe(
       puts JSON.generate(%w[internal alpha beta production].map { |t| PlayRelease.tag_prefix(t) })
     `);
       assert.deepEqual(out, ["mobile@", "mobile-alpha@", "mobile-beta@", "mobile@"]);
-      // The notes generator and comment-released-issues.mjs list `mobile@*`.
+      // The notes generator lists `mobile@*`, and the "Now live" walk
+      // (comment-released-issues.mjs) `mobile@*+<platform>.*`, then `mobile@*`.
       for (const prefix of ["mobile-alpha@", "mobile-beta@"]) {
         assert.ok(!prefix.startsWith("mobile@"), `${prefix} would match mobile@*`);
       }
@@ -382,5 +383,24 @@ describe("generate-release-notes.sh (mobile) — closed-testing tags", () => {
     } finally {
       g("tag", "mobile-alpha@1.7.0+android.88", "HEAD~1");
     }
+  });
+});
+
+describe("mobile Fastfile 'Now live' hook", () => {
+  const src = read("apps/mobile/fastlane/Fastfile");
+
+  it("starts the walk at this platform's last release tag", () => {
+    const start = src.indexOf("def comment_released_issues(");
+    const end = src.indexOf("def package_json_version");
+    assert.notEqual(start, -1, "comment_released_issues helper not found");
+    assert.ok(end > start, "def package_json_version must follow the helper");
+    const helper = src.slice(start, end);
+    assert.match(helper, /"--tag-prefix", "mobile@",/);
+    assert.match(helper, /"--tag-glob", "mobile@\*\+#\{platform\}\.\*",/);
+    // Both callers name their platform, which is what the glob interpolates.
+    // That git's glob keeps closed-testing tags (mobile-alpha@…) out is pinned
+    // against a real repository in comment-released-issues.test.mjs.
+    assert.match(src, /comment_released_issues\(platform: "android",/);
+    assert.match(src, /comment_released_issues\(platform: "ios",/);
   });
 });
