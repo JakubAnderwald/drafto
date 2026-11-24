@@ -86,3 +86,15 @@ describe("PrimeTestLab 11035 S-03 note counts", () => {
     expect(formatNoteCount(3)).toBe("3 notes");
   });
 });
+
+describe("PrimeTestLab 11035 CodeRabbit notebook-name normalization", () => {
+  it("re-normalizes after lower-casing so case-equivalent names clash", () => {
+    // "ǰ" (U+01F0) has no precomposed upper case: "J̌" lower-cases to "ǰ", which only
+    // equals "ǰ" once recomposed.
+    expect(normalizeNotebookName("J̌")).toBe(normalizeNotebookName("ǰ"));
+    expect(findDuplicateNotebook("J̌", [{ id: "nb-1", name: "ǰ" }])).toEqual({
+      id: "nb-1",
+      name: "ǰ",
+    });
+  });
+});

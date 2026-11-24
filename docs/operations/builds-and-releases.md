@@ -228,8 +228,13 @@ in the Fastfile). Taking only the target track's highest code breaks once tracks
 diverge: internal was at 87 while alpha held 82, so an alpha build would have reused
 code 83. fastlane already reads an empty or missing track as no codes. Any other
 failure to read a track (network, a 5xx, auth) stops the lane, because guessing that
-track is empty could reuse one of its codes. The codes are read before `expo prebuild`,
-so a failure costs seconds rather than a whole build.
+track is empty could reuse one of its codes. The codes are read after `expo prebuild`
+and right before Gradle, so a failure costs the prebuild rather than a whole build.
+Nothing serialises Android lanes across machines (a factory beta on the Mac mini and
+a manual lane on a laptop), and the code is baked into the AAB, so reading it late
+keeps the window short: if another lane uploads the same code first, this lane's
+upload fails with Play's "version code already used" error, and running it again
+takes the next code.
 
 **Google review.** Unlike the internal track, a closed-testing release goes through
 Google's review before testers get it. That usually takes a few hours and can take

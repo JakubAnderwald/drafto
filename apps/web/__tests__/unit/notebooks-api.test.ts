@@ -50,7 +50,7 @@ function namesQuery(
         expect([column, value]).toEqual(["user_id", "user-1"]);
         return {
           order: () => ({
-            range: () => Promise.resolve({ data: error ? null : names, error }),
+            limit: () => Promise.resolve({ data: error ? null : names, error }),
           }),
         };
       }),

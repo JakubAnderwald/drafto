@@ -119,3 +119,58 @@ describe("PrimeTestLab 11035 S-04 useNoteAttachmentSizes across loads", () => {
     expect(mockFetch).toHaveBeenLastCalledWith("/api/notes/note-2/attachments");
   });
 });
+
+describe("PrimeTestLab 11035 CodeRabbit useNoteAttachmentSizes stale uploads", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+    vi.stubGlobal("fetch", mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("ignores an upload for the previous note that finishes after switching notes", async () => {
+    mockFetch.mockResolvedValueOnce(respond(true, []));
+    mockFetch.mockResolvedValueOnce(
+      respond(true, [{ file_path: "u/b/b.pdf", file_size: 3, mime_type: "y" }]),
+    );
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) => useNoteAttachmentSizes(id),
+      { initialProps: { id: "note-a" } },
+    );
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    // Note A's upload callback, captured before the switch.
+    const addToNoteA = result.current.addAttachment;
+
+    rerender({ id: "note-b" });
+    await waitFor(() => expect(result.current.attachments).toHaveLength(1));
+
+    act(() => {
+      addToNoteA({ filePath: "u/a/late.pdf", fileSize: 9, mimeType: "x" });
+    });
+
+    expect(result.current.attachments).toEqual([
+      { filePath: "u/b/b.pdf", fileSize: 3, mimeType: "y" },
+    ]);
+  });
+
+  it("still adds an upload for the note on show", async () => {
+    mockFetch.mockResolvedValueOnce(respond(true, []));
+    mockFetch.mockResolvedValueOnce(respond(true, []));
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) => useNoteAttachmentSizes(id),
+      { initialProps: { id: "note-a" } },
+    );
+    rerender({ id: "note-b" });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      result.current.addAttachment({ filePath: "u/b/new.pdf", fileSize: 9, mimeType: "x" });
+    });
+
+    expect(result.current.attachments).toEqual([
+      { filePath: "u/b/new.pdf", fileSize: 9, mimeType: "x" },
+    ]);
+  });
+});

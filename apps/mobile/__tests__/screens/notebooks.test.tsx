@@ -88,12 +88,20 @@ jest.mock("@/hooks/use-notebook-note-count", () => ({
   useNotebookNoteCount: (id: string) => mockNoteCounts[id] ?? null,
 }));
 
+// The notebooks stored in WatermelonDB, as the in-writer name check reads them
+// (PrimeTestLab 11035 CodeRabbit). Defaults to what the list shows; a test can store more.
+let mockStoredNotebooks: { id: string; name: string }[] | null = null;
+const storedNotebooksQuery = () => ({
+  fetch: jest.fn(async () => mockStoredNotebooks ?? [...mockNotebooks]),
+});
+
 describe("NotebooksScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockNotebooks.length = 0;
     for (const id of Object.keys(mockNoteCounts)) delete mockNoteCounts[id];
     mockLoading = false;
+    mockStoredNotebooks = null;
     mockIsSyncing = false;
     mockSync.mockResolvedValue(undefined);
     mockedInsets.mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
@@ -284,6 +292,7 @@ describe("NotebooksScreen", () => {
     });
     mockDatabaseGet.mockReturnValue({
       create: jest.fn(),
+      query: storedNotebooksQuery,
     });
 
     const { getByText, getByPlaceholderText } = render(<NotebooksScreen />);
@@ -455,7 +464,7 @@ describe("NotebooksScreen", () => {
 
     it("refuses to create a notebook whose name is taken, and keeps the field open", async () => {
       const create = jest.fn();
-      mockDatabaseGet.mockReturnValue({ create });
+      mockDatabaseGet.mockReturnValue({ create, query: storedNotebooksQuery });
       const utils = render(<NotebooksScreen />);
 
       const input = openCreateBar(utils);
@@ -486,7 +495,7 @@ describe("NotebooksScreen", () => {
 
     it("clears the error once the name is edited, and then creates", async () => {
       const create = jest.fn();
-      mockDatabaseGet.mockReturnValue({ create });
+      mockDatabaseGet.mockReturnValue({ create, query: storedNotebooksQuery });
       const utils = render(<NotebooksScreen />);
 
       const input = openCreateBar(utils);
@@ -515,7 +524,7 @@ describe("NotebooksScreen", () => {
     it("refuses to rename a notebook to another notebook's name", async () => {
       const update = jest.fn();
       const find = jest.fn().mockResolvedValue({ update });
-      mockDatabaseGet.mockReturnValue({ find });
+      mockDatabaseGet.mockReturnValue({ find, query: storedNotebooksQuery });
       const utils = render(<NotebooksScreen />);
 
       fireEvent(utils.getByText("Recipes"), "longPress");
@@ -535,7 +544,10 @@ describe("NotebooksScreen", () => {
     it("lets a notebook change only the case of its own name", async () => {
       const draft = { name: "Project Ideas" };
       const update = jest.fn(async (fn: (record: { name: string }) => void) => fn(draft));
-      mockDatabaseGet.mockReturnValue({ find: jest.fn().mockResolvedValue({ update }) });
+      mockDatabaseGet.mockReturnValue({
+        find: jest.fn().mockResolvedValue({ update }),
+        query: storedNotebooksQuery,
+      });
       const utils = render(<NotebooksScreen />);
 
       fireEvent(utils.getByText("Project Ideas"), "longPress");
@@ -548,6 +560,82 @@ describe("NotebooksScreen", () => {
       expect(utils.queryByTestId("notebook-name-error")).toBeNull();
       expect(update).toHaveBeenCalledTimes(1);
       expect(draft.name).toBe("PROJECT IDEAS");
+    });
+  });
+
+  describe("duplicate names checked inside the write (PrimeTestLab 11035 CodeRabbit)", () => {
+    const DUPLICATE_MESSAGE =
+      'A notebook named "Project Ideas" already exists. Choose a different name.';
+
+    beforeEach(() => {
+      // The list is stale: a sync stored "Project Ideas" after it was read.
+      mockNotebooks.push({ id: "nb-2", name: "Recipes", updatedAt: new Date() });
+      mockStoredNotebooks = [
+        { id: "nb-1", name: "Project Ideas" },
+        { id: "nb-2", name: "Recipes" },
+      ];
+      mockDatabaseWrite.mockImplementation(async (fn: () => Promise<void>) => {
+        await fn();
+      });
+    });
+
+    it("refuses to create a name only the stored notebooks hold, and keeps the field open", async () => {
+      const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+      const create = jest.fn();
+      mockDatabaseGet.mockReturnValue({ create, query: storedNotebooksQuery });
+      const utils = render(<NotebooksScreen />);
+
+      fireEvent.press(utils.getByTestId("add"));
+      const input = utils.getByTestId("notebook-name-input");
+      fireEvent.changeText(input, "project ideas");
+      await act(async () => {
+        fireEvent(input, "submitEditing");
+      });
+
+      expect(mockDatabaseWrite).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+      expect(utils.getByTestId("notebook-name-error").props.children).toBe(DUPLICATE_MESSAGE);
+      expect(utils.getByTestId("notebook-name-input")).toBeTruthy();
+      expect(alertSpy).not.toHaveBeenCalled();
+      expect(mockSync).not.toHaveBeenCalled();
+      alertSpy.mockRestore();
+    });
+
+    it("refuses to rename to a name only the stored notebooks hold", async () => {
+      const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+      const update = jest.fn();
+      mockDatabaseGet.mockReturnValue({
+        find: jest.fn().mockResolvedValue({ update }),
+        query: storedNotebooksQuery,
+      });
+      const utils = render(<NotebooksScreen />);
+
+      fireEvent(utils.getByText("Recipes"), "longPress");
+      fireEvent.changeText(utils.getByDisplayValue("Recipes"), "Project Ideas");
+      await act(async () => {
+        fireEvent.press(utils.getByTestId("checkmark"));
+      });
+
+      expect(update).not.toHaveBeenCalled();
+      expect(utils.getByTestId("notebook-name-error").props.children).toBe(DUPLICATE_MESSAGE);
+      expect(utils.getByDisplayValue("Project Ideas")).toBeTruthy();
+      expect(alertSpy).not.toHaveBeenCalled();
+      alertSpy.mockRestore();
+    });
+
+    it("still creates a free name", async () => {
+      const create = jest.fn();
+      mockDatabaseGet.mockReturnValue({ create, query: storedNotebooksQuery });
+      const utils = render(<NotebooksScreen />);
+
+      fireEvent.press(utils.getByTestId("add"));
+      fireEvent.changeText(utils.getByTestId("notebook-name-input"), "Travel");
+      await act(async () => {
+        fireEvent(utils.getByTestId("notebook-name-input"), "submitEditing");
+      });
+
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(utils.queryByTestId("notebook-name-input")).toBeNull();
     });
   });
 
@@ -573,7 +661,10 @@ describe("NotebooksScreen", () => {
       const dismiss = jest.spyOn(Keyboard, "dismiss");
       const draft = { name: "Recipes" };
       const update = jest.fn(async (fn: (record: { name: string }) => void) => fn(draft));
-      mockDatabaseGet.mockReturnValue({ find: jest.fn().mockResolvedValue({ update }) });
+      mockDatabaseGet.mockReturnValue({
+        find: jest.fn().mockResolvedValue({ update }),
+        query: storedNotebooksQuery,
+      });
       const utils = render(<NotebooksScreen />);
 
       fireEvent(utils.getByText("Recipes"), "longPress");
@@ -593,7 +684,7 @@ describe("NotebooksScreen", () => {
     it("keeps the field and the keyboard up when the checkmark meets a taken name", async () => {
       const dismiss = jest.spyOn(Keyboard, "dismiss");
       const find = jest.fn();
-      mockDatabaseGet.mockReturnValue({ find });
+      mockDatabaseGet.mockReturnValue({ find, query: storedNotebooksQuery });
       const utils = render(<NotebooksScreen />);
 
       fireEvent(utils.getByText("Recipes"), "longPress");
@@ -637,7 +728,7 @@ describe("NotebooksScreen", () => {
     it("creates on one tap of the checkmark in the create bar", async () => {
       const dismiss = jest.spyOn(Keyboard, "dismiss");
       const create = jest.fn();
-      mockDatabaseGet.mockReturnValue({ create });
+      mockDatabaseGet.mockReturnValue({ create, query: storedNotebooksQuery });
       const utils = render(<NotebooksScreen />);
 
       fireEvent.press(utils.getByTestId("add"));

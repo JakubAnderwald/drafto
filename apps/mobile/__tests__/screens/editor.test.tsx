@@ -693,6 +693,35 @@ describe("EditorScreen offline attachment images (ADR-0086)", () => {
     expect(JSON.stringify(lastBridgeOptions().initialContent)).toContain(SIGNED);
   });
 
+  it("PrimeTestLab 11035 CodeRabbit: resolves a note whose only attachment is an inline text link", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    const SIGNED =
+      "https://x.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/report.pdf?token=t";
+    mockResolveAttachmentSrc.mockResolvedValue(SIGNED);
+    storeNote(
+      JSON.stringify([
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "link",
+              href: toAttachmentUrl(LINK_PATH),
+              content: [{ type: "text", text: "the report", styles: {} }],
+            },
+          ],
+          children: [],
+        },
+      ]),
+    );
+    render(<EditorScreen />);
+    await settle();
+
+    expect(mockResolveAttachmentSrc).toHaveBeenCalledWith(LINK_PATH, "link");
+    const initial = JSON.stringify(lastBridgeOptions().initialContent);
+    expect(initial).toContain(SIGNED);
+    expect(initial).not.toContain(toAttachmentUrl(LINK_PATH));
+  });
+
   it("PrimeTestLab 11035 S-04 inserts an uploaded file with its signed URL and stores a file block", async () => {
     const LINK_PATH = "user-1/note-1/report.pdf";
     const SIGNED =
@@ -722,6 +751,56 @@ describe("EditorScreen offline attachment images (ADR-0086)", () => {
       props: { url: toAttachmentUrl(LINK_PATH), name: "report.pdf" },
       children: [],
     });
+  });
+
+  it("PrimeTestLab 11035 CodeRabbit: a later edit stores the inserted file's signed link as attachment://", async () => {
+    const LINK_PATH = "user-1/note-1/report.pdf";
+    const SIGNED =
+      "https://x.supabase.co/storage/v1/object/sign/attachments/user-1/note-1/report.pdf?token=t";
+    mockResolveAttachmentSrc.mockResolvedValue(SIGNED);
+    const record = storeNote(null);
+    mockGetJSON.mockResolvedValue({ type: "doc", content: [{ type: "paragraph" }] });
+    render(<EditorScreen />);
+    await settle();
+
+    await act(async () => {
+      await mockOnAttachmentReady?.({
+        filePath: LINK_PATH,
+        fileName: "report.pdf",
+        mimeType: "application/pdf",
+        uploadStatus: "uploaded",
+        localUri: null,
+      });
+    });
+
+    // The editor now holds the signed href; the user types, and the autosave reads it back,
+    // with the same link also used inline under other text.
+    const shown = mockSetContent.mock.calls[mockSetContent.mock.calls.length - 1][0] as TipTapDoc;
+    mockGetJSON.mockResolvedValue({
+      type: "doc",
+      content: [
+        ...shown.content,
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "See " },
+            {
+              type: "text",
+              text: "the report",
+              marks: [{ type: "link", attrs: { href: SIGNED } }],
+            },
+          ],
+        },
+      ],
+    });
+    const { saveContent } = latestSaveHandlers();
+    await act(async () => {
+      await expect(saveContent(undefined)).resolves.toBe(true);
+    });
+
+    expect(record.content).not.toContain(SIGNED);
+    expect(record.content).not.toContain("token=");
+    expect(record.content?.split(toAttachmentUrl(LINK_PATH)).length).toBe(3);
   });
 
   it("PrimeTestLab 11035 review: inserts a file after 1.5 s, not 8 s, when its signed URL stalls", async () => {

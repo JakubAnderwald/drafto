@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AttachmentSizeInfo } from "@drafto/shared";
 
 interface AttachmentRow {
@@ -51,8 +51,12 @@ export function useNoteAttachmentSizes(noteId: string): NoteAttachmentSizes {
   // Tagged with its note, so another note's list is never shown while the
   // new one loads.
   const [loaded, setLoaded] = useState<LoadedSizes>({ noteId, attachments: NO_ATTACHMENTS });
+  // The note on show. An upload that finishes after the user moved to another note must not
+  // replace that note's list with its own note's; it is fetched again when that note reopens.
+  const activeNoteId = useRef(noteId);
 
   useEffect(() => {
+    activeNoteId.current = noteId;
     let cancelled = false;
     fetch(`/api/notes/${noteId}/attachments`)
       .then(async (response) => {
@@ -77,6 +81,7 @@ export function useNoteAttachmentSizes(noteId: string): NoteAttachmentSizes {
 
   const addAttachment = useCallback(
     (attachment: AttachmentSizeInfo) => {
+      if (activeNoteId.current !== noteId) return;
       setLoaded((current) => ({
         noteId,
         attachments: mergeByPath(current.noteId === noteId ? current.attachments : [], [

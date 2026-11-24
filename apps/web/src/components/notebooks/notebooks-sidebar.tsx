@@ -77,10 +77,15 @@ export function NotebooksSidebar({
   // 11035 M-01): a taken name, or the API's error. Editing the name clears it.
   const [createError, setCreateError] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  // One in-flight guard per field, so a pending create never swallows Enter on a rename (or
-  // the reverse): each only stops a second submit of its own field.
-  const submittingCreate = useRef(false);
-  const submittingRename = useRef(false);
+  // Each time a field opens or closes it starts a new session. A request belongs to the session
+  // that sent it: its error or its closing the field lands only while that session is still the
+  // one on show, so a reopened field or another notebook's rename never gets it.
+  const createSession = useRef(0);
+  const renameSession = useRef(0);
+  // The session with a request in flight, per field, so a pending create never swallows Enter
+  // on a rename (or the reverse): each only stops a second submit of the same session.
+  const submittingCreate = useRef<number | null>(null);
+  const submittingRename = useRef<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -147,17 +152,20 @@ export function NotebooksSidebar({
   }, [editingId]);
 
   function closeCreate() {
+    createSession.current += 1;
     setCreatingName(null);
     setCreateError(null);
   }
 
   function closeRename() {
+    renameSession.current += 1;
     setEditingId(null);
     setRenameError(null);
   }
 
   /** Opens a notebook's rename field afresh: an earlier refused rename's error doesn't carry over. */
   function startRename(notebook: Notebook) {
+    renameSession.current += 1;
     setEditingId(notebook.id);
     setEditingName(notebook.name);
     setRenameError(null);
@@ -165,6 +173,7 @@ export function NotebooksSidebar({
 
   async function handleCreate() {
     if (creatingName === null) {
+      createSession.current += 1;
       setCreateError(null);
       setCreatingName("");
       return;
@@ -175,7 +184,8 @@ export function NotebooksSidebar({
       closeCreate();
       return;
     }
-    if (submittingCreate.current) return;
+    const session = createSession.current;
+    if (submittingCreate.current === session) return;
 
     const duplicate = findDuplicateNotebook(name, notebooks);
     if (duplicate) {
@@ -183,7 +193,8 @@ export function NotebooksSidebar({
       return;
     }
 
-    submittingCreate.current = true;
+    submittingCreate.current = session;
+    const stillOpen = () => createSession.current === session;
     try {
       const res = await fetch("/api/notebooks", {
         method: "POST",
@@ -194,7 +205,8 @@ export function NotebooksSidebar({
       if (handleAuthError(res)) return;
       if (!res.ok) {
         // A 409 names the notebook that already has the name; the field stays open to fix it.
-        setCreateError(await errorMessageFrom(res, "Failed to create notebook"));
+        const message = await errorMessageFrom(res, "Failed to create notebook");
+        if (stillOpen()) setCreateError(message);
         return;
       }
 
@@ -206,11 +218,12 @@ export function NotebooksSidebar({
         return updated;
       });
       onSelectNotebook(notebook.id);
-      closeCreate();
+      // A field reopened while this was pending is the user's next name: leave it open.
+      if (stillOpen()) closeCreate();
     } catch {
-      setCreateError(NETWORK_ERROR);
+      if (stillOpen()) setCreateError(NETWORK_ERROR);
     } finally {
-      submittingCreate.current = false;
+      if (submittingCreate.current === session) submittingCreate.current = null;
     }
   }
 
@@ -220,7 +233,8 @@ export function NotebooksSidebar({
       closeRename();
       return;
     }
-    if (submittingRename.current) return;
+    const session = renameSession.current;
+    if (submittingRename.current === session) return;
 
     const duplicate = findDuplicateNotebook(name, notebooks, id);
     if (duplicate) {
@@ -228,7 +242,8 @@ export function NotebooksSidebar({
       return;
     }
 
-    submittingRename.current = true;
+    submittingRename.current = session;
+    const stillOpen = () => renameSession.current === session;
     try {
       const res = await fetch(`/api/notebooks/${id}`, {
         method: "PATCH",
@@ -238,7 +253,8 @@ export function NotebooksSidebar({
 
       if (handleAuthError(res)) return;
       if (!res.ok) {
-        setRenameError(await errorMessageFrom(res, "Failed to rename notebook"));
+        const message = await errorMessageFrom(res, "Failed to rename notebook");
+        if (stillOpen()) setRenameError(message);
         return;
       }
 
@@ -251,11 +267,12 @@ export function NotebooksSidebar({
         onNotebooksChange?.(newList.map((n) => ({ id: n.id, name: n.name })));
         return newList;
       });
-      closeRename();
+      // Another notebook's rename field, opened while this was pending, stays open.
+      if (stillOpen()) closeRename();
     } catch {
-      setRenameError(NETWORK_ERROR);
+      if (stillOpen()) setRenameError(NETWORK_ERROR);
     } finally {
-      submittingRename.current = false;
+      if (submittingRename.current === session) submittingRename.current = null;
     }
   }
 

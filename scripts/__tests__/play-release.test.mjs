@@ -158,10 +158,18 @@ describe("mobile Fastfile alpha lane", () => {
 
   it("PrimeTestLab 11035 release: computes the version code across all tracks, not the target track", () => {
     assert.match(buildAndSubmit, /next_code = next_play_version_code/);
+    // PrimeTestLab 11035 CodeRabbit: read after prebuild (another lane can upload the
+    // same code until this one does, so the read is as late as it can be) but before
+    // Gradle, so an unreadable track never costs a Gradle bundle.
+    const readAt = buildAndSubmit.indexOf("next_code = next_play_version_code");
     assert.ok(
-      buildAndSubmit.indexOf("next_code = next_play_version_code") <
-        buildAndSubmit.indexOf('"expo", "prebuild"'),
-      "the version code must be read before the (slow) prebuild and Gradle build",
+      buildAndSubmit.indexOf('"expo", "prebuild"') < readAt,
+      "the version code must be read after expo prebuild",
+    );
+    assert.ok(
+      readAt < buildAndSubmit.indexOf("android_set_version_code(") &&
+        readAt < buildAndSubmit.indexOf('task: "bundle"'),
+      "the version code must be read before it is applied and before the Gradle build",
     );
     assert.match(src, /rescue PlayRelease::TrackUnreadable => e\r?\n\s*UI\.user_error!/);
     assert.ok(

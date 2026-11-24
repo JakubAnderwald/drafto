@@ -27,6 +27,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { database, Notebook, Note, Attachment } from "@/db";
 import { generateId } from "@/lib/generate-id";
+import { DuplicateNotebookNameError, assertNotebookNameFree } from "@/lib/data/notebook-name-guard";
 import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
 import type { SemanticColors } from "@/theme/tokens";
 import { SyncStatus } from "@/components/sync-status";
@@ -95,6 +96,8 @@ export function NotebooksSidebar({
     try {
       const id = generateId();
       await database.write(async () => {
+        // The list above may still be loading or stale; this check sees what is stored.
+        await assertNotebookNameFree(database, name);
         await database.get<Notebook>("notebooks").create((nb) => {
           nb._raw.id = id;
           nb.remoteId = id;
@@ -106,6 +109,10 @@ export function NotebooksSidebar({
       setNewName("");
       setIsCreating(false);
     } catch (err) {
+      if (err instanceof DuplicateNotebookNameError) {
+        setCreateError(err.message);
+        return;
+      }
       console.error("Failed to create notebook:", err);
       setCreateError(err instanceof Error ? err.message : "Failed to create notebook");
     }
@@ -124,6 +131,7 @@ export function NotebooksSidebar({
 
       try {
         await database.write(async () => {
+          await assertNotebookNameFree(database, name, notebook.id);
           await notebook.update((nb) => {
             nb.name = name;
           });
@@ -132,6 +140,10 @@ export function NotebooksSidebar({
         setEditingId(null);
         setEditName("");
       } catch (err) {
+        if (err instanceof DuplicateNotebookNameError) {
+          setRenameError(err.message);
+          return;
+        }
         console.error("Failed to rename notebook:", err);
         setRenameError(err instanceof Error ? err.message : "Failed to rename notebook");
       }

@@ -671,7 +671,7 @@ end
 # taking the target track's max alone breaks as soon as two tracks diverge.
 # fastlane already returns [] for an empty or missing track, so any track that
 # raises stops the lane (PlayRelease::TrackUnreadable) — the caller runs this
-# before the build, so that costs seconds, not a prebuild and a Gradle bundle.
+# right before Gradle, so that costs the prebuild, not a Gradle bundle.
 def next_play_version_code
   codes = PlayRelease.collect_version_codes do |track|
     google_play_track_version_codes(package_name: PACKAGE_NAME, track: track, json_key: json_key_path)
@@ -711,10 +711,6 @@ platform :android do
     # Load production Supabase credentials
     load_production_env
 
-    # Pick the version code from the store, across every track, before the
-    # (slow) build, so an unreadable track stops the lane straight away
-    next_code = next_play_version_code
-
     # Generate native project
     run_in_project("npx", "expo", "prebuild", "--platform", "android", "--clean")
 
@@ -728,7 +724,15 @@ platform :android do
     # without it (JEP 472). Every JDK in the supported range accepts the flag.
     ENV["_JAVA_OPTIONS"] = "--enable-native-access=ALL-UNNAMED"
 
-    # Apply the version code picked above
+    # Pick the version code from the store, across every track, as late as it
+    # can be: it is baked into the AAB, and nothing serialises Android lanes
+    # across machines (a factory beta on the Mac mini, a manual lane here). A
+    # lane that uploads the same code first makes this upload fail with Play's
+    # "version code already used" error, and a re-run takes the next code. So
+    # it is read after prebuild, leaving only the Gradle build and the upload
+    # for another lane to land in, and still before Gradle, so an unreadable
+    # track never costs a Gradle bundle.
+    next_code = next_play_version_code
     android_set_version_code(
       gradle_file: File.join(PROJECT_ROOT, "android", "app", "build.gradle"),
       version_code: next_code

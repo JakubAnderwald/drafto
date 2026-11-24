@@ -20,7 +20,9 @@ export interface NamedNotebook {
  * every platform agrees on which names clash.
  */
 export function normalizeNotebookName(name: string): string {
-  return name.normalize("NFC").trim().replace(/\s+/g, " ").toLowerCase();
+  // NFC again after lower-casing: casing doesn't preserve normalization, so "\u01f0" and
+  // "J\u030c" only meet as one form once the lower-cased "j\u030c" is recomposed.
+  return name.normalize("NFC").trim().replace(/\s+/g, " ").toLowerCase().normalize("NFC");
 }
 
 /**

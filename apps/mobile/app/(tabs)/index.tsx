@@ -28,6 +28,7 @@ import { useHaptics } from "@/hooks/use-haptics";
 import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
 import { useSwipeHint } from "@/hooks/use-swipe-hint";
 import { generateId } from "@/lib/generate-id";
+import { DuplicateNotebookNameError, assertNotebookNameFree } from "@/lib/data/notebook-name-guard";
 import { SwipeableRow } from "@/components/swipeable-row";
 import { NotebookListRow } from "@/components/notebook-list-row";
 import { SwipeHint, SWIPE_HINT_TEXT } from "@/components/swipe-hint";
@@ -82,6 +83,8 @@ export default function NotebooksScreen() {
       setSubmitting(true);
       const id = generateId();
       await database.write(async () => {
+        // The list above may be stale (a sync, a double tap); this check sees what is stored.
+        await assertNotebookNameFree(database, trimmed);
         await database.get<Notebook>("notebooks").create((record) => {
           record._raw.id = id;
           record.remoteId = id;
@@ -95,6 +98,11 @@ export default function NotebooksScreen() {
       setCreating(false);
       sync();
     } catch (err) {
+      if (err instanceof DuplicateNotebookNameError) {
+        haptics.error();
+        setCreateError(err.message);
+        return;
+      }
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to create notebook");
     } finally {
       setSubmitting(false);
@@ -116,6 +124,7 @@ export default function NotebooksScreen() {
       setSubmitting(true);
       const notebook = await database.get<Notebook>("notebooks").find(id);
       await database.write(async () => {
+        await assertNotebookNameFree(database, trimmed, id);
         await notebook.update((record) => {
           record.name = trimmed;
         });
@@ -126,6 +135,11 @@ export default function NotebooksScreen() {
       setEditName("");
       sync();
     } catch (err) {
+      if (err instanceof DuplicateNotebookNameError) {
+        haptics.error();
+        setRenameError(err.message);
+        return;
+      }
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to rename notebook");
     } finally {
       setSubmitting(false);

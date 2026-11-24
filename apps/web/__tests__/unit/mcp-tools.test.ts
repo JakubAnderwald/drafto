@@ -224,7 +224,7 @@ describe("createNotebook", () => {
         // The paged name read finds no other notebooks.
         select: () => ({
           eq: () => ({
-            order: () => ({ range: () => Promise.resolve({ data: [], error: null }) }),
+            order: () => ({ limit: () => Promise.resolve({ data: [], error: null }) }),
           }),
         }),
         insert: () => ({
@@ -245,7 +245,7 @@ describe("createNotebook", () => {
         select: () => ({
           eq: () => ({
             order: () => ({
-              range: () =>
+              limit: () =>
                 Promise.resolve({ data: [{ id: "nb-1", name: "Project Ideas" }], error: null }),
             }),
           }),
@@ -269,7 +269,7 @@ describe("createNotebook", () => {
         select: () => ({
           eq: () => ({
             order: () => ({
-              range: () => Promise.resolve({ data: null, error: { message: "db down" } }),
+              limit: () => Promise.resolve({ data: null, error: { message: "db down" } }),
             }),
           }),
         }),
@@ -468,14 +468,14 @@ describe("renameNotebook", () => {
     const supabase = createMockSupabase(
       vi.fn(() => ({
         // The existence check (select → eq → eq → single), then the paged name read
-        // (select → eq → order → range).
+        // (select → eq → order → limit).
         select: () => ({
           eq: () => ({
             eq: () => ({
               single: () => Promise.resolve({ data: { id: "nb-1" }, error: null }),
             }),
             order: () => ({
-              range: () => Promise.resolve({ data: [{ id: "nb-1", name: "Old" }], error: null }),
+              limit: () => Promise.resolve({ data: [{ id: "nb-1", name: "Old" }], error: null }),
             }),
           }),
         }),
@@ -522,14 +522,14 @@ describe("renameNotebook", () => {
     ];
 
     // The existence check (select → eq → eq → single), then the paged name read
-    // (select → eq → order → range).
+    // (select → eq → order → limit).
     function buildSupabase(update: ReturnType<typeof vi.fn>) {
       return createMockSupabase(
         vi.fn(() => ({
           select: (columns: string) => ({
             eq: () =>
               columns === "id, name"
-                ? { order: () => ({ range: () => Promise.resolve({ data: names, error: null }) }) }
+                ? { order: () => ({ limit: () => Promise.resolve({ data: names, error: null }) }) }
                 : {
                     eq: () => ({
                       single: () => Promise.resolve({ data: { id: "nb-1" }, error: null }),

@@ -110,6 +110,13 @@ jest.mock("@/db", () => ({
   },
 }));
 
+// The notebooks stored in WatermelonDB, as the in-writer name check reads them
+// (PrimeTestLab 11035 CodeRabbit). Defaults to what the list shows; a test can store more.
+let mockStoredNotebooks: { id: string; name: string }[] | null = null;
+const storedNotebooksQuery = () => ({
+  fetch: jest.fn(async () => mockStoredNotebooks ?? [...mockNotebooks]),
+});
+
 const mockNoteFetchCount = jest.fn();
 const mockNoteFetch = jest.fn();
 // A real jest.fn so we can assert the guard queries with the is_trashed=false predicate.
@@ -732,6 +739,7 @@ describe("NotebooksSidebar — notebook list scrolls", () => {
     mockIsInternetReachable = true;
     mockNoteFetch.mockResolvedValue([]);
     mockGet.mockImplementation((table: string) => {
+      if (table === "notebooks") return { query: storedNotebooksQuery };
       if (table === "notes") return { query: mockNotesQuery };
       return {};
     });
@@ -796,7 +804,7 @@ describe("NotebooksSidebar — notebook list scrolls", () => {
   it("keeps the create-notebook input above the list, outside it, and still creates", async () => {
     const create = jest.fn();
     mockGet.mockImplementation((table: string) => {
-      if (table === "notebooks") return { create };
+      if (table === "notebooks") return { create, query: storedNotebooksQuery };
       if (table === "notes") return { query: mockNotesQuery };
       return {};
     });
@@ -1050,7 +1058,7 @@ describe("NotebooksSidebar — duplicate names (PrimeTestLab 11035 M-01)", () =>
     );
     mockLoading = false;
     mockGet.mockImplementation((table: string) => {
-      if (table === "notebooks") return { create };
+      if (table === "notebooks") return { create, query: storedNotebooksQuery };
       if (table === "notes") return { query: mockNotesQuery };
       return {};
     });
@@ -1150,6 +1158,82 @@ describe("NotebooksSidebar — duplicate names (PrimeTestLab 11035 M-01)", () =>
     expect(utils.queryByTestId("notebook-name-error")).toBeNull();
     expect(mockNotebooks[0].update).toHaveBeenCalledTimes(1);
     expect(draft.name).toBe("PROJECT IDEAS");
+  });
+});
+
+describe("NotebooksSidebar — duplicate names checked inside the write (PrimeTestLab 11035 CodeRabbit)", () => {
+  const DUPLICATE_MESSAGE =
+    'A notebook named "Project Ideas" already exists. Choose a different name.';
+  const create = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockNotebooks.length = 0;
+    mockLoading = false;
+    // The list is stale (still loading, or a sync stored "Project Ideas" after it was read).
+    mockStoredNotebooks = [
+      { id: "nb-1", name: "Project Ideas" },
+      { id: "nb-2", name: "Recipes" },
+    ];
+    mockGet.mockImplementation((table: string) => {
+      if (table === "notebooks") return { create, query: storedNotebooksQuery };
+      if (table === "notes") return { query: mockNotesQuery };
+      return {};
+    });
+  });
+
+  afterEach(() => {
+    mockStoredNotebooks = null;
+  });
+
+  async function submit(input: ReturnType<ReturnType<typeof render>["getByTestId"]>) {
+    await act(async () => {
+      fireEvent(input, "submitEditing");
+    });
+  }
+
+  it("refuses to create a name only the stored notebooks hold, and keeps the field open", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent.press(utils.getByLabelText("New notebook"));
+    const input = utils.getByTestId("notebook-name-input");
+    fireEvent.changeText(input, "project ideas");
+    await submit(input);
+
+    expect(mockWrite).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
+    expect(utils.getByTestId("notebook-name-error").props.children).toBe(DUPLICATE_MESSAGE);
+    expect(utils.getByTestId("notebook-name-input")).toBe(input);
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("refuses to rename to a name only the stored notebooks hold", async () => {
+    const update = jest.fn();
+    mockNotebooks.push({ id: "nb-2", name: "Recipes", markAsDeleted: jest.fn(), update });
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent(utils.getByLabelText("Recipes"), "longPress");
+    const input = utils.getByDisplayValue("Recipes");
+    fireEvent.changeText(input, "Project Ideas");
+    await submit(input);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(utils.getByTestId("notebook-name-error").props.children).toBe(DUPLICATE_MESSAGE);
+    expect(utils.getByDisplayValue("Project Ideas")).toBeTruthy();
+  });
+
+  it("still creates a free name", async () => {
+    const utils = render(<NotebooksSidebar {...defaultProps} />);
+
+    fireEvent.press(utils.getByLabelText("New notebook"));
+    const input = utils.getByTestId("notebook-name-input");
+    fireEvent.changeText(input, "Travel");
+    await submit(input);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(utils.queryByTestId("notebook-name-input")).toBeNull();
   });
 });
 

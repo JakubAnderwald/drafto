@@ -301,7 +301,7 @@ describe("Security Audit", () => {
             select: () => ({
               eq: () => ({
                 order: () => ({
-                  range: () => Promise.resolve({ data: [], error: null }),
+                  limit: () => Promise.resolve({ data: [], error: null }),
                 }),
                 eq: () => ({
                   single: () =>

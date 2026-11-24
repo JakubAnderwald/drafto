@@ -26,25 +26,41 @@ export const NOTEBOOK_NAME_PAGE_SIZE = 1000;
 type NotebookNamesResult =
   { notebooks: NamedNotebook[]; error: null } | { notebooks: null; error: { message: string } };
 
-/** Every notebook the user owns (id and name), read page by page in a stable order. */
+/**
+ * Every notebook the user owns (id and name), read page by page in id order. Each page starts
+ * after the last id read rather than at an offset, so a notebook deleted from an earlier page
+ * while this runs can't shift a later one past the next page's start.
+ */
 async function readAllNotebookNames(
   supabase: SupabaseClient<Database>,
   userId: string,
 ): Promise<NotebookNamesResult> {
   const notebooks: NamedNotebook[] = [];
-  for (let from = 0; ; from += NOTEBOOK_NAME_PAGE_SIZE) {
-    const { data, error } = await supabase
-      .from("notebooks")
-      .select("id, name")
-      .eq("user_id", userId)
+  let afterId: string | null = null;
+  for (;;) {
+    let query = supabase.from("notebooks").select("id, name").eq("user_id", userId);
+    if (afterId !== null) query = query.gt("id", afterId);
+    const { data, error } = await query
       .order("id", { ascending: true })
-      .range(from, from + NOTEBOOK_NAME_PAGE_SIZE - 1);
+      .limit(NOTEBOOK_NAME_PAGE_SIZE);
 
     if (error) return { notebooks: null, error };
     const page = data ?? [];
     notebooks.push(...page);
     if (page.length < NOTEBOOK_NAME_PAGE_SIZE) return { notebooks, error: null };
+    afterId = page[page.length - 1].id;
   }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * `id` as the database returns it. Postgres accepts an upper-case UUID in a URL but always
+ * returns ids in lower case, so an upper-case one is lower-cased before it's compared with
+ * them. Anything else is compared as given.
+ */
+function canonicalNotebookId(id: string): string {
+  return UUID.test(id) ? id.toLowerCase() : id;
 }
 
 /**
@@ -65,12 +81,13 @@ export async function findNotebookNameConflict(
   excludeId?: string,
 ): Promise<NotebookNameConflict> {
   const { notebooks, error } = await readAllNotebookNames(supabase, userId);
+  const renamedId = excludeId === undefined ? undefined : canonicalNotebookId(excludeId);
 
   if (error) return { duplicate: null, renamedNotebookFound: false, error };
   return {
-    duplicate: findDuplicateNotebook(name, notebooks, excludeId) ?? null,
+    duplicate: findDuplicateNotebook(name, notebooks, renamedId) ?? null,
     renamedNotebookFound:
-      excludeId === undefined || notebooks.some((notebook) => notebook.id === excludeId),
+      renamedId === undefined || notebooks.some((notebook) => notebook.id === renamedId),
     error: null,
   };
 }

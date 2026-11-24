@@ -882,6 +882,93 @@ describe("NotebooksSidebar — duplicate names (PrimeTestLab 11035 M-01)", () =>
     });
   });
 
+  it("PrimeTestLab 11035 CodeRabbit: a pending rename's answer stays with its own field", async () => {
+    const user = await renderSidebar();
+    let finishNotes: (response: FakeResponse) => void = () => {};
+    let finishWork: (response: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH" && url === "/api/notebooks/nb-1") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishNotes = resolve;
+        });
+      }
+      if (init?.method === "PATCH" && url === "/api/notebooks/nb-2") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishWork = resolve;
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.dblClick(screen.getByText("Notes"));
+    const notesInput = screen.getByDisplayValue("Notes");
+    await user.clear(notesInput);
+    await user.type(notesInput, "Journal{Enter}");
+
+    // While the first rename is pending, another notebook's rename is opened and submitted.
+    await user.dblClick(screen.getByText("Work"));
+    const workInput = screen.getByDisplayValue("Work");
+    await user.clear(workInput);
+    await user.type(workInput, "Office{Enter}");
+
+    const patched = mockFetch.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === "PATCH")
+      .map(([url]) => url);
+    expect(patched).toEqual(["/api/notebooks/nb-1", "/api/notebooks/nb-2"]);
+
+    // The first rename's refusal is not shown under the second field, which stays open.
+    await act(async () => {
+      finishNotes(jsonResponse({ error: "Failed to update notebook", status: 404 }, 404));
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("Office")).toBeInTheDocument();
+
+    await act(async () => {
+      finishWork(jsonResponse({ ...mockNotebooks[1], name: "Office" }));
+    });
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("Office")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Office")).toBeInTheDocument();
+  });
+
+  it("PrimeTestLab 11035 CodeRabbit: a create refused after its field was reopened leaves the new field alone", async () => {
+    const user = await renderSidebar();
+    const finishCreates: Array<(response: FakeResponse) => void> = [];
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url === "/api/notebooks") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishCreates.push(resolve);
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Ideas{Enter}");
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByLabelText("New notebook"));
+    const reopened = screen.getByPlaceholderText("Notebook name");
+    expect(reopened).toHaveValue("");
+
+    await act(async () => {
+      finishCreates[0](jsonResponse(null, 500));
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(reopened).not.toHaveAttribute("aria-invalid");
+
+    // The reopened field still submits on blur: no stale error holds it back.
+    await user.type(reopened, "Plans");
+    await act(async () => {
+      reopened.blur();
+    });
+    expect(finishCreates).toHaveLength(2);
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/api/notebooks",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ name: "Plans" }) }),
+    );
+  });
+
   it("lets a notebook change only the case of its own name, keeping its count", async () => {
     const user = await renderSidebar();
     mockFetch.mockResolvedValueOnce(

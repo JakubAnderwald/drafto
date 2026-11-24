@@ -269,3 +269,32 @@ describe("oauthQueryParams (PrimeTestLab 11035 M-03)", () => {
     expect(oauthQueryParams("apple")).toBeUndefined();
   });
 });
+
+describe("isValidEmail DNS label length (PrimeTestLab 11035 CodeRabbit)", () => {
+  it("accepts a 63-character ASCII label and refuses a 64-character one", () => {
+    expect(isValidEmail(`a@${"b".repeat(63)}.com`)).toBe(true);
+    expect(isValidEmail(`a@${"b".repeat(64)}.com`)).toBe(false);
+    expect(validateEmailField(`a@${"b".repeat(64)}.com`)).toBe(INVALID_EMAIL_MESSAGE);
+  });
+
+  it("applies the limit to the top-level domain label too", () => {
+    expect(isValidEmail(`a@example.${"c".repeat(64)}`)).toBe(false);
+  });
+
+  it("keeps internationalised domains whose punycode can fit", () => {
+    expect(isValidEmail("user@bücher.de")).toBe(true);
+    // 59 code points need at least 63 octets ("xn--" + one per code point): the client can't
+    // rule it out, so the server decides.
+    expect(isValidEmail(`user@${"é".repeat(59)}.com`)).toBe(true);
+  });
+
+  it("refuses an internationalised label too long for any punycode form", () => {
+    expect(isValidEmail(`user@${"é".repeat(60)}.com`)).toBe(false);
+  });
+
+  it("counts code points, not UTF-16 units, so a label of astral characters is not over-counted", () => {
+    // 40 emoji are 80 UTF-16 units but 40 code points: their punycode can fit in 63 octets.
+    expect(isValidEmail(`user@${"\u{1F600}".repeat(40)}.com`)).toBe(true);
+    expect(isValidEmail(`user@${"\u{1F600}".repeat(60)}.com`)).toBe(false);
+  });
+});

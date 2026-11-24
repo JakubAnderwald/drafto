@@ -55,7 +55,7 @@ function namesQuery(names: Array<{ id: string; name: string }>) {
   return {
     select: () => ({
       eq: () => ({
-        order: () => ({ range: () => Promise.resolve({ data: names, error: null }) }),
+        order: () => ({ limit: () => Promise.resolve({ data: names, error: null }) }),
       }),
     }),
   };

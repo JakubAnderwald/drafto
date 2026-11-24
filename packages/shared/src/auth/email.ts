@@ -11,6 +11,12 @@ export const INVALID_EMAIL_MESSAGE = "Enter a valid email address, like name@exa
 
 const MAX_LOCAL_PART_LENGTH = 64;
 const MAX_DOMAIN_LENGTH = 253;
+// A DNS label holds at most 63 octets (RFC 1035), counted on its ASCII (punycode) form.
+const MAX_DOMAIN_LABEL_LENGTH = 63;
+// "xn--" in front of a punycode label: the shortest ASCII form of an internationalised label is
+// this plus one character for each of its code points, so a label that can't fit even then is
+// rejected without encoding it.
+const PUNYCODE_PREFIX_LENGTH = 4;
 
 // RFC 5322 "atext" plus dots, and any non-ASCII character (internationalised local parts).
 const LOCAL_PART = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~¡-￿.-]+$/;
@@ -18,6 +24,18 @@ const LOCAL_PART = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~¡-￿.-]+$/;
 const DOMAIN_LABEL = /^[A-Za-z0-9¡-￿](?:[A-Za-z0-9¡-￿-]*[A-Za-z0-9¡-￿])?$/;
 // The top-level domain: two or more letters, or a punycode label.
 const TOP_LEVEL_DOMAIN = /^(?:[A-Za-z¡-￿]{2,}|xn--[A-Za-z0-9-]+)$/;
+
+/**
+ * Whether `label` can fit the 63-octet DNS limit. An ASCII label is its own ASCII form. An
+ * internationalised one is checked against the shortest punycode it could encode to, so a
+ * label too long in any encoding is refused and every one that might fit is left to the server.
+ */
+function fitsDnsLabel(label: string): boolean {
+  if (/^[A-Za-z0-9-]*$/.test(label)) return label.length <= MAX_DOMAIN_LABEL_LENGTH;
+  // Code points, not UTF-16 units: an emoji is two units but one punycode character at least.
+  const shortestAsciiLength = Array.from(label).length + PUNYCODE_PREFIX_LENGTH;
+  return shortestAsciiLength <= MAX_DOMAIN_LABEL_LENGTH;
+}
 
 /**
  * Whether `email` (surrounding whitespace ignored) looks like a deliverable address: exactly one
@@ -41,7 +59,7 @@ export function isValidEmail(email: string): boolean {
   if (!domain || domain.length > MAX_DOMAIN_LENGTH) return false;
   const labels = domain.split(".");
   if (labels.length < 2) return false;
-  if (!labels.every((label) => DOMAIN_LABEL.test(label))) return false;
+  if (!labels.every((label) => DOMAIN_LABEL.test(label) && fitsDnsLabel(label))) return false;
 
   return TOP_LEVEL_DOMAIN.test(labels[labels.length - 1]);
 }
