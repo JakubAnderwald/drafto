@@ -215,7 +215,7 @@ test.describe("Security: admin pages for a signed-in non-admin", () => {
 
 // --- Tampered session cookie -------------------------------------------------------------------
 //
-// The middleware verifies the session's access token itself with `getClaims()` (ADR-0097), so a
+// The middleware verifies the session's access token itself with `getClaims()` (ADR-0098), so a
 // token with a broken signature must read as signed out. These helpers copy the signed-in E2E
 // user's Supabase auth cookie into a fresh browser context, optionally with the token tampered.
 

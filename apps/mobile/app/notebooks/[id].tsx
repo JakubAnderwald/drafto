@@ -6,6 +6,7 @@ import {
   Pressable,
   TextInput,
   Alert,
+  Keyboard,
   RefreshControl,
   StyleSheet,
 } from "react-native";
@@ -76,6 +77,7 @@ export default function NotesListScreen() {
         });
       });
       haptics.success();
+      Keyboard.dismiss();
       setNewTitle("");
       setCreating(false);
       sync();
@@ -98,6 +100,8 @@ export default function NotesListScreen() {
           record.title = trimmed;
         });
       });
+      // The list keeps taps while the keyboard is up, so the keyboard is put away here.
+      Keyboard.dismiss();
       setEditingId(null);
       setEditTitle("");
       sync();
@@ -165,6 +169,7 @@ export default function NotesListScreen() {
           <Pressable
             testID="close"
             onPress={() => {
+              Keyboard.dismiss();
               setEditingId(null);
               setEditTitle("");
             }}
@@ -197,7 +202,11 @@ export default function NotesListScreen() {
           <Pressable
             {...accessibility}
             style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-            onPress={() => router.push(`/notes/${item.id}`)}
+            onPress={() => {
+              // A rename may still have the keyboard up; it shouldn't follow into the note.
+              Keyboard.dismiss();
+              router.push(`/notes/${item.id}`);
+            }}
             onLongPress={() => startEditing(item)}
           >
             <Ionicons
@@ -278,6 +287,10 @@ export default function NotesListScreen() {
           data={notes}
           keyExtractor={(item) => item.id}
           renderItem={renderNote}
+          // The rename row's ✓ and ✗ sit inside the list. Without this the first tap
+          // on them only closes the keyboard and a second one saves (PrimeTestLab
+          // 11035). A tap on empty space still closes the keyboard.
+          keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             swipeHint.visible && notes.length > 0 ? (
               <SwipeHint text={SWIPE_HINT_TEXT.notes} onDismiss={swipeHint.dismiss} />

@@ -1,4 +1,4 @@
-# 0097 — Middleware Verifies the Session Locally with getClaims
+# 0098 — Middleware Verifies the Session Locally with getClaims
 
 - **Status**: Accepted
 - **Date**: 2026-11-23

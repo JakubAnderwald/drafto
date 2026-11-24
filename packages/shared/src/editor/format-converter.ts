@@ -7,7 +7,12 @@ import {
   type TipTapMark,
   type TipTapNode,
 } from "./types";
-import { isAttachmentUrl } from "./attachment-url";
+import {
+  canonicalAttachmentUrl,
+  extractFilePath,
+  isAttachmentFileName,
+  isAttachmentUrl,
+} from "./attachment-url";
 
 // --- BlockNote -> TipTap ---
 
@@ -368,10 +373,22 @@ function tryExtractFileBlock(node: TipTapNode): BlockNoteBlock | null {
   const linkMarks = marks.filter((m) => m.type === "link");
   if (linkMarks.length !== 1) return null;
   const href = linkMarks[0]?.attrs?.href;
-  if (typeof href !== "string" || !isAttachmentUrl(href)) return null;
+  if (typeof href !== "string") return null;
+  if (isAttachmentUrl(href)) {
+    return { type: "file", props: { url: href, name: only.text }, children: [] };
+  }
+  // The native editors show a file link with its display URL (a signed URL
+  // once the note's attachments are resolved), so the link is read back as
+  // its attachment:// form. Without this a resolved file link saved as a
+  // paragraph with a link, and the web lost its file block. A display URL
+  // only counts when the link's text is the file's own name, as it is for a
+  // file link: a pasted signed URL, or a link worded as anything else, stays
+  // a paragraph with a link (its URL is still stored as attachment://).
+  const url = canonicalAttachmentUrl(href);
+  if (!url || !isAttachmentFileName(only.text, extractFilePath(url))) return null;
   return {
     type: "file",
-    props: { url: href, name: only.text },
+    props: { url, name: only.text },
     children: [],
   };
 }
@@ -508,6 +525,20 @@ function isBlockNoteArray(value: unknown): value is BlockNoteBlock[] {
 }
 
 const EMPTY_DOC: TipTapDoc = { type: "doc", content: [] };
+
+/**
+ * `doc` as the native editors hand it to TenTap: a document with no blocks
+ * gets one empty paragraph. ProseMirror's schema needs at least one block, but
+ * TipTap loads JSON without checking it, so an empty `content` array became a
+ * document of size 0 with its selection at 0, where no command applies. Every
+ * toolbar button then read as disabled and did nothing, and iOS could not
+ * place a caret in the body of a new note (PrimeTestLab 11035 follow-up).
+ * Content with blocks is returned as is.
+ */
+export function toEditorDoc(doc: TipTapDoc): TipTapDoc {
+  if (doc.content && doc.content.length > 0) return doc;
+  return { type: "doc", content: [{ type: "paragraph" }] };
+}
 
 /**
  * Convert any stored content to TipTap format for the mobile editor.

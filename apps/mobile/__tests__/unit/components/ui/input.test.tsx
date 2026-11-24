@@ -1,5 +1,5 @@
 import React from "react";
-import { Text } from "react-native";
+import { AccessibilityInfo, Platform, Text } from "react-native";
 
 import { render, fireEvent } from "../../../helpers/test-utils";
 import { Input } from "../../../../src/components/ui/input";
@@ -64,5 +64,25 @@ describe("Input", () => {
     const { UNSAFE_getByType } = render(<Input value="" onChangeText={() => {}} secureTextEntry />);
     const TextInput = require("react-native").TextInput;
     expect(UNSAFE_getByType(TextInput).props.secureTextEntry).toBe(true);
+  });
+
+  it("PrimeTestLab 11035 M-02: asks VoiceOver to announce an error as it appears on iOS", () => {
+    const originalOS = Platform.OS;
+    Object.defineProperty(Platform, "OS", { value: "ios", configurable: true });
+    const announce = jest
+      .spyOn(AccessibilityInfo, "announceForAccessibilityWithOptions")
+      .mockImplementation(() => {});
+    announce.mockClear();
+    try {
+      const { rerender } = render(<Input value="" onChangeText={() => {}} />);
+      expect(announce).not.toHaveBeenCalled();
+
+      rerender(<Input value="" onChangeText={() => {}} errorText="Email is required" />);
+
+      expect(announce).toHaveBeenCalledWith("Email is required", { queue: true });
+    } finally {
+      announce.mockRestore();
+      Object.defineProperty(Platform, "OS", { value: originalOS, configurable: true });
+    }
   });
 });

@@ -3,18 +3,22 @@
  * Post release notes to Google Play and/or App Store Connect (TestFlight).
  *
  * Usage:
- *   node post-release-notes.mjs --platform android|ios|all --notes "Release notes text" [--build N]
+ *   node post-release-notes.mjs --platform android|ios|all --notes "Release notes text" [--build N] [--track T]
  *
  * --build is the iOS build number just uploaded. It is REQUIRED for correct
  * TestFlight targeting: macOS (desktop) and iOS ship under the same App Store
  * Connect app (eu.drafto.mobile), so without an exact build match the "newest
  * uploaded build" can be a macOS build and the iOS notes land on the wrong build.
  *
+ * --track is the Google Play track the Android build was uploaded to
+ * (internal | alpha | beta | production). It overrides GOOGLE_PLAY_TRACK; with
+ * neither, the notes go to the internal track.
+ *
  * Environment variables:
  *   Google Play (android):
  *     GOOGLE_PLAY_SERVICE_ACCOUNT_KEY - JSON string of the service account key
  *     GOOGLE_PLAY_PACKAGE_NAME        - defaults to "eu.drafto.mobile"
- *     GOOGLE_PLAY_TRACK               - defaults to "internal"
+ *     GOOGLE_PLAY_TRACK               - used when --track is absent; defaults to "internal"
  *
  *   App Store Connect (ios):
  *     ASC_API_KEY_ID    - App Store Connect API Key ID
@@ -29,6 +33,26 @@ import { pathToFileURL } from "node:url";
 
 const VALID_PLATFORMS = ["android", "ios", "all"];
 
+// The Google Play tracks the Fastfile uploads to (PlayRelease::TRACKS in
+// apps/mobile/fastlane/play_release.rb).
+export const PLAY_TRACKS = ["internal", "alpha", "beta", "production"];
+
+/**
+ * The Play track to post notes to: --track, else GOOGLE_PLAY_TRACK, else
+ * "internal". An unknown name throws rather than letting the API create or edit
+ * a track nobody meant.
+ *
+ * @param {string} [trackArg]
+ * @param {Record<string, string | undefined>} [env]
+ */
+export function resolvePlayTrack(trackArg, env = process.env) {
+  const track = trackArg || env.GOOGLE_PLAY_TRACK || "internal";
+  if (!PLAY_TRACKS.includes(track)) {
+    throw new Error(`Unknown Google Play track "${track}" (expected ${PLAY_TRACKS.join(", ")})`);
+  }
+  return track;
+}
+
 export function parseArgs(argv) {
   // Return the token after `flag`, but treat a missing value or the next flag as
   // absent — otherwise `--notes --build 29` would swallow `--build` as the notes.
@@ -41,6 +65,7 @@ export function parseArgs(argv) {
     platform: valueAfter("--platform") || "all",
     notes: valueAfter("--notes"),
     build: valueAfter("--build"),
+    track: valueAfter("--track"),
   };
 }
 
@@ -83,7 +108,7 @@ async function getGoogleAccessToken(serviceAccountKey) {
   return data.access_token;
 }
 
-async function postGooglePlayNotes(releaseNotes) {
+async function postGooglePlayNotes(releaseNotes, trackArg) {
   const keySource =
     process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_KEY ||
     (() => {
@@ -103,7 +128,7 @@ async function postGooglePlayNotes(releaseNotes) {
 
   const serviceAccountKey = JSON.parse(keySource);
   const packageName = process.env.GOOGLE_PLAY_PACKAGE_NAME || "eu.drafto.mobile";
-  const track = process.env.GOOGLE_PLAY_TRACK || "internal";
+  const track = resolvePlayTrack(trackArg);
   const accessToken = await getGoogleAccessToken(serviceAccountKey);
 
   const baseUrl = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${packageName}`;
@@ -427,7 +452,7 @@ async function postTestFlightNotes(releaseNotes, buildNumber) {
 // --- Main ---
 
 async function main() {
-  const { platform, notes, build } = parseArgs(process.argv.slice(2));
+  const { platform, notes, build, track } = parseArgs(process.argv.slice(2));
 
   if (!notes) {
     console.error("Error: --notes is required");
@@ -448,7 +473,7 @@ async function main() {
 
   if (platform === "android" || platform === "all") {
     try {
-      await postGooglePlayNotes(notes);
+      await postGooglePlayNotes(notes, track);
     } catch (err) {
       console.error(`Google Play error: ${err.message}`);
       errors.push(err);

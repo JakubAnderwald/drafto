@@ -1124,6 +1124,171 @@ describe("NoteList", () => {
     });
   });
 
+  // #475: `notesCache` must not keep a failed fetch, nor a list a newer refresh replaced.
+  describe("notes cache eviction", () => {
+    function listFor(notebookId: string, refreshTrigger: number, onError = vi.fn()) {
+      return (
+        <ErrorBoundary onError={onError}>
+          <Suspense fallback={<Skeleton height="2.5rem" />}>
+            <NoteList
+              notebookId={notebookId}
+              selectedNoteId={null}
+              onSelectNote={vi.fn()}
+              onCreateNote={vi.fn()}
+              refreshTrigger={refreshTrigger}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      );
+    }
+
+    function fetchesFor(notebookId: string) {
+      return mockFetch.mock.calls.filter(([url]) => url === `/api/notebooks/${notebookId}/notes`)
+        .length;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it("fetches again after a failed fetch instead of rethrowing the cached rejection", async () => {
+      // React logs the error the boundary catches.
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      mockFetch.mockResolvedValue({ ok: false, status: 500, json: () => Promise.resolve({}) });
+      const trigger = nextTrigger();
+      const onError = vi.fn();
+
+      const { unmount } = await act(async () => render(listFor("nb-retry", trigger, onError)));
+
+      await waitFor(() => {
+        expect(onError).toHaveBeenCalledWith(
+          expect.objectContaining({ message: "Failed to fetch notes: 500" }),
+        );
+      });
+      // The render React schedules on the rejection still throws it, rather than
+      // missing the cache and fetching again.
+      expect(fetchesFor("nb-retry")).toBe(1);
+      unmount();
+
+      // The network is back. The same key must fetch again, not serve the rejection.
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(mockNotes) });
+      const fetchesBeforeRetry = fetchesFor("nb-retry");
+      const onRetryError = vi.fn();
+
+      await act(async () => {
+        render(listFor("nb-retry", trigger, onRetryError));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("First Note")).toBeInTheDocument();
+      });
+      expect(fetchesFor("nb-retry")).toBeGreaterThan(fetchesBeforeRetry);
+      expect(onRetryError).not.toHaveBeenCalled();
+    });
+
+    it("shows a lasting failure's error under StrictMode instead of refetching", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      mockFetch.mockResolvedValue({ ok: false, status: 503, json: () => Promise.resolve({}) });
+      const onError = vi.fn();
+
+      await act(async () => {
+        render(<StrictMode>{listFor("nb-strict-fail", nextTrigger(), onError)}</StrictMode>);
+      });
+
+      await waitFor(() => {
+        expect(onError).toHaveBeenCalledWith(
+          expect.objectContaining({ message: "Failed to fetch notes: 503" }),
+        );
+      });
+      expect(fetchesFor("nb-strict-fail")).toBe(1);
+      expect(screen.getByText("Something went wrong!")).toBeInTheDocument();
+    });
+
+    it("expires a failure no render read, so a later mount with the same key fetches", async () => {
+      let rejectFetch: (error: Error) => void = () => {};
+      mockFetch.mockReturnValueOnce(
+        new Promise((_, reject) => {
+          rejectFetch = reject;
+        }),
+      );
+      const trigger = nextTrigger();
+
+      // The list unmounts while its fetch is in flight, so nothing reads the failure.
+      const { unmount } = await act(async () => render(listFor("nb-unread", trigger)));
+      unmount();
+      vi.useFakeTimers();
+      await act(async () => {
+        rejectFetch(new Error("offline"));
+      });
+      vi.advanceTimersByTime(10_000);
+      vi.useRealTimers();
+
+      const onError = vi.fn();
+      await act(async () => {
+        render(listFor("nb-unread", trigger, onError));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("First Note")).toBeInTheDocument();
+      });
+      expect(fetchesFor("nb-unread")).toBe(2);
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("evicts a notebook's older list when a newer refresh fetches it", async () => {
+      const first = nextTrigger();
+      const second = nextTrigger();
+
+      const { rerender } = await act(async () => render(listFor("nb-evict", first)));
+      await waitFor(() => {
+        expect(screen.getByText("First Note")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        rerender(listFor("nb-evict", second));
+      });
+      await waitFor(() => {
+        expect(fetchesFor("nb-evict")).toBe(2);
+      });
+
+      // The first key was evicted by the second fetch, so asking for it fetches again.
+      await act(async () => {
+        rerender(listFor("nb-evict", first));
+      });
+      await waitFor(() => {
+        expect(fetchesFor("nb-evict")).toBe(3);
+      });
+      expect(screen.getByText("First Note")).toBeInTheDocument();
+    });
+
+    it("keeps other notebooks' cached lists", async () => {
+      const trigger = nextTrigger();
+      const otherTrigger = nextTrigger();
+
+      const { rerender } = await act(async () => render(listFor("nb-keep", trigger)));
+      await waitFor(() => {
+        expect(screen.getByText("First Note")).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        rerender(listFor("nb-other", otherTrigger));
+      });
+      await waitFor(() => {
+        expect(fetchesFor("nb-other")).toBe(1);
+      });
+
+      // Fetching another notebook left this notebook's entry alone: a cache hit.
+      await act(async () => {
+        rerender(listFor("nb-keep", trigger));
+      });
+      await waitFor(() => {
+        expect(screen.getByText("First Note")).toBeInTheDocument();
+      });
+      expect(fetchesFor("nb-keep")).toBe(1);
+    });
+  });
+
   // Regression guard for #536: a long note list must scroll. The scrollable
   // `<nav>` carries `overflow-y-auto`, but it only gains a constrained height
   // to scroll within if its flex ancestors can shrink below their content

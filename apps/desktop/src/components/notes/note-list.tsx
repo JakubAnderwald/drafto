@@ -5,6 +5,7 @@ import { formatRelativeTime } from "@drafto/shared";
 
 import { useAuth } from "@/providers/auth-provider";
 import { useNotes } from "@/hooks/use-notes";
+import { useRowDeleteAction } from "@/hooks/use-row-delete-action";
 import { database, Note } from "@/db";
 import { generateId } from "@/lib/generate-id";
 import { colors, fontFamily, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -121,15 +122,23 @@ interface NoteRowProps {
 
 function NoteRow({ note, isSelected, onSelect, onTrash, styles }: NoteRowProps) {
   const [hovered, setHovered] = useState(false);
+  // The × below is hover-only. A press also focuses the row, which then takes ⌫ / ⌦, and
+  // VoiceOver lists a named delete action on it.
+  const deleteAction = useRowDeleteAction({
+    label: "Delete note",
+    onPress: onSelect,
+    onDelete: onTrash,
+    isSelected,
+  });
 
   return (
     <Pressable
+      {...deleteAction}
       style={[
         styles.noteItem,
         hovered && !isSelected && styles.noteItemHover,
         isSelected && styles.noteItemSelected,
       ]}
-      onPress={onSelect}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       accessibilityLabel={note.title || "Untitled"}

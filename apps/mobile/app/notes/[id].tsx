@@ -22,6 +22,7 @@ import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
 import { NoteEditor } from "@/components/editor/note-editor";
 import { ImageRenderStatus } from "@/components/editor/image-render-status";
 import { useImageRenderStatus } from "@/hooks/use-image-render-status";
+import { useNoteAttachmentSizes } from "@/hooks/use-note-attachment-sizes";
 import { editorWebViewBaseUrl } from "@/lib/editor-webview";
 import { localAttachmentSrcFor, resolveAttachmentSrc } from "@/lib/data/attachment-resolver";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
@@ -30,15 +31,18 @@ import { useAutoSave } from "@/hooks/use-auto-save";
 import { buildEditorColorCss, buildEditorCss } from "@/lib/editor-css";
 import { buildEditorTheme } from "@/lib/editor-theme";
 import {
+  ATTACHMENT_SIZES_CSS_TAG,
+  buildAttachmentSizeCss,
   contentToTiptap,
   contentToBlocknote,
   migrateSignedUrlsToAttachmentUrls,
   resolveTipTapImageUrls,
-  isAttachmentUrl,
+  hasTipTapAttachmentRefs,
   toAttachmentUrl,
   isNoOpContentSave,
   rememberContentBaseline,
   serializeEditorContent,
+  toEditorDoc,
   serializeLoadedDoc,
   withResolveTimeout,
   withTimeout,
@@ -71,6 +75,14 @@ function parseInitialContent(note: Note): TipTapDoc {
 // the others (cached images above all) keep what they resolved to; the stored
 // content is unchanged. Same bound as desktop's RESOLVE_TIMEOUT_MS.
 const RESOLVE_TIMEOUT_MS = 8000;
+
+// Bound on resolving the signed URL of a file just attached, before it is
+// inserted. The user is waiting on the insert, so this is far shorter than the
+// note-load bound: on a stalled network the file goes in with its
+// attachment:// href after this long (a plain link until the note is opened
+// again) instead of nothing appearing for 8 s. A file was just uploaded, so the
+// network normally answers well inside it. Same bound as desktop's.
+const INSERT_RESOLVE_TIMEOUT_MS = 1500;
 
 // Bound on reading the editor back once it is ready to add that serialisation
 // to the no-op-save baseline. Content saves wait for the read, so a stuck
@@ -134,25 +146,11 @@ interface NoteEditorViewProps {
   initialNote: Note;
 }
 
-function hasAttachmentUrls(nodes: TipTapNode[]): boolean {
-  for (const node of nodes) {
-    if (
-      node.type === "image" &&
-      typeof node.attrs?.src === "string" &&
-      isAttachmentUrl(node.attrs.src)
-    ) {
-      return true;
-    }
-    if (node.content && hasAttachmentUrls(node.content)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function useResolvedContent(note: Note): { content: TipTapDoc; resolving: boolean } {
   const parsed = useMemo(() => parseInitialContent(note), [note]);
-  const needsResolving = useMemo(() => hasAttachmentUrls(parsed.content), [parsed]);
+  // Images and file links both resolve; a note with only files used to skip
+  // it, leaving its links unopenable and without the file card (S-04).
+  const needsResolving = useMemo(() => hasTipTapAttachmentRefs(parsed), [parsed]);
 
   const [content, setContent] = useState<TipTapDoc>(parsed);
   const [resolving, setResolving] = useState(needsResolving);
@@ -280,7 +278,10 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     // keyboard. TenTap's own avoidance would also pad the document by the
     // keyboard height, leaving a blank band above the toolbar.
     avoidIosKeyboard: false,
-    initialContent: resolvedContent,
+    // A new note's empty doc goes in as one empty paragraph: with no block at
+    // all the editor had nowhere to put the caret, so every toolbar button
+    // read as disabled and the body could not be focused on iOS.
+    initialContent: toEditorDoc(resolvedContent),
     // A file:// base URL lets the editor show cached attachment images
     // (ADR-0086); see NoteEditor for the WebView's file access.
     webviewBaseURL: editorWebViewBaseUrl(),
@@ -344,6 +345,18 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
     editor.injectCSS(buildEditorColorCss(semantic, isDark), "dark-mode");
   }, [isDark, semantic, editor, isReady]);
 
+  // The size label on each file card (PrimeTestLab 11035 S-04), rebuilt as the
+  // note's attachments change. TenTap keeps an injected stylesheet and puts it
+  // back after a WebView reload, and queues it until the page can take it.
+  const attachmentSizes = useNoteAttachmentSizes(noteId);
+  const attachmentSizeCss = useMemo(
+    () => buildAttachmentSizeCss(attachmentSizes),
+    [attachmentSizes],
+  );
+  useEffect(() => {
+    editorRef.current.injectCSS(attachmentSizeCss, ATTACHMENT_SIZES_CSS_TAG);
+  }, [attachmentSizeCss]);
+
   const { flush: flushContent } = contentSave;
 
   useEffect(() => {
@@ -367,18 +380,24 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
           const src = localAttachmentSrcFor(attachment);
           node = { type: "image", attrs: { src, alt: attachment.fileName } };
         } else {
+          // An uploaded file is shown with its signed URL, as it is once the
+          // note is opened again, so it is a file card at once (PrimeTestLab
+          // 11035 S-04). Every save maps the link back to attachment://. A
+          // slow resolve gives up after INSERT_RESOLVE_TIMEOUT_MS.
+          const href =
+            attachment.uploadStatus === "uploaded"
+              ? await withResolveTimeout(resolveAttachmentSrc, INSERT_RESOLVE_TIMEOUT_MS)(
+                  attachment.filePath,
+                  "link",
+                )
+              : toAttachmentUrl(attachment.filePath);
           node = {
             type: "paragraph",
             content: [
               {
                 type: "text",
                 text: attachment.fileName,
-                marks: [
-                  {
-                    type: "link",
-                    attrs: { href: toAttachmentUrl(attachment.filePath) },
-                  },
-                ],
+                marks: [{ type: "link", attrs: { href } }],
               },
             ],
           };
@@ -461,9 +480,9 @@ function NoteEditorView({ noteId, initialNote }: NoteEditorViewProps) {
           />
           <ImageRenderStatus images={imageStatus.images} />
         </View>
-        {/* Keeps the attachment row clear of the home indicator / gesture bar. With
-          the keyboard up the keyboard covers that area, so the toolbar sits
-          directly on it instead. */}
+        {/* Keeps the formatting toolbar (always shown, PrimeTestLab 11035 S-02)
+          clear of the home indicator / gesture bar. With the keyboard up the
+          keyboard covers that area, so the toolbar sits directly on it instead. */}
         <View
           testID="editor-bottom-inset"
           style={[styles.bottomInset, { height: isKeyboardUp ? 0 : insets.bottom }]}

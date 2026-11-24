@@ -4,8 +4,10 @@ import type { EditorBridge } from "@10play/tentap-editor";
 
 import { render } from "../helpers/test-utils";
 import { NoteEditor } from "@/components/editor/note-editor";
+import { NOTE_HEADING_ITEMS, NOTE_TOOLBAR_ITEMS } from "@/components/editor/toolbar-items";
 
 const mockRichTextProps = jest.fn();
+const mockToolbarProps = jest.fn();
 jest.mock("@10play/tentap-editor", () => {
   const { Text: MockText } = require("react-native");
   return {
@@ -13,8 +15,12 @@ jest.mock("@10play/tentap-editor", () => {
       mockRichTextProps(props);
       return <MockText>body</MockText>;
     },
-    Toolbar: () => <MockText>toolbar</MockText>,
+    Toolbar: (props: Record<string, unknown>) => {
+      mockToolbarProps(props);
+      return <MockText>toolbar</MockText>;
+    },
     DEFAULT_TOOLBAR_ITEMS: [],
+    HEADING_ITEMS: [],
   };
 });
 
@@ -29,6 +35,7 @@ const editor = {} as EditorBridge;
 
 beforeEach(() => {
   mockRichTextProps.mockClear();
+  mockToolbarProps.mockClear();
   mockPage.current = { ready: true, webViewProps: {} };
 });
 
@@ -48,6 +55,26 @@ describe("NoteEditor", () => {
     expect(body).toBeGreaterThanOrEqual(0);
     expect(accessory).toBeGreaterThan(body);
     expect(toolbar).toBeGreaterThan(accessory);
+  });
+
+  it("PrimeTestLab 11035 S-02 keeps the formatting toolbar shown with the keyboard closed", () => {
+    render(<NoteEditor editor={editor} />);
+
+    const props = mockToolbarProps.mock.calls[mockToolbarProps.mock.calls.length - 1][0];
+    // TenTap's default (hidden undefined) hides it while the keyboard is down
+    // or the editor is blurred; false shows it always.
+    expect(props.hidden).toBe(false);
+    expect(props.editor).toBe(editor);
+  });
+
+  it("PrimeTestLab 11035 E2E gives the toolbar buttons that focus a blurred editor first", () => {
+    render(<NoteEditor editor={editor} />);
+
+    // With the keyboard down a press must bring it up (Android left the
+    // WebView unfocused); toolbar-items.test.ts covers the items themselves.
+    const props = mockToolbarProps.mock.calls[mockToolbarProps.mock.calls.length - 1][0];
+    expect(props.items).toBe(NOTE_TOOLBAR_ITEMS);
+    expect(props.headingItems).toBe(NOTE_HEADING_ITEMS);
   });
 
   it("renders without an accessory", () => {

@@ -2,9 +2,17 @@ import { useState, useMemo } from "react";
 import { Text, View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { Link } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { SIGNUP_CONFIRMATION_SENT, SIGNUP_EMAIL_REDIRECT_URL } from "@drafto/shared";
+import {
+  SIGNUP_CONFIRMATION_SENT,
+  SIGNUP_EMAIL_REDIRECT_URL,
+  describeAuthError,
+  hasFieldErrors,
+  validateCredentials,
+  type AuthFieldErrors,
+} from "@drafto/shared";
 
 import { useOfflineBannerHeight } from "@/hooks/use-offline-banner-height";
+import { useErrorAnnouncement } from "@/hooks/use-error-announcement";
 import { supabase } from "@/lib/supabase";
 import { useTheme } from "@/providers/theme-provider";
 import { colors, fontSizes, radii, spacing } from "@/theme/tokens";
@@ -23,18 +31,38 @@ export default function SignupScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [loading, setLoading] = useState(false);
+  // Bumped by every submit (and OAuth try), so an error that repeats the last one's words is
+  // still announced to VoiceOver (PrimeTestLab 11035 review).
+  const [submitAttempt, setSubmitAttempt] = useState(0);
+  useErrorAnnouncement(error, submitAttempt);
   const [sentTo, setSentTo] = useState<string | null>(null);
 
-  const handleSignup = async () => {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail || !password) {
-      setError("Please enter your email and password.");
-      return;
-    }
+  const handleEmailChange = (value: string) => {
+    setEmail(value);
+    setFieldErrors((current) => ({ ...current, email: undefined }));
+  };
 
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters.");
+  const handlePasswordChange = (value: string) => {
+    setPassword(value);
+    setFieldErrors((current) => ({ ...current, password: undefined }));
+  };
+
+  const handleOAuthError = (message: string) => {
+    setSubmitAttempt((attempt) => attempt + 1);
+    setError(message);
+  };
+
+  const handleSignup = async () => {
+    setSubmitAttempt((attempt) => attempt + 1);
+    const trimmedEmail = email.trim();
+    // Both fields are checked on every submit, so the user sees every problem at once, and a
+    // malformed address never reaches Supabase (PrimeTestLab 11035 M-02).
+    const validation = validateCredentials({ email, password }, "signup");
+    setFieldErrors(validation);
+    if (hasFieldErrors(validation)) {
+      setError(null);
       return;
     }
 
@@ -49,7 +77,9 @@ export default function SignupScreen() {
       });
 
       if (signUpError) {
-        setError(signUpError.message);
+        const copy = describeAuthError(signUpError);
+        if (copy.field) setFieldErrors({ [copy.field]: copy.message });
+        else setError(copy.message);
         return;
       }
 
@@ -90,7 +120,12 @@ export default function SignupScreen() {
         <Text style={styles.subtitle}>Create your Drafto account</Text>
 
         {error && (
-          <View style={styles.errorContainer}>
+          <View
+            style={styles.errorContainer}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+            testID="signup-error"
+          >
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
@@ -100,12 +135,15 @@ export default function SignupScreen() {
             label="Email"
             placeholder="you@example.com"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={handleEmailChange}
+            errorText={fieldErrors.email}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"
             textContentType="emailAddress"
             editable={!loading}
+            testID="signup-email-input"
             containerStyle={styles.field}
           />
 
@@ -113,7 +151,9 @@ export default function SignupScreen() {
             label="Password"
             placeholder="Min. 6 characters"
             value={password}
-            onChangeText={setPassword}
+            onChangeText={handlePasswordChange}
+            errorText={fieldErrors.password}
+            submitAttempt={submitAttempt}
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="new-password"
@@ -137,7 +177,7 @@ export default function SignupScreen() {
           />
         </View>
 
-        <OAuthButtons onError={(msg) => setError(msg)} />
+        <OAuthButtons onError={handleOAuthError} />
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>

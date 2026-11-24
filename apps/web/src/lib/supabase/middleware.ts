@@ -147,7 +147,7 @@ export async function updateSession(request: NextRequest) {
     : null;
 
   // The session is verified locally against the project's cached JWKS, not with a call to
-  // Supabase Auth per request (ADR-0097). A session about to expire is still refreshed, and the
+  // Supabase Auth per request (ADR-0098). A session about to expire is still refreshed, and the
   // new cookies go through `setAll` above. A bad, tampered or expired-and-unrefreshable token
   // reads as signed out.
   const user = supabase ? await getVerifiedSessionUser(supabase.auth) : null;

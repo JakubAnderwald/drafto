@@ -1,6 +1,6 @@
 import { Linking } from "react-native";
 
-import { isAppleRevocationDeepLink } from "@drafto/shared";
+import { isAppleRevocationDeepLink, oauthQueryParams } from "@drafto/shared";
 
 import { isRecoveryUrl } from "@/lib/auth-recovery";
 import { apiUrl } from "@/lib/config";
@@ -23,11 +23,16 @@ export async function signInWithOAuthBrowser(
   try {
     // A click right after launch would otherwise get a plain PKCE challenge.
     await cryptoReady;
+    // Google always shows its account chooser: the browser keeps its Google session after the
+    // user signs out of Drafto, and would otherwise sign the same account straight back in
+    // (PrimeTestLab 11035 M-03).
+    const queryParams = oauthQueryParams(provider);
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
       provider,
       options: {
         redirectTo: OAUTH_REDIRECT_URL,
         skipBrowserRedirect: true,
+        ...(queryParams ? { queryParams } : {}),
       },
     });
 

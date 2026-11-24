@@ -66,8 +66,11 @@ function timestampedNames(source: string): string[] {
   return names;
 }
 
-/** Typed with a run id, but into a note's body rather than a name. */
-const NOT_NAMES = new Set(["Body"]);
+/**
+ * Typed with a run id, but into a note's body rather than a name. "Bold" is the text
+ * flow 03 types after pressing the Bold toolbar button (PrimeTestLab 11035).
+ */
+const NOT_NAMES = new Set(["Body", "Bold"]);
 
 /**
  * The names the other E2E runners type into the same dev account, with a sample

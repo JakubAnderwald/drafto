@@ -13,7 +13,7 @@ const mockCaptureException = vi.fn();
 vi.mock("@sentry/nextjs", () => ({ captureException: mockCaptureException }));
 
 const mockGetClaims = vi.fn();
-// The middleware verifies the session locally with getClaims() (ADR-0097). getUser() is a call to
+// The middleware verifies the session locally with getClaims() (ADR-0098). getUser() is a call to
 // Supabase Auth per request, so every test checks it is never made.
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
@@ -547,7 +547,7 @@ describe("Auth middleware", () => {
     });
   });
 
-  // The session is verified locally with getClaims() (ADR-0097): anything it can't verify is
+  // The session is verified locally with getClaims() (ADR-0098): anything it can't verify is
   // signed out, and a verified token's claims become the forwarded user.
   describe("session verification", () => {
     function approvedProfile() {

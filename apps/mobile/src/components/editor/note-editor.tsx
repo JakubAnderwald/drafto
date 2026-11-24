@@ -1,19 +1,21 @@
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
-import { RichText, Toolbar, DEFAULT_TOOLBAR_ITEMS } from "@10play/tentap-editor";
+import { RichText, Toolbar } from "@10play/tentap-editor";
 import type { EditorBridge } from "@10play/tentap-editor";
 import type { WebViewMessageEvent } from "react-native-webview";
 
 import { useTheme } from "@/providers/theme-provider";
 import { EDITOR_WEBVIEW_FILE_ACCESS_PROPS } from "@/lib/editor-webview";
 import { useEditorPage } from "@/hooks/use-editor-page";
+import { NOTE_HEADING_ITEMS, NOTE_TOOLBAR_ITEMS } from "@/components/editor/toolbar-items";
 
 interface NoteEditorProps {
   editor: EditorBridge;
   /**
    * Rendered between the note body and the formatting toolbar (the attachment
    * row). The toolbar stays last so that, with the keyboard up, it sits
-   * directly on top of the keyboard.
+   * directly on top of the keyboard, and with it down, just above the bottom
+   * safe-area inset.
    */
   accessory?: ReactNode;
   /**
@@ -53,7 +55,17 @@ export function NoteEditor({ editor, accessory, onMessage }: NoteEditorProps) {
         />
       )}
       {accessory}
-      <Toolbar editor={editor} items={DEFAULT_TOOLBAR_ITEMS} />
+      {/* Always shown (PrimeTestLab 11035 S-02): TenTap's default hides the
+        toolbar whenever the keyboard is down or the editor is blurred, so
+        formatting was out of reach while reading a note. Each formatting
+        button focuses the editor before it applies (toolbar-items.ts), which
+        brings the keyboard up. */}
+      <Toolbar
+        editor={editor}
+        items={NOTE_TOOLBAR_ITEMS}
+        headingItems={NOTE_HEADING_ITEMS}
+        hidden={false}
+      />
     </>
   );
 }

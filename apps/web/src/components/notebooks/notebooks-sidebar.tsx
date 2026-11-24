@@ -6,16 +6,47 @@ import { useNotebookDeleteImpact } from "@/hooks/use-notebook-delete-impact";
 import { IconButton } from "@/components/ui/icon-button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { MAX_NOTEBOOK_NAME_LENGTH } from "@drafto/shared";
+import {
+  MAX_NOTEBOOK_NAME_LENGTH,
+  duplicateNotebookNameMessage,
+  findDuplicateNotebook,
+  formatNoteCount,
+} from "@drafto/shared";
 
 // The same wording as the mobile and desktop delete confirms.
 const TRASHED_NOTES_WARNING = "Trashed notes inside will be permanently deleted.";
+const NETWORK_ERROR = "Network error. Please try again.";
+// Each field has its own error id: a refused create and a refused rename can both be open.
+const CREATE_ERROR_ID = "notebook-create-name-error";
+const RENAME_ERROR_ID = "notebook-rename-name-error";
 
 interface Notebook {
   id: string;
   name: string;
   created_at: string;
   updated_at: string;
+  /** Notes not in the trash (PrimeTestLab 11035 S-03). Absent on a create or rename response. */
+  note_count?: number;
+}
+
+/** The API's error message, or `fallback` when the body carries none. */
+async function errorMessageFrom(res: Response, fallback: string): Promise<string> {
+  const body: { error?: unknown } | null = await res.json().catch(() => null);
+  return typeof body?.error === "string" && body.error ? body.error : fallback;
+}
+
+/** Why a typed name was refused (PrimeTestLab 11035 M-01), under its field. */
+function NameError({ id, message }: Readonly<{ id: string; message: string }>) {
+  return (
+    <p
+      id={id}
+      role="alert"
+      data-testid="notebook-name-error"
+      className="text-error-text mt-1 px-1 text-xs"
+    >
+      {message}
+    </p>
+  );
 }
 
 interface NotebooksSidebarProps {
@@ -42,6 +73,19 @@ export function NotebooksSidebar({
   const [creatingName, setCreatingName] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  // A refused create or rename keeps its field open with the reason under it (PrimeTestLab
+  // 11035 M-01): a taken name, or the API's error. Editing the name clears it.
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  // Each time a field opens or closes it starts a new session. A request belongs to the session
+  // that sent it: its error or its closing the field lands only while that session is still the
+  // one on show, so a reopened field or another notebook's rename never gets it.
+  const createSession = useRef(0);
+  const renameSession = useRef(0);
+  // The session with a request in flight, per field, so a pending create never swallows Enter
+  // on a rename (or the reverse): each only stops a second submit of the same session.
+  const submittingCreate = useRef<number | null>(null);
+  const submittingRename = useRef<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -107,18 +151,50 @@ export function NotebooksSidebar({
     }
   }, [editingId]);
 
+  function closeCreate() {
+    createSession.current += 1;
+    setCreatingName(null);
+    setCreateError(null);
+  }
+
+  function closeRename() {
+    renameSession.current += 1;
+    setEditingId(null);
+    setRenameError(null);
+  }
+
+  /** Opens a notebook's rename field afresh: an earlier refused rename's error doesn't carry over. */
+  function startRename(notebook: Notebook) {
+    renameSession.current += 1;
+    setEditingId(notebook.id);
+    setEditingName(notebook.name);
+    setRenameError(null);
+  }
+
   async function handleCreate() {
     if (creatingName === null) {
+      createSession.current += 1;
+      setCreateError(null);
       setCreatingName("");
       return;
     }
 
     const name = creatingName.trim();
     if (!name) {
-      setCreatingName(null);
+      closeCreate();
+      return;
+    }
+    const session = createSession.current;
+    if (submittingCreate.current === session) return;
+
+    const duplicate = findDuplicateNotebook(name, notebooks);
+    if (duplicate) {
+      setCreateError(duplicateNotebookNameMessage(duplicate.name));
       return;
     }
 
+    submittingCreate.current = session;
+    const stillOpen = () => createSession.current === session;
     try {
       const res = await fetch("/api/notebooks", {
         method: "POST",
@@ -126,27 +202,48 @@ export function NotebooksSidebar({
         body: JSON.stringify({ name }),
       });
 
-      if (res.ok) {
-        const notebook: Notebook = await res.json();
-        setNotebooks((prev) => {
-          const updated = [...prev, notebook].sort((a, b) => a.name.localeCompare(b.name));
-          onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
-          return updated;
-        });
-        onSelectNotebook(notebook.id);
+      if (handleAuthError(res)) return;
+      if (!res.ok) {
+        // A 409 names the notebook that already has the name; the field stays open to fix it.
+        const message = await errorMessageFrom(res, "Failed to create notebook");
+        if (stillOpen()) setCreateError(message);
+        return;
       }
+
+      const created: Notebook = await res.json();
+      const notebook: Notebook = { ...created, note_count: created.note_count ?? 0 };
+      setNotebooks((prev) => {
+        const updated = [...prev, notebook].sort((a, b) => a.name.localeCompare(b.name));
+        onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
+        return updated;
+      });
+      onSelectNotebook(notebook.id);
+      // A field reopened while this was pending is the user's next name: leave it open.
+      if (stillOpen()) closeCreate();
+    } catch {
+      if (stillOpen()) setCreateError(NETWORK_ERROR);
     } finally {
-      setCreatingName(null);
+      if (submittingCreate.current === session) submittingCreate.current = null;
     }
   }
 
   async function handleRename(id: string) {
     const name = editingName.trim();
     if (!name) {
-      setEditingId(null);
+      closeRename();
+      return;
+    }
+    const session = renameSession.current;
+    if (submittingRename.current === session) return;
+
+    const duplicate = findDuplicateNotebook(name, notebooks, id);
+    if (duplicate) {
+      setRenameError(duplicateNotebookNameMessage(duplicate.name));
       return;
     }
 
+    submittingRename.current = session;
+    const stillOpen = () => renameSession.current === session;
     try {
       const res = await fetch(`/api/notebooks/${id}`, {
         method: "PATCH",
@@ -154,18 +251,28 @@ export function NotebooksSidebar({
         body: JSON.stringify({ name }),
       });
 
-      if (res.ok) {
-        const updated: Notebook = await res.json();
-        setNotebooks((prev) => {
-          const newList = prev
-            .map((n) => (n.id === id ? updated : n))
-            .sort((a, b) => a.name.localeCompare(b.name));
-          onNotebooksChange?.(newList.map((n) => ({ id: n.id, name: n.name })));
-          return newList;
-        });
+      if (handleAuthError(res)) return;
+      if (!res.ok) {
+        const message = await errorMessageFrom(res, "Failed to rename notebook");
+        if (stillOpen()) setRenameError(message);
+        return;
       }
+
+      const updated: Notebook = await res.json();
+      setNotebooks((prev) => {
+        // The response has no count; the notebook keeps the one it had.
+        const newList = prev
+          .map((n) => (n.id === id ? { ...n, ...updated } : n))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        onNotebooksChange?.(newList.map((n) => ({ id: n.id, name: n.name })));
+        return newList;
+      });
+      // Another notebook's rename field, opened while this was pending, stays open.
+      if (stillOpen()) closeRename();
+    } catch {
+      if (stillOpen()) setRenameError(NETWORK_ERROR);
     } finally {
-      setEditingId(null);
+      if (submittingRename.current === session) submittingRename.current = null;
     }
   }
 
@@ -265,28 +372,39 @@ export function NotebooksSidebar({
           {notebooks.map((notebook) => (
             <li key={notebook.id}>
               {editingId === notebook.id ? (
-                <input
-                  ref={editInputRef}
-                  type="text"
-                  value={editingName}
-                  onChange={(e) => setEditingName(e.target.value)}
-                  onBlur={() => handleRename(notebook.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleRename(notebook.id);
-                    if (e.key === "Escape") setEditingId(null);
-                  }}
-                  maxLength={MAX_NOTEBOOK_NAME_LENGTH}
-                  className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm transition-colors duration-[var(--transition-fast)] focus:ring-1 focus:outline-none"
-                />
+                <>
+                  <input
+                    ref={editInputRef}
+                    type="text"
+                    value={editingName}
+                    onChange={(e) => {
+                      setEditingName(e.target.value);
+                      setRenameError(null);
+                    }}
+                    // Leaving a refused name doesn't send it again; Escape or a new name does.
+                    onBlur={() => {
+                      if (!renameError) void handleRename(notebook.id);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void handleRename(notebook.id);
+                      if (e.key === "Escape") closeRename();
+                    }}
+                    maxLength={MAX_NOTEBOOK_NAME_LENGTH}
+                    aria-label="Notebook name"
+                    aria-invalid={renameError ? true : undefined}
+                    aria-describedby={renameError ? RENAME_ERROR_ID : undefined}
+                    className={`text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm transition-colors duration-[var(--transition-fast)] focus:ring-1 focus:outline-none ${
+                      renameError ? "border-error" : "border-border"
+                    }`}
+                  />
+                  {renameError && <NameError id={RENAME_ERROR_ID} message={renameError} />}
+                </>
               ) : (
                 <div
                   role="button"
                   tabIndex={0}
                   onClick={() => onSelectNotebook(notebook.id)}
-                  onDoubleClick={() => {
-                    setEditingId(notebook.id);
-                    setEditingName(notebook.name);
-                  }}
+                  onDoubleClick={() => startRename(notebook)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -302,7 +420,22 @@ export function NotebooksSidebar({
                       : "text-fg hover:bg-sidebar-hover"
                   }`}
                 >
-                  <span className="truncate">{notebook.name}</span>
+                  {/* E2E helpers read the name from here: the row's text includes the count. */}
+                  <span data-testid="notebook-name" className="truncate">
+                    {notebook.name}
+                  </span>
+                  {notebook.note_count !== undefined && (
+                    <span
+                      data-testid="notebook-note-count"
+                      className={`ml-auto shrink-0 pl-2 text-xs tabular-nums ${
+                        selectedNotebookId === notebook.id
+                          ? "text-sidebar-active-text"
+                          : "text-fg-muted"
+                      }`}
+                    >
+                      {formatNoteCount(notebook.note_count)}
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={(e) => {
@@ -337,16 +470,27 @@ export function NotebooksSidebar({
                 ref={createInputRef}
                 type="text"
                 value={creatingName}
-                onChange={(e) => setCreatingName(e.target.value)}
-                onBlur={handleCreate}
+                onChange={(e) => {
+                  setCreatingName(e.target.value);
+                  setCreateError(null);
+                }}
+                // Leaving a refused name doesn't send it again; Escape or a new name does.
+                onBlur={() => {
+                  if (!createError) void handleCreate();
+                }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleCreate();
-                  if (e.key === "Escape") setCreatingName(null);
+                  if (e.key === "Enter") void handleCreate();
+                  if (e.key === "Escape") closeCreate();
                 }}
                 maxLength={MAX_NOTEBOOK_NAME_LENGTH}
                 placeholder="Notebook name"
-                className="border-border text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm transition-colors duration-[var(--transition-fast)] focus:ring-1 focus:outline-none"
+                aria-invalid={createError ? true : undefined}
+                aria-describedby={createError ? CREATE_ERROR_ID : undefined}
+                className={`text-fg focus:ring-ring w-full rounded-md border bg-transparent px-2 py-1.5 text-sm transition-colors duration-[var(--transition-fast)] focus:ring-1 focus:outline-none ${
+                  createError ? "border-error" : "border-border"
+                }`}
               />
+              {createError && <NameError id={CREATE_ERROR_ID} message={createError} />}
             </li>
           )}
         </ul>

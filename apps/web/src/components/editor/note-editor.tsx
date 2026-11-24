@@ -17,6 +17,8 @@ import {
 } from "@drafto/shared";
 import { useAttachmentUrlResolver } from "@/components/editor/use-attachment-url-resolver";
 import { discardRefusedUploadBlock } from "@/components/editor/discard-refused-upload-block";
+import { useNoteAttachmentSizes } from "@/components/editor/use-note-attachment-sizes";
+import { AttachmentSizeStyles } from "@/components/editor/attachment-size-styles";
 import { createClient } from "@/lib/supabase/client";
 
 interface NoteEditorProps {
@@ -28,6 +30,7 @@ interface NoteEditorProps {
 export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps) {
   const { resolvedTheme } = useTheme();
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const { attachments, addAttachment } = useNoteAttachmentSizes(noteId);
   // uploadFile is handed to useCreateBlockNote before the editor exists, so it
   // reaches the editor through this ref.
   const editorRef = useRef<BlockNoteEditor | null>(null);
@@ -98,6 +101,11 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
         if (typeof data.file_path !== "string" || data.file_path.length === 0) {
           throw new Error("Upload succeeded but no file path was returned");
         }
+        addAttachment({
+          filePath: data.file_path,
+          fileSize: file.size,
+          mimeType: file.type || "application/octet-stream",
+        });
         return toAttachmentUrl(data.file_path);
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : "Upload failed");
@@ -113,7 +121,7 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
         throw err;
       }
     },
-    [noteId],
+    [noteId, addAttachment],
   );
 
   const resolveFileUrl = useAttachmentUrlResolver();
@@ -130,6 +138,7 @@ export function NoteEditor({ noteId, initialContent, onChange }: NoteEditorProps
 
   return (
     <div data-testid="editor-scroll-container" className="min-h-0 flex-1 overflow-y-auto">
+      <AttachmentSizeStyles attachments={attachments} />
       {uploadError && (
         <div
           role="alert"

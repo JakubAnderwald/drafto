@@ -25,7 +25,7 @@ function reportVerificationError(error: unknown): void {
   Sentry.captureException(error, { extra: { where: "middleware:session-claims" } });
 }
 
-// Verifies the session in the request's cookies without a call to Supabase Auth (ADR-0097).
+// Verifies the session in the request's cookies without a call to Supabase Auth (ADR-0098).
 //
 // `getClaims()` with no argument first runs `getSession()`, which refreshes an expiring session
 // and writes the new cookies through the client's `setAll`. It then checks the access token's

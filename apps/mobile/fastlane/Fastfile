@@ -7,6 +7,10 @@ default_platform(:android)
 PACKAGE_NAME = "eu.drafto.mobile"
 PROJECT_ROOT = File.expand_path("..", __dir__)
 
+# Google Play track helpers (version code across tracks, track labels). Kept in a
+# plain Ruby file so scripts/__tests__/play-release.test.mjs can test them.
+require File.expand_path("play_release.rb", __dir__)
+
 # App Review answers App Store Connect otherwise blocks a submission on. Drafto
 # integrates no ad framework (no IDFA), reaches the network only over HTTPS/TLS
 # provided by the OS (exempt encryption — the same claim as
@@ -211,13 +215,23 @@ end
 # post-release-notes.mjs as --build so TestFlight notes target that exact iOS
 # build — macOS + iOS share one App Store Connect app, so "the newest build"
 # alone can resolve to a macOS (desktop) build.
-def post_release_notes(platform:, max_chars:, build: nil)
+#
+# `track` is the Google Play track the Android lane uploaded to (nil for iOS).
+# Without it the script falls back to GOOGLE_PLAY_TRACK or "internal", which put
+# a closed-testing or production build's notes on the internal track instead.
+#
+# `tag_globs` are the release-tag globs the generator tries in order for the
+# range start (PlayRelease.notes_tag_globs). nil keeps its default, `mobile@*`.
+def post_release_notes(platform:, max_chars:, build: nil, track: nil, tag_globs: nil)
   Dir.chdir(PROJECT_ROOT) do
-    notes = sh("bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s).strip
+    gen = ["bash", "scripts/generate-release-notes.sh", "--max-chars", max_chars.to_s]
+    Array(tag_globs).each { |glob| gen += ["--tag-glob", glob] }
+    notes = sh(*gen).strip
     next if notes.empty?
 
     cmd = ["node", "scripts/post-release-notes.mjs", "--platform", platform, "--notes", notes]
     cmd += ["--build", build.to_s] unless build.nil? || build.to_s.empty?
+    cmd += ["--track", track.to_s] unless track.nil? || track.to_s.empty?
     sh(*cmd)
   end
 rescue StandardError => e
@@ -602,14 +616,19 @@ end
 # unmerged and may be rebased away, leaving a published tag as the only thing
 # keeping a dead commit alive — and starting the next real release's range on an
 # abandoned branch. Both happened to desktop before this guard existed.
-def tag_release(platform:, build:)
+#
+# `prefix` is `mobile@` for iOS, the Play internal track and production. Play
+# closed testing passes its own (PlayRelease.tag_prefix): a commit that only
+# closed-testing testers got must not start the next internal / TestFlight
+# range, which every `mobile@*` reader would otherwise take it as.
+def tag_release(platform:, build:, prefix: PlayRelease::SHARED_TAG_PREFIX)
   if !ENV["DRAFTO_INTEST_ISSUE"].to_s.empty?
     UI.message("Pre-merge test build (issue ##{ENV['DRAFTO_INTEST_ISSUE']}) — not tagging an unmerged commit")
     return
   end
   return if build.nil? || build.to_s.empty?
 
-  release_tag = "mobile@#{package_json_version}+#{platform}.#{build}"
+  release_tag = "#{prefix}#{package_json_version}+#{platform}.#{build}"
   if `git tag -l "#{release_tag}"`.strip.empty?
     sh("git", "tag", release_tag)
     sh("git", "push", "origin", release_tag)
@@ -647,12 +666,38 @@ rescue StandardError => e
   UI.important("In Test build comment failed (non-fatal): #{e.message}")
 end
 
+# The next Android version code: one above the highest code on ANY Play track
+# (PlayRelease::TRACKS). Play rejects a code that any track already used, so
+# taking the target track's max alone breaks as soon as two tracks diverge.
+# fastlane already returns [] for an empty or missing track, so any track that
+# raises stops the lane (PlayRelease::TrackUnreadable) — the caller runs this
+# right before Gradle, so that costs the prebuild, not a Gradle bundle.
+def next_play_version_code
+  codes = PlayRelease.collect_version_codes do |track|
+    google_play_track_version_codes(package_name: PACKAGE_NAME, track: track, json_key: json_key_path)
+  end
+  next_code = PlayRelease.next_version_code(codes)
+  summary = codes.map { |track, list| "#{track}=#{list.max || '-'}" }.join(", ")
+  UI.message("Google Play version codes by track: #{summary} → next #{next_code}")
+  next_code
+rescue PlayRelease::TrackUnreadable => e
+  UI.user_error!(e.message)
+end
+
 # ---------- Android ----------
 
 platform :android do
   desc "Build and submit to Google Play internal track"
   lane :beta do
     build_and_submit(track: "internal")
+  end
+
+  # Closed testing. NOT one of the pre-authorized beta lanes: Google reviews a
+  # closed-testing release before testers get it, and the tester list is wider
+  # than internal. Run it when the operator asks for it.
+  desc "Build and submit to Google Play closed testing (alpha) track"
+  lane :alpha do
+    build_and_submit(track: "alpha")
   end
 
   desc "Build and submit to Google Play production track"
@@ -679,13 +724,15 @@ platform :android do
     # without it (JEP 472). Every JDK in the supported range accepts the flag.
     ENV["_JAVA_OPTIONS"] = "--enable-native-access=ALL-UNNAMED"
 
-    # Auto-increment version code from store
-    latest_codes = google_play_track_version_codes(
-      package_name: PACKAGE_NAME,
-      track: track,
-      json_key: json_key_path
-    )
-    next_code = (latest_codes.max || 0) + 1
+    # Pick the version code from the store, across every track, as late as it
+    # can be: it is baked into the AAB, and nothing serialises Android lanes
+    # across machines (a factory beta on the Mac mini, a manual lane here). A
+    # lane that uploads the same code first makes this upload fail with Play's
+    # "version code already used" error, and a re-run takes the next code. So
+    # it is read after prebuild, leaving only the Gradle build and the upload
+    # for another lane to land in, and still before Gradle, so an unreadable
+    # track never costs a Gradle bundle.
+    next_code = next_play_version_code
     android_set_version_code(
       gradle_file: File.join(PROJECT_ROOT, "android", "app", "build.gradle"),
       version_code: next_code
@@ -709,18 +756,32 @@ platform :android do
       skip_upload_screenshots: true
     )
 
-    # Post release notes
-    post_release_notes(platform: "android", max_chars: 500)
+    # Post release notes to the track this build went to. Not on production:
+    # see PlayRelease.posts_release_notes?.
+    if PlayRelease.posts_release_notes?(track)
+      post_release_notes(
+        platform: "android", max_chars: 500, track: track, tag_globs: PlayRelease.notes_tag_globs(track)
+      )
+    else
+      UI.important("Production 'What's new' is not generated: write it on the production " \
+                   "release in the Play Console")
+    end
 
     # Phase G: comment "Now live" on closed support issues for this build.
-    # Track label distinguishes internal-track beta from production for the
-    # customer-facing email (TestFlight is iOS-only — Android beta is the
-    # Play "internal" track).
-    track_label =
-      track == "production" ? "Google Play (build #{next_code})" : "Google Play internal track (build #{next_code})"
-    comment_released_issues(platform: "android", build: next_code, track: track_label)
+    # Track label distinguishes internal-track beta, closed testing and
+    # production for the customer-facing email (TestFlight is iOS-only —
+    # Android beta is the Play "internal" track). Closed testing (alpha) does
+    # not announce: see PlayRelease.announces_release?.
+    track_label = PlayRelease.track_label(track, next_code)
+    if PlayRelease.announces_release?(track)
+      comment_released_issues(platform: "android", build: next_code, track: track_label)
+    else
+      UI.message("#{track_label} — no customer 'now live' notice: closed-testing testers are a hand-picked list")
+    end
     comment_intest_build(platform: "android", build: next_code, track: track_label)
-    tag_release(platform: "android", build: next_code)
+    # Tagged so the next build's notes start here. Closed testing uses its own
+    # prefix (PlayRelease.tag_prefix) so it only anchors its own next notes.
+    tag_release(platform: "android", build: next_code, prefix: PlayRelease.tag_prefix(track))
   end
 end
 

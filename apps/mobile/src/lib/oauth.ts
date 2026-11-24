@@ -124,6 +124,24 @@ export async function signInWithGoogle(): Promise<{ error: string | null }> {
   }
 }
 
+/**
+ * Ends the native Google Sign-In session on this device, so the next "Continue with Google" opens
+ * the account chooser instead of silently reusing the last account (PrimeTestLab 11035 M-03).
+ * Supabase's sign-out does not touch it: Google Sign-In keeps its own session in the OS.
+ *
+ * Best-effort and never throws: a user who never used Google, an unconfigured client or a native
+ * failure must not stop a Drafto sign-out or account deletion. Only the native code and message
+ * are logged, under the same greppable prefix as sign-in failures.
+ */
+export async function signOutOfGoogle(): Promise<void> {
+  try {
+    await GoogleSignin.signOut();
+  } catch (err) {
+    const { code, message } = nativeErrorDetails(err);
+    console.warn("[oauth][google] sign-out failed", { code, message });
+  }
+}
+
 export async function signInWithApple(): Promise<{ error: string | null }> {
   if (Platform.OS === "ios") {
     return signInWithAppleNative();
