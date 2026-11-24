@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, StyleSheet } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { DEFAULT_STORAGE_QUOTA_BYTES, storageFullMessage } from "@drafto/shared";
 
-import { render, fireEvent, waitFor } from "../helpers/test-utils";
+import { render, fireEvent, waitFor, act } from "../helpers/test-utils";
 import { AttachmentPicker } from "@/components/editor/attachment-picker";
 import { semanticDark, semanticLight } from "@/theme/tokens";
 import type { Attachment } from "@/db";
@@ -291,9 +291,16 @@ describe("AttachmentPicker", () => {
       };
     }
 
-    it("tints the buttons with the subtle accent tokens in light mode", () => {
-      mockSecureStore.getItemAsync.mockResolvedValue(null);
+    it("tints the buttons with the subtle accent tokens in light mode", async () => {
+      mockSecureStore.getItemAsync.mockResolvedValue("light");
       const utils = render(<AttachmentPicker noteId="note-1" />);
+
+      // Let the ThemeProvider's SecureStore read resolve and apply the stored
+      // preference (inside act) before asserting, as the dark-mode tests do.
+      await waitFor(() => expect(mockSecureStore.getItemAsync).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await mockSecureStore.getItemAsync.mock.results[0].value;
+      });
 
       expect(buttonColors(utils)).toEqual({
         background: semanticLight.accentSubtleBg,

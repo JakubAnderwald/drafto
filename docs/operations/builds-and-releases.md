@@ -510,11 +510,17 @@ in valid state` and `You must provide a value for the attribute 'whatsNew'`.
 > precheck before it submits, at `deliver`'s default `:warn` rule level, so
 > precheck's findings print as warnings and never stop the submission. Since
 > fastlane 2.242.0, `deliver` skips the submission without raising if precheck
-> does block, which only happens if someone raises the rule level to `:error`.
-> So after every submitting upload (`promote`, and `production submit:true`, on
-> iOS and macOS) the lane asks App Store Connect for the review submission
-> (`assert_submitted_for_review!`). If there is none, it fails with "was NOT
-> submitted for review"; the `deliver` output above that line says why. On
+> does block, which only happens if someone raises the rule level to `:error`:
+> in a lane, or by exporting `DELIVER_PRECHECK_DEFAULT_RULE_LEVEL=error` in the
+> environment the lane runs in. So after every submitting upload (`promote`,
+> and `production submit:true`, on iOS and macOS) the lane asks App Store
+> Connect for a review submission for that version on that platform
+> (`assert_submitted_for_review!`), checking up to four times a few seconds
+> apart. A submission for another version, such as an older rejected one,
+> doesn't count. If App Store Connect answers and has none, the lane fails with
+> "was NOT submitted for review"; the `deliver` output above that line says
+> why. If the lookup itself fails, the lane only warns and names the version to
+> check in App Store Connect. On
 > macOS, precheck checks the iOS version of the shared `eu.drafto.mobile` app,
 > because `deliver` passes it no platform when it signs in with an API key.
 

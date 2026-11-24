@@ -663,8 +663,41 @@ describe("App Store promote lanes", () => {
       );
       const helper = src.slice(src.indexOf("def assert_submitted_for_review!("));
       const helperBody = helper.slice(0, helper.indexOf("\nend\n"));
-      assert.match(helperBody, /get_in_progress_review_submission\(platform: platform\)/);
+      // Polls before deciding, warns (never fails) when it could not look, and
+      // fails only when App Store Connect answered without this version.
+      assert.match(helperBody, /attempts\.times do \|attempt\|/);
+      assert.match(helperBody, /sleep\(interval_seconds\) if attempt\.positive\?/);
+      assert.match(
+        helperBody,
+        /review_submission_for_version\(platform: platform, app_identifier: app_identifier, app_version: app_version\)/,
+      );
+      assert.match(helperBody, /if lookup\[:error\]\r?\n\s+UI\.important\(/);
       assert.match(helperBody, /UI\.user_error!\(/);
+      assert.ok(
+        helperBody.indexOf("UI.important(") < helperBody.indexOf("UI.user_error!("),
+        "an unverifiable lookup must warn and return before the hard stop",
+      );
+
+      // Any in-progress submission is not enough (UNRESOLVED_ISSUES matches a
+      // stale rejected one): the lookup must match this version and platform,
+      // and count only a submission waiting for or in review.
+      const lookupStart = src.indexOf(
+        "def review_submission_for_version(platform:, app_identifier:, app_version:)",
+      );
+      assert.notEqual(lookupStart, -1, "review_submission_for_version is not defined");
+      const lookupFn = src.slice(lookupStart);
+      const lookupBody = lookupFn.slice(0, lookupFn.indexOf("\nend\n"));
+      assert.match(lookupBody, /includes: "appStoreVersionForReview"/);
+      assert.match(lookupBody, /submission\.app_store_version_for_review/);
+      assert.match(lookupBody, /v\.version_string == app_version && v\.platform == platform/);
+      assert.match(
+        lookupBody,
+        /\[state::WAITING_FOR_REVIEW, state::IN_REVIEW\]\.include\?\(submission\.state\)/,
+      );
+      assert.match(lookupBody, /submission\.platform == platform/);
+      assert.match(lookupBody, /return \{ error: .* \} unless app/);
+      assert.match(lookupBody, /rescue StandardError => e/);
+      assert.doesNotMatch(lookupBody, /get_in_progress_review_submission/);
     });
 
     it(`${f.path} answers the IDFA / encryption / content-rights questions`, () => {

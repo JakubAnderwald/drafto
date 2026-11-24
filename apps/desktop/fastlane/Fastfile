@@ -617,7 +617,8 @@ def apply_appstore_release_settings(asc_platform:, app_identifier:, app_version:
 end
 
 # Hard stop unless App Store Connect now holds a review submission for this
-# platform. Call it right after an upload_to_app_store that asked to submit.
+# version on this platform. Call it right after an upload_to_app_store that
+# asked to submit.
 #
 # A defence-in-depth postcondition: upload_to_app_store returning normally does
 # not by itself prove deliver submitted anything. Runner#run ends with
@@ -628,35 +629,111 @@ end
 # blocking precheck violation skips SubmitForReview without raising.
 #
 # At this repo's settings precheck never blocks. deliver hands precheck its own
-# precheck_default_rule_level, which defaults to :warn
-# (deliver/lib/deliver/options.rb:350-355); no lane overrides it and there is no
-# Precheckfile, so every failed rule lands in warning_results
-# (precheck/lib/precheck/rule_processor.rb:95-96), BlockingViolationError is never
-# raised, and precheck's findings print as warnings while the submission goes
-# ahead (2.232.2 behaved the same). The check matters only if someone raises the
-# rule level to :error, or if deliver ever returns without submitting for another
-# reason: without it the lane would then report "submitted for review" and exit
-# 0 for a version still sitting in Prepare for Submission.
+# precheck_default_rule_level, which defaults to :warn and can also be set
+# through the DELIVER_PRECHECK_DEFAULT_RULE_LEVEL env var
+# (deliver/lib/deliver/options.rb:350-355). No lane passes it, nothing here
+# exports that variable, and there is no Precheckfile, so every failed rule lands
+# in warning_results (precheck/lib/precheck/rule_processor.rb:95-96),
+# BlockingViolationError is never raised, and precheck's findings print as
+# warnings while the submission goes ahead (2.232.2 behaved the same). The check
+# matters only if someone raises the rule level to :error (in a lane, or by
+# exporting DELIVER_PRECHECK_DEFAULT_RULE_LEVEL=error in the environment the lane
+# runs in), or if deliver ever returns without submitting for another reason:
+# without it the lane would then report "submitted for review" and exit 0 for a
+# version still sitting in Prepare for Submission.
 #
 # With an API key deliver passes precheck no platform (runner.rb:95-105), so
 # precheck falls back to "ios" (precheck/lib/precheck/options.rb:80-88): on the
 # shared eu.drafto.mobile App Store Connect app, these mac lanes' precheck
 # warnings are about the iOS version, not the macOS one.
 #
-# get_in_progress_review_submission is the call deliver's own SubmitForReview
-# makes (WAITING_FOR_REVIEW, IN_REVIEW or UNRESOLVED_ISSUES), and
-# ReviewSubmission#submit_for_review is synchronous, so a submission deliver
-# made is already visible here.
+# What counts: a submission for this platform that is WAITING_FOR_REVIEW or
+# IN_REVIEW and whose app store version is `app_version` on this platform. Any
+# in-progress submission is not enough: the in-progress states deliver checks
+# (App#get_in_progress_review_submission) include UNRESOLVED_ISSUES, so an older,
+# rejected submission would otherwise pass. The version comes from the
+# submission's appStoreVersionForReview relationship (fetched with
+# `includes: "appStoreVersionForReview"`), or, if App Store Connect leaves that
+# empty, from its items' appStoreVersion.
+#
+# ReviewSubmission#submit_for_review is synchronous, so a submission deliver made
+# should already be visible, but the guard still polls a few times before it
+# decides there is none. A lookup that errors or cannot find the app is "could
+# not verify": deliver already returned without raising, so that only warns and
+# names what to check in App Store Connect. The lane fails only when App Store
+# Connect answers and still has no submission for this version.
 def assert_submitted_for_review!(asc_platform:, app_identifier:, app_version:)
   platform = Spaceship::ConnectAPI::Platform.map(asc_platform)
-  app = Spaceship::ConnectAPI::App.find(app_identifier)
-  return if app&.get_in_progress_review_submission(platform: platform)
+  attempts = 4
+  interval_seconds = 5
+  lookup = nil
 
+  attempts.times do |attempt|
+    sleep(interval_seconds) if attempt.positive?
+    lookup = review_submission_for_version(platform: platform, app_identifier: app_identifier, app_version: app_version)
+    if lookup[:matched]
+      UI.success("App Store Connect has #{app_identifier} #{app_version} (#{asc_platform}) in review submission #{lookup[:matched].id} (#{lookup[:matched].state})")
+      return
+    end
+    UI.message("Review submission for #{app_identifier} #{app_version} (#{asc_platform}) not confirmed yet (attempt #{attempt + 1}/#{attempts})") if attempt < attempts - 1
+  end
+
+  if lookup[:error]
+    UI.important(
+      "Could not verify that #{app_identifier} #{app_version} (#{asc_platform}) was submitted for review: " \
+      "#{lookup[:error]}. upload_to_app_store returned without an error, so the lane carries on. Check " \
+      "App Store Connect → Apps → #{app_identifier} → #{asc_platform} version #{app_version}: it should read " \
+      "Waiting for Review. If it still reads Prepare for Submission, submit it there or re-run the lane."
+    )
+    return
+  end
+
+  others = lookup[:others].empty? ? "none" : lookup[:others].join(", ")
   UI.user_error!(
-    "#{app_identifier} #{app_version} (#{asc_platform}) was NOT submitted for review: App Store " \
-    "Connect has no review submission waiting for or in review after upload_to_app_store returned. " \
-    "Check the deliver output above for why the submission did not happen, then re-run."
+    "#{app_identifier} #{app_version} (#{asc_platform}) was NOT submitted for review: after " \
+    "upload_to_app_store returned, App Store Connect has no review submission waiting for or in review " \
+    "for this version (other in-progress submissions on this platform: #{others}). Check the deliver " \
+    "output above, then re-run."
   )
+end
+
+# One App Store Connect lookup for assert_submitted_for_review!. Returns
+# { matched: <ReviewSubmission> } when a WAITING_FOR_REVIEW / IN_REVIEW
+# submission on `platform` is for `app_version`, { others: [...] } describing the
+# platform's other in-progress submissions when none is, and { error: "..." }
+# when the lookup itself failed.
+def review_submission_for_version(platform:, app_identifier:, app_version:)
+  app = Spaceship::ConnectAPI::App.find(app_identifier)
+  return { error: "App Store Connect returned no app for #{app_identifier}" } unless app
+
+  state = Spaceship::ConnectAPI::ReviewSubmission::ReviewSubmissionState
+  submissions = app.get_review_submissions(
+    filter: {
+      state: [state::WAITING_FOR_REVIEW, state::IN_REVIEW, state::UNRESOLVED_ISSUES].join(","),
+      platform: platform
+    },
+    includes: "appStoreVersionForReview"
+  )
+
+  others = []
+  submissions.each do |submission|
+    versions = [submission.app_store_version_for_review].compact
+    if versions.empty?
+      versions = Spaceship::ConnectAPI::ReviewSubmissionItem
+                 .all(review_submission_id: submission.id, includes: "appStoreVersion")
+                 .map(&:app_store_version)
+                 .compact
+    end
+    for_this_version = versions.any? { |v| v.version_string == app_version && v.platform == platform }
+    submitted = [state::WAITING_FOR_REVIEW, state::IN_REVIEW].include?(submission.state)
+    return { matched: submission } if for_this_version && submission.platform == platform && submitted
+
+    labels = versions.map(&:version_string).join("/")
+    others << "#{labels.empty? ? 'unknown version' : labels} #{submission.state}"
+  end
+  { others: others }
+rescue StandardError => e
+  { error: "the review submission lookup failed (#{e.class}: #{e.message})" }
 end
 
 # Uploads ./fastlane/screenshots/<locale>/*.png to the App Store version that is
