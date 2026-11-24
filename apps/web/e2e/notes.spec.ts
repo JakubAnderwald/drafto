@@ -175,6 +175,36 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Hello from E2E test")).toBeVisible({ timeout: 5000 });
   });
 
+  test("a title typed just before a reload is saved by the page-hide flush", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+    const activeNotebook = await getActiveNotebookName(page);
+
+    await page.getByRole("button", { name: "New note", exact: true }).click();
+    const titleInput = page.getByRole("textbox", { name: "Note title" });
+    await expect(titleInput).toBeVisible({ timeout: 5000 });
+    await expect(titleInput).toHaveValue("");
+
+    // Reload straight away, inside the 500 ms autosave debounce: only the flush on
+    // `pagehide` can save this title.
+    const noteTitle = `E2E Reload Flush ${Date.now()}`;
+    await titleInput.fill(noteTitle);
+    await page.reload();
+
+    // The keepalive PATCH may land just after the reloaded page fetches its list, so
+    // reload until the row shows up.
+    let attempt = 0;
+    await expect(async () => {
+      if (attempt++ > 0) await page.reload();
+      await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({
+        timeout: 10000,
+      });
+      await selectNotebookByName(page, activeNotebook);
+      await expect(page.getByText(noteTitle)).toBeVisible({ timeout: 3000 });
+    }).toPass({ timeout: 20000, intervals: [500, 1000, 2000] });
+  });
+
   test("move a note between notebooks", async ({ page }, testInfo) => {
     // The note starts in a notebook made for this test. One picked from the sidebar
     // can be gone after the reload below: the e2e account can hold more notebooks than
