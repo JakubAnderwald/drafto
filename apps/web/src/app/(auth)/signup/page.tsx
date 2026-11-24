@@ -91,7 +91,7 @@ export default function SignupPage() {
         <p className="text-fg-muted mb-6">{SIGNUP_CONFIRMATION_SENT}</p>
         <Link
           href="/login"
-          className="text-primary-600 hover:text-primary-700 transition-colors duration-[var(--transition-fast)] hover:underline"
+          className="ui-link transition-colors duration-[var(--transition-fast)] hover:underline"
         >
           Back to login
         </Link>
@@ -166,7 +166,7 @@ export default function SignupPage() {
         Already have an account?{" "}
         <Link
           href="/login"
-          className="text-primary-600 hover:text-primary-700 transition-colors duration-[var(--transition-fast)] hover:underline"
+          className="ui-link transition-colors duration-[var(--transition-fast)] hover:underline"
         >
           Log in
         </Link>

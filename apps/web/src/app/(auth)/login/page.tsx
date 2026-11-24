@@ -138,7 +138,7 @@ export default function LoginPage() {
           Don&apos;t have an account?{" "}
           <Link
             href="/signup"
-            className="text-primary-600 hover:text-primary-700 transition-colors duration-[var(--transition-fast)] hover:underline"
+            className="ui-link transition-colors duration-[var(--transition-fast)] hover:underline"
           >
             Sign up
           </Link>
@@ -146,7 +146,7 @@ export default function LoginPage() {
         <p className="mt-2">
           <Link
             href="/forgot-password"
-            className="text-primary-600 hover:text-primary-700 transition-colors duration-[var(--transition-fast)] hover:underline"
+            className="ui-link transition-colors duration-[var(--transition-fast)] hover:underline"
           >
             Forgot your password?
           </Link>

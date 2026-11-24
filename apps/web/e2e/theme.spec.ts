@@ -5,7 +5,8 @@ import { test, expect } from "./helpers/test";
  * The browser chrome follows the in-app theme, not the OS (#865): `color-scheme` on `<html>`
  * (form controls, scroll bars) and `<meta name="theme-color">` (the mobile address and status
  * bars). So does Tailwind's `dark:` variant (#901), checked through the `/login` wordmark, whose
- * dark colour is a `dark:` utility. Each case sets the OS to the opposite of the stored theme,
+ * dark colour is a `dark:` utility, and through its "Sign up" link, whose `.ui-link` colour is too
+ * (#910). Each case sets the OS to the opposite of the stored theme,
  * so a page that followed the OS would fail it. Signed out on /login, whose layout has the theme
  * toggle.
  */
@@ -15,6 +16,11 @@ const LIGHT = { colorScheme: "light", themeColor: "#fff8f5" } as const;
 const DARK = { colorScheme: "dark", themeColor: "#1f1b17" } as const;
 /** `.brand-wordmark`: `text-primary-600`, and `dark:text-primary-300` under `.dark`. */
 const WORDMARK = { light: "rgb(53, 37, 205)", dark: "rgb(148, 120, 255)" } as const;
+/** `.ui-link` (#910): primary-600/700 in light mode, primary-300/200 under `.dark`. */
+const UI_LINK = {
+  light: { rest: "rgb(53, 37, 205)", hover: "rgb(40, 25, 168)" },
+  dark: { rest: "rgb(148, 120, 255)", hover: "rgb(184, 164, 255)" },
+} as const;
 
 declare global {
   interface Window {
@@ -73,6 +79,12 @@ for (const { stored, os, expected } of CASES) {
       expect(await chrome(page)).toEqual(expected);
       expect(await wordmarkColor(page)).toBe(WORDMARK[expected.colorScheme]);
       await expect(page.locator('meta[name="theme-color"]')).toHaveCount(1);
+
+      // The link has a 150 ms colour transition, so the retrying toHaveCSS reads it.
+      const signUp = page.getByRole("link", { name: "Sign up" });
+      await expect(signUp).toHaveCSS("color", UI_LINK[expected.colorScheme].rest);
+      await signUp.hover();
+      await expect(signUp).toHaveCSS("color", UI_LINK[expected.colorScheme].hover);
     });
   });
 }

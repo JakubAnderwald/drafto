@@ -64,6 +64,7 @@ Text-heavy pages written as plain HTML (`/privacy`, `/support`, `/account/delete
 - **Tables:** below the `sm` breakpoint, table rows stack into cards, and each cell is labelled from its `data-label` attribute. `display: block` can strip table semantics in WebKit, so a table that stacks also carries explicit ARIA roles (`role="table"`, `"rowgroup"`, `"row"`, `"columnheader"`, `"cell"`).
 - **Callouts and boxes:** use the `Card` primitive, not a hand-rolled `bg-bg-subtle` box.
 - **Links outside `.doc-prose`:** give them the same look with `.doc-link`. It sets lighter `dark:` colours, because `text-primary-600` is unreadable on the dark surfaces.
+- **Links that set their own underline:** use `.ui-link` (the auth and admin pages: `ui-link hover:underline`). It sets only the colour, the same pair as `.doc-link` (`primary-600`, `primary-700` on hover; `primary-300`, `primary-200` on hover in dark mode), so the call site keeps its own underline, size and transition utilities. Don't add a colour utility next to it: utilities override the `components` layer.
 
 Utility classes on an element override these styles, because `.doc-prose` sits in the `components` cascade layer.
 
@@ -80,6 +81,7 @@ Within `className` string and template literals, the web rule blocks:
 - **Raw Tailwind greys** — `bg-gray-*`, `text-slate-*`, `bg-stone-*`, `bg-zinc-*`, `bg-neutral-*` and their `border-/from-/to-/ring-/divide-/placeholder-/…` cousins. Use semantic tokens (`bg-bg`, `text-fg-muted`, `border-border`) or a palette scale class (`bg-primary-500`) that is defined in `globals.css`.
 - **Arbitrary color values** — `bg-[#...]`, `text-[#...]`, `border-[#...]`, `from-[#...]`, `to-[#...]`, `shadow-[rgb(...)]`, etc. Use a scale token. Arbitrary values that reference a CSS variable (`bg-[var(--surface-glass)]`) are still allowed.
 - **Arbitrary shadow/radius values** — `shadow-[0_0_10px_red]`, `rounded-[17px]`. Use the system shadows (`shadow-sm`, `shadow-md`) and radii (`rounded-md`, `rounded-lg`). CSS-variable-driven values (`shadow-[var(--shadow-glow)]`) remain allowed.
+- **A bare `text-primary-600`** — one with no `dark:text-*` colour in the same string, because the scale colours don't follow the theme and it stays deep indigo on the dark surfaces. Use `.ui-link` (or `.doc-link`) for a link, or add a `dark:text-*` partner. Only a colour counts as a partner: `dark:text-sm`, `dark:text-center`, an arbitrary size like `dark:text-[14px]` and the other `text-*` utilities that aren't colours don't, and neither does a `dark:text-${…}` whose value comes from an expression. The partner must also apply at rest, so a longer variant chain such as `hover:dark:text-primary-300` or `md:dark:text-primary-300` doesn't count. The rule reads one string, or one template literal as a whole, at a time, so a `dark:` partner in a different `cn()` argument needs a suppression comment. Every variant-prefixed use is skipped, not only state ones: `hover:text-primary-600`, but also `md:text-primary-600` and `[&_a]:text-primary-600`. Give those a `dark:` partner by hand.
 
 ### Mobile + desktop (`apps/mobile/eslint.config.mjs`, `apps/desktop/eslint.config.mjs`)
 

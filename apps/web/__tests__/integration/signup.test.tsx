@@ -63,6 +63,8 @@ describe("Signup page", () => {
     });
 
     expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("link", { name: "Log in" })).toHaveClass("ui-link");
+    expect(screen.getByRole("link", { name: "Log in" })).not.toHaveClass("text-primary-600");
   });
 
   it("shows validation for required email", async () => {
@@ -111,6 +113,8 @@ describe("Signup page", () => {
     expect(screen.getByText("new@example.com")).toBeInTheDocument();
     expect(screen.getByText(SIGNUP_CONFIRMATION_SENT)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to login" })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("link", { name: "Back to login" })).toHaveClass("ui-link");
+    expect(screen.getByRole("link", { name: "Back to login" })).not.toHaveClass("text-primary-600");
     // The form is gone, so it cannot send a second email.
     expect(screen.queryByRole("button", { name: "Sign up" })).not.toBeInTheDocument();
     expect(mockPush).not.toHaveBeenCalled();

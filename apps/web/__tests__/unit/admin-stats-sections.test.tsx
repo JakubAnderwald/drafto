@@ -236,6 +236,13 @@ describe("limit levels", () => {
       "href",
       "https://vercel.com/x/~/usage",
     );
+    expect(screen.getByRole("link", { name: "See the Vercel usage page" })).toHaveClass(
+      "ui-link",
+      "underline",
+    );
+    expect(screen.getByRole("link", { name: "See the Vercel usage page" })).not.toHaveClass(
+      "text-primary-600",
+    );
   });
 });
 

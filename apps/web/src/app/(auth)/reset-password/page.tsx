@@ -87,7 +87,7 @@ export default function ResetPasswordPage() {
       <p className="text-fg-muted mt-4 text-center text-sm">
         <Link
           href="/login"
-          className="text-primary-600 hover:text-primary-700 transition-colors duration-[var(--transition-fast)] hover:underline"
+          className="ui-link transition-colors duration-[var(--transition-fast)] hover:underline"
         >
           Back to login
         </Link>

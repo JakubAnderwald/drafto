@@ -314,6 +314,16 @@ body {
   }
 
   /*
+   * `.ui-link` sets only a link's colour, the same pair as `.doc-link`, for links that set their
+   * own underline, size and transition (the auth and admin pages). The scale colours don't change
+   * with the theme, so a bare `text-primary-600` link stays deep indigo on the dark surfaces; the
+   * web lint rule rejects one without a `dark:text-*` partner.
+   */
+  .ui-link {
+    @apply text-primary-600 hover:text-primary-700 dark:text-primary-300 dark:hover:text-primary-200;
+  }
+
+  /*
    * The signed-out pages (the landing page and the (auth) group) sit on `.brand-backdrop`, with
    * the Drafto name in `.brand-wordmark`. The primary-50/secondary-50 tints and primary-600 don't
    * change in dark mode, where `text-fg` and `text-fg-muted` turn light, so each rule sets

@@ -46,6 +46,8 @@ describe("Reset password page", () => {
     });
 
     expect(screen.getByRole("link", { name: "Back to login" })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("link", { name: "Back to login" })).toHaveClass("ui-link");
+    expect(screen.getByRole("link", { name: "Back to login" })).not.toHaveClass("text-primary-600");
   });
 
   it("calls updateUser and navigates on success", async () => {

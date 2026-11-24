@@ -83,7 +83,7 @@ export default async function AdminPage() {
         <div className="flex items-center gap-4">
           <Link
             href="/admin/stats"
-            className="text-primary-600 hover:text-primary-700 text-sm font-medium underline-offset-4 hover:underline"
+            className="ui-link text-sm font-medium underline-offset-4 hover:underline"
           >
             Product metrics
           </Link>
