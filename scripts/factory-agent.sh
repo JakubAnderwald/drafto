@@ -2657,9 +2657,16 @@ build_watch_bundle() {
 }
 
 # Build the factory_review bundle for the code-review stage. $2 approved-plan
-# obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list, $6 head SHA.
+# obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list, $6 head SHA,
+# $7 the PR's file listing (pr_file_stats; "" when it couldn't be fetched).
 # Deliberately carries no comment thread — the reviewer judges the diff, not the
 # conversation about it.
+#
+# The diff and the file lists reach jq through files (--rawfile), never argv: a
+# diff of about 1 MB or more passed with --arg made jq's exec fail with E2BIG
+# (macOS's ARG_MAX). factory-bundle.mjs then decides
+# whether the reviewer gets the diff inline or the file list (reviewDiffMode),
+# so truncateDiff's limits live in one place.
 build_review_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -2667,14 +2674,20 @@ build_review_bundle() {
   local pr_diff="${4:-}"
   local pr_files="${5:-}"
   local head_sha="${6:-}"
-  local repo_head_ref
+  local pr_file_stats="${7:-}"
+  local repo_head_ref tmp_dir rc=0
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  tmp_dir=$(mktemp -d -t factory-review-bundle.XXXXXX) || return 1
+  printf '%s' "$pr_diff" >"$tmp_dir/diff"
+  printf '%s' "$pr_files" >"$tmp_dir/files"
+  printf '%s' "$pr_file_stats" >"$tmp_dir/stats"
   jq -n \
     --argjson issue "$issue_entry" \
     --argjson plan "$approved_plan" \
     --argjson priorPr "$prior_pr" \
-    --arg prDiff "$pr_diff" \
-    --arg prFiles "$pr_files" \
+    --rawfile prDiff "$tmp_dir/diff" \
+    --rawfile prFiles "$tmp_dir/files" \
+    --rawfile prFileStats "$tmp_dir/stats" \
     --arg headSha "$head_sha" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
@@ -2693,6 +2706,7 @@ build_review_bundle() {
        priorPr: $priorPr,
        prDiff: $prDiff,
        prFiles: $prFiles,
+       prFileStats: $prFileStats,
        headSha: $headSha,
        config: {
          phase: $phase,
@@ -2701,7 +2715,9 @@ build_review_bundle() {
        },
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
      }' \
-    | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+    | node "$SCRIPT_DIR/lib/factory-bundle.mjs" || rc=$?
+  rm -rf "$tmp_dir"
+  return "$rc"
 }
 
 # Build the factory_intest bundle for the In Review → In Test hand-off. $2
@@ -6934,8 +6950,8 @@ plan_probe_browser_run() {
 # $1 issue, $2 pr-num, $3 pr obj, $4 head sha, $5 changed files.
 review_stage() {
   local issue_num="$1" pr_num="$2" pr_obj="$3" head_sha="$4" diff_files="$5"
-  local issue_record comments_json plan_json pr_diff bundle claude_input
-  local out_file start_iso exit_code=0
+  local issue_record comments_json plan_json pr_diff file_stats bundle claude_input
+  local review_mode out_file start_iso exit_code=0
 
   # Every DETERMINISTIC failure below records the SHA before returning. Skipping
   # the record would leave lastReviewSha != headRefOid forever: the caller
@@ -6958,18 +6974,29 @@ review_stage() {
   [[ -n "$comments_json" ]] || comments_json="[]"
   plan_json=$(extract_plan_comment "$comments_json")
   [[ -n "$plan_json" ]] || plan_json="null"
+  # The file listing is fetched every time, whatever the diff's size: the
+  # bundle, not bash, decides whether the reviewer gets the diff inline or this
+  # list. `gh pr diff` fails with HTTP 406 on a diff over 300 files or 20,000
+  # lines; the listing still works then, so that PR is reviewed from the list.
   pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
-  if [[ -z "$pr_diff" ]]; then
+  # A listing cut short by a failed page is dropped, not half-used.
+  file_stats=""
+  if ! file_stats=$(pr_file_stats "$pr_num"); then file_stats=""; fi
+  if [[ -z "$pr_diff" && -z "$file_stats" ]]; then
     log "WARNING: empty diff for PR #$pr_num; skipping review"
     review_record_sha "$issue_num" "$head_sha"
     return 0
   fi
 
   if ! bundle=$(build_review_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
-      "$diff_files" "$head_sha"); then
+      "$diff_files" "$head_sha" "$file_stats"); then
     log "ERROR: build_review_bundle failed for #$issue_num; skipping review"
     review_record_sha "$issue_num" "$head_sha"
     return 0
+  fi
+  review_mode=$(printf '%s' "$bundle" | jq -r '.reviewDiffMode // "inline"' 2>/dev/null || echo "inline")
+  if [[ "$review_mode" == "file-list" ]]; then
+    log "Issue #$issue_num: PR #$pr_num's diff is too large to send inline; reviewing in file-list mode ($(printf '%s' "$bundle" | jq -r '(.prFileStats | length) + (.prFileStatsOmitted // 0)' 2>/dev/null || echo '?') files)"
   fi
 
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
@@ -6978,8 +7005,11 @@ review_stage() {
   out_file=$(mktemp -t factory-agent-review.XXXXXX)
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
-  ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "${FACTORY_MODEL:-opus[1m]}" ) \
+  # The prompt goes in on stdin, not argv, as in run_browser_task: an inline
+  # diff of up to 200 KB or a long file list would otherwise ride in one argv
+  # element, and exec fails with E2BIG once the whole prompt passes ARG_MAX.
+  ( cd "$REPO_ROOT" && printf '%s' "$claude_input" | CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "${FACTORY_MODEL:-opus[1m]}" ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -7058,6 +7088,18 @@ review_record_sha() {
   [[ -n "$head_sha" ]] || return 0
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
     lastReviewSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# Print PR <pr-num>'s changed files as `status<TAB>path<TAB>additions<TAB>
+# deletions` lines, from the REST files endpoint, paginated. That endpoint lists
+# up to 3000 files and never refuses a large diff, where `gh pr diff` (with or
+# without --name-only) fails with HTTP 406 on a diff over 300 files or 20,000
+# lines, and `gh pr view --json files` stops at 100. Same call as
+# claimedVersions in lib/migration-renumber.mjs. Non-zero when the call fails.
+pr_file_stats() {
+  local pr_num="$1"
+  gh api --paginate "repos/JakubAnderwald/drafto/pulls/$pr_num/files" \
+    --jq '.[]|[.status,.filename,.additions,.deletions]|@tsv' 2>>"$LOG_FILE"
 }
 
 # Does PR <pr-num>'s conversation carry <marker>? The PR-comment analogue of
@@ -10657,7 +10699,14 @@ A human should take a look. Reset with \
     # Required CI green. The changed files decide what "testable" even means
     # here, so fetch them once and derive the platforms.
     if ! INTEST_DIFF_FILES=$(gh pr diff "$PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
-      log "WARNING: gh pr diff #$PR_NUM failed (transient?); skipping this tick"; continue
+      # --name-only still fetches the whole diff, so a diff GitHub finds too
+      # large (HTTP 406: over 300 files or 20,000 lines) fails here on every
+      # tick and the card never reaches its code review. The files endpoint has
+      # no such limit; only when it fails too is this a transient skip.
+      if ! INTEST_DIFF_FILES=$(pr_file_stats "$PR_NUM" | cut -f2) || [[ -z "$INTEST_DIFF_FILES" ]]; then
+        log "WARNING: gh pr diff #$PR_NUM failed (transient?); skipping this tick"; continue
+      fi
+      log "Issue #$ISSUE_NUM: gh pr diff refused PR #$PR_NUM's diff (too large?); took its changed files from the files API"
     fi
     INTEST_PLATFORMS=$(printf '%s\n' "$INTEST_DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo '{}')
     WEB_TOUCHED=$(echo "$INTEST_PLATFORMS" | jq -r '.web // false' 2>/dev/null || echo "false")
