@@ -219,7 +219,7 @@ flow below and do this instead, then emit the directive line (step 7):
 
    Rows of `docs/adr/README.md` don't conflict: bash merges it with git's union
    driver, which keeps every line either side wrote, and puts the rows in number
-   order when it can (ADR-0103). It does that only when the two sides clash on
+   order when it can (ADR-0105). It does that only when the two sides clash on
    index rows alone. When both also changed another line (the intro, a note,
    or the table header a re-padded table rewrites), the README is in
    `mergeConflict.conflictedFiles` with ordinary conflict markers: settle the

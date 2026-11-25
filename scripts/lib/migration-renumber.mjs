@@ -1036,7 +1036,7 @@ function runGh(args, { timeoutMs = ghTimeoutMs(), cwd } = {}) {
 }
 
 // A claim's path: a `<version>_<name>.sql` file directly under the migrations
-// directory. The ADR sweep (adr-allocate.mjs, ADR-0103) passes its own.
+// directory. The ADR sweep (adr-allocate.mjs, ADR-0105) passes its own.
 const CLAIM_PATH_RE = /^supabase\/migrations\/\d+_[^/]+\.sql$/;
 // The files API statuses that put a version in use: a new file, or a rename's
 // new name. A PR that edits or deletes one of main's migrations claims nothing.
@@ -1055,7 +1055,7 @@ const CLAIM_STATUSES = new Set(["added", "renamed"]);
 // pr list` throws. Once `deadline` (a `now()` time) passes, no more PRs are
 // read: `gaveUp` is true and `checked` of `total` PRs were read. `pathRe`,
 // `what` and `who` (the warning's prefix) sweep other files the same way:
-// adr-allocate.mjs passes docs/adr's numbered ADRs (ADR-0103).
+// adr-allocate.mjs passes docs/adr's numbered ADRs (ADR-0105).
 export function claimedVersions({
   excludePr,
   gh = runGh,
@@ -1371,7 +1371,7 @@ const SWEEP_GH_BUDGET_MS = 60_000;
 // SWEEP_GH_TIMEOUT_MS and what's left of the budget; past it no more PRs are
 // read and the result has gaveUp. An injected `gh` (tests) skips the per-call
 // cap but not the deadline. `pathRe`, `what` and `who` pass through to
-// claimedVersions (the ADR sweep, ADR-0103).
+// claimedVersions (the ADR sweep, ADR-0105).
 export function sweepClaims({ excludePr, gh, now = Date.now, cwd, pathRe, what, who } = {}) {
   const deadline = now() + SWEEP_GH_BUDGET_MS;
   const call =

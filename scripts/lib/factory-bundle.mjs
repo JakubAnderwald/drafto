@@ -97,7 +97,7 @@
 //     "adr"?:          { "mainNewest", "next", "own": [...],
 //                        "claimed": [{ "pr", "file" }] }
 //                      (adr-allocate.mjs next-adr; only when the approved plan
-//                      mentions an ADR, ADR-0103),
+//                      mentions an ADR, ADR-0105),
 //     "config":        { "phase", ... },
 //     "repo":          { "nameWithOwner", "headRef" }
 //   }
@@ -697,7 +697,7 @@ export function shapeMigrations(m) {
   };
 }
 
-// ADR numbers (ADR-0103): adr-allocate.mjs next-adr's result, checked and
+// ADR numbers (ADR-0105): adr-allocate.mjs next-adr's result, checked and
 // capped like the migration versions above, or null.
 const MAX_CLAIMED_ADRS = 100;
 const ADR_NUMBER = /^\d{4}$/;
@@ -808,7 +808,7 @@ export function buildFactoryImplementBundle({
     // rule applies.
     migrations: spec.schemaChanges === true ? shapeMigrations(migrations) : null,
     // The number for a new ADR, clear of main and of every other open PR's
-    // (ADR-0103). Only when the approved plan mentions an ADR; null otherwise,
+    // (ADR-0105). Only when the approved plan mentions an ADR; null otherwise,
     // or when bash couldn't work it out, and the prompt's fallback applies.
     adr: shapeAdr(adr),
     config: shapeConfig(config),
@@ -886,7 +886,7 @@ export function buildFactoryWatchBundle({
     reviewThreads: envelopeReviewThreads(reviewThreads),
     // Set only on a conflict pass (ADR-0061): bash has merged origin/main into
     // the branch and stopped on these files, or git merged cleanly but left two
-    // ADRs sharing a number, or the ADR index listing one twice (ADR-0103).
+    // ADRs sharing a number, or the ADR index listing one twice (ADR-0105).
     // null on every other pass.
     mergeConflict: shapeMergeConflict(mergeConflict),
     comments: envelopeComments(comments),
@@ -916,7 +916,7 @@ function shapeMergeConflict(mc) {
       .filter((c) => c && typeof c.number === "string" && /^\d{4}$/.test(c.number))
       .map((c) => ({ number: c.number, files: names(c.files) })),
     nextFreeAdr: /^\d{4}$/.test(mc.nextFreeAdr ?? "") ? mc.nextFreeAdr : null,
-    // ADRs the merged README index lists on more than one row (ADR-0103): the
+    // ADRs the merged README index lists on more than one row (ADR-0105): the
     // union merge kept both sides' version of a row they both edited.
     adrIndexDuplicates: (Array.isArray(mc.adrIndexDuplicates) ? mc.adrIndexDuplicates : [])
       .filter(

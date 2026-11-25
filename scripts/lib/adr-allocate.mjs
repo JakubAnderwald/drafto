@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The ADR number a card's new ADR takes, for the implement bundle (ADR-0103).
+// The ADR number a card's new ADR takes, for the implement bundle (ADR-0105).
 //
 // Every PR that adds an ADR took the next free number on main, so two cards
 // implemented while the other's PR was still open took the same one. Once one

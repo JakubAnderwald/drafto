@@ -654,7 +654,7 @@ function adrState(files, wtPath, mainSha) {
   };
 }
 
-// ── The ADR index (ADR-0103) ───────────────────────────────────────────────
+// ── The ADR index (ADR-0105) ───────────────────────────────────────────────
 
 // The attributes file every merge-main passes to git: `docs/adr/README.md
 // merge=union`. It is resolved next to this module, so the factory checkout's
@@ -689,7 +689,7 @@ const PREVIEW_MARKER_SIZE = 7;
 // of the index (the merge base's, the PR's at <before>, main's) must conflict
 // only on index rows. Returns { union, expected }: `expected` is the preview's
 // union result, which the real merge must match (null: nothing to compare). A
-// preview that fails means no union, as before ADR-0103.
+// preview that fails means no union, as before ADR-0105.
 function adrIndexMergePlan(wtPath, before, mainSha) {
   if (!before || !mainSha) return { union: false, expected: null };
   const ours = adrIndexAt(wtPath, before);
@@ -858,7 +858,7 @@ function firstLine(res) {
 // `adrCollisions` lists numbers the merge left on two ADR files that main
 // doesn't itself duplicate — a clean merge can produce one, so it is reported
 // for every status. `adrIndexDuplicates` lists ADRs the merged README index
-// shows on two rows (ADR-0103: the index merges with the union driver, which
+// shows on two rows (ADR-0105: the index merges with the union driver, which
 // keeps both sides' version of a row they both edited), and
 // `adrIndexReordered` says the merge's index rows were put back in number
 // order. `adrIndexUnion` says the union driver merged the index: false when
@@ -890,7 +890,7 @@ export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
   const before = revParse(wtPath, "HEAD");
   // The short name keeps git's default message readable: "Merge
   // remote-tracking branch 'origin/main' into factory/issue-<n>". The
-  // attributes file merges the ADR index with the union driver (ADR-0103), but
+  // attributes file merges the ADR index with the union driver (ADR-0105), but
   // only when the index conflicts on nothing but its rows (adrIndexMergePlan).
   const merge = (union) =>
     git(
@@ -907,7 +907,7 @@ export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
   let res = merge(adrIndexUnion);
   if (adrIndexUnion && adrIndexUnionDiverged(wtPath, res, plan.expected)) {
     // Nothing of this merge has left the worktree: drop it (and the merge
-    // state) and let the index conflict as it did before ADR-0103.
+    // state) and let the index conflict as it did before ADR-0105.
     git(["reset", "--hard", "--quiet", before], { cwd: wtPath });
     adrIndexUnion = false;
     res = merge(false);

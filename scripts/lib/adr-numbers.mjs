@@ -1,5 +1,5 @@
 // ADR numbering checks for the factory's merge-conflict pass (ADR-0061), its
-// union merge of the README index and the implement-time number (ADR-0103).
+// union merge of the README index and the implement-time number (ADR-0105).
 //
 // Every PR that adds an ADR takes the next free number in docs/adr/, so two
 // PRs developed in parallel claim the same one. When main lands first the
@@ -68,7 +68,7 @@ export function newestAdrNumber(fileNames) {
   return next > 1 ? String(next - 1).padStart(4, "0") : null;
 }
 
-// The number a card's new ADR takes at implement time (ADR-0103): one past the
+// The number a card's new ADR takes at implement time (ADR-0105): one past the
 // highest that main, another open PR (`claimed`, [{pr, file}]) or the card's
 // own PR (`ownNames`, on a revision) uses. A gap below the highest is never
 // reused: a stale PR may still hold it.
@@ -97,7 +97,7 @@ export function adrIndexNumbers(text) {
 // keeps both sides' rows, and a row both sides edited shows up as an ADR listed
 // twice (adrIndexDuplicates). On any other line, such as the intro, the "when
 // to write an ADR" list, or the table's header and separator that a re-padded
-// table rewrites, union would quietly keep both wordings (ADR-0103).
+// table rewrites, union would quietly keep both wordings (ADR-0105).
 export function conflictsOnlyOnIndexRows(merged, markerSize) {
   const marker = (ch) => new RegExp(`^\\${ch}{${markerSize}}(?: |$)`);
   const open = marker("<");
@@ -116,7 +116,7 @@ export function conflictsOnlyOnIndexRows(merged, markerSize) {
 }
 
 // Numbers the index lists on more than one row: [{ number, rows }], in number
-// order. The factory merges the index with git's union driver (ADR-0103), which
+// order. The factory merges the index with git's union driver (ADR-0105), which
 // keeps every line either side added. Two PRs that both edited one row (a
 // status change on each side) leave two rows for one ADR, which only a person
 // or the conflict pass can reconcile.

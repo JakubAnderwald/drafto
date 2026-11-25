@@ -1902,7 +1902,7 @@ issue_already_impl_stubbed() {
 # (implement_migration_versions, ADR-0079): the versions the implementer names
 # its new migrations with, in order, clear of main and of every other open
 # PR's. When the approved plan mentions docs/adr or an ADR-, it also carries
-# `adr` (implement_adr_numbers, ADR-0103): the number a new ADR takes, clear
+# `adr` (implement_adr_numbers, ADR-0105): the number a new ADR takes, clear
 # of main and of every other open PR's. If the bundle with them can't be
 # built, the first one (both null) is used, with a warning: the prompt's
 # fallback rules and the conflict pass cover it.
@@ -2021,7 +2021,7 @@ implement_migration_versions() {
 }
 
 # implement_adr_numbers [<own-pr>] — the `adr` field of the implement bundle
-# (ADR-0103): {mainNewest, next, own, claimed, skipped} from adr-allocate.mjs
+# (ADR-0105): {mainNewest, next, own, claimed, skipped} from adr-allocate.mjs
 # next-adr, which fetches main and lists the ADR files every open PR adds.
 # `next` is the number the card's new ADR takes: one past main's newest, every
 # other open PR's and (with <own-pr>, on a revision) the PR's own. Two PRs that
@@ -10464,7 +10464,7 @@ A human should take a look. Reset with \
       # the agent's checks run against the merged lockfile. What git merges on
       # its own is pushed without a Claude run or an attempt; the agent gets
       # the merge only when it stopped on conflicts or left two ADRs sharing a
-      # number. The ADR index merges with git's union driver (ADR-0103), so two
+      # number. The ADR index merges with git's union driver (ADR-0105), so two
       # new index rows no longer stop it; an ADR the merged index lists twice
       # goes to the agent like a number clash. Every way out of the pass below
       # rolls back what didn't land.
@@ -10483,7 +10483,7 @@ A human should take a look. Reset with \
         MERGE_STATUS=$(echo "$MERGE_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
         MERGE_BEFORE=$(echo "$MERGE_JSON" | jq -r '.before // ""' 2>/dev/null || echo "")
         # An ADR clash is two ADR files sharing a number, or the ADR index
-        # listing one ADR twice: the union merge (ADR-0103) keeps both sides'
+        # listing one ADR twice: the union merge (ADR-0105) keeps both sides'
         # version of a row they both edited.
         ADR_CLASHES=$(echo "$MERGE_JSON" | jq '((.adrCollisions // []) | length) + ((.adrIndexDuplicates // []) | length)' 2>/dev/null || echo "0")
         [[ "$ADR_CLASHES" =~ ^[0-9]+$ ]] || ADR_CLASHES=0

@@ -1,4 +1,4 @@
-# Merge attributes for the factory's conflict pass (ADR-0103).
+# Merge attributes for the factory's conflict pass (ADR-0105).
 #
 # worktree-cli.mjs merge-main passes this file to `git merge` with
 # `-c core.attributesFile=<this file>`, so it applies whatever the PR branch

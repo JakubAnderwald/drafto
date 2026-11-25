@@ -503,7 +503,7 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    the new row's link (the file name's slug) and title no wider than the
    widest already in their columns. A row that widens a column rewrites every
    other row, and the factory can then no longer merge the index with main on
-   its own (ADR-0103).
+   its own (ADR-0105).
 
    On failure, fix the underlying issue and re-run. Don't swallow errors,
    don't add `// @ts-ignore`, don't suppress lint rules without a `-- <reason>`
