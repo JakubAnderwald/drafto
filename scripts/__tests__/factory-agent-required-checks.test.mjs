@@ -139,7 +139,7 @@ describe("factory-agent required-context gating: static wiring", () => {
   });
 
   // #899 / PR #915: ten Claude passes ended `noop` on the same red checks of
-  // the same head. ADR-0100 records the first and re-runs the checks in bash.
+  // the same head. ADR-0102 records the first and re-runs the checks in bash.
   it("--watch records a no-op pass over red CI (ciNoop) along with the attempt", () => {
     const noop = script.match(/ {8}noop\)\n[\s\S]*?\n {10};;/);
     assert.ok(noop, "noop arm not found");
@@ -833,11 +833,11 @@ EOF`,
       assert.match(out, new RegExp(`HOLD 654 657 ${SHA} In Review`));
     });
   });
-  // ADR-0100 — #899 / PR #915: ten Claude passes ended `noop` on the same red
+  // ADR-0102 — #899 / PR #915: ten Claude passes ended `noop` on the same red
   // checks of the same head. The first one is recorded (ciNoop); a repeat
   // re-runs the checks in bash under the ciRerun budget, then parks the card
   // in Blocked with one comment. A new head SHA re-arms the card.
-  describe("red CI a no-op fix pass left (ADR-0100)", () => {
+  describe("red CI a no-op fix pass left (ADR-0102)", () => {
     const SHA_915 = "9b9d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c";
     const PR_915 = {
       headRefOid: SHA_915,

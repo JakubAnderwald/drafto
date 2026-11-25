@@ -358,7 +358,7 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["9"].ciRerun, null);
   });
 
-  it("tracks ciNoop (red CI a no-op fix pass left, ADR-0100) and clears it", () => {
+  it("tracks ciNoop (red CI a no-op fix pass left, ADR-0102) and clears it", () => {
     // The key carries the head SHA and check names with spaces, `&` and commas
     // between them; the operator's re-arm is `factory:set-issue-field <n> ciNoop ""`.
     const s = emptyFactoryState();

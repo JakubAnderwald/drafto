@@ -223,7 +223,7 @@ fi
 # Automatic re-runs per PR head SHA for required checks GitHub cancelled before
 # they could judge the code (no runner acquired). Spent → one comment and a hold.
 # See rerun_infra_failures. Red checks a no-op fix pass left as they were spend
-# the same budget, and park the card in Blocked once it is spent (ADR-0100).
+# the same budget, and park the card in Blocked once it is spent (ADR-0102).
 FACTORY_CI_RERUN_MAX="${FACTORY_CI_RERUN_MAX:-2}"
 # No leading zeros: bash arithmetic reads "08" as invalid octal, and a failed
 # -ge comparison would mean an unlimited budget.
@@ -4239,7 +4239,7 @@ is_ci_infra_step() {
 
 # The GitHub Actions run IDs behind the failing required checks, deduped, one per
 # line. After an "infra" classification every one of them is an Actions job; a
-# red one a no-op fix pass left (ADR-0100) may not be, and a check with no
+# red one a no-op fix pass left (ADR-0102) may not be, and a check with no
 # Actions run URL (an outside service's status, or none at all) is skipped.
 pr_infra_rerun_ids() {
   pr_failing_required_checks "$1" | jq -r '
@@ -4267,7 +4267,7 @@ ci_rerun_count() {
 # calling gh, so a re-run GitHub keeps refusing still spends the budget instead
 # of retrying every tick forever. <kind> (default "infra") only words the log:
 # "noop" is red CI a no-op fix pass left as it was (recover_noop_red_ci,
-# ADR-0100), which spends the same budget.
+# ADR-0102), which spends the same budget.
 rerun_infra_failures() {
   local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4" kind="${5:-infra}"
   local run_ids count id status what why
@@ -4357,7 +4357,7 @@ recover_cancelled_ci() {
   comment_ci_infra_hold "$issue_num" "$pr_num" "$head_sha" "$pr_view" "$where"
 }
 
-# ── Red CI a no-op fix pass left as it was (ADR-0100) ───────────────────────
+# ── Red CI a no-op fix pass left as it was (ADR-0102) ───────────────────────
 # A --watch fix pass that ends `noop` on red CI found nothing in the code to
 # change. Another Claude pass on the same head and the same red checks would
 # see the same thing (#899 spent ten of them), so bash records what the pass
@@ -4479,7 +4479,7 @@ in \`drafto-factory\`.
 # attempt), or, the budget spent, comment once and park the card in Blocked.
 recover_noop_red_ci() {
   local issue_num="$1" item_id="$2" pr_num="$3" head_sha="$4" pr_view="$5"
-  log "Issue #$issue_num: PR #$pr_num is red on ${head_sha:0:12} with the checks a no-op fix pass already looked at; re-running them in bash, no Claude run (ADR-0100)"
+  log "Issue #$issue_num: PR #$pr_num is red on ${head_sha:0:12} with the checks a no-op fix pass already looked at; re-running them in bash, no Claude run (ADR-0102)"
   rerun_infra_failures "$issue_num" "$pr_num" "$head_sha" "$pr_view" noop && return 0
   log "Issue #$issue_num: PR #$pr_num required check(s) still red after $(ci_rerun_count "$issue_num" "$head_sha") re-run(s); moving to Blocked"
   comment_ci_noop_hold "$issue_num" "$item_id" "$pr_num" "$head_sha" "$pr_view"
@@ -10427,7 +10427,7 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
           continue ;;
       esac
       # Red CI a no-op fix pass already looked at, on the same head with the
-      # same failing checks or some of them (ADR-0100): another Claude pass
+      # same failing checks or some of them (ADR-0102): another Claude pass
       # would find nothing new. Re-run the checks in bash, or park the card in
       # Blocked once the re-runs are spent. `|| true`: this loop runs under
       # `set -e`, and one card's hiccup must not end the tick for the rest.
@@ -10725,7 +10725,7 @@ A human should take a look. Reset with \
           # endless loop (--release hands red Approved cards back here — ADR-0041).
           # Also record the head and the red checks (ciNoop): the next tick that
           # sees the same re-runs them in bash instead of another Claude pass,
-          # and parks the card in Blocked once the re-runs are spent (ADR-0100).
+          # and parks the card in Blocked once the re-runs are spent (ADR-0102).
           if [[ "$FAILING" -gt 0 ]]; then
             log "Issue #$ISSUE_NUM: no-op fix pass on $FAILING failing required check(s); spending one attempt"
             node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
