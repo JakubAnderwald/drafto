@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Event } from "@sentry/nextjs";
-import { scrubSearchQuery } from "@/lib/sentry/scrub-search-query";
+import { scrubSearchBreadcrumb, scrubSearchQuery } from "@/lib/sentry/scrub-search-query";
 
 describe("scrubSearchQuery", () => {
   it.each([
@@ -76,5 +76,30 @@ describe("scrubSearchQuery", () => {
     expect(scrubSearchQuery(bare)).toBe(bare);
     const noUrl: Event = { request: { query_string: "q=x" }, breadcrumbs: [{ message: "hi" }] };
     expect(scrubSearchQuery(noUrl)).toBe(noUrl);
+  });
+});
+
+describe("scrubSearchBreadcrumb", () => {
+  it("drops the query string from a fetch breadcrumb that called the search route", () => {
+    const original = {
+      category: "fetch",
+      type: "http",
+      data: { method: "GET", url: "/api/notes/search?q=secret", status_code: 500 },
+    };
+    const scrubbed = scrubSearchBreadcrumb(original);
+
+    expect(scrubbed).toEqual({
+      category: "fetch",
+      type: "http",
+      data: { method: "GET", url: "/api/notes/search", status_code: 500 },
+    });
+    expect(original.data.url).toBe("/api/notes/search?q=secret");
+  });
+
+  it("leaves other breadcrumbs alone", () => {
+    const notebooksFetch = { category: "fetch", data: { url: "/api/notebooks?x=1" } };
+    const click = { category: "ui.click", message: "button" };
+    expect(scrubSearchBreadcrumb(notebooksFetch)).toBe(notebooksFetch);
+    expect(scrubSearchBreadcrumb(click)).toBe(click);
   });
 });

@@ -117,6 +117,9 @@ export function NotebooksSidebar({
   // superseded load that was to open the first notebook hands that on to the newest one.
   const loadSeq = useRef(0);
   const pendingSelectFirst = useRef(false);
+  // Set while the newest load is in flight. A create, rename or delete that lands meanwhile makes
+  // that load's list out of date: the server may have read it before the change.
+  const loadInFlight = useRef(false);
 
   /**
    * Loads the notebook list. `selectFirst` opens the first notebook when nothing (no notebook, not
@@ -129,6 +132,7 @@ export function NotebooksSidebar({
       const seq = loadSeq.current;
       const isLatest = () => loadSeq.current === seq;
       if (selectFirst) pendingSelectFirst.current = true;
+      loadInFlight.current = true;
 
       return fetch("/api/notebooks")
         .then(async (res) => {
@@ -171,11 +175,21 @@ export function NotebooksSidebar({
           setLoadError(true);
         })
         .finally(() => {
-          if (isLatest()) setLoading(false);
+          if (!isLatest()) return;
+          loadInFlight.current = false;
+          setLoading(false);
         });
     },
     [onNotebooksChange, onSelectNotebook],
   );
+
+  /**
+   * Called once a create, rename or delete has landed. A load still in flight may hold the list
+   * from before it, which would undo the change on screen, so a new load replaces that one.
+   */
+  function reloadIfLoadInFlight() {
+    if (loadInFlight.current) void loadNotebooks();
+  }
 
   useEffect(() => {
     if (hasFetched.current) return;
@@ -269,6 +283,7 @@ export function NotebooksSidebar({
         onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
         return updated;
       });
+      reloadIfLoadInFlight();
       onSelectNotebook(notebook.id);
       // A field reopened while this was pending is the user's next name: leave it open.
       if (stillOpen()) closeCreate();
@@ -320,6 +335,7 @@ export function NotebooksSidebar({
         onNotebooksChange?.(newList.map((n) => ({ id: n.id, name: n.name })));
         return newList;
       });
+      reloadIfLoadInFlight();
       // Another notebook's rename field, opened while this was pending, stays open.
       if (stillOpen()) closeRename();
     } catch {
@@ -365,6 +381,7 @@ export function NotebooksSidebar({
           onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
           return updated;
         });
+        reloadIfLoadInFlight();
         if (selectedNotebookId === id) {
           onSelectNotebook(null);
         }

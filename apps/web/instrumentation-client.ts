@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/nextjs";
 import { FILE_TOO_LARGE_MESSAGE, FILE_EMPTY_MESSAGE } from "@drafto/shared";
-import { scrubSearchQuery } from "@/lib/sentry/scrub-search-query";
+import { scrubSearchBreadcrumb, scrubSearchQuery } from "@/lib/sentry/scrub-search-query";
 import { sentryEnabled, sentryEnvironment } from "@/lib/sentry-environment";
 
 Sentry.init({
@@ -21,8 +21,10 @@ Sentry.init({
   debug: false,
   // Expected user-input validation, not bugs — keep these out of Sentry.
   ignoreErrors: [FILE_TOO_LARGE_MESSAGE, FILE_EMPTY_MESSAGE],
-  // An error's fetch breadcrumbs include each search request's URL, and so the search text
-  // (ADR-0099).
+  // A search request's URL carries the search text (ADR-0099). Scrubbing each breadcrumb as it is
+  // recorded keeps it out of error events and of Session Replay's network entries, which Replay
+  // builds from the breadcrumb this returns.
+  beforeBreadcrumb: (breadcrumb) => scrubSearchBreadcrumb(breadcrumb),
   beforeSend: (event) => scrubSearchQuery(event),
 });
 

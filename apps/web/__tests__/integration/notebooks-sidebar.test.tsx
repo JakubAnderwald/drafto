@@ -1194,6 +1194,91 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
     expect(screen.getByText(/No notebooks yet/)).toBeInTheDocument();
   });
 
+  it("loads again instead of applying a list read before a create landed", async () => {
+    const user = userEvent.setup();
+    const created = {
+      id: "nb-3",
+      name: "Fresh",
+      created_at: "2026-03-01",
+      updated_at: "2026-03-01",
+    };
+    let settleStale: (res: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return Promise.resolve(jsonResponse(created));
+      return Promise.resolve(jsonResponse([created, ...mockNotebooks]));
+    });
+
+    const { rerender } = render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    // A refresh is in flight, and the server read the list before the create.
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleStale = resolve;
+      }),
+    );
+    rerender(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+        refreshTrigger={1}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Fresh{Enter}");
+    await waitFor(() => {
+      expect(screen.getByText("Fresh")).toBeInTheDocument();
+    });
+    const listLoads = () =>
+      mockFetch.mock.calls.filter(([url, init]) => url === "/api/notebooks" && !init);
+    await waitFor(() => {
+      expect(listLoads()).toHaveLength(2);
+    });
+
+    // The stale list settles last and is ignored: the new notebook stays.
+    await act(async () => {
+      settleStale(jsonResponse(mockNotebooks));
+    });
+    expect(screen.getByText("Fresh")).toBeInTheDocument();
+  });
+
+  it("doesn't load again after a create when no load is in flight", async () => {
+    const user = userEvent.setup();
+    mockFetch.mockImplementation((_url: string, init?: RequestInit) =>
+      Promise.resolve(
+        init?.method === "POST"
+          ? jsonResponse({
+              id: "nb-3",
+              name: "Fresh",
+              created_at: "2026-03-01",
+              updated_at: "2026-03-01",
+            })
+          : jsonResponse(mockNotebooks),
+      ),
+    );
+
+    render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Fresh{Enter}");
+    await waitFor(() => {
+      expect(screen.getByText("Fresh")).toBeInTheDocument();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("still opens the first notebook when a refresh replaces the first load", async () => {
     const onSelect = vi.fn();
     let settleFirst: (res: FakeResponse) => void = () => {};

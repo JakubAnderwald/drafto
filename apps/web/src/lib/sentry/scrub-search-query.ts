@@ -17,7 +17,13 @@ function withoutQuery(url: string): string {
   return cut === -1 ? url : url.slice(0, cut);
 }
 
-function scrubBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb {
+/**
+ * Drops the search text from a breadcrumb that called the search route (the browser SDK records
+ * the URL it fetched). Runs as `beforeBreadcrumb` in the browser config: Session Replay records
+ * each fetch from the breadcrumb that hook returns, so its network entries lose the text too.
+ * Other breadcrumbs are returned unchanged. Pure: it returns a copy and never mutates.
+ */
+export function scrubSearchBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb {
   const url = breadcrumb.data?.url;
   if (!isSearchUrl(url)) return breadcrumb;
   return { ...breadcrumb, data: { ...breadcrumb.data, url: withoutQuery(url) } };
@@ -41,7 +47,7 @@ export function scrubSearchQuery<T extends Event>(event: T): T {
 
   const breadcrumbs = event.breadcrumbs;
   if (breadcrumbs?.some((breadcrumb) => isSearchUrl(breadcrumb.data?.url))) {
-    scrubbed = { ...scrubbed, breadcrumbs: breadcrumbs.map(scrubBreadcrumb) };
+    scrubbed = { ...scrubbed, breadcrumbs: breadcrumbs.map(scrubSearchBreadcrumb) };
   }
 
   return scrubbed;

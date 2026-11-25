@@ -418,6 +418,46 @@ describe("SearchOverlay", () => {
     vi.useRealTimers();
   });
 
+  it("lets Enter on the Close search and Retry buttons do what the button does", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onClose = vi.fn();
+
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={onClose}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "meeting");
+    vi.advanceTimersByTime(300);
+    const alert = await screen.findByRole("alert");
+    const callsAfterFailure = mockFetch.mock.calls.length;
+
+    // Enter on Close search closes the overlay, and doesn't retry the search.
+    screen.getByRole("button", { name: "Close search" }).focus();
+    await user.keyboard("{Enter}");
+    vi.advanceTimersByTime(300);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledTimes(callsAfterFailure);
+
+    // Enter on Retry retries once.
+    within(alert).getByRole("button", { name: "Retry" }).focus();
+    await user.keyboard("{Enter}");
+    vi.advanceTimersByTime(300);
+    await waitFor(() => {
+      expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(callsAfterFailure + 1);
+
+    vi.useRealTimers();
+  });
+
   it("does not report or show a failure for an aborted search", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });

@@ -155,7 +155,9 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
         return;
       }
 
-      if (e.key === "Enter" && searchError && query.trim()) {
+      // Only from the search box: Enter on the Retry or Close search button does what that
+      // button does.
+      if (e.key === "Enter" && searchError && query.trim() && e.target === inputRef.current) {
         e.preventDefault();
         retrySearch();
         return;

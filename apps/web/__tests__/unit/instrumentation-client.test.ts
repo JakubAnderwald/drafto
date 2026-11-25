@@ -41,6 +41,14 @@ describe("instrumentation-client", () => {
     expect(JSON.stringify(options.beforeSend(event))).not.toContain("secret");
   });
 
+  it("drops the search text from each breadcrumb as it is recorded, for Replay's network entries too (ADR-0099)", () => {
+    const options = sentry.init.mock.calls[0][0] as {
+      beforeBreadcrumb: (breadcrumb: Record<string, unknown>) => Record<string, unknown>;
+    };
+    const breadcrumb = { category: "fetch", data: { url: "/api/notes/search?q=secret" } };
+    expect(JSON.stringify(options.beforeBreadcrumb(breadcrumb))).not.toContain("secret");
+  });
+
   it("exports Sentry's router transition hook", () => {
     expect(onRouterTransitionStart).toBe(sentry.captureRouterTransitionStart);
   });
