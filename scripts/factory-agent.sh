@@ -70,13 +70,13 @@
 #
 # Claude effort: --implement runs at ultracode (FACTORY_EFFORT — xhigh reasoning
 # + dynamic multi-agent workflows), and a revision run at xhigh
-# (FACTORY_REVISION_EFFORT, ADR-0099); --watch fix passes run at xhigh
+# (FACTORY_REVISION_EFFORT, ADR-0101); --watch fix passes run at xhigh
 # (FACTORY_WATCH_EFFORT, ADR-0076); the read-only stages (--plan/replan, the
 # code review, the scenario writer, the browser runner, the verification shell
 # lane) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below. Every
 # call passes --model: FACTORY_MODEL (opus[1m]), or for the browser runner and
 # the scenario writer FACTORY_BROWSER_MODEL / FACTORY_INTEST_MODEL when set
-# (ADR-0080, ADR-0099); see the model block after it.
+# (ADR-0080, ADR-0101); see the model block after it.
 
 set -euo pipefail
 
@@ -309,7 +309,7 @@ case "$FACTORY_PLAN_EFFORT" in
 esac
 # A revision run (a card that already has a factory PR, open or closed, plus
 # new owner feedback) is a small change to code that already exists, so it runs
-# at plain xhigh, not ultracode (ADR-0099): at ultracode it fanned out workflows
+# at plain xhigh, not ultracode (ADR-0101): at ultracode it fanned out workflows
 # for a one-line change. implement_effort picks between the two for each
 # --implement run, and the run-time facts' `effort` tells the agent which one.
 # Setting this to ultracode alone restores Workflows on revisions.
@@ -320,10 +320,10 @@ case "$FACTORY_REVISION_EFFORT" in
      FACTORY_REVISION_EFFORT="xhigh" ;;
 esac
 
-# ── Claude model knobs (ADR-0080, ADR-0099) ─────────────────────────────────
+# ── Claude model knobs (ADR-0080, ADR-0101) ─────────────────────────────────
 # Every factory Claude call passes --model, so the factory never runs on
 # whatever model ~/.claude/settings.json or the CLI happens to default to
-# (ADR-0099). FACTORY_MODEL is that model, opus[1m] by default. Two read-only
+# (ADR-0101). FACTORY_MODEL is that model, opus[1m] by default. Two read-only
 # stages can run on another one: FACTORY_BROWSER_MODEL for the browser runner
 # (all of its kinds: intest, verify and plan) and FACTORY_INTEST_MODEL for the
 # scenario writer (In Test and Testing). Empty, their default, means
@@ -2345,7 +2345,7 @@ implement_park_blocked() {
 # minus 5 minutes), the --effort this run was started at (default
 # FACTORY_EFFORT; the prompt's Revision runs section keys off it, so
 # FACTORY_REVISION_EFFORT=ultracode alone restores Workflows on revisions,
-# ADR-0099) and what an earlier attempt left in the worktree. The prompt's Time
+# ADR-0101) and what an earlier attempt left in the worktree. The prompt's Time
 # budget section documents every key, and a test pins them to it.
 # Prints nothing on failure; the caller then leaves the block out.
 implement_runtime_facts() {
@@ -5518,7 +5518,7 @@ intest_handoff() {
   log "Issue #$issue_num: scenario for ${head_sha:0:12} in $diff_mode mode${mode_reason:+ ($mode_reason)}"
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$INTEST_PROMPT_FILE")" "$bundle")
-  # FACTORY_INTEST_MODEL when set, FACTORY_MODEL otherwise (ADR-0080, ADR-0099).
+  # FACTORY_INTEST_MODEL when set, FACTORY_MODEL otherwise (ADR-0080, ADR-0101).
   local intest_model="${FACTORY_INTEST_MODEL:-${FACTORY_MODEL:-opus[1m]}}"
   log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=$intest_model)"
   out_file=$(mktemp -t factory-agent-intest.XXXXXX)
@@ -5816,7 +5816,7 @@ run_browser_task() {
   input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$prompt_file")" "$bundle")
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  # FACTORY_BROWSER_MODEL when set, FACTORY_MODEL otherwise (ADR-0080, ADR-0099).
+  # FACTORY_BROWSER_MODEL when set, FACTORY_MODEL otherwise (ADR-0080, ADR-0101).
   # --setting-sources "" below drops ~/.claude/settings.json, so without
   # --model the runner would fall back to the CLI's built-in default.
   local runner_model="${FACTORY_BROWSER_MODEL:-${FACTORY_MODEL:-opus[1m]}}"
@@ -9392,7 +9392,7 @@ implement_lane_precheck() {
 # implement_effort <is_revision> — the effort for this --implement run:
 # FACTORY_REVISION_EFFORT for a revision run (1: the card already has a
 # factory PR, open or closed, and new owner feedback since lastFeedbackAt),
-# FACTORY_EFFORT otherwise (ADR-0099). A resumed run gets the same
+# FACTORY_EFFORT otherwise (ADR-0101). A resumed run gets the same
 # answer as the run it resumes: the resume task key includes the revision
 # comments (implement-resume.mjs), so a resume never crosses between the two.
 implement_effort() {
@@ -9926,7 +9926,7 @@ Drag it back to **Ready** so the factory can plan it first.
       fi
     fi
     # A revision run is a small change to existing code: FACTORY_REVISION_EFFORT
-    # (xhigh), not the ultracode a fresh implementation gets (ADR-0099). Both the
+    # (xhigh), not the ultracode a fresh implementation gets (ADR-0101). Both the
     # synchronous call and the detached start use it; meta.effort records it.
     IMPL_EFFORT=$(implement_effort "$IS_REVISION")
 

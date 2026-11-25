@@ -189,7 +189,7 @@ describe("buildImplementArgv / buildImplementEnv", () => {
     );
   });
 
-  it("puts --model right before the session flag when given, nothing when absent (ADR-0099)", () => {
+  it("puts --model right before the session flag when given, nothing when absent (ADR-0101)", () => {
     assert.deepEqual(
       buildImplementArgv({ effort: "xhigh", model: "opus[1m]", mode: "fresh", sessionId: SID }),
       [
@@ -814,7 +814,7 @@ describe("start", () => {
     await assert.rejects(start(env3, fakeDeps()), /invalid model/);
   });
 
-  it("carries the spec's model into meta.argv and meta.model (ADR-0099)", async () => {
+  it("carries the spec's model into meta.argv and meta.model (ADR-0101)", async () => {
     const env = await setup();
     fs.writeFileSync(
       env.specFile,

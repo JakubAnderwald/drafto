@@ -556,7 +556,7 @@ describe("start: a run", () => {
     assert.equal(m.laneFacts.bypass, "ok");
     assert.equal(m.sessionId, SESSION);
     assert.equal(m.effort, "xhigh");
-    // FACTORY_MODEL's default: the start was given no --model (ADR-0099).
+    // FACTORY_MODEL's default: the start was given no --model (ADR-0101).
     assert.equal(m.model, "opus[1m]");
     assert.equal(m.bins.claude, "/fake/bin/claude");
     assert.equal(m.previewOrigin, ORIGIN);
@@ -564,7 +564,7 @@ describe("start: a run", () => {
     assert.equal(m.qaTag, `${QA_TAG_PREFIX}${ISSUE}-${SHA.slice(0, 7)}-100000`);
   });
 
-  it("records the --model it was started with in meta.json and its answer (ADR-0099)", async () => {
+  it("records the --model it was started with in meta.json and its answer (ADR-0101)", async () => {
     await writeState(readyCard);
     const { deps } = makeDeps();
     const r = await runStart(startOpts({ flags: { model: "claude-sonnet-5-5" } }), deps);
@@ -723,7 +723,7 @@ describe("the claude call's flags (lock-in)", () => {
     }
   });
 
-  it("ends with --model after --effort when a model is given, and stays safe (ADR-0099)", () => {
+  it("ends with --model after --effort when a model is given, and stays safe (ADR-0101)", () => {
     const withModel = buildClaudeArgs({
       settingsPath: "/run/guard-settings.json",
       sessionId: SESSION,
@@ -1090,7 +1090,7 @@ describe("readKnobs", () => {
     );
   });
 
-  it("reads the model from --model over FACTORY_MODEL, and falls back to opus[1m] (ADR-0099)", () => {
+  it("reads the model from --model over FACTORY_MODEL, and falls back to opus[1m] (ADR-0101)", () => {
     assert.equal(readKnobs({ HOME: "/h" }).model, "opus[1m]");
     assert.equal(readKnobs({ HOME: "/h", FACTORY_MODEL: "sonnet" }).model, "sonnet");
     assert.equal(

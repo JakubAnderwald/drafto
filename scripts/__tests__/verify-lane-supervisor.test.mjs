@@ -341,7 +341,7 @@ describe("_supervise", () => {
       meta.sessionId,
       "--effort",
       "low",
-      // ADR-0099: the session has no setting sources, so the model is explicit.
+      // ADR-0101: the session has no setting sources, so the model is explicit.
       "--model",
       "opus[1m]",
     ]);

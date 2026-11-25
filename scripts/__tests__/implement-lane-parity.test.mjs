@@ -44,7 +44,7 @@ describe("detached implement = the synchronous call (parity)", () => {
   });
 
   it("the synchronous call takes this run's effort and FACTORY_MODEL", () => {
-    // IMPL_EFFORT: the coding or the revision effort (ADR-0099); the detached
+    // IMPL_EFFORT: the coding or the revision effort (ADR-0101); the detached
     // start hands the same two to implement-lane.mjs (below).
     const flags = words(SYNC.flags);
     assert.equal(flags[flags.indexOf("--effort") + 1], '"$IMPL_EFFORT"');

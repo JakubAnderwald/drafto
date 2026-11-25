@@ -1600,7 +1600,7 @@ describe("verify_shell_work (real helper, lane module stubbed)", () => {
     });
   });
 
-  it("hands the lane FACTORY_MODEL, opus[1m] when unset (ADR-0099)", () => {
+  it("hands the lane FACTORY_MODEL, opus[1m] when unset (ADR-0101)", () => {
     const started = JSON.stringify({ started: true, runId: "7-aaaaaaaaaaaa-x" });
     for (const [model, want] of [
       [undefined, "opus[1m]"],

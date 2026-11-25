@@ -228,7 +228,7 @@ export function readKnobs(env = process.env, flags = {}) {
     limitFallbackMin: positiveInt(env.FACTORY_LIMIT_FALLBACK_MIN, 30),
     effort: EFFORTS.includes(effort) ? effort : "xhigh",
     // The session runs with --setting-sources "", so without --model it would
-    // take the CLI's built-in default (ADR-0099). Garbage falls back to
+    // take the CLI's built-in default (ADR-0101). Garbage falls back to
     // factory-agent.sh's default, like FACTORY_MODEL itself.
     model: isValidModel(model) ? model : DEFAULT_MODEL,
     bypassFile: expandTilde(
@@ -352,7 +352,7 @@ export function laneEnv(env, { binDirs = [], ghConfigDir = null, extra = {} } = 
 
 /**
  * The one argument list the lane's claude call ever gets (via run-claude.mjs).
- * <model> is optional: a run started before ADR-0099 has none in its meta.json
+ * <model> is optional: a run started before ADR-0101 has none in its meta.json
  * and gets no --model; set, `--model <model>` comes last, after --effort.
  */
 export function buildClaudeArgs({ settingsPath, sessionId, effort, model }) {

@@ -1,4 +1,4 @@
-// ADR-0099: the node lanes (implement-lane.mjs, verify-lane.mjs) validate a
+// ADR-0101: the node lanes (implement-lane.mjs, verify-lane.mjs) validate a
 // --model value with claude-model.mjs's MODEL_RE; factory-agent.sh validates
 // its model knobs with MODEL_KNOB_RE. The two must accept exactly the same
 // values, or a model bash lets through would make a lane throw (or the

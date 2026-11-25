@@ -239,7 +239,7 @@ describe("intest_handoff — failure degrades, never escalates", () => {
 });
 
 describe("intest_handoff — the scenario writer's claude call (extracted, real bash)", () => {
-  // The model knob block (ADR-0080, ADR-0099), so a run with `model` set goes
+  // The model knob block (ADR-0080, ADR-0101), so a run with `model` set goes
   // through the same validation the factory does at startup.
   const modelKnobs = script.match(/^MODEL_KNOB_RE=[\s\S]*?^ {2}FACTORY_INTEST_MODEL=""\nfi\n/m);
   const SHA = "c".repeat(40);
@@ -307,7 +307,7 @@ echo "rc=$?"
     return { r, args, events: log, dir };
   }
 
-  it("passes FACTORY_MODEL when FACTORY_INTEST_MODEL is unset or empty (ADR-0099)", () => {
+  it("passes FACTORY_MODEL when FACTORY_INTEST_MODEL is unset or empty (ADR-0101)", () => {
     for (const [model, factoryModel, want] of [
       [undefined, undefined, "opus[1m]"],
       ["", undefined, "opus[1m]"],

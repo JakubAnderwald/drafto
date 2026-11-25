@@ -4,7 +4,7 @@
 - **Date**: 2026-11-16
 - **Authors**: Jakub Anderwald, with Claude Code
 
-> **Amended by [ADR-0099](./0099-factory-pins-model-and-revision-effort.md)** (2026-11-25): every factory call now passes `--model`. A new knob, `FACTORY_MODEL` (default `opus[1m]`), sets the model, and empty `FACTORY_BROWSER_MODEL` / `FACTORY_INTEST_MODEL` now mean `FACTORY_MODEL` instead of "no `--model`" (Decision 1). The optional `model_args` arrays (Decision 3) are gone: both stages always pass `--model`, in the same places, and log the model they used, never `model=default` (Decision 5). An invalid stage knob still warns and falls back to empty, which is now `FACTORY_MODEL`.
+> **Amended by [ADR-0101](./0101-factory-pins-model-and-revision-effort.md)** (2026-11-25): every factory call now passes `--model`. A new knob, `FACTORY_MODEL` (default `opus[1m]`), sets the model, and empty `FACTORY_BROWSER_MODEL` / `FACTORY_INTEST_MODEL` now mean `FACTORY_MODEL` instead of "no `--model`" (Decision 1). The optional `model_args` arrays (Decision 3) are gone: both stages always pass `--model`, in the same places, and log the model they used, never `model=default` (Decision 5). An invalid stage knob still warns and falls back to empty, which is now `FACTORY_MODEL`.
 
 ## Context
 

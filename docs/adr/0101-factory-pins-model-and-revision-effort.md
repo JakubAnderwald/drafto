@@ -1,4 +1,4 @@
-# 0099 — Factory Pins Its Claude Model, and Revision Runs at xhigh
+# 0101 — Factory Pins Its Claude Model, and Revision Runs at xhigh
 
 - **Status**: Accepted
 - **Date**: 2026-11-25

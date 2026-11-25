@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 // regression would send the factory back to whatever ambient effort the host
 // happens to default to, which is exactly the drift this change removed.
 //
-// The model is pinned the same way (ADR-0099): every call passes --model,
+// The model is pinned the same way (ADR-0101): every call passes --model,
 // FACTORY_MODEL (opus[1m]) unless a stage knob (ADR-0080) names another one,
 // so no call falls back to ~/.claude/settings.json or the CLI's default.
 
@@ -24,7 +24,7 @@ describe("factory-agent Claude effort", () => {
   it("passes --effort at all six Claude call sites", () => {
     // Four read-only sites (plan + replan + In Test scenario + code review) use
     // the plan effort; the implement site uses this run's implement effort
-    // (IMPL_EFFORT: the coding effort, or the revision effort, ADR-0099) and
+    // (IMPL_EFFORT: the coding effort, or the revision effort, ADR-0101) and
     // the watch fix site its own (ADR-0076).
     const planFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_PLAN_EFFORT"/g) || [];
@@ -150,7 +150,7 @@ describe("factory-agent Claude effort", () => {
   });
 });
 
-describe("factory-agent revision effort (ADR-0099)", () => {
+describe("factory-agent revision effort (ADR-0101)", () => {
   // The real implement_effort, extracted, with only the given env.
   const fn = script.match(/^implement_effort\(\) \{[\s\S]*?^\}\n/m);
 
@@ -208,7 +208,7 @@ describe("factory-agent revision effort (ADR-0099)", () => {
   });
 });
 
-describe("factory-agent Claude model knobs (ADR-0080, ADR-0099)", () => {
+describe("factory-agent Claude model knobs (ADR-0080, ADR-0101)", () => {
   const block = script.match(/^MODEL_KNOB_RE=[\s\S]*?^ {2}FACTORY_INTEST_MODEL=""\nfi\n/m);
 
   // Run the knob block in bash with only the given env, under the factory's

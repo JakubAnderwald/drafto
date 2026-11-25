@@ -142,7 +142,7 @@ const RUN_DIR_NAME_RE = /^[1-9][0-9]*-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
 //       CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \
 //       node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" <the flags below> )
 // and implement-lane-parity.test.mjs pins the two to each other.
-// <model> (ADR-0099) is optional: absent or "", no --model, as before it
+// <model> (ADR-0101) is optional: absent or "", no --model, as before it
 // existed; set, `--model <model>` goes right before the session flag.
 
 export function buildImplementArgv({ effort, model, mode, sessionId }) {

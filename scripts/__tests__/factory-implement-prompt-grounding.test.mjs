@@ -384,10 +384,10 @@ describe("implementer prompt — time budget (ADR-0084)", () => {
   });
 });
 
-// ADR-0099: revisions run at FACTORY_REVISION_EFFORT. The "no Workflow" rule
+// ADR-0101: revisions run at FACTORY_REVISION_EFFORT. The "no Workflow" rule
 // follows the `effort` fact, not a hard-coded level, so setting the knob to
 // ultracode alone restores the old revision behaviour.
-describe("implementer prompt — revision effort (ADR-0099)", () => {
+describe("implementer prompt — revision effort (ADR-0101)", () => {
   const rev = flat.slice(flat.indexOf("## Revision runs"));
 
   it("skips Workflows on a revision only below ultracode, as the effort fact says", () => {

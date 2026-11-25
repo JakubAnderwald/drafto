@@ -1,4 +1,4 @@
-// The model a factory Claude call names with --model (ADR-0080, ADR-0099).
+// The model a factory Claude call names with --model (ADR-0080, ADR-0101).
 //
 // factory-agent.sh validates its model knobs (FACTORY_MODEL and the two stage
 // knobs) against MODEL_KNOB_RE; the node lanes that build a claude argv of

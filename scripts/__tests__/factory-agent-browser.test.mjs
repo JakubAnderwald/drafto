@@ -154,7 +154,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     assert.equal(noChrome.length, 6, "every stage call must pass --no-chrome explicitly");
     // --no-chrome sits AFTER --effort so factory-agent-effort.test.mjs's
     // `--dangerously-skip-permissions --effort "$X"` counts keep holding. The
-    // implement call's effort is IMPL_EFFORT (coding or revision, ADR-0099).
+    // implement call's effort is IMPL_EFFORT (coding or revision, ADR-0101).
     for (const c of noChrome) {
       assert.match(
         c,
@@ -706,7 +706,7 @@ preview_url_for_sha ${SHA}
 });
 
 describe("run_browser_task", () => {
-  // The model knob block (ADR-0080, ADR-0099), so a run with `model` set goes
+  // The model knob block (ADR-0080, ADR-0101), so a run with `model` set goes
   // through the same validation the factory does at startup.
   const modelKnobs = script.match(/^MODEL_KNOB_RE=[\s\S]*?^ {2}FACTORY_INTEST_MODEL=""\nfi\n/m);
 
@@ -776,7 +776,7 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
       .filter((l) => l.startsWith("arg:"))
       .map((l) => l.slice(4));
 
-  it("passes FACTORY_MODEL when FACTORY_BROWSER_MODEL is unset or empty (ADR-0099)", () => {
+  it("passes FACTORY_MODEL when FACTORY_BROWSER_MODEL is unset or empty (ADR-0101)", () => {
     // --setting-sources "" drops ~/.claude/settings.json: without --model the
     // runner would run on the CLI's built-in default.
     for (const [model, factoryModel, want] of [

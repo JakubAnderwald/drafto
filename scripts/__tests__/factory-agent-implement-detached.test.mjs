@@ -122,7 +122,7 @@ describe("the loop tail: knob 0 runs the synchronous call, knob 1 only starts", 
       "ISSUE_NUM=7; SLOT=1; IMPL_RESUMED=0; WT_JSON='{}'; PROMPT_TEXT='prompt'; BUNDLE='{}'",
       `RESUME_PROMPT_TEXT=''; IMPL_SESSION_FLAG=--session-id; IMPL_SESSION_ID=${SID}`,
       "IMPLEMENT_TIMEOUT_SEC=2700; FACTORY_EFFORT=ultracode; FACTORY_IMPLEMENT_TERM_GRACE_SEC=30",
-      // Set by the loop before the tail (implement_effort, ADR-0099), and the
+      // Set by the loop before the tail (implement_effort, ADR-0101), and the
       // model knob block.
       "IMPL_EFFORT=ultracode; FACTORY_MODEL='opus[1m]'",
       'rec() { printf "%s\\n" "$*" >>"$CALLS"; }',
@@ -739,7 +739,7 @@ describe("implement_lane_start", () => {
     assert.equal(r.calls, "");
   });
 
-  it("hands over this run's effort and model: a revision at xhigh, another model (ADR-0099)", () => {
+  it("hands over this run's effort and model: a revision at xhigh, another model (ADR-0101)", () => {
     const r = runStart({
       answer: '{"started":true,"runId":"R1","pid":1}',
       effort: "xhigh",
