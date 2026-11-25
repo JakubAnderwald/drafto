@@ -69,6 +69,8 @@ describe("planner prompt — Size section and marker", () => {
       flat,
       /An `XL` card is held\. When the estimate is at or above the factory's oversize threshold \(1,500 lines by default\), an approved card goes back to Plan Review instead of being implemented, until it is split or the operator adds the `oversize-approved` label/,
     );
+    // Telling the planner about the hold mustn't invite a lowered estimate.
+    assert.match(flat, /Never lower `<estLines>` to stay under the threshold/);
   });
 
   it("orders the replan body's tail: size marker, then the ack markers", () => {

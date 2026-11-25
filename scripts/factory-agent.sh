@@ -1898,10 +1898,13 @@ plan_size_label() {
 # FACTORY_PLAN_OVERSIZE_LINES and the issue lacks oversize-approved, the card
 # goes back to Plan Review with one 🏭 comment saying how to release it.
 # Only a card that hasn't started is held: no prior PR, no worktree slot
-# assigned, no implement resume record, and no implement run on record
-# (implementSessionId, which every implement start writes, or lastImplementAt).
-# Not the attempts counter: --plan shares it, and a failed replan followed by a
-# noop one leaves it above 0 on a card that has never been implemented. A card
+# assigned, no implement resume record, no implement run on record
+# (implementSessionId, which every implement start writes), and no
+# factory/issue-<n> branch on origin (an interactive /drive-issue session may
+# have pushed work there and handed the card back without a PR). Not
+# lastImplementAt: the Phase A stub writes it without writing code. Not the
+# attempts counter: --plan shares it, and a failed replan followed by a noop
+# one leaves it above 0 on a card that has never been implemented. A card
 # mid-run (a retry after a timeout, a revision back from In Test) never
 # bounces. Nor is a
 # plan with no size marker, or a dry run (it only logs). The marker carries the
@@ -1915,7 +1918,7 @@ oversize_hold() {
   local prior_pr="${5:-null}" comments_json="${6:-[]}"
   local threshold="${FACTORY_PLAN_OVERSIZE_LINES:-1500}"
   local approved="${OVERSIZE_APPROVED_LABEL:-oversize-approved}"
-  local size est cls plan_id marker slots record
+  local size est cls plan_id marker slots record pr_count remote_head
   [[ "${FACTORY_OVERSIZE_HOLD:-1}" == "1" ]] || return 1
   [[ "$threshold" =~ ^[0-9]+$ && "$threshold" -gt 0 ]] || return 1
   [[ -z "$prior_pr" || "$prior_pr" == "null" ]] || return 1
@@ -1944,8 +1947,27 @@ oversize_hold() {
   fi
   # A resume record, or any implement run on record, means it has started.
   if [[ -n "$(echo "$record" | jq -r \
-      '[.implementResumeSession, .implementSessionId, .lastImplementAt]
+      '[.implementResumeSession, .implementSessionId]
        | map(select(. != null and . != "")) | first // empty' 2>/dev/null || echo "")" ]]; then
+    return 1
+  fi
+  # find_prior_pr returns null both for "no PR" and for a failed gh call, so
+  # ask once more and tell the two apart: a failure defers the card a tick.
+  if ! pr_count=$(gh pr list --repo JakubAnderwald/drafto --head "factory/issue-$issue_num" \
+      --state all --json number --jq 'length' 2>>"$LOG_FILE") \
+      || ! [[ "$pr_count" =~ ^[0-9]+$ ]]; then
+    log "WARNING: #$issue_num: couldn't list its PRs for the oversize hold; deferring the card to the next tick"
+    return 0
+  fi
+  [[ "$pr_count" -eq 0 ]] || return 1
+  # Work pushed to the branch without a PR yet (an interactive session's) means
+  # it has started too. A failed ls-remote can't tell, so the card waits a tick.
+  if ! remote_head=$(git -C "$REPO_ROOT" ls-remote --heads origin \
+      "refs/heads/factory/issue-$issue_num" 2>>"$LOG_FILE"); then
+    log "WARNING: #$issue_num: couldn't check origin for factory/issue-$issue_num for the oversize hold; deferring the card to the next tick"
+    return 0
+  fi
+  if echo "$remote_head" | awk -v r="refs/heads/factory/issue-$issue_num" '$2 == r { found = 1 } END { exit !found }'; then
     return 1
   fi
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then

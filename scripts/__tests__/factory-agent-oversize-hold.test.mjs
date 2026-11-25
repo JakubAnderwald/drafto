@@ -9,8 +9,9 @@ import { fileURLToPath } from "node:url";
 // The oversize hold (ADR-0103): --implement never starts an unsplit oversize
 // card. An unstarted card whose approved plan estimates at least
 // FACTORY_PLAN_OVERSIZE_LINES, and that has no oversize-approved label, goes
-// back to Plan Review with one 🏭 comment. `gh` and transition_status are HARD
-// STUBS here: without them a unit test would comment on and move a live card.
+// back to Plan Review with one 🏭 comment. `gh`, `git` and transition_status
+// are HARD STUBS here: without them a unit test would comment on and move a
+// live card.
 // plan-size.mjs and state-cli.mjs run for real, on a temp state file.
 
 const scriptsDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -33,7 +34,10 @@ const M = "<!-- drafto-factory-plan-size:M:400 -->";
 
 // opts: marker, labels, priorPr, comments, state (object | string),
 // knobs ({FACTORY_OVERSIZE_HOLD, FACTORY_PLAN_OVERSIZE_LINES}), dryRun,
-// commentFails, transitionFails. Returns {status, held, log, calls}.
+// commentFails, transitionFails, prCount (what `gh pr list` counts),
+// prListFails, remoteHead (what `git ls-remote` prints), lsRemoteFails.
+// Returns {held, log, calls, reads}: calls are writes, reads the read-only
+// gh/git calls.
 function runHold(opts = {}) {
   const {
     marker = XL,
@@ -45,9 +49,14 @@ function runHold(opts = {}) {
     dryRun = 0,
     commentFails = false,
     transitionFails = false,
+    prCount = "0",
+    prListFails = false,
+    remoteHead = "",
+    lsRemoteFails = false,
   } = opts;
   const dir = mkdtempSync(join(tmpdir(), "oversize-hold-"));
   const calls = join(dir, "calls");
+  const reads = join(dir, "reads");
   const stateFile = join(dir, "factory-state.json");
   writeFileSync(stateFile, typeof state === "string" ? state : JSON.stringify(state));
   const knobLines = Object.entries(knobs)
@@ -60,9 +69,17 @@ ${extract("comments_have_marker")}
 ${extract("oversize_hold")}
 log() { echo "[log] $*"; }
 gh() {
+  if [[ "\${1:-} \${2:-}" == "pr list" ]]; then
+    echo "[gh] $*" >>${JSON.stringify(reads)}
+    ${prListFails ? "return 1" : `printf '%s\n' ${JSON.stringify(prCount)}; return 0`}
+  fi
   echo "[gh] $*" >>${JSON.stringify(calls)}
   ${commentFails ? 'case "${1:-} ${2:-}" in "issue comment") return 1 ;; esac' : ""}
   return 0
+}
+git() {
+  echo "[git] $*" >>${JSON.stringify(reads)}
+  ${lsRemoteFails ? "return 1" : `printf '%b' ${JSON.stringify(remoteHead)}; return 0`}
 }
 transition_status() {
   echo "[transition] $1 $2 $3" >>${JSON.stringify(calls)}
@@ -70,6 +87,7 @@ transition_status() {
 }
 SCRIPT_DIR=${JSON.stringify(scriptsDir)}
 STATE_FILE=${JSON.stringify(stateFile)}
+REPO_ROOT=${JSON.stringify(dir)}
 LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
 DRY_RUN=${dryRun}
 ${knobLines}
@@ -91,6 +109,7 @@ fi
       held: /HELD\s*$/.test(r.stdout),
       log: r.stdout,
       calls: existsSync(calls) ? readFileSync(calls, "utf8") : "",
+      reads: existsSync(reads) ? readFileSync(reads, "utf8") : "",
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -159,14 +178,61 @@ describe("oversize_hold (extracted, real bash 3.2, gh + transition stubbed)", ()
   });
 
   it("does not hold a card with an implement run on record (a retry after a timeout)", () => {
-    for (const rec of [
-      { implementSessionId: "0b8f2a1e-1111-4222-8333-444455556666" },
-      { lastImplementAt: "2026-11-25T09:00:00.000Z" },
-    ]) {
-      const out = runHold({ state: { issues: { 900: { attempts: 1, ...rec } } } });
-      assert.equal(out.held, false, JSON.stringify(rec));
-      assert.equal(out.calls, "", JSON.stringify(rec));
-    }
+    const rec = { implementSessionId: "0b8f2a1e-1111-4222-8333-444455556666" };
+    const out = runHold({ state: { issues: { 900: { attempts: 1, ...rec } } } });
+    assert.equal(out.held, false);
+    assert.equal(out.calls, "");
+  });
+
+  it("holds a card whose only implement trace is the Phase A stub's lastImplementAt", () => {
+    // Phase A posts its plan-only stub and writes lastImplementAt without
+    // writing code. After promotion to Phase B that card hasn't started.
+    const state = { issues: { 900: { lastImplementAt: "2026-11-25T09:00:00.000Z" } } };
+    const out = runHold({ state });
+    assert.equal(out.held, true, out.log);
+    assert.match(out.calls, /\[transition\] ITEM_900 900 Plan Review/);
+  });
+
+  it("re-checks PRs itself, and defers when gh can't list them", () => {
+    // find_prior_pr gives null for a failed gh call too.
+    const ok = runHold();
+    assert.match(
+      ok.reads,
+      /\[gh\] pr list --repo JakubAnderwald\/drafto --head factory\/issue-900 --state all/,
+    );
+    const failed = runHold({ prListFails: true });
+    assert.equal(failed.held, true, "skipped this tick");
+    assert.equal(failed.calls, "");
+    assert.match(failed.log, /couldn't list its PRs for the oversize hold; deferring/);
+    const garbage = runHold({ prCount: "oops" });
+    assert.equal(garbage.held, true);
+    assert.equal(garbage.calls, "");
+    const found = runHold({ prCount: "1" });
+    assert.equal(found.held, false);
+    assert.equal(found.calls, "");
+  });
+
+  it("does not hold a card with work pushed to factory/issue-<n> on origin", () => {
+    const out = runHold({ remoteHead: "abc123\trefs/heads/factory/issue-900\n" });
+    assert.equal(out.held, false, out.log);
+    assert.equal(out.calls, "");
+    assert.match(
+      out.reads,
+      /\[git\] -C .* ls-remote --heads origin refs\/heads\/factory\/issue-900/,
+    );
+    // Another issue's branch doesn't count.
+    const other = runHold({ remoteHead: "abc123\trefs/heads/factory/issue-9001\n" });
+    assert.equal(other.held, true);
+  });
+
+  it("defers, without a comment or a move, when ls-remote fails", () => {
+    const out = runHold({ lsRemoteFails: true });
+    assert.equal(out.held, true, "skipped this tick");
+    assert.equal(out.calls, "");
+    assert.match(
+      out.log,
+      /couldn't check origin for factory\/issue-900 for the oversize hold; deferring/,
+    );
   });
 
   it("holds a card whose attempts come from the plan stage only", () => {

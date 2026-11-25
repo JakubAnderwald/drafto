@@ -146,7 +146,7 @@ Every plan has a **Size** section after **Confidence** ([ADR-0083](../adr/0083-p
   - **Run it as-is**: add `oversize-approved` to the issue and drag the card back to **In Progress**.
   - **Narrow it**: comment to replan. If the new estimate is under the threshold, dragging the card to **In Progress** runs it.
 
-  A plain "approved" comment doesn't release the hold: like any comment in Plan Review, it starts a replan, which is a paid planner run. Only a card that hasn't started is held. A card with a PR, a worktree slot, a session to resume or an implement run on record is never sent back, so a retry after a timeout or a revision from In Test runs as before. A plan with no size marker isn't held either. `FACTORY_OVERSIZE_HOLD=0` (or `FACTORY_PLAN_OVERSIZE_LINES=0`) turns the hold off.
+  A plain "approved" comment doesn't release the hold: like any comment in Plan Review, it starts a replan, which is a paid planner run. Only a card that hasn't started is held. A card with a PR, a `factory/issue-<n>` branch on origin, a worktree slot, a session to resume or an implement run on record is never sent back, so a retry after a timeout or a revision from In Test runs as before. A plan with no size marker isn't held either. `FACTORY_OVERSIZE_HOLD=0` (or `FACTORY_PLAN_OVERSIZE_LINES=0`) turns the hold off.
 
 ### Plan-stage browser probe
 
