@@ -9,8 +9,22 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
 }));
 
+// The order logout steps run in: pending autosaves must flush before signOut clears the
+// session cookie.
+const logoutSteps: string[] = [];
+
+const mockFlushPendingSaves = vi.fn(async () => {
+  logoutSteps.push("flush");
+});
+vi.mock("@/lib/pending-saves", () => ({
+  flushPendingSaves: () => mockFlushPendingSaves(),
+}));
+
 // Mock Supabase client
-const mockSignOut = vi.fn().mockResolvedValue({ error: null });
+const mockSignOut = vi.fn(async () => {
+  logoutSteps.push("signOut");
+  return { error: null };
+});
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     auth: { signOut: mockSignOut },
@@ -24,6 +38,7 @@ describe("AppMenu", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    logoutSteps.length = 0;
   });
 
   it("renders the menu trigger and theme toggle", () => {
@@ -135,7 +150,7 @@ describe("AppMenu", () => {
     expect(mockPush).toHaveBeenCalledWith("/admin");
   });
 
-  it("calls signOut and redirects on logout", async () => {
+  it("waits for pending saves to flush, then calls signOut and redirects on logout", async () => {
     const user = userEvent.setup();
 
     // Mock window.location
@@ -144,6 +159,16 @@ describe("AppMenu", () => {
       value: locationMock,
       writable: true,
     });
+
+    // The flush stays in flight until the test finishes it.
+    let finishFlush: () => void = () => {};
+    mockFlushPendingSaves.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          logoutSteps.push("flush");
+          finishFlush = resolve;
+        }),
+    );
 
     render(
       <AppMenu
@@ -156,10 +181,19 @@ describe("AppMenu", () => {
     await user.click(screen.getByTestId("app-menu-trigger"));
     await user.click(screen.getByTestId("logout-button"));
 
-    expect(mockSignOut).toHaveBeenCalled();
-    // Wait for async signOut to complete
+    // Sign-out waits while the flush is still running.
+    await vi.waitFor(() => {
+      expect(mockFlushPendingSaves).toHaveBeenCalled();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(locationMock.href).toBe("");
+
+    finishFlush();
     await vi.waitFor(() => {
       expect(locationMock.href).toBe("/login");
     });
+    expect(mockSignOut).toHaveBeenCalled();
+    expect(logoutSteps).toEqual(["flush", "signOut"]);
   });
 });
