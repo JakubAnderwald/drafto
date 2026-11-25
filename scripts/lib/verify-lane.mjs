@@ -1521,6 +1521,7 @@ export function runStep(
     stderrFile = null,
     capture = false,
     group = false,
+    graceMs = KILL_GRACE_MS,
     onChild,
   },
 ) {
@@ -1562,7 +1563,11 @@ export function runStep(
       ? setTimeout(() => {
           timedOut = true;
           signal("SIGTERM");
-          setTimeout(() => signal("SIGKILL"), KILL_GRACE_MS).unref();
+          // A group's leader can exit on SIGTERM (and resolve this step)
+          // while a member that ignores it lives on: the group SIGKILL must
+          // still be sent, so that timer keeps the process alive.
+          const kill = setTimeout(() => signal("SIGKILL"), graceMs);
+          if (!group) kill.unref();
         }, timeoutMs)
       : null;
     child.once("error", (err) => {

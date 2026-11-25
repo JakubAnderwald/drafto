@@ -415,6 +415,49 @@ export async function saveLedger(ledger, file) {
 
 // mutateState (verify-lane.mjs) over the ledger: reload → mutate → save.
 const LEDGER_STORE = Object.freeze({ loadFactoryState: loadLedger, saveFactoryState: saveLedger });
+const LEDGER_LOCK_WAIT_MS = 15_000;
+const LEDGER_LOCK_STALE_MS = MINUTE_MS;
+
+/**
+ * mutateState under <file>.lock, a directory made with mkdir (atomic), so a
+ * read-check-save can't interleave with another process's. The factory's
+ * own calls are already serialised by its tick mutex; this covers an
+ * operator's CLI start / stop / housekeeping beside a tick. The section is a
+ * synchronous read and write, so a lock older than a minute was left by a
+ * dead process and is taken over.
+ */
+export async function mutateLedger(file, fn) {
+  const lock = `${file}.lock`;
+  nodeFs.mkdirSync(path.dirname(file), { recursive: true });
+  const until = Date.now() + LEDGER_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      nodeFs.mkdirSync(lock);
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+    }
+    try {
+      if (Date.now() - nodeFs.statSync(lock).mtimeMs > LEDGER_LOCK_STALE_MS) {
+        nodeFs.rmdirSync(lock);
+        continue;
+      }
+    } catch {
+      continue; // released meanwhile
+    }
+    if (Date.now() > until) throw new Error("the device ledger is locked");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  try {
+    return await mutateState(LEDGER_STORE, file, fn);
+  } finally {
+    try {
+      nodeFs.rmdirSync(lock);
+    } catch {
+      /* already gone */
+    }
+  }
+}
 
 export function attemptsFor(ledger, issue, sha) {
   const n = ledger.attempts?.[String(issue)]?.[sha];
@@ -430,7 +473,7 @@ function bumpAttempts(ledger, issue, sha, delta) {
 }
 
 async function finishLedgerRun(file, runId, { refund, last }) {
-  const out = await mutateState(LEDGER_STORE, file, (l) => {
+  const out = await mutateLedger(file, (l) => {
     const f = l.inFlight;
     if (!f || f.runId !== runId) return false;
     if (refund === "attempt") bumpAttempts(l, f.issue, f.sha, -1);
@@ -670,21 +713,35 @@ async function quick(ctx, cmd, args, { timeoutMs = QUICK_MS, env, cwd } = {}) {
  * SIGTERM <child>'s process group, then SIGKILL it once <graceMs> has gone by
  * if the leader is still alive (a gradle or xcodebuild that ignores SIGTERM).
  */
-export function killGroup(deps, child, graceMs = KILL_GRACE_MS) {
+export function killGroup(deps, child, graceMs = deps.killGraceMs ?? KILL_GRACE_MS) {
   if (!child?.pid) return null;
   const pid = child.pid;
   if (!deps.kill(-pid, "SIGTERM")) deps.kill(pid, "SIGTERM");
   // Escalate on the group, not its leader: gradle's wrapper can exit on
-  // SIGTERM while the daemon it forked keeps building. kill(-pid, 0) is true
+  // SIGTERM while the daemon it forked keeps building. groupAlive is true
   // while any member is left. The timer is kept referenced, so a supervisor
   // that is about to exit still sends it.
   return new Promise((resolve) => {
     setTimeout(() => {
-      if (deps.kill(-pid, 0)) deps.kill(-pid, "SIGKILL");
+      if (groupAlive(deps, pid)) deps.kill(-pid, "SIGKILL");
       else if (deps.isPidAlive(pid)) deps.kill(pid, "SIGKILL");
       resolve();
     }, graceMs);
   });
+}
+
+/**
+ * Whether process group <pgid> still has a member. Only ESRCH from a
+ * signal-0 probe means "gone": EPERM (a member we may not signal) is alive.
+ */
+export function groupAlive(deps, pgid) {
+  if (deps.groupAlive) return deps.groupAlive(pgid);
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    return err.code !== "ESRCH";
+  }
 }
 
 // ── process groups on record ────────────────────────────────────────────────
@@ -736,7 +793,7 @@ export async function killLingeringGroups(runDir, deps) {
   for (const [kind, entry] of Object.entries(readGroups(deps.fs, runDir))) {
     const pid = entry?.pid;
     if (kind === "emulator" || !Number.isInteger(pid) || pid <= 1) continue;
-    if (deps.kill(-pid, 0) && deps.kill(-pid, "SIGKILL")) killed.push(pid);
+    if (groupAlive(deps, pid) && deps.kill(-pid, "SIGKILL")) killed.push(pid);
   }
   return killed;
 }
@@ -749,13 +806,16 @@ export async function killLingeringGroups(runDir, deps) {
 export async function guardedRun(ctx, cmd, args, opts) {
   await ctx.checkpoint();
   let hit = null;
+  // This step's own child and liveness: a probe that resolves after the step
+  // ended must neither kill the next step's child nor be lost on it.
+  let mine = null;
+  let active = true;
   const timer = setInterval(async () => {
-    if (hit) return;
+    if (hit || !active) return;
     const why = await ctx.interruptReason();
-    if (why) {
-      hit = why;
-      killGroup(ctx.deps, ctx.status.child);
-    }
+    if (!why || hit || !active) return;
+    hit = why;
+    killGroup(ctx.deps, mine);
   }, ctx.pollMs ?? POLL_MS);
   timer.unref?.();
   let r;
@@ -764,18 +824,37 @@ export async function guardedRun(ctx, cmd, args, opts) {
       group: true,
       ...opts,
       onChild: (c) => {
+        mine = c;
         ctx.status.child = c;
-        recordGroup(ctx, "child", c?.pid, path.basename(cmd));
+        recordGroup(ctx, groupKey(c?.pid), c?.pid, path.basename(cmd));
       },
     });
   } finally {
+    active = false;
     clearInterval(timer);
-    if (ctx.status.child) recordGroup(ctx, "child", null);
     ctx.status.child = null;
+    if (mine?.pid) await settleStepGroup(ctx, mine.pid);
   }
   if (hit) throw new Interrupt(hit);
   await ctx.checkpoint();
   return r;
+}
+
+function groupKey(pid) {
+  return `child:${pid}`;
+}
+
+/**
+ * After a step's leader exits: members of its group may live on (a forked
+ * daemon). Stop them, and forget the group only once it is confirmed gone;
+ * otherwise the record stays for killLingeringGroups and housekeeping.
+ */
+async function settleStepGroup(ctx, pgid) {
+  if (groupAlive(ctx.deps, pgid)) {
+    ctx.log?.(`step group ${pgid} outlived its leader; stopping it`);
+    await killGroup(ctx.deps, { pid: pgid });
+  }
+  if (!groupAlive(ctx.deps, pgid)) recordGroup(ctx, groupKey(pgid), null);
 }
 
 function makeChecks(ctx) {
@@ -1142,8 +1221,34 @@ export function judgeArtifact({ readOk, prodFound, configText }) {
   if (!configText.includes(DEV_REF)) return { ok: false, problem: "no-dev-ref" };
   const config = parseJson(configText, null);
   if (!config) return { ok: false, problem: "app-config-unparsable" };
+  // The field the Supabase client reads, not just any dev ref in the text.
+  const supabaseUrl = config?.extra?.supabaseUrl;
+  if (typeof supabaseUrl !== "string" || !supabaseUrl.startsWith(`https://${DEV_REF}.`)) {
+    return { ok: false, problem: "supabase-url" };
+  }
   if (config?.extra?.apiUrl !== INVALID_API_URL) return { ok: false, problem: "api-url" };
   return { ok: true, problem: null };
+}
+
+/**
+ * Every file under <dir>, for the artifact scan: unlike listFiles (the
+ * fingerprint's, where a missing directory is fine) it throws when any
+ * directory can't be read or an entry is neither a file nor a directory, so
+ * a scan is never silently partial. Symlinks are followed once (realpath).
+ */
+export function listFilesStrict(fs, dir, seen = new Set()) {
+  const real = fs.realpathSync(dir);
+  if (seen.has(real)) return [];
+  seen.add(real);
+  const out = [];
+  for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, d.name);
+    const st = d.isSymbolicLink() ? fs.statSync(full) : d;
+    if (st.isDirectory()) out.push(...listFilesStrict(fs, full, seen));
+    else if (st.isFile()) out.push(full);
+    else throw new Error(`not a file or directory: ${full}`);
+  }
+  return out;
 }
 
 function bufferHas(buf, text) {
@@ -1189,7 +1294,12 @@ export async function checkArtifact(ctx, platform, artifact) {
   let readOk = true;
   let prodFound = false;
   let configText = null;
-  const files = listFiles(fs, artifact);
+  let files = [];
+  try {
+    files = listFilesStrict(fs, artifact);
+  } catch {
+    readOk = false;
+  }
   if (files.length === 0) readOk = false;
   for (const file of files) {
     let buf;
@@ -1819,7 +1929,7 @@ export function platformVerdict(flows) {
  * device-output.json entry. A PlatformError becomes the entry's state; an
  * Interrupt (or anything unexpected) propagates after the device is stopped.
  */
-export async function runPlatform(ctx, platform, { flows, account, needsAccount }) {
+export async function runPlatform(ctx, platform, { flows, account, needsAccount, unavailable }) {
   const { deps, meta } = ctx;
   const fs = deps.fs;
   const res = { state: "running", verdict: null, build: null, flows: [] };
@@ -1832,6 +1942,8 @@ export async function runPlatform(ctx, platform, { flows, account, needsAccount 
   ctx.stepLog = path.join(ctx.platDir, "steps.log");
   let deviceUp = false;
   try {
+    // Known before anything builds: e.g. the PR deletes the smoke flow.
+    if (unavailable) throw new PlatformError(`unavailable:${unavailable}`);
     if (needsAccount && !account) throw new PlatformError("unavailable:no-account");
     if (platform === "ios") {
       if (!meta.iosSimUdid) throw new PlatformError("unavailable:no-simulator");
@@ -2012,6 +2124,7 @@ export async function runSupervise({ runDir }, { deps = createDeviceDeps() } = {
         flows: plan.flows,
         account,
         needsAccount: meta.needsAccount,
+        unavailable: plan.unavailable ?? null,
       });
     }
   } catch (err) {
@@ -2187,7 +2300,9 @@ async function readFlowTags(files, sha, repoRoot, deps) {
   const tags = {};
   for (const file of files.filter((f) => f.startsWith(`${E2E_DIR}/`) && /\.ya?ml$/.test(f))) {
     const r = await deps.git(["show", `${sha}:${file}`], { cwd: repoRoot });
-    if (r.code === 0) tags[file] = parseFlowTags(r.stdout);
+    // Unreadable at the head (and not deleted, which the plan handles): its
+    // eligibility is unknown, so it isn't run.
+    tags[file] = r.code === 0 ? parseFlowTags(r.stdout) : null;
   }
   return tags;
 }
@@ -2251,7 +2366,12 @@ export async function runStart(opts, deps) {
     requested ? requested.includes(p) : Boolean(plan.platforms[p]),
   );
   const platforms = {};
-  for (const p of order) platforms[p] = { flows: plan.platforms[p]?.flows ?? [smokeFlow(p)] };
+  for (const p of order) {
+    const planned = plan.platforms[p];
+    platforms[p] = planned?.unavailable
+      ? { flows: [], unavailable: planned.unavailable }
+      : { flows: planned?.flows ?? [smokeFlow(p)] };
+  }
 
   const accountProblem = deviceAccountProblem(knobs.accountFile, deps.fs);
   if (accountProblem) return refuse("account", { problem: accountProblem });
@@ -2264,7 +2384,7 @@ export async function runStart(opts, deps) {
   const deadlineAt = addMinutes(now, knobs.runMaxMin);
   const runDir = path.join(runRoot, runId);
   let reserved = null;
-  await mutateState(LEDGER_STORE, ledgerFile, (l) => {
+  await mutateLedger(ledgerFile, (l) => {
     if (l.inFlight) return false;
     const attempt = bumpAttempts(l, issue, sha, 1);
     l.inFlight = {
@@ -2285,15 +2405,25 @@ export async function runStart(opts, deps) {
   if (!reserved) return refuse("deferred:busy");
 
   const lockFile = deviceLockPath(knobs);
+  let lockTaken = false;
   const giveBack = async () => {
     await finishLedgerRun(ledgerFile, runId, { refund: "attempt", last: null });
-    releasePidLock(lockFile, deps.pid, deps);
+    // Only a lock this start took: never one another process holds.
+    if (lockTaken) releasePidLock(lockFile, deps.pid, deps);
   };
-  const took = takePidLock(lockFile, deps.pid, deps);
+  let took;
+  try {
+    took = takePidLock(lockFile, deps.pid, deps);
+  } catch (err) {
+    // A volume gone read-only after the disk checks: give the slot back.
+    await giveBack();
+    return refuse("start-failed", { error: err.message });
+  }
   if (!took.ok) {
     await giveBack();
     return refuse("deferred:busy", { holder: took.holder });
   }
+  lockTaken = true;
   let spawned = null;
   try {
     await ensureDeviceWorktrees({ repoRoot, sha, platforms: order, knobs }, deps);
@@ -2334,7 +2464,7 @@ export async function runStart(opts, deps) {
     );
     if (!spawned.ok) throw new Error(`supervisor failed to start: ${spawned.reason}`);
     handOverPidLock(lockFile, deps.pid, spawned.pid, deps);
-    const attached = await mutateState(LEDGER_STORE, ledgerFile, (l) => {
+    const attached = await mutateLedger(ledgerFile, (l) => {
       if (l.inFlight?.runId !== runId) return false;
       l.inFlight.pid = spawned.pid;
       return true;
@@ -2433,6 +2563,44 @@ function signalRun(inFlight, reason, deps) {
   }
 }
 
+// A stopped supervisor gets this long to shut its device down and exit
+// before housekeeping SIGKILLs it and cleans up after it.
+const STOP_ESCALATE_MS = 5 * MINUTE_MS;
+
+/** Keep the slot, marked as stopping: finalised once the supervisor is gone. */
+async function markStopping(ledgerFile, runId, stopping) {
+  const out = await mutateLedger(ledgerFile, (l) => {
+    if (l.inFlight?.runId !== runId) return false;
+    l.inFlight.stopping ??= stopping;
+    return true;
+  });
+  return out === true;
+}
+
+/** The simulator the run itself booted (its meta.json), never today's config. */
+export function runSimUdid(fs, runDir) {
+  const meta = runDir ? parseJson(readText(fs, path.join(runDir, "meta.json")), null) : null;
+  const udid = meta?.iosSimUdid;
+  return typeof udid === "string" && /^[0-9A-Fa-f-]{36}$/.test(udid) ? udid : null;
+}
+
+/**
+ * After a supervisor that is gone (or was SIGKILLed): its recorded step
+ * groups, its devices (the emulator cleanly before its group is killed), by
+ * the run's own UDID.
+ */
+async function cleanUpAfterRun(inFlight, { knobs, repoRoot }, deps) {
+  const groups = await killRecordedGroups(inFlight.runDir, "SIGKILL", deps, {
+    skip: ["emulator"],
+  });
+  const ctx = hkCtx(deps, knobs, repoRoot);
+  const devices = await stopAllDevices(ctx, runSimUdid(deps.fs, inFlight.runDir));
+  groups.push(
+    ...(await killRecordedGroups(inFlight.runDir, "SIGKILL", deps, { only: ["emulator"] })),
+  );
+  return { groups, devices };
+}
+
 export async function runStop(opts, deps) {
   const { issue, repoRoot } = opts;
   const reason = opts.reason ?? "stop";
@@ -2454,10 +2622,16 @@ export async function runStop(opts, deps) {
       signalled = deps.kill(-pid, "SIGTERM") || signalled;
     }
   }
-  // No live supervisor to wind its children down: their groups directly.
-  const groups = signalled ? [] : await killRecordedGroups(inFlight.runDir, "SIGTERM", deps);
   const refund = REFUNDED_STOPS.has(reason) ? "attempt" : "none";
   const now = opts.now ?? deps.now();
+  if (signalled) {
+    // The slot stays until the supervisor has shut its device down and gone;
+    // housekeeping finalises it, or escalates a supervisor that doesn't stop.
+    await markStopping(ledgerFile, inFlight.runId, { reason, refund, at: isoSeconds(now) });
+    return { state: "stopping", runId: inFlight.runId, reason, signalled, refund };
+  }
+  // No live supervisor to wind its children down: their groups directly.
+  const groups = await killRecordedGroups(inFlight.runDir, "SIGTERM", deps);
   const finished = await finishLedgerRun(ledgerFile, inFlight.runId, {
     refund,
     last: lastFor(inFlight, `stopped:${reason}`, now),
@@ -2480,14 +2654,25 @@ async function reapIdle({ repoRoot, runRoot, knobs, now, liveRunId = null }, dep
   if (!holder.alive) {
     if (deps.fs.existsSync(lockFile)) reaped.lock = releasePidLock(lockFile, deps.pid, deps);
     // Nothing holds the devices: anything still up on the lane's port or UDID
-    // was left by a supervisor that died.
-    if (!liveRunId) {
-      const ctx = hkCtx(deps, knobs, repoRoot);
-      const udid = readIosSimUdid(repoRoot, deps.fs);
-      const emu = ctx.bins.adb ? await emulatorRunning(ctx) : false;
-      const sim = udid && ctx.bins.xcrun ? await simState(ctx, udid) : null;
-      if (emu || sim?.state === "Booted") {
-        reaped.devices = await stopAllDevices(ctx, sim?.state === "Booted" ? udid : null);
+    // was left by a supervisor that died. The device lock is held from the
+    // probe through the stop, so a start can't boot a device in between.
+    let took = { ok: false };
+    try {
+      took = liveRunId ? took : takePidLock(lockFile, deps.pid, deps);
+    } catch {
+      took = { ok: false };
+    }
+    if (took.ok) {
+      try {
+        const ctx = hkCtx(deps, knobs, repoRoot);
+        const udid = readIosSimUdid(repoRoot, deps.fs);
+        const emu = ctx.bins.adb ? await emulatorRunning(ctx) : false;
+        const sim = udid && ctx.bins.xcrun ? await simState(ctx, udid) : null;
+        if (emu || sim?.state === "Booted") {
+          reaped.devices = await stopAllDevices(ctx, sim?.state === "Booted" ? udid : null);
+        }
+      } finally {
+        releasePidLock(lockFile, deps.pid, deps);
       }
     }
   }
@@ -2519,6 +2704,10 @@ async function reapIdle({ repoRoot, runRoot, knobs, now, liveRunId = null }, dep
     } catch {
       continue;
     }
+    // FACTORY_DEVICE_KEEP_RAW, as the run had it: its raw logs stay (until
+    // the run dir's own retention ends).
+    const meta = parseJson(readText(deps.fs, path.join(full, "meta.json")), null);
+    if (meta?.knobs?.keepRaw === true) continue;
     if (deps.fs.existsSync(path.join(full, "private"))) {
       rmQuiet(deps.fs, path.join(full, "private"));
       reaped.privateDirs.push(full);
@@ -2542,6 +2731,12 @@ export async function runHousekeeping(opts, deps) {
   const base = { runId: inFlight.runId, issue: inFlight.issue, sha: inFlight.sha };
   const poll = await pollRun(inFlight, { now }, deps);
   const live = poll.state === "running" || poll.state === "overdue";
+  if (inFlight.stopping && !opts.dryRun) {
+    return finishStopping(
+      { inFlight, poll, live, now, knobs, repoRoot, runRoot, ledgerFile },
+      deps,
+    );
+  }
   if (live && !opts.dryRun) {
     const why = await stopReasonFor(inFlight, deps);
     if (why) {
@@ -2550,19 +2745,14 @@ export async function runHousekeeping(opts, deps) {
       // Overdue: the supervisor is wedged and may never stop its children.
       if (poll.state === "overdue") await killRecordedGroups(inFlight.runDir, poll.signal, deps);
       const refund = REFUNDED_STOPS.has(why) ? "attempt" : "none";
-      // The supervisor shuts its device down and drops the device lock itself;
-      // until it has, the lock keeps the next run from starting.
-      const finished = await finishLedgerRun(ledgerFile, inFlight.runId, {
-        refund,
-        last: lastFor(inFlight, `stopped:${why}`, now),
-      });
-      return {
-        ...base,
-        state: "terminated",
+      // The slot stays, marked stopping, until the supervisor has shut its
+      // device down and gone (or is escalated); the refund comes then.
+      await markStopping(ledgerFile, inFlight.runId, {
         reason: why,
         refund,
-        ...(finished ? {} : { finishedElsewhere: true }),
-      };
+        at: isoSeconds(now),
+      });
+      return { ...base, state: "terminated", reason: why, refund };
     }
   }
   if (poll.state === "starting" || poll.state === "running") return { ...base, state: poll.state };
@@ -2604,12 +2794,7 @@ export async function runHousekeeping(opts, deps) {
     // A supervisor that died never stopped its children or its device. The
     // emulator is shut down cleanly first (a SIGKILLed qemu can leave AVD
     // locks and an unclean snapshot); its group is killed only if that fails.
-    groups = await killRecordedGroups(inFlight.runDir, "SIGKILL", deps, { skip: ["emulator"] });
-    const ctx = hkCtx(deps, knobs, repoRoot);
-    devices = await stopAllDevices(ctx, readIosSimUdid(repoRoot, deps.fs));
-    groups.push(
-      ...(await killRecordedGroups(inFlight.runDir, "SIGKILL", deps, { only: ["emulator"] })),
-    );
+    ({ groups, devices } = await cleanUpAfterRun(inFlight, { knobs, repoRoot }, deps));
   }
   const finished = await finishLedgerRun(ledgerFile, inFlight.runId, {
     refund: c.refund,
@@ -2623,6 +2808,46 @@ export async function runHousekeeping(opts, deps) {
     refund: c.refund,
     runDir: inFlight.runDir,
     ...(devices ? { devices, groups } : {}),
+    ...(finished ? {} : { finishedElsewhere: true }),
+    reaped,
+  };
+}
+
+/**
+ * A run that was told to stop: finalise it once its supervisor is gone;
+ * SIGKILL it (and clean up after it) once it has had STOP_ESCALATE_MS.
+ */
+async function finishStopping(
+  { inFlight, poll, live, now, knobs, repoRoot, runRoot, ledgerFile },
+  deps,
+) {
+  const { reason, refund, at } = inFlight.stopping;
+  const base = { runId: inFlight.runId, issue: inFlight.issue, sha: inFlight.sha, reason };
+  const waitedMs = Date.parse(now) - Date.parse(at ?? now);
+  const starting = poll.state === "starting";
+  if ((live || starting) && waitedMs < STOP_ESCALATE_MS) return { ...base, state: "stopping" };
+  let escalated = false;
+  if (live) {
+    deps.kill(-inFlight.pid, "SIGKILL");
+    escalated = true;
+  } else if (starting || poll.unattached) {
+    const procs = (await deps.listProcesses()) ?? [];
+    for (const pid of supervisorPids(procs, inFlight.runId)) deps.kill(-pid, "SIGKILL");
+    escalated = true;
+  }
+  // A supervisor that wrote exit.json cleaned up after itself.
+  const cleanup = poll.exit ? null : await cleanUpAfterRun(inFlight, { knobs, repoRoot }, deps);
+  const finished = await finishLedgerRun(ledgerFile, inFlight.runId, {
+    refund,
+    last: lastFor(inFlight, `stopped:${reason}`, now),
+  });
+  const reaped = await reapIdle({ repoRoot, runRoot, knobs, now }, deps);
+  return {
+    ...base,
+    state: "stopped",
+    refund,
+    escalated,
+    ...(cleanup ? cleanup : {}),
     ...(finished ? {} : { finishedElsewhere: true }),
     reaped,
   };

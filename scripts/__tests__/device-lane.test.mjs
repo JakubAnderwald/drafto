@@ -74,6 +74,10 @@ import {
   killRecordedGroups,
   readGroups,
   runSelftestBuild,
+  checkArtifact,
+  guardedRun,
+  mutateLedger,
+  runSimUdid,
 } from "../lib/device-lane.mjs";
 import { flowNeedsSignIn } from "../lib/device-plan.mjs";
 
@@ -213,6 +217,8 @@ function makeHarness() {
     psCommand: async (pid) =>
       pid === SUP_PID ? `node device-lane.mjs _supervise ${state.runId ?? ""}` : "",
     listProcesses: async () => state.procs,
+    groupAlive: (pgid) => state.alive.has(pgid) || state.aliveGroups.has(pgid),
+    killGraceMs: 5,
     kill: (pid, signal) => {
       // Signal 0 only asks whether the process (or group) still exists.
       if (signal === 0) {
@@ -495,17 +501,35 @@ describe("artifact check", () => {
       judgeArtifact({ readOk: true, prodFound: false, configText: noDev }).problem,
       "no-dev-ref",
     );
+    const devUrl = `https://${DEV_REF}.supabase.co`;
     const prodApi = JSON.stringify({
-      extra: { supabaseUrl: DEV_REF, apiUrl: "https://drafto.eu" },
+      extra: { supabaseUrl: devUrl, apiUrl: "https://drafto.eu" },
     });
     assert.equal(
       judgeArtifact({ readOk: true, prodFound: false, configText: prodApi }).problem,
       "api-url",
     );
-    const noApi = JSON.stringify({ extra: { supabaseUrl: DEV_REF } });
+    const noApi = JSON.stringify({ extra: { supabaseUrl: devUrl } });
     assert.equal(
       judgeArtifact({ readOk: true, prodFound: false, configText: noApi }).problem,
       "api-url",
+    );
+    // A dev ref somewhere else doesn't make the client's URL a dev one.
+    const otherUrl = JSON.stringify({
+      extra: {
+        supabaseUrl: "https://someotherref.supabase.co",
+        apiUrl: INVALID_API_URL,
+        note: DEV_REF,
+      },
+    });
+    assert.equal(
+      judgeArtifact({ readOk: true, prodFound: false, configText: otherUrl }).problem,
+      "supabase-url",
+    );
+    const noUrl = JSON.stringify({ extra: { apiUrl: INVALID_API_URL, note: DEV_REF } });
+    assert.equal(
+      judgeArtifact({ readOk: true, prodFound: false, configText: noUrl }).problem,
+      "supabase-url",
     );
     assert.equal(
       judgeArtifact({ readOk: true, prodFound: false, configText: null }).problem,
@@ -891,10 +915,42 @@ describe("housekeeping and stop", () => {
     assert.equal(out.reason, "head-moved");
     assert.ok(h.kills.some((k) => k.pid === -SUP_PID && k.signal === "SIGTERM"));
     assert.deepEqual(readJson(path.join(r.runDir, STOP_REQUEST_FILE)), { reason: "head-moved" });
-    const ledger = await loadLedger(ledgerPath(h.repoRoot));
+    // The slot stays, marked stopping, until the supervisor has gone.
+    let ledger = await loadLedger(ledgerPath(h.repoRoot));
+    assert.equal(ledger.inFlight.stopping.reason, "head-moved");
+    assert.equal(attemptsFor(ledger, "874", SHA), 1);
+    assert.equal((await start()).reason, "deferred:busy");
+    assert.equal((await runHousekeeping({ repoRoot: h.repoRoot }, h.deps)).state, "stopping");
+    // It shut down and wrote exit.json: finalised, refunded once.
+    h.alive.delete(SUP_PID);
+    writeFileSync(
+      path.join(r.runDir, "exit.json"),
+      JSON.stringify({ interrupt: "stopped:head-moved" }),
+    );
+    const done = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+    assert.equal(done.state, "stopped");
+    assert.equal(done.escalated, false);
+    ledger = await loadLedger(ledgerPath(h.repoRoot));
     assert.equal(ledger.inFlight, null);
     assert.equal(attemptsFor(ledger, "874", SHA), 0);
     assert.equal(ledger.last["874"].state, "stopped:head-moved");
+  });
+
+  it("a stopped supervisor that doesn't exit is SIGKILLed and cleaned up after", async () => {
+    const r = await start();
+    h.alive.add(SUP_PID);
+    const out = await runStop({ repoRoot: h.repoRoot, issue: "874", reason: "stop" }, h.deps);
+    assert.equal(out.state, "stopping");
+    // Still wedged five minutes later: escalated, devices stopped, slot freed.
+    const later = new Date(h.clock + 6 * 60_000).toISOString();
+    const done = await runHousekeeping({ repoRoot: h.repoRoot, now: later }, h.deps);
+    assert.equal(done.state, "stopped");
+    assert.equal(done.escalated, true);
+    assert.ok(h.kills.some((k) => k.pid === -SUP_PID && k.signal === "SIGKILL"));
+    assert.ok(emuKilled());
+    const ledger = await loadLedger(ledgerPath(h.repoRoot));
+    assert.equal(ledger.inFlight, null);
+    assert.equal(attemptsFor(ledger, "874", SHA), 0);
   });
 
   it("stops a run whose card left Testing / In Test, keeping the attempt spent", async () => {
@@ -955,9 +1011,13 @@ describe("housekeeping and stop", () => {
     const r = await start();
     h.alive.add(SUP_PID);
     const out = await runStop({ repoRoot: h.repoRoot, issue: "874", reason: "stop" }, h.deps);
-    assert.equal(out.state, "stopped");
+    assert.equal(out.state, "stopping");
     assert.equal(out.refund, "attempt");
     assert.ok(existsSync(path.join(r.runDir, STOP_REQUEST_FILE)));
+    assert.ok((await loadLedger(ledgerPath(h.repoRoot))).inFlight.stopping);
+    h.alive.delete(SUP_PID);
+    const done = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+    assert.equal(done.state, "stopped");
     assert.equal((await loadLedger(ledgerPath(h.repoRoot))).inFlight, null);
   });
 });
@@ -1101,12 +1161,27 @@ describe("flows read the password through the env fallback", () => {
   const FALLBACK =
     "${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}";
 
+  // Every static subflow a flow names: `runFlow: x.yaml` and `file: x.yaml`
+  // (under `- runFlow:`), quoted or not, with or without a trailing comment.
+  // A `runFlow:` with neither a path nor a nested block is a parse gap.
   function runFlowTargets(file) {
-    const text = readFileSync(file, "utf8");
+    const lines = readFileSync(file, "utf8").split("\n");
     const targets = [];
-    for (const m of text.matchAll(/^\s*-?\s*runFlow:\s*([^\s#]+\.ya?ml)\s*$/gm)) targets.push(m[1]);
-    for (const m of text.matchAll(/^\s*file:\s*([^\s#]+\.ya?ml)\s*$/gm)) targets.push(m[1]);
-    return targets.map((t) => path.resolve(path.dirname(file), t));
+    const ref = /^\s*(?:-\s*)?(runFlow|file):\s*(?:(["'])(.*?)\2|([^\s#"']*))\s*(?:#.*)?$/;
+    for (const line of lines) {
+      if (/^\s*#/.test(line)) continue;
+      const m = ref.exec(line);
+      if (!m) continue;
+      const target = m[3] ?? m[4];
+      if (!target) {
+        assert.equal(m[1], "runFlow", `${path.relative(REPO, file)}: empty ${m[1]}`);
+        continue; // `- runFlow:` with a nested file:/commands: block
+      }
+      if (target.includes("${")) continue; // dynamic: not a static target
+      assert.match(target, /\.ya?ml$/, `${path.relative(REPO, file)}: ${line.trim()}`);
+      targets.push(path.resolve(path.dirname(file), target));
+    }
+    return targets;
   }
 
   function closure(start) {
@@ -1114,12 +1189,26 @@ describe("flows read the password through the env fallback", () => {
     const queue = [start];
     while (queue.length) {
       const f = queue.shift();
-      if (seen.has(f) || !existsSync(f)) continue;
+      if (seen.has(f)) continue;
+      assert.ok(existsSync(f), `subflow not found: ${path.relative(REPO, f)}`);
       seen.add(f);
       queue.push(...runFlowTargets(f));
     }
     return [...seen];
   }
+
+  it("the traversal reads quoted targets and fails on a missing one", () => {
+    const dir = path.join(h.tmp, "flows");
+    mkdirSync(path.join(dir, "helpers"), { recursive: true });
+    writeFileSync(path.join(dir, "helpers", "a.yaml"), "appId: x\n---\n- launchApp\n");
+    writeFileSync(
+      path.join(dir, "top.yaml"),
+      "appId: x\n---\n- runFlow: \"helpers/a.yaml\" # quoted\n- runFlow:\n    file: 'helpers/a.yaml'\n",
+    );
+    assert.deepEqual(closure(path.join(dir, "top.yaml")).length, 2);
+    writeFileSync(path.join(dir, "bad.yaml"), "appId: x\n---\n- runFlow: helpers/missing.yaml\n");
+    assert.throws(() => closure(path.join(dir, "bad.yaml")), /subflow not found/);
+  });
 
   for (const top of ["ios-all.yaml", "android-all.yaml", "09-password-visibility.yaml"]) {
     it(`${top} and every flow it runs`, () => {
@@ -1255,7 +1344,7 @@ describe("review fixes", () => {
       runDir = r.runDir;
       h.deps.pid = SUP_PID;
       await runSupervise({ runDir }, { deps: h.deps });
-      assert.deepEqual(during.child, { pid: 7100, match: "gradlew" });
+      assert.deepEqual(during["child:7100"], { pid: 7100, match: "gradlew" });
       assert.deepEqual(during.emulator, undefined);
       assert.equal(existsSync(path.join(runDir, PGIDS_FILE)), false);
     });
@@ -1371,13 +1460,23 @@ describe("review fixes", () => {
 
     it("selftest --build: Ctrl-C stops the step and still shuts the emulator down", async () => {
       const before = process.listenerCount("SIGINT");
-      h.onRun = (cmd) => {
-        if (path.basename(cmd) === "maestro") process.emit("SIGINT");
-        return null;
+      let signalled = false;
+      h.onRun = async (cmd, args, opts) => {
+        if (path.basename(cmd) !== "maestro" || signalled) return null;
+        signalled = true;
+        // A running step: it ends only once the handler has signalled its group.
+        opts.onChild?.({ pid: 7650 });
+        h.alive.add(7650);
+        process.emit("SIGINT");
+        const hit = () => h.kills.some((k) => k.pid === -7650 && k.signal === "SIGTERM");
+        for (let i = 0; i < 200 && !hit(); i++) await new Promise((res) => setTimeout(res, 5));
+        h.alive.delete(7650);
+        return { code: 143, stdout: "", timedOut: false };
       };
       const out = await runSelftestBuild({ repoRoot: h.repoRoot, platform: "android" }, h.deps);
       assert.equal(out.ok, false);
       assert.equal(out.platform.state, "stopped:signal");
+      assert.ok(h.kills.some((k) => k.pid === -7650 && k.signal === "SIGTERM"));
       assert.ok(emuKilled());
       assert.equal(process.listenerCount("SIGINT"), before);
       assert.equal(existsSync(deviceLockPath(h.knobs)), false);
@@ -1636,5 +1735,217 @@ describe("JDK toolchains for gradle", () => {
     assert.ok(args.includes("-Porg.gradle.java.installations.paths=/jdk17,/jbr 21"));
     const none = androidBuildArgsForJdk(knobs, []);
     assert.ok(!none.some((a) => a.startsWith("-Porg.gradle.java.installations.paths=")));
+  });
+});
+
+describe("review round 3", () => {
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  function stepCtx(extra = {}) {
+    return {
+      deps: h.deps,
+      status: { child: null },
+      checkpoint: async () => {},
+      interruptReason: async () => null,
+      pollMs: 5,
+      recordGroups: true,
+      runDir: h.tmp,
+      log: () => {},
+      ...extra,
+    };
+  }
+  const step = (pid, ms) => async (cmd, args, opts) => {
+    opts.onChild?.({ pid });
+    await sleep(ms);
+    return { code: 0, stdout: "", timedOut: false };
+  };
+
+  describe("guardedRun", () => {
+    it("a probe that resolves after its step ended never touches the next step", async () => {
+      let calls = 0;
+      const ctx = stepCtx({
+        interruptReason: async () => {
+          if (++calls > 1) return null;
+          await sleep(40); // a slow memory probe, started during step A
+          return "stopped:memory";
+        },
+      });
+      h.deps.run = step(8001, 15);
+      await guardedRun(ctx, "/bin/a", [], {});
+      h.deps.run = step(8002, 80);
+      const b = await guardedRun(ctx, "/bin/b", [], {});
+      assert.equal(b.code, 0);
+      assert.ok(!h.kills.some((k) => Math.abs(k.pid) === 8002), JSON.stringify(h.kills));
+    });
+
+    it("a probe that resolves while its step runs interrupts that step", async () => {
+      let calls = 0;
+      const ctx = stepCtx({
+        interruptReason: async () => (++calls === 1 ? "stopped:memory" : null),
+      });
+      h.deps.run = step(8003, 60);
+      await assert.rejects(guardedRun(ctx, "/bin/a", [], {}), /stopped:memory/);
+      assert.ok(h.kills.some((k) => k.pid === -8003 && k.signal === "SIGTERM"));
+    });
+
+    it("keeps a step's group on record until its members are gone", async () => {
+      const ctx = stepCtx();
+      h.aliveGroups.add(8100); // the leader exits, a forked daemon stays
+      h.deps.run = step(8100, 1);
+      const kill = h.deps.kill;
+      h.deps.kill = () => true; // a member that survives even SIGKILL (for now)
+      await guardedRun(ctx, "/bin/gradlew", [], {});
+      assert.deepEqual(readGroups(nodeFs, h.tmp)["child:8100"], { pid: 8100, match: "gradlew" });
+      // Gone once SIGKILL lands: the record is dropped.
+      h.deps.kill = (pid, sig) => {
+        if (sig === "SIGKILL") h.aliveGroups.delete(Math.abs(pid));
+        return kill(pid, sig);
+      };
+      h.deps.run = step(8101, 1);
+      h.aliveGroups.add(8101);
+      await guardedRun(ctx, "/bin/xcodebuild", [], {});
+      assert.equal(readGroups(nodeFs, h.tmp)["child:8101"], undefined);
+      assert.ok(h.kills.some((k) => k.pid === -8101 && k.signal === "SIGKILL"));
+    });
+  });
+
+  it("an iOS artifact with an unreadable directory is refused, not half-scanned", async (t) => {
+    if (process.getuid?.() === 0) return t.skip("root reads everything");
+    const app = path.join(h.tmp, "Drafto.app");
+    mkdirSync(path.join(app, "EXConstants.bundle"), { recursive: true });
+    writeFileSync(path.join(app, "EXConstants.bundle", "app.config"), GOOD_CONFIG);
+    const ctx = { deps: h.deps, meta: { bins: {} }, rawDir: h.tmp, cwd: h.tmp };
+    assert.deepEqual(await checkArtifact(ctx, "ios", app), { ok: true, problem: null });
+    const hidden = path.join(app, "Frameworks");
+    mkdirSync(hidden);
+    writeFileSync(path.join(hidden, "x.js"), `https://${PROD_REF}.supabase.co`);
+    chmodSync(hidden, 0o000);
+    try {
+      assert.deepEqual(await checkArtifact(ctx, "ios", app), { ok: false, problem: "unreadable" });
+    } finally {
+      chmodSync(hidden, 0o700);
+    }
+  });
+
+  describe("ledger", () => {
+    it("mutateLedger waits for another process's lock", async () => {
+      const file = ledgerPath(h.repoRoot);
+      mkdirSync(path.dirname(file), { recursive: true });
+      mkdirSync(`${file}.lock`);
+      let done = false;
+      const p = mutateLedger(file, (l) => {
+        l.last.x = 1;
+        done = true;
+        return true;
+      });
+      await sleep(60);
+      assert.equal(done, false);
+      nodeFs.rmdirSync(`${file}.lock`);
+      await p;
+      assert.equal(done, true);
+      assert.equal((await loadLedger(file)).last.x, 1);
+      assert.equal(existsSync(`${file}.lock`), false);
+    });
+
+    it("takes over a lock left by a dead process", async () => {
+      const file = ledgerPath(h.repoRoot);
+      mkdirSync(`${file}.lock`, { recursive: true });
+      const old = new Date(Date.now() - 2 * 60_000);
+      utimesSync(`${file}.lock`, old, old);
+      assert.equal(await mutateLedger(file, () => true), true);
+    });
+
+    it("a lock take that throws gives the reservation back", async () => {
+      const lock = deviceLockPath(h.knobs);
+      const real = h.deps.fs;
+      h.deps.fs = new Proxy(real, {
+        get(target, key) {
+          if (key === "writeFileSync") {
+            return (f, ...rest) => {
+              if (String(f).startsWith(lock)) throw new Error("EROFS: read-only file system");
+              return target.writeFileSync(f, ...rest);
+            };
+          }
+          return target[key];
+        },
+      });
+      const r = await start();
+      assert.equal(r.reason, "start-failed");
+      const ledger = await loadLedger(ledgerPath(h.repoRoot));
+      assert.equal(ledger.inFlight, null);
+      assert.equal(attemptsFor(ledger, "874", SHA), 0);
+      h.deps.fs = real;
+      assert.equal((await start()).started, true);
+    });
+  });
+
+  it("idle housekeeping holds the device lock from the probe through the stop", async () => {
+    h.simBooted = true;
+    h.alive.add(9999);
+    h.alive.add(TICK_PID); // the housekeeping process itself
+    let tookDuringProbe = null;
+    h.onRun = (cmd, args) => {
+      if (path.basename(cmd) === "xcrun" && args.includes("list")) {
+        tookDuringProbe = takePidLock(deviceLockPath(h.knobs), 9999, h.deps).ok;
+      }
+      return null;
+    };
+    const out = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+    assert.equal(tookDuringProbe, false);
+    assert.ok(out.reaped.devices);
+    assert.equal(existsSync(deviceLockPath(h.knobs)), false);
+  });
+
+  it("housekeeping keeps private/ of a run made with FACTORY_DEVICE_KEEP_RAW=1", async () => {
+    const runRoot = path.join(h.repoRoot, "logs", "factory", "device", "runs");
+    const keep = path.join(runRoot, "874-aaaaaaaaaaaa-20261120T000000Z");
+    const drop = path.join(runRoot, "874-aaaaaaaaaaaa-20261121T000000Z");
+    for (const d of [keep, drop]) mkdirSync(path.join(d, "private"), { recursive: true });
+    writeFileSync(path.join(keep, "meta.json"), JSON.stringify({ knobs: { keepRaw: true } }));
+    writeFileSync(path.join(drop, "meta.json"), JSON.stringify({ knobs: { keepRaw: false } }));
+    const out = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+    assert.deepEqual(out.reaped.privateDirs, [drop]);
+    assert.ok(existsSync(path.join(keep, "private")));
+  });
+
+  it("a lost run's simulator comes from its meta.json, not today's config", async () => {
+    const r = await start();
+    assert.equal(runSimUdid(nodeFs, r.runDir), h.udid);
+    const other = "99999999-8888-7777-6666-555555555555";
+    writeFileSync(
+      path.join(h.repoRoot, "logs", "factory", "device-config.json"),
+      JSON.stringify({ iosSimUdid: other }),
+    );
+    const out = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+    assert.equal(out.outcome, "retry:lost");
+    const shutdowns = callsOf("xcrun").filter((c) => c.args.includes("shutdown"));
+    assert.ok(shutdowns.some((c) => c.args.includes(h.udid)));
+    assert.ok(!shutdowns.some((c) => c.args.includes(other)));
+  });
+
+  it("a PR that deletes the smoke flow: the platform is unavailable, nothing builds", async () => {
+    h.prView.files = [{ path: "apps/mobile/e2e/ios-all.yaml", changeType: "DELETED" }];
+    const { r, output } = await startAndSupervise();
+    assert.deepEqual(r.platforms, { ios: { flows: [], unavailable: "no-smoke-flow" } });
+    assert.equal(output.platforms.ios.state, "unavailable:no-smoke-flow");
+    assert.equal(callsOf("xcodebuild").length, 0);
+    assert.equal(callsOf("pnpm").length, 0);
+  });
+
+  it("a flow whose header can't be read at the head isn't run", async () => {
+    h.prView.files = [{ path: "apps/mobile/e2e/10-swipe-hint.yaml" }];
+    const git = h.deps.git;
+    h.deps.git = async (args, opts) =>
+      args[0] === "show" ? { code: 128, stdout: "", timedOut: false } : git(args, opts);
+    const r = await start({ platforms: "ios" });
+    assert.deepEqual(r.platforms.ios.flows, ["apps/mobile/e2e/ios-all.yaml"]);
+    assert.ok(r.reasons.some((x) => /10-swipe-hint\.yaml skipped .*tags couldn't be read/.test(x)));
+  });
+
+  it("flowNeedsSignIn ignores a password named only in a trailing comment", () => {
+    const flow = 'appId: x\n---\n- launchApp\n- inputText: "search" # E2E_TEST_PASSWORD\n';
+    assert.equal(flowNeedsSignIn(flow), true);
+    const real =
+      "appId: x\n---\n- launchApp\n- inputText: \"${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}\" # sign in\n";
+    assert.equal(flowNeedsSignIn(real), false);
   });
 });

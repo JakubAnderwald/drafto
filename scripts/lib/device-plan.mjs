@@ -110,11 +110,14 @@ function headingPlatforms(heading) {
  * @param {object} input
  * @param {string[]} input.diffFiles         repo-relative paths the PR changes
  * @param {{heading: string, text?: string}[]} [input.scenarioSections]
- * @param {Record<string, string[]>} [input.flowTags]  a flow's Maestro tags, by
- *   repo-relative path (read by the lane; flows without an entry have none)
+ * @param {Record<string, string[]|null>} [input.flowTags]  a flow's Maestro tags,
+ *   by repo-relative path (read by the lane; flows without an entry have none;
+ *   null means its header couldn't be read, and the flow isn't run)
  * @param {string[]} [input.deletedFiles]  files the PR deletes: they still make
  *   the PR applicable, but a deleted flow is never run
- * @returns {{applicable: boolean, platforms: {android?: {flows: string[]}, ios?: {flows: string[]}}, reasons: string[]}}
+ * @returns {{applicable: boolean, platforms: {android?: {flows: string[], unavailable?: string}, ios?: {flows: string[], unavailable?: string}}, reasons: string[]}}
+ *   A platform whose smoke flow the PR deletes has no flows and
+ *   `unavailable: "no-smoke-flow"`: the lane reports it without building.
  */
 export function deriveDevicePlan({
   diffFiles = [],
@@ -156,6 +159,11 @@ export function deriveDevicePlan({
   const platforms = {};
   for (const p of PLATFORMS) {
     if (!selected.has(p)) continue;
+    if (deleted.has(smokeFlow(p))) {
+      reasons.push(`${flowName(smokeFlow(p))} is deleted by the PR: nothing to run on ${p}`);
+      platforms[p] = { flows: [], unavailable: "no-smoke-flow" };
+      continue;
+    }
     const flows = [smokeFlow(p)];
     for (const file of extra[p]) {
       if (flows.includes(file)) continue;
@@ -167,7 +175,12 @@ export function deriveDevicePlan({
         reasons.push(`${flowName(file)} skipped on ${p}: needs its runner script's seeded data`);
         continue;
       }
-      const tags = Array.isArray(flowTags?.[file]) ? flowTags[file] : [];
+      const raw = flowTags?.[file];
+      if (raw === null) {
+        reasons.push(`${flowName(file)} skipped on ${p}: its tags couldn't be read`);
+        continue;
+      }
+      const tags = Array.isArray(raw) ? raw : [];
       const hostTag = tags.find((t) => HOST_TAGS.includes(t));
       if (hostTag) {
         reasons.push(`${flowName(file)} skipped on ${p}: tagged ${hostTag}`);
@@ -181,17 +194,56 @@ export function deriveDevicePlan({
 }
 
 /**
- * The Maestro tags in a flow file's header (the part before the first `---`).
- * Small and forgiving: `tags:` followed by `- name` lines.
+ * The Maestro tags in a flow file's header (the part before the first `---`):
+ * a block list (`tags:` then `- name` lines) or a flow sequence
+ * (`tags: [a, "b"]`). [] when the header has no `tags:` key; null when it has
+ * one this can't read, which the plan treats as "don't run it".
  */
 export function parseFlowTags(yamlText) {
   const header = String(yamlText ?? "").split(/^---\s*$/m)[0] ?? "";
-  const m = /^tags:\s*\n((?:[ \t]+-[^\n]*\n?)+)/m.exec(header);
-  if (!m) return [];
-  return m[1]
-    .split("\n")
-    .map((l) => /^[ \t]+-\s*["']?([^"'#\s]+)["']?/.exec(l)?.[1])
-    .filter(Boolean);
+  const lines = header.split("\n");
+  const at = lines.findIndex((l) => /^tags\s*:/.test(l));
+  if (at === -1) return [];
+  const unquote = (t) => t.trim().replace(/^(["'])(.*)\1$/, "$2");
+  const valid = (t) => /^[A-Za-z0-9._-]+$/.test(t);
+  const inline = stripComment(lines[at].replace(/^tags\s*:/, "")).trim();
+  if (inline) {
+    const m = /^\[(.*)\]$/.exec(inline);
+    if (!m) return null;
+    const tags = m[1].trim() ? m[1].split(",").map(unquote) : [];
+    return tags.every(valid) ? tags : null;
+  }
+  const tags = [];
+  for (const line of lines.slice(at + 1)) {
+    const l = stripComment(line);
+    if (!l.trim()) continue;
+    const m = /^[ \t]*-\s*(.+)$/.exec(l);
+    if (!m) {
+      if (/^\S/.test(l)) break; // the next key
+      return null;
+    }
+    const tag = unquote(m[1]);
+    if (!valid(tag)) return null;
+    tags.push(tag);
+  }
+  return tags;
+}
+
+/** <line> without a YAML comment: a `#` outside quotes, at the start or after a space. */
+export function stripComment(line) {
+  let quote = null;
+  const s = String(line ?? "");
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === "#" && (i === 0 || /\s/.test(s[i - 1]))) {
+      return s.slice(0, i).trimEnd();
+    }
+  }
+  return s;
 }
 
 // A flow starts from a clean, signed-out app when it clears the keychain in
@@ -218,5 +270,8 @@ export function flowNeedsSignIn(yamlText) {
     .filter((l) => /^- /.test(l))
     .slice(0, 3);
   if (first.some((l) => /^-\s*clearKeychain\b/.test(l))) return false;
-  return !OWN_PASSWORD.test(body.replace(/^\s*#.*$/gm, ""));
+  // Comments out first, whole-line and trailing: `- inputText: "x" # E2E_TEST_PASSWORD`
+  // types no password.
+  const code = body.split("\n").map(stripComment).join("\n");
+  return !OWN_PASSWORD.test(code);
 }

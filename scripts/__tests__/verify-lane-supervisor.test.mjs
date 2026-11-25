@@ -884,3 +884,68 @@ describe("preview-curl", () => {
     assert.match(r.stderr, /no preview session/);
   });
 });
+
+describe("runStep with a process group", () => {
+  it("still SIGKILLs a member that ignores SIGTERM after its leader exited and the caller finished", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "runstep-group-"));
+    const pidFile = path.join(dir, "worker.pid");
+    const script = path.join(dir, "wrap.sh");
+    // The wrapper exits on SIGTERM; the worker it forks into the same group
+    // ignores SIGTERM (and so does its sleep), as a forked gradle daemon can.
+    writeFileSync(
+      script,
+      [
+        "#!/bin/sh",
+        `sh -c 'trap "" TERM; echo $$ > "$1"; while :; do sleep 1; done' worker "$1" &`,
+        "trap 'exit 0' TERM",
+        "while :; do sleep 1; done",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const lane = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "lib",
+      "verify-lane.mjs",
+    );
+    const code = [
+      `const { runStep } = await import(${JSON.stringify(lane)});`,
+      `const log = ${JSON.stringify(path.join(dir, "step.log"))};`,
+      `const r = await runStep("/bin/sh", [${JSON.stringify(script)}, ${JSON.stringify(pidFile)}],`,
+      "  { group: true, timeoutMs: 1500, graceMs: 800, stdoutFile: log, stderrFile: log });",
+      "process.stdout.write(String(r.code));",
+    ].join("\n");
+    let worker = null;
+    try {
+      // The caller returns as soon as runStep resolves; the process must not
+      // exit before the group SIGKILL is sent.
+      const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
+        encoding: "utf8",
+        timeout: 20_000,
+      });
+      assert.equal(r.stdout, "124", r.stderr);
+      worker = Number(readFileSync(pidFile, "utf8").trim());
+      assert.ok(Number.isInteger(worker) && worker > 1);
+      let alive = true;
+      for (let i = 0; i < 40 && alive; i++) {
+        try {
+          process.kill(worker, 0);
+          await new Promise((res) => setTimeout(res, 50));
+        } catch (err) {
+          alive = err.code !== "ESRCH";
+        }
+      }
+      assert.equal(alive, false, "the SIGTERM-ignoring worker outlived the step");
+    } finally {
+      if (worker) {
+        try {
+          process.kill(worker, "SIGKILL");
+        } catch {
+          /* gone */
+        }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

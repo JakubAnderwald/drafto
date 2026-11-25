@@ -16,6 +16,7 @@ import {
   flowName,
   isDestructiveFlow,
   parseFlowTags,
+  stripComment,
 } from "../lib/device-plan.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -116,6 +117,35 @@ describe("deriveDevicePlan", () => {
     assert.ok(plan.reasons.some((r) => /ios-only\/search\.yaml is deleted/.test(r)));
   });
 
+  it("a deleted smoke flow makes its platform unavailable, not a missing file to run", () => {
+    const plan = deriveDevicePlan({
+      diffFiles: [`${E2E}/ios-all.yaml`, "apps/mobile/src/app.tsx"],
+      deletedFiles: [`${E2E}/ios-all.yaml`],
+    });
+    assert.deepEqual(plan.platforms.ios, { flows: [], unavailable: "no-smoke-flow" });
+    assert.deepEqual(plan.platforms.android, { flows: [`${E2E}/android-all.yaml`] });
+    assert.ok(
+      plan.reasons.some((r) => /ios-all\.yaml is deleted by the PR: nothing to run on ios/.test(r)),
+    );
+  });
+
+  it("a flow with inline host-offline tags, or tags it can't read, isn't run", () => {
+    const inline = `${E2E}/ios-only/10-offline-banner-header.yaml`;
+    const odd = `${E2E}/ios-only/search.yaml`;
+    const plan = deriveDevicePlan({
+      diffFiles: [inline, odd],
+      flowTags: {
+        [inline]: parseFlowTags("appId: x\ntags: [qa-10668, requires-host-offline]\n---\n"),
+        [odd]: parseFlowTags("appId: x\ntags: {a: b}\n---\n"),
+      },
+    });
+    assert.deepEqual(plan.platforms.ios.flows, [`${E2E}/ios-all.yaml`]);
+    assert.ok(plan.reasons.some((r) => /tagged requires-host-offline/.test(r)));
+    assert.ok(
+      plan.reasons.some((r) => /search\.yaml skipped on ios: its tags couldn't be read/.test(r)),
+    );
+  });
+
   it("an e2e runner script alone is applicable to nothing", () => {
     assert.equal(
       deriveDevicePlan({ diffFiles: [`${E2E}/run-cross-platform-e2e.sh`] }).applicable,
@@ -175,6 +205,28 @@ describe("headings and helpers", () => {
 
   it("flowName is the path under apps/mobile/e2e", () => {
     assert.equal(flowName(`${E2E}/ios-only/search.yaml`), "ios-only/search.yaml");
+  });
+
+  it("parseFlowTags reads block lists, flow sequences and comments; null when unreadable", () => {
+    assert.deepEqual(parseFlowTags("appId: x\ntags: [a, 'b', \"c\"] # note\n---\n"), [
+      "a",
+      "b",
+      "c",
+    ]);
+    assert.deepEqual(parseFlowTags("appId: x\ntags: []\n---\n"), []);
+    assert.deepEqual(
+      parseFlowTags("appId: x\ntags:\n  - a # first\n\n  - b\nenv:\n  X: 1\n---\n"),
+      ["a", "b"],
+    );
+    assert.equal(parseFlowTags("appId: x\ntags: a\n---\n"), null);
+    assert.equal(parseFlowTags("appId: x\ntags:\n  a: b\n---\n"), null);
+    assert.equal(parseFlowTags("appId: x\ntags: [a b]\n---\n"), null);
+  });
+
+  it("stripComment keeps a # inside quotes", () => {
+    assert.equal(stripComment('- inputText: "a # b" # c'), '- inputText: "a # b"');
+    assert.equal(stripComment("- tapOn: x#y"), "- tapOn: x#y");
+    assert.equal(stripComment("# whole"), "");
   });
 
   it("parseFlowTags reads a real flow's header", () => {
