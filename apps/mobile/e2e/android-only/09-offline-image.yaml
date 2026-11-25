@@ -30,8 +30,9 @@ onFlowComplete:
 # has the image status views ("E2E probe builds" in the same doc).
 # -e QA_NO_PROBES=1 (the runner's --before) is for a build without them, such
 # as 1.4.7: it skips the probe waits so the flow still ends offline on the
-# note, where the host check falls back to the WebView's <img> alt text. Assumes the
-# user is logged in (after 01-login).
+# note, where the host check falls back to the WebView's <img> alt text. Signs
+# in when the app shows Log In (helpers/sign-in-if-needed.yaml): pass
+# -e E2E_TEST_EMAIL / E2E_TEST_PASSWORD.
 # It ends offline, so it leaves its notebook ("Attach NB <RUN_ID>", as 07 names
 # its own: give it a RUN_ID no 07 run has used) behind for
 # the E2E cleanup (apps/web/e2e/helpers/e2e-patterns.ts) to remove.
@@ -40,11 +41,7 @@ onFlowComplete:
 - addMedia:
     - "../fixtures/attachment-photo.jpg"
 
-- launchApp
-- extendedWaitUntil:
-    visible:
-      id: "search-button"
-    timeout: 30000
+- runFlow: ../helpers/sign-in-if-needed.yaml
 
 # --- Online: a notebook with one note ---
 - tapOn:

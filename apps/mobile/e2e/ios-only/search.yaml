@@ -1,14 +1,12 @@
 appId: eu.drafto.mobile
 ---
 # iOS search flow
-# Assumes user is already logged in (run after 01-login or ios-all)
+# Signs in when the app shows Log In (helpers/sign-in-if-needed.yaml): pass
+# -e E2E_TEST_EMAIL / E2E_TEST_PASSWORD.
 # Pass -e RUN_ID=<timestamp> so the note it searches for is unique to this run.
 # Run with: maestro test apps/mobile/e2e/ios-only/search.yaml --platform ios -e RUN_ID=$(date +%s)
 
-- launchApp
-- extendedWaitUntil:
-    visible: "Notebooks"
-    timeout: 30000
+- runFlow: ../helpers/sign-in-if-needed.yaml
 
 # Create a note to search for, so the result and its sheet are always tested
 - tapOn:

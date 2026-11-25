@@ -19,7 +19,8 @@ tags:
 #
 # Self-contained: creates its own notebook ("OffMode NB", a name no other flow
 # uses, so 06's "OffNB" never matches it) and deletes it in the reconnect
-# phase. Assumes the user is logged in.
+# phase. The prepare phase signs in when the app shows Log In
+# (helpers/sign-in-if-needed.yaml): pass -e E2E_TEST_EMAIL / E2E_TEST_PASSWORD.
 # Pass -e RUN_ID=<timestamp>, the same for all three phases. To skip it in a
 # folder run: maestro test apps/mobile/e2e/ios-only/ --exclude-tags requires-host-offline
 
@@ -32,11 +33,7 @@ tags:
     when:
       true: ${QA_PHASE == 'prepare'}
     commands:
-      - launchApp
-      - extendedWaitUntil:
-          visible:
-            id: "search-button"
-          timeout: 30000
+      - runFlow: ../helpers/sign-in-if-needed.yaml
       - tapOn:
           id: "add"
       - assertVisible: "Notebook name"
