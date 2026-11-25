@@ -339,7 +339,7 @@ Constraints:
 - An `XL` card is held. When the estimate is at or above the factory's
   oversize threshold (1,500 lines by default), an approved card goes back to
   Plan Review instead of being implemented, until it is split or the operator
-  adds the `oversize-approved` label (ADR-0101).
+  adds the `oversize-approved` label (ADR-0103).
 - A plan of class `L` or `XL` also has a **Proposed split** section. It is
   advice only: never file an issue for a part (`gh issue create` stays
   refused), and if a comment asks you to split the card, reply that the

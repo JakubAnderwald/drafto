@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The oversize hold (ADR-0101): --implement never starts an unsplit oversize
+// The oversize hold (ADR-0103): --implement never starts an unsplit oversize
 // card. An unstarted card whose approved plan estimates at least
 // FACTORY_PLAN_OVERSIZE_LINES, and that has no oversize-approved label, goes
 // back to Plan Review with one 🏭 comment. `gh` and transition_status are HARD
@@ -353,7 +353,7 @@ describe("setup-factory-labels.sh: oversize-approved", () => {
     assert.equal(r.stdout, header.slice(1, end).join("\n") + "\n");
     assert.match(
       r.stdout,
-      /oversize-approved lets such a card be implemented as-is \(ADR-0101\)\.\n$/,
+      /oversize-approved lets such a card be implemented as-is \(ADR-0103\)\.\n$/,
     );
   });
 });

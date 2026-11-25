@@ -55,7 +55,7 @@ describe("planner prompt — Size section and marker", () => {
     );
   });
 
-  it("counts the churn estimates miss, and asks for estLines near the top of the range (ADR-0101)", () => {
+  it("counts the churn estimates miss, and asks for estLines near the top of the range (ADR-0103)", () => {
     assert.match(
       flat,
       /count every line the diff will add: code, tests and their fixtures, docs and ADRs, new helpers, migrations, and edits to prompts and the runbook/,
@@ -64,7 +64,7 @@ describe("planner prompt — Size section and marker", () => {
     assert.match(flat, /put `<estLines>` near the top of your range, not its middle/);
   });
 
-  it("says an XL card is held until it is split or carries oversize-approved (ADR-0101)", () => {
+  it("says an XL card is held until it is split or carries oversize-approved (ADR-0103)", () => {
     assert.match(
       flat,
       /An `XL` card is held\. When the estimate is at or above the factory's oversize threshold \(1,500 lines by default\), an approved card goes back to Plan Review instead of being implemented, until it is split or the operator adds the `oversize-approved` label/,

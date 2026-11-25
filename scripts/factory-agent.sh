@@ -675,7 +675,7 @@ if ! [[ "$FACTORY_PLAN_OVERSIZE_LINES" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then
   FACTORY_PLAN_OVERSIZE_LINES=1500
 fi
 OVERSIZE_LABEL="factory-oversize"
-# The oversize hold (ADR-0101): --implement sends a card that hasn't started,
+# The oversize hold (ADR-0103): --implement sends a card that hasn't started,
 # whose approved plan estimates at least FACTORY_PLAN_OVERSIZE_LINES, back to
 # Plan Review unless the operator added oversize-approved (oversize_hold).
 # FACTORY_OVERSIZE_HOLD=0, or FACTORY_PLAN_OVERSIZE_LINES=0, turns it off. A bad
@@ -1893,7 +1893,7 @@ plan_size_label() {
 
 # oversize_hold <issue> <item-id> <labels-csv> <plan-comment-json>
 #   <prior-pr-json|null> <comments-json>
-# The oversize hold (ADR-0101). --implement never starts an unsplit oversize
+# The oversize hold (ADR-0103). --implement never starts an unsplit oversize
 # card: when the approved plan's size marker estimates at least
 # FACTORY_PLAN_OVERSIZE_LINES and the issue lacks oversize-approved, the card
 # goes back to Plan Review with one 🏭 comment saying how to release it.
@@ -9952,7 +9952,7 @@ Drag it back to **Ready** so the factory can plan it first.
 
     PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
 
-    # Oversize hold (ADR-0101): a card that hasn't started, whose approved plan
+    # Oversize hold (ADR-0103): a card that hasn't started, whose approved plan
     # is oversize and which has no oversize-approved label, goes back to Plan
     # Review before a slot or a worktree is spent on it. The labels are the
     # board item's plus the issue's own, read just above.

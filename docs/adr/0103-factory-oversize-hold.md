@@ -1,4 +1,4 @@
-# 0101 — Factory Holds Unsplit Oversize Cards Before Implementing
+# 0103 — Factory Holds Unsplit Oversize Cards Before Implementing
 
 - **Status**: Accepted
 - **Date**: 2026-11-25
@@ -24,7 +24,7 @@ A label that the operator can overlook at the Plan Review gate doesn't stop that
 2. **A held card goes back to Plan Review with one comment.** The factory posts a 🏭 comment that explains the hold and how to release it, then moves the card to **Plan Review**. The comment carries `<!-- drafto-factory-oversize-hold:<planCommentId>:<estLines> -->`. The estimate is part of the marker because replans edit the plan comment in place: a new estimate gets a new comment, and the same estimate never gets a second one. The comment is posted first and the move happens only once it is on the issue, so a failure in either step is retried on the next tick without a duplicate. If the factory can't read its state to tell whether the card has started, the card waits a tick: it neither bounces nor starts.
 
 3. **The operator releases the hold in one of three ways:**
-   - **split it**: comment `/split` to have the factory file the sub-cards from the **Proposed split** (the command comes with ADR-0102, the follow-up to this one), or file them by hand;
+   - **split it**: comment `/split` to have the factory file the sub-cards from the **Proposed split** (the command comes with ADR-0104, the follow-up to this one), or file them by hand;
    - **run it as-is**: add the `oversize-approved` label and drag the card back to **In Progress**;
    - **narrow it**: comment to replan. A replan that brings the estimate under the threshold releases the hold when the card is dragged to In Progress again.
 
@@ -41,7 +41,7 @@ A label that the operator can overlook at the Plan Review gate doesn't stop that
 
 - **Positive**: an XL card can no longer be implemented by default. Running one is an explicit choice, a label, and the cheaper paths (split, narrow) are spelled out at the moment it matters. The hold costs no Claude run: it reads the plan the implement sweep already holds and two state records.
 - **Negative**: an operator who meant to run a big card as-is has to add a label and drag it a second time. A low estimate still slips through, since the hold is only as good as the planner's guess; the prompt change aims to make that guess higher.
-- **Neutral**: `/split` in the hold comment depends on ADR-0102. Until that lands, a `/split` comment is an ordinary Plan Review comment, which starts a replan. `oversize-approved` must be created once with `scripts/setup-factory-labels.sh` before an operator can add it.
+- **Neutral**: `/split` in the hold comment depends on ADR-0104. Until that lands, a `/split` comment is an ordinary Plan Review comment, which starts a replan. `oversize-approved` must be created once with `scripts/setup-factory-labels.sh` before an operator can add it.
 
 ## Alternatives Considered
 
