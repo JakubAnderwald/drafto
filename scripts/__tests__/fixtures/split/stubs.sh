@@ -20,7 +20,9 @@ touch "$CALLS"
 [[ -f "$T/counter" ]] || echo 1000 >"$T/counter"
 [[ -f "$T/linked" ]] || : >"$T/linked"
 
-log() { echo "[log] $*" >>"$CALLS"; }
+# log tees to stdout like the real one, so a function whose stdout is captured
+# and that calls log (rather than logerr) corrupts its value here too.
+log() { echo "[log] $*" | tee -a "$CALLS"; }
 logerr() { echo "[log] $*" >>"$CALLS"; }
 check_session_limit() { [[ "${SESSION_LIMIT:-0}" -eq 1 ]]; }
 pause_for_session_limit() { echo "[pause]" >>"$CALLS"; }

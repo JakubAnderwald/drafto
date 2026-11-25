@@ -42,7 +42,7 @@ This decision answers each one with a narrow trigger and bash-owned writes.
    - **Spec gate.** Every parsed spec then goes through `spec_missing_section`, the gate a Ready card meets.
    - **One failure stops the split.** Any failure, a refusal or a failed run posts one 🏭 "Split not filed" comment with the reason and the ack. Nothing is created, the card stays in Plan Review, and a new `/split` comment tries again. A session limit pauses the factory instead, as the plan runs do.
 4. **Bash files the sub-cards, in order.** `split_file_children` handles the writes.
-   - **The record.** The checked cards are kept in `logs/factory/split/issue-<n>/plan-<planCommentId>.json` (mode 600).
+   - **The record.** The checked cards are kept in `logs/factory/split/issue-<n>/plan-<planCommentId>.json` (mode 600), with the plan body's sha256 in `plan-<planCommentId>.sha256`. A replan keeps the plan comment's id, so cards saved from an earlier plan are split again, unless one of them is already filed.
    - **Each card's body.** Card _i_ is filed with `gh issue create`. Its body gets a `### Split from` section:
      - the parent's number;
      - for every card after the first, `Depends on #<previous>`;

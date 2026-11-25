@@ -1964,6 +1964,21 @@ split_dir_for() {
   printf '%s/logs/factory/split/issue-%s' "$REPO_ROOT" "$1"
 }
 
+# split_children_record <issue> — the issue's splitChildren record
+# ("<plan comment id>:<total>:<n1>,<n2>…"), or "" when there is none.
+split_children_record() {
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$1" --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
+    | jq -r '.splitChildren // ""' 2>/dev/null || echo ""
+}
+
+# split_plan_hash <plan-body> — the sha256 of the plan body, "" if shasum fails.
+# A replan edits the plan comment in place and keeps its id, so the saved
+# sub-cards carry this hash too (plan-<id>.sha256) to tell which plan they
+# were split from.
+split_plan_hash() {
+  printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-64 || true
+}
+
 # split_ack_lines <trigger-ids-json> — one ack marker line per directive.
 split_ack_lines() {
   echo "${1:-[]}" | jq -r '.[] | select(test("^[0-9]+$")) | "<!-- drafto-factory-split-ack:\(.) -->"' 2>/dev/null || true
@@ -2055,17 +2070,17 @@ split_write_cards() {
 # the last one it recorded. Before filing card i it looks for an OWNER issue
 # that already carries card i's hidden marker: a `gh issue create` whose reply
 # was lost still filed the issue, and a retry must not file it twice. When that
-# lookup fails it stops (returns 1) rather than risk a duplicate.
+# lookup fails it stops (returns 1) rather than risk a duplicate. Its stdout
+# is the caller's list of numbers, so it logs with logerr, never log.
 split_file_children() {
   local issue_num="$1" plan_id="$2" cards_file="$3" total rec done_csv="" i n dep composed title url recent body_file
   local nums=()
   total=$(jq 'length' "$cards_file" 2>/dev/null || echo "")
   if ! [[ "$total" =~ ^[0-9]+$ && "$total" -ge 1 ]]; then
-    log "WARNING: #$issue_num's saved sub-cards ($cards_file) are unreadable; remove the file and comment /split again"
+    logerr "WARNING: #$issue_num's saved sub-cards ($cards_file) are unreadable; remove the file and comment /split again"
     return 1
   fi
-  rec=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
-    | jq -r '.splitChildren // ""' 2>/dev/null || echo "")
+  rec=$(split_children_record "$issue_num")
   if [[ "$rec" == "$plan_id:$total:"* ]]; then
     done_csv="${rec#"$plan_id:$total:"}"
     [[ "$done_csv" =~ ^[0-9]+(,[0-9]+)*$ ]] || done_csv=""
@@ -2079,39 +2094,39 @@ split_file_children() {
     if [[ $i -gt 0 ]]; then dep="${nums[$((i-1))]}"; fi
     if ! composed=$(node "$SCRIPT_DIR/lib/factory-split.mjs" compose --cards-file "$cards_file" --index "$i" \
         --parent "$issue_num" --plan-comment "$plan_id" --total "$total" ${dep:+--depends-on "$dep"} 2>>"$LOG_FILE"); then
-      log "WARNING: composing sub-card $((i+1))/$total of #$issue_num failed; the next tick tries again"
+      logerr "WARNING: composing sub-card $((i+1))/$total of #$issue_num failed; the next tick tries again"
       rm -f "$body_file"
       return 1
     fi
     if ! recent=$(gh api "repos/JakubAnderwald/drafto/issues?state=all&sort=created&direction=desc&per_page=50" 2>>"$LOG_FILE") \
         || ! n=$(printf '%s' "$recent" | node "$SCRIPT_DIR/lib/factory-split.mjs" find-child --parent "$issue_num" \
           --plan-comment "$plan_id" --index "$i" 2>>"$LOG_FILE"); then
-      log "WARNING: couldn't check whether sub-card $((i+1))/$total of #$issue_num is already filed; the next tick tries again"
+      logerr "WARNING: couldn't check whether sub-card $((i+1))/$total of #$issue_num is already filed; the next tick tries again"
       rm -f "$body_file"
       return 1
     fi
     if [[ -n "$n" ]]; then
-      log "Issue #$issue_num: sub-card $((i+1))/$total is already filed as #$n"
+      logerr "Issue #$issue_num: sub-card $((i+1))/$total is already filed as #$n"
     else
       title=$(echo "$composed" | jq -r '.title')
       echo "$composed" | jq -r '.body' >"$body_file"
       if ! url=$(gh issue create --repo JakubAnderwald/drafto --title "$title" --body-file "$body_file" 2>>"$LOG_FILE"); then
-        log "WARNING: filing sub-card $((i+1))/$total of #$issue_num failed; the next tick tries again"
+        logerr "WARNING: filing sub-card $((i+1))/$total of #$issue_num failed; the next tick tries again"
         rm -f "$body_file"
         return 1
       fi
       n=$(printf '%s' "${url##*/}" | tr -d '[:space:]')
       if ! [[ "$n" =~ ^[0-9]+$ ]]; then
-        log "WARNING: gh issue create gave no issue number for sub-card $((i+1))/$total of #$issue_num; the next tick looks for it"
+        logerr "WARNING: gh issue create gave no issue number for sub-card $((i+1))/$total of #$issue_num; the next tick looks for it"
         rm -f "$body_file"
         return 1
       fi
-      log "Issue #$issue_num: filed sub-card $((i+1))/$total as #$n"
+      logerr "Issue #$issue_num: filed sub-card $((i+1))/$total as #$n"
     fi
     nums+=("$n")
     node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" splitChildren \
       "$plan_id:$total:$(IFS=,; echo "${nums[*]}")" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
-      || log "WARNING: couldn't record #$n in #$issue_num's splitChildren; the marker check finds it next time"
+      || logerr "WARNING: couldn't record #$n in #$issue_num's splitChildren; the marker check finds it next time"
   done
   rm -f "$body_file"
   echo "${nums[*]}"
@@ -2169,7 +2184,8 @@ split_park_parent() {
 # next tick repeats these steps; each one is safe to repeat.
 split_finish() {
   local item_id="$1" issue_num="$2" plan_id="$3" triggers="${4:-[]}" nums="$5"
-  local first="" n info child_item child_status list="" count=0 label="${SPLIT_LABEL:-factory-split}"
+  local first="" first_status="Ready" first_line n info child_item child_status list="" count=0
+  local label="${SPLIT_LABEL:-factory-split}"
   for n in $nums; do
     count=$((count + 1))
     if ! info=$(node "$SCRIPT_DIR/lib/factory-project.mjs" ensure-item --issue "$n" 2>>"$LOG_FILE"); then
@@ -2187,20 +2203,28 @@ split_finish() {
             return 0
           fi
           ;;
-        *) log "Issue #$issue_num: sub-card #$n is already in $child_status; leaving it there" ;;
+        *)
+          log "Issue #$issue_num: sub-card #$n is already in $child_status; leaving it there"
+          first_status="$child_status"
+          ;;
       esac
-      list+="- #$n (**Ready**)"$'\n'
+      list+="- #$n (**$first_status**)"$'\n'
     else
       list+="- #$n (**Backlog**)"$'\n'
     fi
   done
+  if [[ "$first_status" == "Ready" ]]; then
+    first_line="#$first is in **Ready**, so the factory plans it next."
+  else
+    first_line="#$first is already in **$first_status**."
+  fi
   if ! gh issue edit "$issue_num" --repo JakubAnderwald/drafto --add-label "$label" >>"$LOG_FILE" 2>&1; then
     log "WARNING: adding $label to #$issue_num failed (if the repo lacks it, run scripts/setup-factory-labels.sh)"
   fi
   if ! printf '%s' "🏭 **Split into $count sub-cards.**
 
 ${list}
-#$first is in **Ready**, so the factory plans it next. Each later sub-card waits in **Backlog** with a \"Depends on\" line: drag it to **Ready** once the one before it has merged. Every sub-card still goes through Plan Review.
+${first_line} Each later sub-card waits in **Backlog** with a \"Depends on\" line: drag it to **Ready** once the one before it has merged. Every sub-card still goes through Plan Review.
 
 This card is now in **Backlog** with the \`$label\` label, and the factory leaves it there. Close it once its sub-cards have shipped.
 
@@ -2215,10 +2239,13 @@ $(split_ack_lines "$triggers")" | gh issue comment "$issue_num" --repo JakubAnde
 
 # split_card <item-id> <issue> <issue-record-json> <plan-comment-json> <trigger-ids-json>
 # The /split of one Plan Review card: the sub-cards come from the cards file a
-# run already checked, or from a new splitter run. Never fails the tick.
+# run already checked, or from a new splitter run. A cards file saved from an
+# earlier version of the plan (a replan keeps the comment id) is split again,
+# unless some of its sub-cards are already filed: those finish as saved.
+# Never fails the tick.
 split_card() {
   local item_id="$1" issue_num="$2" record="$3" plan_json="$4" triggers="${5:-[]}"
-  local plan_id plan_body dir cards_file nums
+  local plan_id plan_body dir cards_file hash_file plan_hash nums nums_re='^[0-9]+( [0-9]+)*$'
   plan_id=$(echo "$plan_json" | jq -r '.id | tostring' 2>/dev/null || echo "")
   plan_body=$(echo "$plan_json" | jq -r '.body // ""' 2>/dev/null || echo "")
   [[ "$plan_id" =~ ^[0-9]+$ ]] || return 0
@@ -2233,10 +2260,27 @@ split_card() {
     return 0
   fi
   cards_file="$dir/plan-$plan_id.json"
+  hash_file="$dir/plan-$plan_id.sha256"
+  plan_hash=$(split_plan_hash "$plan_body")
+  if [[ -s "$cards_file" && -n "$plan_hash" && "$(cat "$hash_file" 2>/dev/null || true)" != "$plan_hash" ]]; then
+    if [[ "$(split_children_record "$issue_num")" == "$plan_id:"* ]]; then
+      log "Issue #$issue_num: the plan changed since its sub-cards were saved, but some are filed; finishing the saved split"
+    else
+      log "Issue #$issue_num: the plan changed since its sub-cards were saved; running the splitter again"
+      rm -f "$cards_file" "$hash_file"
+    fi
+  fi
   if [[ ! -s "$cards_file" ]]; then
     split_write_cards "$issue_num" "$record" "$plan_body" "$triggers" "$cards_file" || return 0
+    if ! (umask 077 && printf '%s\n' "$plan_hash" >"$hash_file"); then
+      log "WARNING: couldn't save the plan hash to $hash_file; until a sub-card is filed, the next tick may run the splitter again"
+    fi
   fi
   nums=$(split_file_children "$issue_num" "$plan_id" "$cards_file") || return 0
+  if ! [[ "$nums" =~ $nums_re ]]; then
+    log "WARNING: #$issue_num's sub-card numbers came back unreadable; the next tick tries again"
+    return 0
+  fi
   split_link_children "$issue_num" "$nums"
   split_finish "$item_id" "$issue_num" "$plan_id" "$triggers" "$nums"
 }

@@ -34,6 +34,8 @@ const FNS = [
   "split_trigger_ids",
   "split_drop_directives",
   "split_dir_for",
+  "split_children_record",
+  "split_plan_hash",
   "split_ack_lines",
   "split_abort",
   "split_write_cards",
@@ -153,14 +155,22 @@ ${body}
   return { ...r, calls: read("calls"), posted: read("posted"), read };
 }
 
-function splitCard(dir, { claudeOut, triggers = '["9100"]', env = {} } = {}) {
+function splitCard(
+  dir,
+  { claudeOut, triggers = '["9100"]', env = {}, plan = PLAN_COMMENT, before = "" } = {},
+) {
   if (claudeOut !== undefined) writeFileSync(join(dir, "claude.out"), claudeOut);
   return run(
     dir,
-    `split_card ITEM_42 42 ${q(JSON.stringify(RECORD))} ${q(JSON.stringify(PLAN_COMMENT))} ${q(triggers)}`,
+    `${before}
+split_card ITEM_42 42 ${q(JSON.stringify(RECORD))} ${q(JSON.stringify(plan))} ${q(triggers)}`,
     env,
   );
 }
+
+// The [project] ensure-item calls, in order: every one must name a filed issue.
+const ensured = (calls) =>
+  [...calls.matchAll(/\[project\] ensure-item --issue (.*)/g)].map((m) => m[1]);
 
 const stateOf = (dir) =>
   JSON.parse(
@@ -312,10 +322,16 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
         c,
         /issue edit 42 --repo JakubAnderwald\/drafto --remove-label status:plan-review\n/,
       );
-      assert.match(r.posted, /🏭 \*\*Split into 3 sub-cards\.\*\*/);
+      // Exactly the filed numbers: split_file_children's log lines never
+      // reach the list split_card captures from it.
+      assert.deepEqual(ensured(c), ["1001", "1002", "1003"]);
+      assert.deepEqual(
+        [...c.matchAll(/\[gh\] api id (.*)/g)].map((m) => m[1]),
+        ["1001", "1002", "1003"],
+      );
       assert.match(
         r.posted,
-        /- #1001 \(\*\*Ready\*\*\)\n- #1002 \(\*\*Backlog\*\*\)\n- #1003 \(\*\*Backlog\*\*\)/,
+        /^🏭 \*\*Split into 3 sub-cards\.\*\*\n\n- #1001 \(\*\*Ready\*\*\)\n- #1002 \(\*\*Backlog\*\*\)\n- #1003 \(\*\*Backlog\*\*\)\n\n#1001 is in \*\*Ready\*\*, so the factory plans it next\./,
       );
       assert.match(
         r.posted,
@@ -326,6 +342,7 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
       assert.equal(stateOf(dir).lastStatus, "Backlog");
       const cards = join(dir, "logs/factory/split/issue-42/plan-9001.json");
       assert.equal(statSync(cards).mode & 0o777, 0o600);
+      assert.equal(statSync(cards.replace(/json$/, "sha256")).mode & 0o777, 0o600);
       assert.equal(statSync(dirname(cards)).mode & 0o777, 0o700);
       assert.deepEqual(
         JSON.parse(readFileSync(cards, "utf8")).map((x) => x.title),
@@ -441,9 +458,10 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
       );
       assert.match(second.read("body-1003"), /Depends on #1001\./);
       assert.equal(stateOf(dir).splitChildren, "9001:3:1001,1003,1004");
+      assert.deepEqual(ensured(second.calls), ["1001", "1003", "1004"]);
       assert.match(
         second.posted,
-        /- #1001 \(\*\*Ready\*\*\)\n- #1003 \(\*\*Backlog\*\*\)\n- #1004/,
+        /Split into 3 sub-cards\.\*\*\n\n- #1001 \(\*\*Ready\*\*\)\n- #1003 \(\*\*Backlog\*\*\)\n- #1004 \(\*\*Backlog\*\*\)\n\n/,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -460,6 +478,8 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
       assert.match(second.calls, /sub-card 2\/3 is already filed as #1002/);
       assert.equal((second.calls.match(/issue create/g) || []).length, 1);
       assert.equal(stateOf(dir).splitChildren, "9001:3:1001,1002,1003");
+      assert.deepEqual(ensured(second.calls), ["1001", "1002", "1003"]);
+      assert.match(second.posted, /Split into 3 sub-cards\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -488,6 +508,10 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
       assert.doesNotMatch(r.calls, /ITEM_1001 --status Ready/);
       assert.match(r.calls, /sub-card #1001 is already in Planning; leaving it there/);
       assert.match(r.posted, /Split into 3 sub-cards/);
+      // The comment says where the first sub-card is, not where it would be.
+      assert.match(r.posted, /- #1001 \(\*\*Planning\*\*\)\n- #1002 \(\*\*Backlog\*\*\)/);
+      assert.match(r.posted, /\n#1001 is already in \*\*Planning\*\*\. Each later sub-card/);
+      assert.doesNotMatch(r.posted, /Ready\*\*, so the factory plans it next|#1001 \(\*\*Ready/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -506,6 +530,76 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
       assert.doesNotMatch(second.calls, /ITEM_1001 --status Ready/);
       assert.match(second.posted, /Split into 3 sub-cards/);
       assert.match(second.calls, /ITEM_42 --status Backlog/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("splits a replanned plan again when none of the saved sub-cards is filed yet", () => {
+    const dir = newDir();
+    try {
+      // Tick 1 saves the checked cards, then can't check for an earlier create.
+      const first = splitCard(dir, { claudeOut: splitOut(THREE), env: { FAIL_RECENT: "1" } });
+      assert.equal(first.status, 0, first.stderr);
+      assert.doesNotMatch(first.calls, /issue create/);
+      // Same plan: the saved cards are reused, with no second splitter run.
+      writeFileSync(join(dir, "calls"), "");
+      const same = splitCard(dir, { env: { FAIL_RECENT: "1" } });
+      assert.doesNotMatch(same.calls, /\[claude\]/);
+      // A replan edits the plan comment in place (same id): split it again.
+      writeFileSync(join(dir, "calls"), "");
+      const replanned = {
+        ...PLAN_COMMENT,
+        body: `${PLAN}\n<!-- drafto-factory-replan-ack:9050 -->`,
+      };
+      const TWO = THREE.slice(0, 2);
+      const r = splitCard(dir, { claudeOut: splitOut(TWO), plan: replanned });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(
+        r.calls,
+        /the plan changed since its sub-cards were saved; running the splitter again/,
+      );
+      assert.equal((r.calls.match(/\[claude\]/g) || []).length, 1);
+      assert.equal((r.calls.match(/issue create/g) || []).length, 2);
+      assert.equal(stateOf(dir).splitChildren, "9001:2:1001,1002");
+      assert.match(r.posted, /Split into 2 sub-cards\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes a part-filed split from its saved sub-cards even after a replan", () => {
+    const dir = newDir();
+    try {
+      splitCard(dir, { claudeOut: splitOut(THREE), env: { FAIL_CREATE_AT: "1002" } });
+      assert.equal(stateOf(dir).splitChildren, "9001:3:1001");
+      writeFileSync(join(dir, "calls"), "");
+      const replanned = {
+        ...PLAN_COMMENT,
+        body: `${PLAN}\n<!-- drafto-factory-replan-ack:9050 -->`,
+      };
+      const r = splitCard(dir, { claudeOut: splitOut(THREE.slice(0, 2)), plan: replanned });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.calls, /some are filed; finishing the saved split/);
+      assert.doesNotMatch(r.calls, /\[claude\]/);
+      assert.equal(stateOf(dir).splitChildren, "9001:3:1001,1003,1004");
+      assert.match(r.posted, /Split into 3 sub-cards\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops before the board when the sub-card numbers come back unreadable", () => {
+    const dir = newDir();
+    try {
+      const r = splitCard(dir, {
+        claudeOut: splitOut(THREE),
+        before: `split_file_children() { echo "[07:54:40] Issue #42: filed sub-card 1/2 as #1001"; echo 1001; }`,
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.calls, /sub-card numbers came back unreadable/);
+      assert.doesNotMatch(r.calls, /ensure-item|sub_issues|issue comment/);
+      assert.equal(r.posted, "");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
