@@ -1,7 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +19,8 @@ import { fileURLToPath } from "node:url";
 // FACTORY_PLAN_OVERSIZE_LINES, and that has no oversize-approved label, goes
 // back to Plan Review with one 🏭 comment. `gh`, `git` and transition_status
 // are HARD STUBS here: without them a unit test would comment on and move a
-// live card.
+// live card. `git` is a stub executable first on PATH, not a bash function:
+// the hold runs it through run-with-timeout.mjs, which spawns it from PATH.
 // plan-size.mjs and state-cli.mjs run for real, on a temp state file.
 
 const scriptsDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,7 +44,8 @@ const M = "<!-- drafto-factory-plan-size:M:400 -->";
 // opts: marker, labels, priorPr, comments, state (object | string),
 // knobs ({FACTORY_OVERSIZE_HOLD, FACTORY_PLAN_OVERSIZE_LINES}), dryRun,
 // commentFails, transitionFails, prCount (what `gh pr list` counts),
-// prListFails, remoteHead (what `git ls-remote` prints), lsRemoteFails.
+// prListFails, remoteHead (what `git ls-remote` prints), lsRemoteFails,
+// lsRemoteHangs (git never answers; the cap is 1 s).
 // Returns {held, log, calls, reads}: calls are writes, reads the read-only
 // gh/git calls.
 function runHold(opts = {}) {
@@ -53,12 +63,27 @@ function runHold(opts = {}) {
     prListFails = false,
     remoteHead = "",
     lsRemoteFails = false,
+    lsRemoteHangs = false,
   } = opts;
   const dir = mkdtempSync(join(tmpdir(), "oversize-hold-"));
   const calls = join(dir, "calls");
   const reads = join(dir, "reads");
   const stateFile = join(dir, "factory-state.json");
   writeFileSync(stateFile, typeof state === "string" ? state : JSON.stringify(state));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  // `exec sleep`: the stub itself is the process the cap kills, so no orphan
+  // holds the command substitution's pipe open.
+  const gitBody = lsRemoteHangs
+    ? "exec sleep 30"
+    : lsRemoteFails
+      ? "exit 1"
+      : `printf '%b' ${JSON.stringify(remoteHead)}`;
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/bash\necho "[git] $*" >>${JSON.stringify(reads)}\n${gitBody}\n`,
+  );
+  chmodSync(join(bin, "git"), 0o755);
   const knobLines = Object.entries(knobs)
     .map(([k, v]) => `${k}=${JSON.stringify(String(v))}`)
     .join("\n");
@@ -77,10 +102,6 @@ gh() {
   ${commentFails ? 'case "${1:-} ${2:-}" in "issue comment") return 1 ;; esac' : ""}
   return 0
 }
-git() {
-  echo "[git] $*" >>${JSON.stringify(reads)}
-  ${lsRemoteFails ? "return 1" : `printf '%b' ${JSON.stringify(remoteHead)}; return 0`}
-}
 transition_status() {
   echo "[transition] $1 $2 $3" >>${JSON.stringify(calls)}
   ${transitionFails ? "return 1" : "return 0"}
@@ -90,6 +111,7 @@ STATE_FILE=${JSON.stringify(stateFile)}
 REPO_ROOT=${JSON.stringify(dir)}
 LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
 DRY_RUN=${dryRun}
+${lsRemoteHangs ? "FACTORY_GH_TIMEOUT_SEC=1" : ""}
 ${knobLines}
 if oversize_hold 900 ITEM_900 ${JSON.stringify(labels)} ${JSON.stringify(planJson(marker))} \\
     ${JSON.stringify(priorPr)} ${JSON.stringify(JSON.stringify(comments))}; then
@@ -102,7 +124,8 @@ fi
     // shell running the tests. The snippet sets the ones a test wants.
     const r = spawnSync("/bin/bash", ["-c", snippet], {
       encoding: "utf8",
-      env: { PATH: process.env.PATH, HOME: process.env.HOME },
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME },
+      timeout: 20000,
     });
     assert.equal(r.status, 0, `bash failed: ${r.stderr}`);
     return {
@@ -194,7 +217,8 @@ describe("oversize_hold (extracted, real bash 3.2, gh + transition stubbed)", ()
   });
 
   it("re-checks PRs itself, and defers when gh can't list them", () => {
-    // find_prior_pr gives null for a failed gh call too.
+    // The caller defers a failed find_prior_pr, but the hold asks again before
+    // it sends a card back.
     const ok = runHold();
     assert.match(
       ok.reads,
@@ -233,6 +257,32 @@ describe("oversize_hold (extracted, real bash 3.2, gh + transition stubbed)", ()
       out.log,
       /couldn't check origin for factory\/issue-900 for the oversize hold; deferring/,
     );
+  });
+
+  it("bounds ls-remote with the gh cap: a hung git defers the card, without a comment or a move", () => {
+    const started = Date.now();
+    const out = runHold({ lsRemoteHangs: true });
+    assert.ok(Date.now() - started < 15000, "the cap ended the hung git");
+    assert.equal(out.held, true, "skipped this tick");
+    assert.equal(out.calls, "");
+    assert.match(
+      out.reads,
+      /\[git\] -C .* ls-remote --heads origin refs\/heads\/factory\/issue-900/,
+    );
+    assert.match(
+      out.log,
+      /couldn't check origin for factory\/issue-900 for the oversize hold; deferring/,
+    );
+  });
+
+  it("runs ls-remote through run-with-timeout.mjs", () => {
+    const fn = script.match(/^oversize_hold\(\) \{[\s\S]*?\n\}/m);
+    assert.ok(fn);
+    assert.match(
+      fn[0],
+      /remote_head=\$\(node "\$SCRIPT_DIR\/lib\/run-with-timeout\.mjs" "\$\{FACTORY_GH_TIMEOUT_SEC:-120\}" \\\n\s+git -C "\$REPO_ROOT" ls-remote --heads origin/,
+    );
+    assert.doesNotMatch(fn[0], /\$\(git -C/, "no unbounded git call");
   });
 
   it("holds a card whose attempts come from the plan stage only", () => {
@@ -391,6 +441,49 @@ describe("factory-agent.sh oversize hold: --implement wiring", () => {
     assert.doesNotMatch(call, /ATTEMPTS/);
     assert.match(call, /\$ITEM_LABELS,/, "board labels");
     assert.match(call, /ISSUE_RECORD/, "and the issue's own labels");
+  });
+
+  it("defers a card whose PR lookup fails, and the sweep goes on (bash 3.2, set -euo pipefail)", () => {
+    const start = IMPLEMENT.indexOf('if ! PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); then');
+    assert.ok(start !== -1, "the lookup is guarded");
+    const endMark = '[[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"\n';
+    const end = IMPLEMENT.indexOf(endMark, start);
+    assert.ok(end !== -1);
+    const block = IMPLEMENT.slice(start, end + endMark.length);
+    assert.match(
+      block,
+      /couldn't look up its PR; deferring the card to the next tick"\n\s+continue\n/,
+    );
+    // find_prior_pr's own pipeline, with gh failing for #1, finding no PR for
+    // #2 and a PR for #3. pipefail makes #1's lookup fail though jq exits 0.
+    const snippet = `
+set -euo pipefail
+log() { echo "[log] $*"; }
+gh() {
+  case "$*" in
+    *issue-1\\ *) return 1 ;;
+    *issue-2\\ *) echo '[]' ;;
+    *) echo '[{"number":7,"url":"u","headRefName":"factory/issue-3","state":"OPEN"}]' ;;
+  esac
+}
+LOG_FILE=/dev/null
+${extract("find_prior_pr")}
+for ISSUE_NUM in 1 2 3; do
+${block}
+  echo "next #$ISSUE_NUM $PRIOR_PR"
+done
+echo "sweep done"
+`;
+    const r = spawnSync("/bin/bash", ["-c", snippet], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /\[log\] WARNING: #1: couldn't look up its PR; deferring/);
+    assert.doesNotMatch(r.stdout, /next #1 /, "#1 never reaches the hold");
+    assert.match(r.stdout, /next #2 null\n/);
+    assert.match(r.stdout, /next #3 \{"number":7,/);
+    assert.match(r.stdout, /sweep done\n$/);
   });
 
   it("never touches transition_status's label swap", () => {

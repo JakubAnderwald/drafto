@@ -1974,8 +1974,9 @@ oversize_hold() {
        | map(select(. != null and . != "")) | first // empty' 2>/dev/null || echo "")" ]]; then
     return 1
   fi
-  # find_prior_pr returns null both for "no PR" and for a failed gh call, so
-  # ask once more and tell the two apart: a failure defers the card a tick.
+  # The caller defers a card whose find_prior_pr fails, so null means no PR was
+  # found. The hold is the one step that sends a card back, so it lists the
+  # PRs once more before it does: a failure here defers the card a tick too.
   if ! pr_count=$(gh pr list --repo JakubAnderwald/drafto --head "factory/issue-$issue_num" \
       --state all --json number --jq 'length' 2>>"$LOG_FILE") \
       || ! [[ "$pr_count" =~ ^[0-9]+$ ]]; then
@@ -1985,7 +1986,10 @@ oversize_hold() {
   [[ "$pr_count" -eq 0 ]] || return 1
   # Work pushed to the branch without a PR yet (an interactive session's) means
   # it has started too. A failed ls-remote can't tell, so the card waits a tick.
-  if ! remote_head=$(git -C "$REPO_ROOT" ls-remote --heads origin \
+  # It is bounded like a gh call (FACTORY_GH_TIMEOUT_SEC): a stalled transport
+  # would otherwise hold the implement lock. A timeout (exit 124) is a failure.
+  if ! remote_head=$(node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "${FACTORY_GH_TIMEOUT_SEC:-120}" \
+      git -C "$REPO_ROOT" ls-remote --heads origin \
       "refs/heads/factory/issue-$issue_num" 2>>"$LOG_FILE"); then
     log "WARNING: #$issue_num: couldn't check origin for factory/issue-$issue_num for the oversize hold; deferring the card to the next tick"
     return 0
@@ -10229,7 +10233,13 @@ Drag it back to **Ready** so the factory can plan it first.
       continue
     fi
 
-    PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
+    # A failed lookup (gh down, pipefail) would end the whole tick under set -e,
+    # and passing it on as null would read as "no PR". Defer the card instead.
+    if ! PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); then
+      log "WARNING: #$ISSUE_NUM: couldn't look up its PR; deferring the card to the next tick"
+      continue
+    fi
+    [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
 
     # Oversize hold (ADR-0103): a card that hasn't started, whose approved plan
     # is oversize and which has no oversize-approved label, goes back to Plan
