@@ -20,6 +20,7 @@ const E2E_NAME_PREFIXES = [
   "SSR NB",
   "SSR Note",
   "E2E Test Note",
+  "E2E Reload Flush",
   "Move Me",
   "Trash Test",
   "Trash Perm",

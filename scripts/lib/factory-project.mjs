@@ -40,6 +40,10 @@
 //   addIssueToProject(projectId, contentId) → itemId
 //        Put an issue on the board (idempotent on GitHub's side).
 //
+//   ensureItemForIssue(projectId, issueNumber, {repo}) → {itemId, status, added}
+//        The issue's card, added to the board first when it isn't on it.
+//        Used by factory-agent.sh's /split (ADR-0104).
+//
 //   hasStatusOption(projectId, name) → boolean (read-only)
 //        Whether the Status field has an option with exactly this name. Lets
 //        a caller check a column exists (e.g. "Testing") before moving a card
@@ -64,6 +68,8 @@
 //                      [--repo <owner/name>] [--limit <n>]
 //   set-status --item-id <id> --status <name> [--project-id <id>]
 //              [--owner <login>] [--title <title>]
+//   ensure-item --issue <n> [--project-id <id>] [--owner <login>]
+//               [--title <title>] [--repo <owner/name>]
 //
 // All subcommands print JSON to stdout and exit 0; errors print
 // `{"error": "..."}` to stderr and exit non-zero — same shape as
@@ -517,6 +523,22 @@ export async function addIssueToProject(projectId, contentId) {
   return itemId;
 }
 
+// The card for issue #<issueNumber>, put on the board first when it isn't
+// there: {itemId, status, added}. `added` is true when this call put it there
+// (its Status is then whatever the board's "Item added to project" workflow
+// sets, normally Backlog). Throws when the issue doesn't exist. Used by
+// factory-agent.sh's /split (ADR-0104), which files sub-cards with plain
+// `gh issue create` and then makes sure each one is on the board, so a card
+// filed without its board membership is caught up on the next tick.
+export async function ensureItemForIssue(projectId, issueNumber, { repo = DEFAULT_REPO } = {}) {
+  const found = await findItemForIssue(projectId, issueNumber, { repo });
+  if (!found) throw new Error(`ensureItemForIssue: issue #${issueNumber} not found`);
+  if (found.itemId) return { itemId: found.itemId, status: found.status, added: false };
+  if (!found.contentId) throw new Error(`ensureItemForIssue: #${issueNumber} has no node id`);
+  const itemId = await addIssueToProject(projectId, found.contentId);
+  return { itemId, status: null, added: true };
+}
+
 export async function hasStatusOption(projectId, name) {
   if (!name) throw new Error("hasStatusOption requires an option name");
   const meta = await getStatusFieldMeta(projectId);
@@ -682,6 +704,18 @@ async function main(argv) {
         statusName: flags.status,
       });
     }
+    case "ensure-item": {
+      const issueNumber = Number(flags.issue);
+      if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+        throw new Error("ensure-item requires --issue <number>");
+      }
+      const projectId = await resolveProjectId({
+        projectId: flags["project-id"],
+        owner: flags.owner,
+        title: flags.title,
+      });
+      return ensureItemForIssue(projectId, issueNumber, { repo: flags.repo ?? DEFAULT_REPO });
+    }
     case "--help":
     case "-h":
     case undefined:
@@ -691,7 +725,8 @@ async function main(argv) {
           "has-status-option --name <option> [--project-id <id>] [--owner <login>] [--title <title>]|" +
           "export-statuses [--project-id <id>] [--owner <login>] [--title <title>]|" +
           "query-status-items --status <name> [--project-id <id>] [--owner <login>] [--title <title>] [--repo <owner/name>] [--limit <n>]|" +
-          "set-status --item-id <id> --status <name> [--project-id <id>] [--owner <login>] [--title <title>]>\n",
+          "set-status --item-id <id> --status <name> [--project-id <id>] [--owner <login>] [--title <title>]|" +
+          "ensure-item --issue <n> [--project-id <id>] [--owner <login>] [--title <title>] [--repo <owner/name>]>\n",
       );
       return null;
     default:

@@ -13,7 +13,9 @@
 # parity:* and migration-approved are operator gates; factory-pause and
 # factory-failure are kill-switch / failure-trap signals; driver:interactive
 # marks a card an interactive session owns (ADR-0091); factory-oversize
-# flags a plan whose size estimate suggests a split (ADR-0083).
+# flags a plan whose size estimate suggests a split (ADR-0083);
+# oversize-approved lets such a card be implemented as-is (ADR-0103); and
+# factory-split marks a card the factory split into sub-cards (ADR-0104).
 
 set -euo pipefail
 
@@ -25,7 +27,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,15p' "$0"
+      # The header comment: line 2 up to the first blank line.
+      awk 'NR > 1 && /^$/ { exit } NR > 1' "$0"
       exit 0
       ;;
     *)
@@ -62,11 +65,13 @@ LABELS=(
   "driver:interactive|5319E7|An interactive Claude Code session owns this card; the factory skips it (ADR-0091)."
   "migration-approved|0052CC|Authorises merging this PR's migration SQL as it is when added; an SQL edit removes it."
   "hosted-config-applied|0052CC|Operator applied this PR's supabase/config.toml changes to dev and prod."
+  "oversize-approved|0052CC|Lets the factory implement this oversize card as-is, without a split (ADR-0103)."
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."
 
   # Planning signals — set and cleared by the factory from the plan's size
-  # estimate (ADR-0083).
+  # estimate (ADR-0083), and set when it files a split (ADR-0104).
   "factory-oversize|E99695|The plan estimates 1,500+ added lines (FACTORY_PLAN_OVERSIZE_LINES); consider a split."
+  "factory-split|C2E0C6|Split into sub-cards on the operator's /split comment (ADR-0104); parked in Backlog."
 
   # Parity overrides — set by the operator to disable the cross-platform
   # parity check for legitimate single-platform work.
