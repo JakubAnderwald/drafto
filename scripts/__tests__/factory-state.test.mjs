@@ -849,7 +849,7 @@ describe("verification stage (ADR-0053): verify ledger", () => {
   });
 
   describe("per-issue keys", () => {
-    it("are the eleven documented fields", () => {
+    it("are the fifteen documented fields (the device lane's four included)", () => {
       assert.deepEqual(
         [...VERIFY_ISSUE_FIELDS],
         [
@@ -864,6 +864,10 @@ describe("verification stage (ADR-0053): verify ledger", () => {
           "verifyBounces",
           "verifyCrNote",
           "verifyReportPosts",
+          "verifyDevice",
+          "verifyDeviceRunDir",
+          "deviceReportPosted",
+          "deviceRunRequest",
         ],
       );
       assert.throws(() => VERIFY_ISSUE_FIELDS.push("x"), TypeError);

@@ -978,7 +978,7 @@ The runner's own run dir is `logs/factory/browser/issue-<n>-probe-<probeId>-<tim
 
 ## Pre-In-Test verification (Testing)
 
-A factory-owned **Testing** column between In Review and In Test ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md), [factory-verification.md](../features/factory-verification.md)). With `FACTORY_VERIFY=1`, a converged In Review card moves to Testing instead of In Test. The scenario is written and the betas dispatched there. The Testing sweep in `--watch` works the verification lanes, then moves the card to In Test with one report comment. Verification is evidence, never a gate. Both lanes are built: the **shell lane** (see "The shell lane" below) and the **browser lane**, the browser runner's `verify` kind (see "Browser runner (Claude in Chrome)" → "A Testing card's browser lane"). The card is promoted once both lanes have a result, or at the hold cap.
+A factory-owned **Testing** column between In Review and In Test ([ADR-0053](../adr/0053-pre-in-test-verification-stage.md), [factory-verification.md](../features/factory-verification.md)). With `FACTORY_VERIFY=1`, a converged In Review card moves to Testing instead of In Test. The scenario is written and the betas dispatched there. The Testing sweep in `--watch` works the verification lanes, then moves the card to In Test with one report comment. Verification is evidence, never a gate. Three lanes are built: the **shell lane** (see "The shell lane" below), the **browser lane**, the browser runner's `verify` kind (see "Browser runner (Claude in Chrome)" → "A Testing card's browser lane"), and the **device lane** (see "The device lane" below), which is off by default. The card is promoted once every lane has a result, or at the hold cap. The device lane holds it only `FACTORY_VERIFY_DEVICE_WAIT_MIN`.
 
 ### Settings
 
@@ -987,7 +987,7 @@ All in the launchd plist. A bad value warns in the launchd log and falls back to
 | Setting                            | Default                              | What it does                                                                                                                                                                                                                                                                                                                                                                                          |
 | ---------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FACTORY_VERIFY`                   | `0`                                  | The master switch and kill switch. Off: cards go straight to In Test, and the Testing sweep only drains the column.                                                                                                                                                                                                                                                                                   |
-| `FACTORY_VERIFY_LANES`             | `shell,browser`                      | Which lanes run. Unknown words are dropped. Set it empty for no lanes: scenario and betas still move to Testing, and the card is promoted on the next sweep.                                                                                                                                                                                                                                          |
+| `FACTORY_VERIFY_LANES`             | `shell,browser`                      | Which lanes run (`shell`, `browser`, `device`). Unknown words are dropped. Set it empty for no lanes: scenario and betas still move to Testing, and the card is promoted on the next sweep.                                                                                                                                                                                                           |
 | `FACTORY_VERIFY_ONLY_LABEL`        | (none)                               | Canary: only issues with this label enter Testing. A label the factory can't match exactly (comma, newline, leading or trailing blank) turns verification off.                                                                                                                                                                                                                                        |
 | `FACTORY_VERIFY_HOLD_MAX_MIN`      | `60`                                 | Longest stay in Testing, from the start of the card's round. At the cap the card is promoted, lanes still running or not.                                                                                                                                                                                                                                                                             |
 | `FACTORY_VERIFY_SHELL_TIMEOUT_MIN` | `30`                                 | Per-run cap for the shell lane: install, sign-in, the claude session and key revocation.                                                                                                                                                                                                                                                                                                              |
@@ -997,6 +997,9 @@ All in the launchd plist. A bad value warns in the launchd log and falls back to
 | `FACTORY_DEV_INSPECT`              | `0`                                  | The shell lane's `dev-inspect` wrapper: read-only checks of the factory test account's data on dev ([ADR-0073](../adr/0073-factory-verification-data-checks-live-tests-uploads-admin-js.md)). Reads `FACTORY_BROWSER_SIGNIN_KEY_FILE` and `FACTORY_BROWSER_ACCOUNT_FILE` in its own process.                                                                                                          |
 | `FACTORY_VERIFY_LIVE_TESTS`        | `0`                                  | The shell lane's live tests: before the session, the supervisor runs the scenario's `### Live tests` at the PR head, and `live-tests` shows the session only filtered result lines: test names and outcomes, counts and durations (ADR-0073). Needs the key file and `apps/web/.env.local` in the factory checkout (dev URL and anon key).                                                            |
 | `FACTORY_VERIFY_BYPASS_FILE`       | `~/drafto-secrets/vercel-bypass.env` | The Vercel protection-bypass secret for the shell lane's curl against previews. A missing or unusable file (not mode 600, no key) means the lane runs without it, and the report says so.                                                                                                                                                                                                             |
+| `FACTORY_VERIFY_DEVICE`            | `0`                                  | The device lane's switch ([ADR-0106](../adr/0106-factory-device-lane.md)). It runs only when this is `1` **and** `device` is in `FACTORY_VERIFY_LANES` (it isn't in the default list). Off, the iOS / Android row reads as before. See "The device lane" below.                                                                                                                                       |
+| `FACTORY_VERIFY_DEVICE_WAIT_MIN`   | `30`                                 | How long a Testing card waits for its device run, from the start of its round. After that a run still going no longer holds the card: the report's device rows read "running — results follow" and the run posts a follow-up comment when it ends. The hold cap still wins.                                                                                                                           |
+| `FACTORY_DEVICE_ACCOUNT_FILE`      | (none)                               | The device lane's own **dev** account, `E2E_TEST_EMAIL=` and `E2E_TEST_PASSWORD=`, mode 600. Without a usable one the lane doesn't start (`unavailable:no-account`). The reports are scanned for its password.                                                                                                                                                                                        |
 
 ### One-time setup
 
@@ -1021,14 +1024,14 @@ All in the launchd plist. A bad value warns in the launchd log and falls back to
 - **Entry** (`verify_enter`): the card moves to Testing first. Then `verifySha`, `verifyStartedAt` and `verifyCrNote` are set, and `lastFeedbackAt` too if it was empty. Betas are dispatched (from the plain platforms) and the scenario is written with the Testing title and the verification platforms, where a `packages/shared/` change counts as web (`derive-platforms --verify`), so a shared-only PR gets the `### Web` section the browser lane walks. Attempts and the CodeRabbit run cap aren't reset here; that happens at the move to In Test. If the move to Testing fails, the card is promoted to In Test as before.
 - **The sweep** (`verify_sweep`, every tick, oldest issue first) logs `Issue #N: Testing → <action> (<reason>)`. `verify-decide.mjs` picks the action:
 
-| Action       | Reasons                                                                  | What happens                                                                                                                                                                                                                                |
-| ------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `skip`       | `pr-merged`, `pr-closed`, `pr-unknown`                                   | Nothing. The card waits for you.                                                                                                                                                                                                            |
-| `promote`    | `verification-off`, `feedback`, `lanes-done`, `hold-cap`, `decide-error` | Report composed, card moved to In Test, report posted once, attempts and `crCliRuns` reset.                                                                                                                                                 |
-| `hand-back`  | `head-moved`, `ci-red`, `not-reviewed`, `threads`                        | Back to In Review (a `threads` one also bumps `verifyBounces`), one comment per commit and reason (`drafto-factory-verify-handback:<sha12>:<reason>`).                                                                                      |
-| `init`       | `no-round`, `new-round`                                                  | A round starts for the head (a card dragged in, or the revision no-op path). Betas are checked; the scenario is written if this commit has none.                                                                                            |
-| `wait`       | `ci-pending`, `threads-unknown`, `head-unknown`                          | Nothing this tick. The hold cap still applies.                                                                                                                                                                                              |
-| `work-lanes` | `lanes-pending`                                                          | Betas re-checked, and the lanes started or polled: the shell lane (`verify_shell_work`) starts its run; the browser lane (`verify_browser_work`) queues a `verify` candidate for `--browser`, or ends at once (no web changes, runner off). |
+| Action       | Reasons                                                                  | What happens                                                                                                                                                                                                                                                                                                                            |
+| ------------ | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `skip`       | `pr-merged`, `pr-closed`, `pr-unknown`                                   | Nothing. The card waits for you.                                                                                                                                                                                                                                                                                                        |
+| `promote`    | `verification-off`, `feedback`, `lanes-done`, `hold-cap`, `decide-error` | Report composed, card moved to In Test, report posted once, attempts and `crCliRuns` reset.                                                                                                                                                                                                                                             |
+| `hand-back`  | `head-moved`, `ci-red`, `not-reviewed`, `threads`                        | Back to In Review (a `threads` one also bumps `verifyBounces`), one comment per commit and reason (`drafto-factory-verify-handback:<sha12>:<reason>`).                                                                                                                                                                                  |
+| `init`       | `no-round`, `new-round`                                                  | A round starts for the head (a card dragged in, or the revision no-op path). Betas are checked; the scenario is written if this commit has none.                                                                                                                                                                                        |
+| `wait`       | `ci-pending`, `threads-unknown`, `head-unknown`                          | Nothing this tick. The hold cap still applies.                                                                                                                                                                                                                                                                                          |
+| `work-lanes` | `lanes-pending`                                                          | Betas re-checked, and the lanes started or polled: the shell lane (`verify_shell_work`) starts its run; the browser lane (`verify_browser_work`) queues a `verify` candidate for `--browser`, or ends at once (no web changes, runner off); the device lane (`verify_device_work`) starts its run, or ends at once (no mobile changes). |
 
 - **The report** is composed into `logs/factory/verify/report-<issue>-<sha>.md`, with the scenario it was built from beside it, and kept for 30 days. If posting fails, the In Test sweep tries again 10, 20 and 30 minutes after it was composed (4 failed attempts per commit in all, counted in `verifyReportPosts`). If the composer fails, a minimal "INCOMPLETE: couldn't be composed" notice goes out instead, with the same markers.
 
@@ -1059,6 +1062,143 @@ Each run has a directory, `logs/factory/verify/<issue>-<sha12>-<timestamp>/` (mo
 | `private/` (`curl.cfg`, `curl-signed-out.cfg`, `cookies.txt`) | Only while the run is live. Removed at the end, and by housekeeping if the supervisor was killed                 |
 
 To stop a run by hand: `node scripts/lib/state-cli.mjs factory:verify-status` for its run id, then `factory:verify-finish <runId> --refund attempt`. Housekeeping removes its worktree on the next tick.
+
+### The device lane
+
+The third lane ([ADR-0106](../adr/0106-factory-device-lane.md)), off by default. A node supervisor, `scripts/lib/device-lane.mjs`, builds a **dev-backed** app from the PR head with the JS bundle embedded, then runs the repo's Maestro flows on a dedicated headless Android emulator and a dedicated iOS simulator, one platform at a time. No claude session touches a device: the shell lane's guard still denies `maestro`, `adb`, `emulator`, `xcrun`, `xcodebuild` and `gradle`. It's evidence, never a gate, and it never moves a card.
+
+- **When it runs:** a Testing card whose PR changes `apps/mobile/` (except `apps/mobile/store/`) or `packages/shared/`. Any other card's device row reads `skipped:not-applicable` at once, so it never waits on another card's run. `--watch` starts the run (`verify_device_work` → `device-lane.mjs start --trigger testing`), collects it at the top of the next ticks (`verify_device_housekeeping`, step 1d) and stops it (`verify_device_stop`).
+- **One run at a time,** under its own pid lock, `<volume>/drafto-device.lock`, and a ledger, `logs/factory/device/ledger.json`. **Betas come first:** a run doesn't start while a beta build root is locked, under memory pressure, or with the build volume under `FACTORY_DEVICE_MIN_FREE_GB` free (or the internal disk under `FACTORY_MIN_FREE_DISK_GB` + 5). The card's device row then reads `deferred:<why>` (`busy`, `beta-build`, `memory`, `disk`) and the next tick tries again. In turn, while the device lock is held, `intest_dispatch_betas` holds the **mobile** beta lane back a tick (`device-lane-busy, retrying next tick` in the scenario's skipped list). No attempt is spent, and desktop betas go ahead.
+- **How long a card waits:** `FACTORY_VERIFY_DEVICE_WAIT_MIN` from the start of its round, never past `FACTORY_VERIFY_HOLD_MAX_MIN`. After that the card is promoted when the other lanes are done. The report's iOS / Android rows read "running — results follow in a separate comment", with no device screenshots. On most mobile cards the betas are still building at that point, so the results arriving as a follow-up is the normal path.
+- **The follow-up comment:** when a run ends (finished, timed out or failed), housekeeping posts one comment with its results and its screenshots, from the factory's identity. It carries `<!-- drafto-factory-device-report -->` and `<!-- drafto-factory-device-sha:<sha>:<runId> -->`, so the feedback detectors ignore it and the card stays where it is. The run's commit must still be the open PR's head, checked before the screenshots are published and again just before posting. A stale run posts nothing (`deviceReportPosted` = `<sha>:<runId>:stale`). A stopped or retried run posts nothing either.
+- **Stops:** the factory stops a run when it hands the card back to In Review, on feedback, or with verification switched off. Promotion at the hold cap or with the other lanes done lets it run on. Housekeeping also stops a run whose PR head moved, whose PR closed or merged, whose card left Testing and In Test, or that passed `FACTORY_DEVICE_RUN_MAX_MIN`.
+- **Results** (`verifyDevice` = `<sha>:<state>`): `running` (not terminal: it holds the card until the wait is over); `reported:pass|fail|error`; `timeout`; `unavailable:<why>` (`no-account`, `<bin>-missing`, `error`, `lost`); `skipped:not-applicable|attempts|stopped-<why>`; `deferred:<why>`; `retry:<why>` (a supervisor lost, or stopped for a beta build or memory pressure: the next tick starts it again). Attempts per commit (`FACTORY_DEVICE_MAX_ATTEMPTS`) are counted in the ledger, not in the factory state.
+
+#### Device-lane settings
+
+`FACTORY_VERIFY_DEVICE`, `FACTORY_VERIFY_DEVICE_WAIT_MIN` and `FACTORY_DEVICE_ACCOUNT_FILE` are in the table above. `device-lane.mjs` reads the rest itself (`readDeviceKnobs`). A bad value falls back to its default.
+
+| Setting                            | Default                                                 | What it does                                                                                                                                      |
+| ---------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORY_DEVICE_VOLUME`            | `$DRAFTO_BUILDS_VOLUME_DIR` or `/Volumes/DraftoFactory` | The volume for the build roots (`drafto-device-{android,ios}`), the lock and `drafto-device/` (AVD, Gradle home, keystore).                       |
+| `FACTORY_DEVICE_BUILD_TIMEOUT_MIN` | `45`                                                    | Cap per build (Gradle or xcodebuild).                                                                                                             |
+| `FACTORY_DEVICE_FLOW_TIMEOUT_MIN`  | `20`                                                    | Cap per Maestro flow.                                                                                                                             |
+| `FACTORY_DEVICE_BOOT_TIMEOUT_MIN`  | `10`                                                    | Cap for the emulator or simulator to boot.                                                                                                        |
+| `FACTORY_DEVICE_RUN_MAX_MIN`       | `150`                                                   | Cap for a whole run. Housekeeping kills a run past it (`timeout`).                                                                                |
+| `FACTORY_DEVICE_MAX_ATTEMPTS`      | `2`                                                     | Runs per commit. A run stopped for a reason that isn't the card's (head moved, PR closed, a beta build, memory pressure) gives its attempt back.  |
+| `FACTORY_DEVICE_MIN_FREE_GB`       | `25`                                                    | Free space the build volume needs before a run starts. The internal disk needs `FACTORY_MIN_FREE_DISK_GB` + 5 (the simulator's data lives there). |
+| `FACTORY_DEVICE_JAVA_HOME`         | the newest JDK 17–24 found, else `java_home -v 17+`     | The JDK for Gradle (17–24) and Maestro (17+). Android Studio's JBR is a good choice.                                                              |
+| `FACTORY_DEVICE_JDK_PATHS`         | (none)                                                  | Extra JDK homes, comma-separated, offered to Gradle as toolchains (the React Native plugin asks for 17; auto-download is off).                    |
+| `FACTORY_ANDROID_SDK`              | `~/Library/Android/sdk`                                 | The Android SDK (`emulator`, `adb`, `avdmanager`).                                                                                                |
+| `ANDROID_AVD_HOME`                 | `<volume>/drafto-device/avd`                            | Where the `drafto-factory` AVD lives.                                                                                                             |
+| `FACTORY_DEVICE_KEYSTORE`          | `<volume>/drafto-device/debug.keystore`                 | The factory debug keystore the Android build is signed with. Never the release keystore.                                                          |
+| `FACTORY_DEVICE_KEEP_RAW`          | `0`                                                     | `1` keeps a run's `private/` (raw JUnit and Maestro output) for debugging. Housekeeping still reaps it once the run is gone.                      |
+
+#### One-time setup
+
+On the Mac mini, from the factory checkout (`/Volumes/DraftoFactory/drafto-factory`):
+
+1. **Volume dirs and the debug keystore:**
+
+   ```bash
+   mkdir -p /Volumes/DraftoFactory/drafto-device/{avd,gradle}
+   keytool -genkeypair -v -keystore /Volumes/DraftoFactory/drafto-device/debug.keystore \
+     -storepass android -alias androiddebugkey -keypass android \
+     -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+   ```
+
+   These are Android's standard debug-keystore values, not secrets: the APK only ever goes to the lane's emulator.
+
+2. **The AVD** `drafto-factory`, on android-35 `google_apis` arm64 (not a Play Store image: those block `adb root`), with a `clean` snapshot:
+
+   ```bash
+   export ANDROID_AVD_HOME=/Volumes/DraftoFactory/drafto-device/avd
+   SDK=~/Library/Android/sdk
+   "$SDK/cmdline-tools/latest/bin/avdmanager" create avd -n drafto-factory \
+     -k "system-images;android-35;google_apis;arm64-v8a" -d pixel_6
+   "$SDK/emulator/emulator" -avd drafto-factory -port 5580 -no-window -no-audio -no-snapshot-load &
+   "$SDK/platform-tools/adb" -s emulator-5580 wait-for-device
+   # once `adb -s emulator-5580 shell getprop sys.boot_completed` prints 1:
+   "$SDK/platform-tools/adb" -s emulator-5580 emu avd snapshot save clean
+   "$SDK/platform-tools/adb" -s emulator-5580 emu kill
+   ```
+
+   The lane boots it with `-port 5580 -snapshot clean -no-snapshot-save`, so the operator's `emulator-5554` is never touched and the snapshot stays clean.
+
+3. **The simulator** `drafto-factory-iphone`, driven by `simctl` alone (Xcode 27 has no Simulator.app), and its UDID in `logs/factory/device-config.json`:
+
+   ```bash
+   UDID=$(xcrun simctl create drafto-factory-iphone \
+     com.apple.CoreSimulator.SimDeviceType.iPhone-16 com.apple.CoreSimulator.SimRuntime.iOS-27-0)
+   printf '{"iosSimUdid":"%s"}\n' "$UDID" > logs/factory/device-config.json
+   ```
+
+   Pick any installed device type and runtime (`xcrun simctl list devicetypes`, `xcrun simctl list runtimes`). The lane erases it before each run.
+
+4. **The dedicated dev account.** Create an account on **dev** (`huhzactreblzcogqkbsd`, never prod) for the device lane alone, so a sign-out on a device never ends the browser lane's session, and approve it. Then:
+
+   ```bash
+   read -r EMAIL; read -rs PASSWORD
+   (umask 077 && printf 'E2E_TEST_EMAIL=%s\nE2E_TEST_PASSWORD=%s\n' "$EMAIL" "$PASSWORD" \
+     > ~/drafto-secrets/device-account.env)
+   unset EMAIL PASSWORD
+   chmod 600 ~/drafto-secrets/device-account.env
+   ```
+
+   The password reaches Maestro only as `MAESTRO_E2E_TEST_PASSWORD` in its environment, never on a command line, and no claude session sees it.
+
+5. **The plist:** add `FACTORY_DEVICE_ACCOUNT_FILE=~/drafto-secrets/device-account.env`, `FACTORY_DEVICE_JAVA_HOME` (for example Android Studio's JBR, `/Applications/Android Studio.app/Contents/jbr/Contents/Home`), `FACTORY_ANDROID_SDK`, `ANDROID_AVD_HOME=/Volumes/DraftoFactory/drafto-device/avd`, and `FACTORY_VERIFY_DEVICE=0` for now. Reload the agent.
+
+6. **Selftest:**
+
+   ```bash
+   node scripts/lib/device-lane.mjs selftest                               # read-only checks, both platforms
+   node scripts/lib/device-lane.mjs selftest --build --platform android    # builds origin/main, boots, runs one flow
+   node scripts/lib/device-lane.mjs selftest --build --platform ios
+   ```
+
+   Plain `selftest` prints one PASS / FAIL line per check: the volume, the binaries, the JDKs, the AVD, the keystore, the simulator UDID, free disk, memory pressure, `apps/mobile/.env` being dev, the account file, and no beta build or device run holding its lock. `--build` runs in the foreground, holding the device lock: it builds `origin/main`, checks the artifact is dev-only, boots the device and runs `09-password-visibility.yaml` (no sign-in), then shuts the device down. Run each platform once while a beta build is going too, and watch the memory: the lane is meant to wait for betas, never to run beside one.
+
+#### Switching it on
+
+1. Add `device` to `FACTORY_VERIFY_LANES` (`shell,browser,device`) and set `FACTORY_VERIFY_DEVICE=1`. Keep the canary label (`FACTORY_VERIFY_ONLY_LABEL`) on, and reload.
+2. Put the label on one mobile card. Watch it in Testing: `device lane started for …`, then either a `reported:*` row in the report or "running — results follow" and, later, the follow-up comment. The card must stay in In Test when the follow-up lands.
+3. After a few clean runs, drop the canary.
+
+To turn it off, set `FACTORY_VERIFY_DEVICE=0`. A run already going finishes (or is stopped by housekeeping), and its follow-up is still posted.
+
+#### Reading a run
+
+Each run has a directory, `logs/factory/device/runs/<issue>-<sha12>-<timestamp>/` (mode 700, reaped after 30 days):
+
+| File                                                                  | What it is                                                                                                             |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `meta.json`                                                           | What `start` decided: platforms and flows, deadline, binaries, knobs, secret-file **paths** (never values)             |
+| `device-output.json`                                                  | The results, per platform: state, verdict, build (cached, duration) and each flow's status, duration and failure line  |
+| `supervisor.log`                                                      | The supervisor's log, including the filtered JUnit lines                                                               |
+| `device-<platform>/`                                                  | That platform's `prebuild.log` and `build.log`                                                                         |
+| `evidence/` (`shots.json`, `device-<platform>/`)                      | The screenshots the supervisor took after each flow, with their sha256 in `shots.json`. Only these are ever published  |
+| `exit.json`                                                           | How the supervisor ended                                                                                               |
+| `followup.md`, `followup-render.json`, `upload.json`, `followup.done` | The follow-up comment as composed, its render result, the screenshots' upload record, and the marker that it's settled |
+| `private/`                                                            | Raw JUnit and Maestro output, only while the run is live (or with `FACTORY_DEVICE_KEEP_RAW=1`)                         |
+
+```bash
+node scripts/lib/device-lane.mjs status                          # the ledger, the run in flight and its progress
+node scripts/lib/device-lane.mjs render --run-dir <dir>          # device-output.json as the follow-up comment would read
+node scripts/lib/device-lane.mjs stop --issue <n> --reason stop  # stop a card's run (its attempt is given back)
+```
+
+**The Android adb drop.** Now and then the emulator drops off adb in the middle of a flow, and Maestro fails with `device offline` or `device '…' not found`. That's the harness, not the app, so the supervisor runs that flow once more. The log says `lost the device (adb); retrying once`, and a failure after the retry says `(after one retry for an adb drop)`. A flow that drops twice is reported as it failed. If it keeps happening, cold-boot the AVD and save its `clean` snapshot again (setup step 2).
+
+#### Device-lane triage
+
+| Symptom                                   | Look at                                                                                                                                                                                                                                                                       |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Device row `deferred:*` for a long time   | The `--watch` log's `device lane not started (<reason>)` lines. `busy`: another card's run (`device-lane.mjs status`). `beta-build`: a beta is building, which is expected. `memory` / `disk`: the Mac mini.                                                                  |
+| `unavailable:no-account` / `*-missing`    | `node scripts/lib/device-lane.mjs selftest` names what's missing (setup steps 4 and 5).                                                                                                                                                                                       |
+| A platform `unavailable:artifact-not-dev` | The build wasn't provably dev-only (the dev ref missing from the app config, the prod ref somewhere in the artifact, or the API URL not the `.invalid` one). Check the factory checkout's `apps/mobile/.env`. Nothing was installed.                                          |
+| No follow-up comment                      | `factory:get-issue <n>` → `deviceReportPosted`. `:stale` means the head moved, so nothing will be posted. Nothing recorded: the `--watch` log for `device lane's follow-up` lines, and the run dir's `followup.md` (post it by hand with `gh issue comment <n> --body-file`). |
+| Mobile betas keep waiting                 | `device-lane.mjs status`, and the device lock's pid (`cat /Volumes/DraftoFactory/drafto-device.lock`). Stop a stuck run with `stop`; housekeeping reaps a dead holder's lock.                                                                                                 |
 
 ### Triage
 

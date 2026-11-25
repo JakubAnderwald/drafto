@@ -141,7 +141,9 @@
 //                                    verifyShellRunDir, verifyShellAttempts,
 //                                    verifyBrowser, verifyBrowserRunDir,
 //                                    verifyReportSha, verifyBounces,
-//                                    verifyCrNote, verifyReportPosts}.
+//                                    verifyCrNote, verifyReportPosts,
+//                                    verifyDevice, verifyDeviceRunDir,
+//                                    deviceReportPosted, deviceRunRequest}.
 //                                    Empty/`null` clears the field.
 //   factory:set-issue-fields <issue> <field> <value> [<field> <value> …]
 //                                    The same for several fields in ONE

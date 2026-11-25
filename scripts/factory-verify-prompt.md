@@ -126,7 +126,10 @@ options]` sends one request to `preview.origin` with the preview's protection
    `--signed-out` when the step is done signed out, and
    judge it by the status and body the step expects.
 6. **Mobile and device steps are manual.** Nothing here can run an iOS or
-   Android build or a simulator. List those steps as manual.
+   Android build or a simulator, and the guard denies the device tools. The
+   factory's device lane runs the repo's Maestro flows on its own emulator and
+   simulator, outside this session, and the report adds its results. List
+   those steps as manual.
 7. **Never touch production.** drafto.eu, the production database and the
    stores are out of scope. A step that needs them is manual.
 8. **Never repeat a secret.** Report status codes and short values only, never

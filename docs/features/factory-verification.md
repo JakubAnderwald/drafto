@@ -1,6 +1,6 @@
 # Factory verification before In Test (the Testing column)
 
-**Status:** state machine, shell lane and browser lane built, off by default (`FACTORY_VERIFY=0`); device lane being built ([ADR-0106](../adr/0106-factory-device-lane.md)) **Updated:** 2026-11-25
+**Status:** state machine, shell, browser and device lanes built, off by default (`FACTORY_VERIFY=0`; the device lane also needs `FACTORY_VERIFY_DEVICE=1`) **Updated:** 2026-11-25
 
 ## What it is
 
@@ -41,17 +41,18 @@ All of it runs in `scripts/factory-agent.sh --watch`, the shell lane detached fr
 
 ## Lanes
 
-| Lane                 | What it does                                                                                                                                                                                                                                                                                                        | Status                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| Repo & API (`shell`) | A detached `--no-chrome` claude session with a guard hook, in its own detached worktree with no env files. It runs targeted tests, the scenario's command steps, the macOS `--preflight` (ADR-0043), and API and MCP checks against the per-commit preview through a curl wrapper holding the Vercel bypass secret. | Built (Wave 5A); see below                    |
-| Web (`browser`)      | A `verify` kind of the locked-down Claude in Chrome runner (ADR-0051), on the per-commit preview.                                                                                                                                                                                                                   | Built (Wave 5B); see "The browser lane" below |
-| iOS / Android, macOS | Manual, on the betas dispatched at Testing entry. The report lists the steps.                                                                                                                                                                                                                                       | Deferred (see "Planned" below)                |
+| Lane                     | What it does                                                                                                                                                                                                                                                                                                        | Status                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Repo & API (`shell`)     | A detached `--no-chrome` claude session with a guard hook, in its own detached worktree with no env files. It runs targeted tests, the scenario's command steps, the macOS `--preflight` (ADR-0043), and API and MCP checks against the per-commit preview through a curl wrapper holding the Vercel bypass secret. | Built (Wave 5A); see below                         |
+| Web (`browser`)          | A `verify` kind of the locked-down Claude in Chrome runner (ADR-0051), on the per-commit preview.                                                                                                                                                                                                                   | Built (Wave 5B); see "The browser lane" below      |
+| iOS / Android (`device`) | A node supervisor builds a dev-backed app from the PR head and runs the repo's Maestro flows on a headless Android emulator and an iOS simulator. No claude session. Holds the card only `FACTORY_VERIFY_DEVICE_WAIT_MIN`; a later result arrives as a follow-up comment.                                           | Built, off by default; see "The device lane" below |
+| macOS                    | Manual, on the beta dispatched at Testing entry (ADR-0043). The report lists the steps. Without the device lane, iOS and Android are manual too.                                                                                                                                                                    | Manual                                             |
 
-A lane's state is read for the card's head as `"<sha>:<state>[:<verdict>]"` (`verifyShell`, `verifyBrowser`). The states:
+A lane's state is read for the card's head as `"<sha>:<state>[:<verdict>]"` (`verifyShell`, `verifyBrowser`, `verifyDevice`). The states:
 
 - **Terminal:** `reported[:<verdict>]`, `timeout`, `unavailable:<reason>`, `stale-branch`, `no-preview`, `skipped:<reason>`.
-- **Still running:** anything else: `none`, the shell lane's `running`, `retry:<why>` and `deferred:<why>`, the browser lane's `waiting-preview:<iso>`.
-- **Filled in by the sweep:** `skipped:not-built` for a lane missing from `VERIFY_BUILT_LANES` (both lanes are built, so only a future lane would read it), `skipped:lane-off` when `FACTORY_VERIFY_LANES` leaves the lane out, and `skipped:verification-off` when the card is drained. At promotion, a lane still running becomes `skipped:hold-cap` or `skipped:feedback`. At the hold cap, a shell lane still `deferred:<why>` becomes `skipped:<why>` (memory pressure, low disk, another card's run, a session limit), one whose last attempt ended `retry:<why>` becomes `skipped:after-<why>`, and the browser lane's preview wait becomes `skipped:hold-cap`.
+- **Still running:** anything else: `none`, the shell and device lanes' `running`, `retry:<why>` and `deferred:<why>`, the browser lane's `waiting-preview:<iso>`. The device lane is an **async lane**: once `FACTORY_VERIFY_DEVICE_WAIT_MIN` has passed since the round started (or the hold cap, if that comes first), it no longer counts as pending, and a run still going is reported as `running`.
+- **Filled in by the sweep:** `skipped:not-built` for a lane missing from `VERIFY_BUILT_LANES` (every lane is built, so only a future lane would read it), `skipped:lane-off` when `FACTORY_VERIFY_LANES` leaves the lane out (or, for the device lane, when `FACTORY_VERIFY_DEVICE` isn't `1`), and `skipped:verification-off` when the card is drained. At promotion, a lane still running becomes `skipped:hold-cap` or `skipped:feedback`. At the hold cap, a shell lane still `deferred:<why>` becomes `skipped:<why>` (memory pressure, low disk, another card's run, a session limit), one whose last attempt ended `retry:<why>` becomes `skipped:after-<why>`, and the browser lane's preview wait becomes `skipped:hold-cap`.
 
 The report reads every reason as a sentence (the `REASONS` table in `verify-report.mjs`); an unknown one is shown as it is.
 
@@ -149,7 +150,7 @@ The scenario matters because the browser lane runs only its `### Web` section: t
 `scripts/lib/verify-report.mjs` is deterministic (no claude call). It writes one comment, **🏭 Verification before In Test**:
 
 1. **Headline verdict:** PASS / WARN / FAIL (the worst of the lanes that reported), or INCOMPLETE. Then "Evidence, not a gate: the card is now In Test."
-2. **Lane table:** status, verdict and a note for each lane, plus iOS / Android and macOS. On a PR that reaches the web app only through `packages/shared/`, the Web row's note says so.
+2. **Lane table:** status, verdict and a note for each lane, plus iOS / Android and macOS. With the device lane's output for the commit, the iOS / Android row becomes "Android (emulator)" and "iOS (simulator)" rows; a platform still running reads "running — results follow in a separate comment". On a PR that reaches the web app only through `packages/shared/`, the Web row's note says so.
 3. **Assessment** from the lanes.
 4. **Steps for you to do manually:** deduplicated, at most 25.
 5. **Coverage gaps**, including the CodeRabbit coverage note the card carried into Testing (`verifyCrNote`).
@@ -173,6 +174,7 @@ The Web lane's screenshots are published only after that scan: bash composes the
 | The column                                                                    | `scripts/setup-factory-board.sh`, `scripts/setup-factory-labels.sh`, `scripts/lib/factory-project.mjs has-status-option`                                                                                                                                                |
 | The Testing-stage scenario wording                                            | `scripts/factory-intest-prompt.md` ("Stage: In Test or Testing"), `buildFactoryInTestBundle({stage})`, `intest_fallback_comment`                                                                                                                                        |
 | Web reached through `packages/shared/`                                        | `deriveVerifyPlatforms` (`dispatch-release.mjs`, `derive-platforms --verify`); `verify_platforms_of`, `scenario_platforms` in `factory-agent.sh`; tests in `dispatch-release.test.mjs`, `factory-intest-prompt-grounding.test.mjs`                                      |
+| The device lane                                                               | `scripts/lib/device-lane.mjs`, `device-plan.mjs`; `verify_device_*`, `device_post_followup` and `device_lock_live` in `factory-agent.sh`; `verify-report.mjs render --device-out` and `--kind device`; `evidence-upload.mjs --source device`                            |
 | The Web lane's screenshots                                                    | `scripts/lib/evidence-upload.mjs`, `evidence-images.mjs`, `evidence-embed.mjs`; `verify_publish_screenshots` and `evidence_upload` in `factory-agent.sh`; `verify-report.mjs render --browser-images`                                                                   |
 | Tests                                                                         | `scripts/__tests__/verify-decide.test.mjs`, `factory-agent-verify.test.mjs`, `verify-report.test.mjs`, `verify-lane.test.mjs`, `verify-lane-supervisor.test.mjs`, `verify-guard.test.mjs`, `factory-verify-prompt-grounding.test.mjs`, `factory-agent-browser.test.mjs` |
 
@@ -183,17 +185,20 @@ The settings table, one-time setup (board, label, bypass secret, canary), triage
 - `FACTORY_VERIFY=0` is the default and the kill switch. With it off, the Testing sweep only drains the column.
 - To roll back, set `FACTORY_VERIFY=0`, wait for the Testing column to empty (move by hand any card the sweep leaves: `factory-pause` or `support` labels, a merged or closed PR, no PR), and only then revert the code.
 
-## Device lane (being built, ADR-0106)
+## The device lane
 
-[ADR-0106](../adr/0106-factory-device-lane.md) adds a third lane, off by default. A node supervisor (`scripts/lib/device-lane.mjs`) builds a dev-backed app from the PR head, with the JS bundle embedded. It then runs Maestro on a dedicated headless Android emulator and a dedicated iOS simulator, one at a time.
+The third lane ([ADR-0106](../adr/0106-factory-device-lane.md)), off by default: it runs only with `FACTORY_VERIFY_DEVICE=1` **and** `device` in `FACTORY_VERIFY_LANES`. A node supervisor, `scripts/lib/device-lane.mjs`, builds a **dev-backed** app from the PR head with the JS bundle embedded (no Metro), checks the artifact can't reach production, then runs Maestro on a dedicated headless Android emulator (`drafto-factory`, port 5580) and a dedicated iOS simulator (`drafto-factory-iphone`), one at a time. No claude session touches a device: the shell lane's guard still denies `maestro`, `adb`, `emulator`, `xcrun`, `xcodebuild` and `gradle`.
 
-- **What runs:** the repo flows the PR touches plus the combined `<platform>-all.yaml` flow. Later, the scenario's iOS and Android steps too: a guarded session translates them into YAML, the supervisor validates the YAML and runs it.
-- **Timing:** the lane is serialised with the beta builds. The card waits for it only `FACTORY_VERIFY_DEVICE_WAIT_MIN`, and never past the hold cap. A longer run posts a follow-up comment instead of holding the card.
-- **The head moves:** the run is killed when the PR head moves, the PR closes, or the card leaves Testing and In Test. Results for a commit that's no longer the head are never posted.
-- **On demand:** the `factory-device-run` label starts a run on a card in Testing or In Test.
-- **Until it's switched on:** iOS, Android and macOS steps go to the manual list, on the betas dispatched at Testing entry. macOS stays manual either way (ADR-0043).
+- **What runs:** for a PR that changes `apps/mobile/` (outside `apps/mobile/store/`) or `packages/shared/`, the combined `<platform>-all.yaml` flow plus the standalone flows the PR changes, minus the destructive ones (`device-plan.mjs`). A PR that only touches `ios-all.yaml` or `ios-only/` runs on iOS alone, and the same for Android. Any other PR reads `skipped:not-applicable` at once.
+- **In the Testing sweep:** `verify_device_work` starts the run (`device-lane.mjs start --trigger testing`) and records `verifyDevice` = `<sha>:running`. A run that can't start yet (another card's run, a beta build, memory pressure, low disk) reads `deferred:<why>` and is tried again next tick. Betas come first: the lane waits while a beta build root is locked, and the mobile beta lane waits a tick while the device lock is held.
+- **It doesn't hold the card.** A run takes 45–90 minutes. The card waits for it only `FACTORY_VERIFY_DEVICE_WAIT_MIN` (default 30) from the start of its round, and never past the hold cap (`verify-decide.mjs`'s `ASYNC_LANES`). Then the card is promoted when the other lanes are done, the run carries on into In Test, and the report's iOS / Android rows read "running — results follow in a separate comment".
+- **The follow-up comment.** When a run ends, `--watch` housekeeping (`verify_device_housekeeping`) records its outcome and posts **one** comment with its results and screenshots (`device_post_followup`). The comment carries `<!-- drafto-factory-device-report -->` and `<!-- drafto-factory-device-sha:<sha>:<runId> -->`, so the feedback detectors ignore it and the card doesn't move. It's posted only while the run's commit is still the open PR's head, checked again just before posting. Results for a stale commit are never posted.
+- **Stops.** A hand-back, feedback or verification switched off stops the run. A promotion at the hold cap or with the other lanes done lets it run on. Housekeeping also stops a run whose head moved, whose PR closed, whose card left Testing and In Test, or that ran past `FACTORY_DEVICE_RUN_MAX_MIN`.
+- **Screenshots.** Only the supervisor's own captures, taken after each flow and listed with their sha256 in `evidence/shots.json`, are published, and only with the follow-up comment. They never go into the verification report. They pass the same OCR secret scan as the Web lane's ([ADR-0096](../adr/0096-factory-test-run-screenshots-on-github.md)).
+- **A dedicated dev account** (`FACTORY_DEVICE_ACCOUNT_FILE`), so a sign-out on a device never ends the browser lane's session. Its password reaches Maestro only through the environment, and every report is scanned for it.
+- **macOS stays manual** (ADR-0043).
 
-The knobs and the one-time Mac mini setup are documented as the lane's pieces land.
+Setup, settings, the selftest, reading a run dir, the Android adb-drop retry and triage are in [the runbook's "The device lane"](../operations/factory-runbook.md#the-device-lane).
 
 ## Related
 

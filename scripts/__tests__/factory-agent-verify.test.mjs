@@ -98,6 +98,10 @@ const REAL_HELPERS = [
   "intest_reused_valid",
   "intest_reuse_fresh",
   "lane_attempt_of",
+  // The device lane (ADR-0106): its lock check and follow-up comment.
+  "device_lock_live",
+  "device_pr_head_is",
+  "device_post_followup",
 ];
 
 const STUBS = `
@@ -105,6 +109,9 @@ LANE_START_DEFAULT='{"started":false,"reason":"busy"}'
 LANE_STOP_DEFAULT='{"state":"idle"}'
 LANE_HK_DEFAULT='{"state":"idle","reaped":{}}'
 LANE_GAPS_DEFAULT='{"gaps":[],"bypassUsed":false}'
+DEVICE_START_DEFAULT='{"started":false,"reason":"deferred:busy"}'
+DEVICE_STOP_DEFAULT='{"state":"idle"}'
+DEVICE_HK_DEFAULT='{"state":"idle","reaped":null}'
 log() { echo "LOG: $*" >> "$LOG_FILE"; }
 logerr() { echo "ERR: $*" >> "$LOG_FILE"; }
 call() { printf '%s\\n' "$*" >> "$CALLS"; }
@@ -174,6 +181,8 @@ node() {
       if [[ " $* " == *" --browser-images "* ]]; then
         [[ -z "\${TRACE_REPORT:-}" ]] || call "report images $(stub_flag --browser-images "$@")"
         [[ -z "\${REPORT_IMAGES_FAIL:-}" ]] || return 1
+      elif [[ " $* " == *" --device-images "* ]]; then
+        [[ -z "\${TRACE_REPORT:-}" ]] || call "report device-images $(stub_flag --device-images "$@")"
       else
         [[ -z "\${TRACE_REPORT:-}" ]] || call "report dry"
       fi
@@ -186,6 +195,16 @@ node() {
       [[ -z "\${UPLOAD_FAIL:-}" ]] || return 1
       [[ -z "\${UPLOAD_STUB:-}" ]] || printf '%s\\n' "$UPLOAD_STUB" > "$(stub_flag --out "$@")"
       echo '{"ok":true,"reason":null,"images":1}'
+      ;;
+    # The device lane's CLI (ADR-0106): its argv, and a canned JSON line.
+    */device-lane.mjs)
+      call "device \${*:2}"
+      [[ -z "\${DEVICE_FAIL:-}" ]] || return 1
+      case "$2" in
+        start) printf '%s\\n' "\${DEVICE_START_STUB:-$DEVICE_START_DEFAULT}" ;;
+        stop) printf '%s\\n' "\${DEVICE_STOP_STUB:-$DEVICE_STOP_DEFAULT}" ;;
+        housekeeping) printf '%s\\n' "\${DEVICE_HK_STUB:-$DEVICE_HK_DEFAULT}" ;;
+      esac
       ;;
     */verify-lane.mjs)
       call "lane \${*:2}"
@@ -1457,7 +1476,11 @@ describe("verify_lane_states (real helper)", () => {
   it("reads a lane's own record for this head, SHA stripped", () => {
     const state = { verifyShell: `${HEAD}:reported:warn`, verifyBrowser: `${OLD}:reported:pass` };
     withBash(states(1), { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser" }, state }, (r) => {
-      assert.deepEqual(JSON.parse(r.stdout), { shell: "reported:warn", browser: "none" });
+      assert.deepEqual(JSON.parse(r.stdout), {
+        shell: "reported:warn",
+        browser: "none",
+        device: "skipped:lane-off",
+      });
     });
   });
 
@@ -1466,12 +1489,14 @@ describe("verify_lane_states (real helper)", () => {
       assert.deepEqual(JSON.parse(r.stdout), {
         shell: "skipped:verification-off",
         browser: "skipped:verification-off",
+        device: "skipped:verification-off",
       });
     });
     withBash(states(1), { env: { HEAD, FACTORY_VERIFY_LANES: "shell" } }, (r) => {
       assert.deepEqual(JSON.parse(r.stdout), {
         shell: "skipped:not-built",
         browser: "skipped:lane-off",
+        device: "skipped:lane-off",
       });
     });
   });
@@ -1961,9 +1986,9 @@ describe("the browser lane's --watch half (verify_browser_work, verify_browser_s
     assert.match(script, /^VERIFY_BUILT_LANES="[^"]*\bbrowser\b[^"]*"/m);
   });
 
-  it("builds both lanes, so neither reads not-built with the script's own list", () => {
+  it("builds every lane, so none reads not-built with the script's own list", () => {
     const built = script.match(/^VERIFY_BUILT_LANES="([^"]*)"/m)?.[1];
-    assert.equal(built, "shell,browser");
+    assert.equal(built, "shell,browser,device");
     // Both seams call both lanes, the shell lane first (it starts a detached
     // run; the browser lane only queues a candidate).
     const work = extract("verify_work_lanes");
@@ -1972,12 +1997,21 @@ describe("the browser lane's --watch half (verify_browser_work, verify_browser_s
     assert.ok(stop.indexOf("verify_shell_stop") < stop.indexOf("verify_browser_stop"));
     const states = `verify_lane_states "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$HEAD" 1`;
     withBash(states, { env: { HEAD, VERIFY_BUILT_LANES_STUB: built } }, (r) => {
-      assert.deepEqual(JSON.parse(r.stdout), { shell: "none", browser: "none" });
+      // The device lane is off unless listed and FACTORY_VERIFY_DEVICE=1.
+      assert.deepEqual(JSON.parse(r.stdout), {
+        shell: "none",
+        browser: "none",
+        device: "skipped:lane-off",
+      });
     });
     // A lane switched off still reads lane-off, and one missing from the list
     // still reads not-built (the wording a future lane would get).
     withBash(states, { env: { HEAD, VERIFY_BUILT_LANES_STUB: "browser" } }, (r) => {
-      assert.deepEqual(JSON.parse(r.stdout), { shell: "skipped:not-built", browser: "none" });
+      assert.deepEqual(JSON.parse(r.stdout), {
+        shell: "skipped:not-built",
+        browser: "none",
+        device: "skipped:lane-off",
+      });
     });
   });
 
@@ -2902,6 +2936,603 @@ describe("the Web lane's screenshots in the verification report (ADR-0096, real 
     // The only verify_* function that publishes anything.
     for (const name of verifyFns.filter((n) => n !== "verify_publish_screenshots")) {
       assert.doesNotMatch(extract(name), /evidence_upload|evidence-upload\.mjs/, name);
+    }
+  });
+});
+
+// ── The device lane (ADR-0106): verify_device_* and device_post_followup ───
+// device-lane.mjs is stubbed (argv recorded, canned JSON line); state-cli,
+// verify-decide and verify-report are the real modules. The lane is off
+// unless `device` is in FACTORY_VERIFY_LANES AND FACTORY_VERIFY_DEVICE=1.
+
+const DEVICE_RUN_ID = `7-${HEAD.slice(0, 12)}-20261110T051950Z`;
+const DEVICE_ON = {
+  FACTORY_VERIFY_LANES: "shell,browser,device",
+  FACTORY_VERIFY_DEVICE: "1",
+  VERIFY_BUILT_LANES_STUB: "shell,browser,device",
+};
+
+// A device-output.json: one iOS platform, finished (PASS) or still running.
+function deviceOutput({ sha = HEAD, running = false } = {}) {
+  return {
+    version: 1,
+    runId: DEVICE_RUN_ID,
+    issue: "7",
+    pr: "70",
+    sha,
+    mode: "smoke",
+    trigger: "testing",
+    startedAt: "2026-11-10T05:19:50Z",
+    finishedAt: running ? null : "2026-11-10T06:00:00Z",
+    platforms: {
+      ios: running
+        ? { state: "running", verdict: null, build: null, flows: [] }
+        : {
+            state: "done",
+            verdict: "PASS",
+            build: { cached: true, durationS: 300 },
+            flows: [{ name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null }],
+          },
+    },
+  };
+}
+
+// Bash that writes the run dir (and the ledger, when <ledgerState> is given)
+// under $REPO_ROOT, as device-lane.mjs lays them out.
+function seedDeviceRun({ output = deviceOutput(), ledgerState = null, evidence = false } = {}) {
+  const runDir = `$REPO_ROOT/logs/factory/device/runs/${DEVICE_RUN_ID}`;
+  const lines = [
+    `RUN_DIR="${runDir}"`,
+    `mkdir -p "$RUN_DIR"${evidence ? ' "$RUN_DIR/evidence"' : ""}`,
+    `printf '%s' '${JSON.stringify(output)}' > "$RUN_DIR/device-output.json"`,
+  ];
+  if (ledgerState) {
+    lines.push(
+      `jq -nc --arg d "$RUN_DIR" --arg s "${ledgerState}" '{version: 1, inFlight: null, attempts: {}, last: {"7": {sha: "${output.sha}", runId: "${DEVICE_RUN_ID}", runDir: $d, state: $s, finishedAt: "2026-11-10T06:00:00Z"}}}' > "$REPO_ROOT/logs/factory/device/ledger.json"`,
+    );
+  }
+  return lines.join("\n");
+}
+
+describe("the device lane: settings and the off path", () => {
+  const block = script.match(
+    /FACTORY_VERIFY="\$\{FACTORY_VERIFY:-0\}"[\s\S]*?VERIFY_REPORT_RETRY_STEP_MIN=10\n/,
+  );
+  function parse(env) {
+    const r = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        `set -euo pipefail\n${block[0]}\necho "LANES=$FACTORY_VERIFY_LANES DEVICE=$FACTORY_VERIFY_DEVICE WAIT=$FACTORY_VERIFY_DEVICE_WAIT_MIN ACCOUNT=$FACTORY_DEVICE_ACCOUNT_FILE"`,
+      ],
+      { encoding: "utf8", env: { PATH: process.env.PATH, HOME: "/home/op", ...env } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    return { out: r.stdout.trim(), stderr: r.stderr };
+  }
+
+  it("is off by default, and not in the default lane list", () => {
+    assert.match(script, /^FACTORY_VERIFY_DEVICE="\$\{FACTORY_VERIFY_DEVICE:-0\}"$/m);
+    assert.match(
+      script,
+      /^FACTORY_VERIFY_DEVICE_WAIT_MIN="\$\{FACTORY_VERIFY_DEVICE_WAIT_MIN:-30\}"$/m,
+    );
+    const { out, stderr } = parse({});
+    assert.equal(stderr, "");
+    assert.equal(out, "LANES=shell,browser DEVICE=0 WAIT=30 ACCOUNT=");
+  });
+
+  it("accepts device in the lane list and validates its knobs", () => {
+    assert.equal(
+      parse({ FACTORY_VERIFY_LANES: "shell,device,device", FACTORY_VERIFY_DEVICE: "1" }).out,
+      "LANES=shell,device DEVICE=1 WAIT=30 ACCOUNT=",
+    );
+    const bad = parse({ FACTORY_VERIFY_DEVICE: "yes", FACTORY_VERIFY_DEVICE_WAIT_MIN: "08" });
+    assert.equal(bad.out, "LANES=shell,browser DEVICE=0 WAIT=30 ACCOUNT=");
+    assert.match(bad.stderr, /invalid FACTORY_VERIFY_DEVICE='yes'/);
+    assert.match(bad.stderr, /invalid FACTORY_VERIFY_DEVICE_WAIT_MIN='08'/);
+    assert.equal(
+      parse({ FACTORY_DEVICE_ACCOUNT_FILE: "~/drafto-secrets/device.env" }).out,
+      "LANES=shell,browser DEVICE=0 WAIT=30 ACCOUNT=/home/op/drafto-secrets/device.env",
+    );
+  });
+
+  it("reads lane-off unless it is listed and switched on", () => {
+    const states = `verify_lane_states "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$HEAD" 1`;
+    const built = { VERIFY_BUILT_LANES_STUB: "shell,browser,device" };
+    for (const env of [
+      { FACTORY_VERIFY_LANES: "shell,browser,device" }, // listed, switch off
+      { FACTORY_VERIFY_DEVICE: "1" }, // switch on, not listed
+    ]) {
+      withBash(states, { env: { HEAD, ...built, ...env } }, (r) => {
+        assert.equal(JSON.parse(r.stdout).device, "skipped:lane-off", JSON.stringify(env));
+      });
+    }
+    withBash(states, { env: { HEAD, ...DEVICE_ON } }, (r) => {
+      assert.equal(JSON.parse(r.stdout).device, "none");
+    });
+    const state = { verifyDevice: `${HEAD}:running` };
+    withBash(states, { env: { HEAD, ...DEVICE_ON }, state }, (r) => {
+      assert.equal(JSON.parse(r.stdout).device, "running");
+    });
+  });
+
+  it("does nothing at all while switched off and never run (no ledger)", () => {
+    const body = [
+      `verify_device_work 7 70 "$HEAD" '{"mobile":true}' '{"device":"none"}'`,
+      `verify_device_stop 7 "$HEAD" threads`,
+      "verify_device_housekeeping",
+    ].join("\n");
+    withBash(body, { env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser,device" } }, (r) => {
+      assert.doesNotMatch(r.calls, /^device /m);
+      assert.equal(r.issue.verifyDevice ?? null, null);
+    });
+  });
+
+  it("is wired into both lane seams, --watch housekeeping and the facts", () => {
+    assert.match(extract("verify_work_lanes"), /^\s+verify_device_work "\$@" \|\| true$/m);
+    assert.match(extract("verify_stop_lanes"), /^\s+verify_device_stop "\$@" \|\| true$/m);
+    const hk = script.indexOf("\n  verify_device_housekeeping\n", watchStart);
+    const shellHk = script.indexOf("\n  verify_shell_housekeeping\n", watchStart);
+    const sweep = script.indexOf("\n  verify_sweep\n", watchStart);
+    assert.ok(shellHk !== -1 && hk > shellHk && hk < sweep);
+    assert.match(
+      extract("verify_sweep_card"),
+      /--argjson deviceWaitMin "\$\{FACTORY_VERIFY_DEVICE_WAIT_MIN:-30\}"/,
+    );
+    // Nothing on the device lane's path moves a card.
+    for (const name of [
+      "verify_device_work",
+      "verify_device_stop",
+      "verify_device_housekeeping",
+      "verify_device_collect",
+      "device_post_followup",
+    ]) {
+      assert.doesNotMatch(extract(name), /transition_status|set-status/, name);
+    }
+  });
+});
+
+describe("verify_device_work", () => {
+  const work = (platforms, device = "none") =>
+    `verify_device_work 7 70 "$HEAD" '${platforms}' '{"shell":"none","browser":"none","device":"${device}"}'`;
+  const MOBILE = '{"web":false,"mobile":true,"desktop":false}';
+  const WEB = '{"web":true,"mobile":false,"desktop":false}';
+
+  it("ends a PR that doesn't touch the mobile app as not-applicable, without a lookup", () => {
+    withBash(work(WEB), { env: { HEAD, ...DEVICE_ON } }, (r) => {
+      assert.doesNotMatch(r.calls, /^device /m);
+      assert.equal(r.issue.verifyDevice, `${HEAD}:skipped:not-applicable`);
+      assert.equal(isTerminalLaneState("skipped:not-applicable"), true);
+    });
+  });
+
+  it("waits, starting nothing, while the platforms are unknown", () => {
+    withBash(work("{}"), { env: { HEAD, ...DEVICE_ON } }, (r) => {
+      assert.doesNotMatch(r.calls, /^device /m);
+      assert.equal(r.issue.verifyDevice ?? null, null);
+      assert.match(r.log, /platforms are unknown this tick; the device lane waits/);
+    });
+  });
+
+  it("starts a testing run on the PR head and records it as running, with its run dir", () => {
+    const started = JSON.stringify({
+      started: true,
+      runId: DEVICE_RUN_ID,
+      runDir: "/runs/x",
+      platforms: { ios: {} },
+    });
+    withBash(work(MOBILE), { env: { HEAD, ...DEVICE_ON, DEVICE_START_STUB: started } }, (r) => {
+      assert.match(
+        r.calls,
+        new RegExp(
+          `^device start --issue 7 --pr 70 --sha ${HEAD} --trigger testing --repo-root `,
+          "m",
+        ),
+      );
+      assert.equal(r.issue.verifyDevice, `${HEAD}:running`);
+      assert.equal(r.issue.verifyDeviceRunDir, "/runs/x");
+    });
+  });
+
+  it("leaves a running run alone, and a terminal lane too", () => {
+    for (const st of ["running", "reported:pass", "skipped:attempts", "unavailable:no-account"]) {
+      withBash(work(MOBILE, st), { env: { HEAD, ...DEVICE_ON } }, (r) => {
+        assert.doesNotMatch(r.calls, /^device /m, st);
+      });
+    }
+  });
+
+  it("records a deferral and tries again next tick, logging once per change", () => {
+    const deferred = '{"started":false,"reason":"deferred:beta-build"}';
+    const body = [work(MOBILE), work(MOBILE, "deferred:beta-build")].join("\n");
+    withBash(body, { env: { HEAD, ...DEVICE_ON, DEVICE_START_STUB: deferred } }, (r) => {
+      assert.equal(r.calls.match(/^device start /gm)?.length, 2, "tried again");
+      assert.equal(r.issue.verifyDevice, `${HEAD}:deferred:beta-build`);
+      assert.equal(r.log.match(/device lane not started/g)?.length, 1);
+    });
+  });
+
+  it("keeps an earlier attempt's retry:<why> over a deferral", () => {
+    const deferred = '{"started":false,"reason":"deferred:memory"}';
+    const state = { verifyDevice: `${HEAD}:retry:lost` };
+    withBash(
+      work(MOBILE, "retry:lost"),
+      { env: { HEAD, ...DEVICE_ON, DEVICE_START_STUB: deferred }, state },
+      (r) => {
+        assert.match(r.calls, /^device start /m);
+        assert.equal(r.issue.verifyDevice, `${HEAD}:retry:lost`);
+      },
+    );
+  });
+
+  it("ends the lane on refusals waiting can't fix, and retries the rest silently", () => {
+    for (const [reason, want] of [
+      ["attempts", "skipped:attempts"],
+      ["not-applicable", "skipped:not-applicable"],
+      ["account", "unavailable:no-account"],
+      ["maestro-missing", "unavailable:maestro-missing"],
+      ["head-moved", null],
+      ["pr-unreadable", null],
+    ]) {
+      const stub = JSON.stringify({ started: false, reason });
+      withBash(work(MOBILE), { env: { HEAD, ...DEVICE_ON, DEVICE_START_STUB: stub } }, (r) => {
+        assert.equal(r.issue.verifyDevice ?? null, want ? `${HEAD}:${want}` : null, reason);
+      });
+    }
+  });
+});
+
+describe("verify_device_stop: only for reasons that leave the run without a reader", () => {
+  const ledger =
+    'mkdir -p "$REPO_ROOT/logs/factory/device" && echo "{}" > "$REPO_ROOT/logs/factory/device/ledger.json"';
+  const stopped = '{"state":"stopped","runId":"r"}';
+
+  it("stops the run on a hand-back, feedback or verification off", () => {
+    for (const reason of [
+      "head-moved",
+      "ci-red",
+      "not-reviewed",
+      "threads",
+      "feedback",
+      "verification-off",
+    ]) {
+      withBash(
+        `${ledger}\nverify_stop_lanes 7 "$HEAD" ${reason}`,
+        { env: { HEAD, DEVICE_STOP_STUB: stopped } },
+        (r) => {
+          assert.match(r.calls, new RegExp(`^device stop --issue 7 --reason ${reason} `, "m"));
+          assert.match(r.log, new RegExp(`device lane stopped \\(${reason}\\)`));
+        },
+      );
+    }
+  });
+
+  it("lets it run on into In Test at the hold cap or with the other lanes done", () => {
+    for (const reason of ["hold-cap", "lanes-done", "decide-error"]) {
+      withBash(`${ledger}\nverify_stop_lanes 7 "$HEAD" ${reason}`, { env: { HEAD } }, (r) => {
+        assert.doesNotMatch(r.calls, /^device /m, reason);
+      });
+    }
+  });
+
+  it("hands back with a stop, promotes at the hold cap without one (real sweep)", () => {
+    const red = prView({ statusCheckRollup: [{ name: "Lint", conclusion: "FAILURE" }] });
+    const state = {
+      verifySha: HEAD,
+      verifyStartedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      lastReviewSha: HEAD,
+      lastFeedbackAt: "2026-01-01T00:00:00Z",
+      intestCommentSha: HEAD,
+      verifyDevice: `${HEAD}:running`,
+    };
+    const env = {
+      HEAD,
+      LABELS: "status:testing",
+      PR_OBJ_STUB: PR_OBJ,
+      ...DEVICE_ON,
+      DEVICE_STOP_STUB: stopped,
+    };
+    const card = `${ledger}\nverify_sweep_card ITEM 7 "$LABELS"`;
+    withBash(card, { env: { ...env, PR_VIEW_STUB: red }, state }, (r) => {
+      assert.match(r.calls, /^transition In Review$/m);
+      assert.match(r.calls, /^device stop --issue 7 --reason ci-red /m);
+    });
+    const capped = { ...state, verifyStartedAt: "2026-01-01T00:00:00Z" };
+    withBash(card, { env: { ...env, PR_VIEW_STUB: prView() }, state: capped }, (r) => {
+      assert.match(r.log, /Testing → promote \(hold-cap\)/);
+      assert.match(r.calls, /^transition In Test$/m);
+      assert.doesNotMatch(r.calls, /^device stop /m);
+    });
+  });
+});
+
+describe("the device lane at promotion: running — results follow", () => {
+  const state = (over = {}) => ({
+    verifySha: HEAD,
+    lastReviewSha: HEAD,
+    lastFeedbackAt: "2026-01-01T00:00:00Z",
+    intestCommentSha: HEAD,
+    verifyShell: `${HEAD}:skipped:lane-off`,
+    verifyBrowser: `${HEAD}:skipped:not-web`,
+    verifyDevice: `${HEAD}:running`,
+    ...over,
+  });
+  const minsAgo = (m) => new Date(Date.now() - m * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const card = [
+    seedDeviceRun({ output: deviceOutput({ running: true }) }),
+    `node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 verifyDeviceRunDir "$RUN_DIR" --state-file "$STATE_FILE" >/dev/null`,
+    'verify_sweep_card ITEM 7 "$LABELS"',
+  ].join("\n");
+  const env = (over = {}) => ({
+    HEAD,
+    LABELS: "status:testing",
+    PR_OBJ_STUB: PR_OBJ,
+    PR_VIEW_STUB: prView(),
+    DIFF_STUB: "apps/mobile/e2e/ios-all.yaml",
+    ...DEVICE_ON,
+    FACTORY_VERIFY_LANES: "browser,device",
+    FACTORY_DEVICE_ACCOUNT_FILE: "",
+    TRACE_REPORT: "1",
+    ...over,
+  });
+
+  it("holds the card while the run is inside FACTORY_VERIFY_DEVICE_WAIT_MIN", () => {
+    withBash(card, { env: env(), state: state({ verifyStartedAt: minsAgo(10) }) }, (r) => {
+      assert.match(r.log, /Testing → work-lanes \(lanes-pending\)/);
+      assert.doesNotMatch(r.calls, /^transition/m);
+      assert.doesNotMatch(r.calls, /^device start /m, "a running run isn't started again");
+    });
+  });
+
+  it("then promotes with the device rows reading running, no images, the run left going", () => {
+    withBash(card, { env: env(), state: state({ verifyStartedAt: minsAgo(31) }) }, (r) => {
+      assert.match(r.log, /Testing → promote \(lanes-done\)/);
+      assert.match(r.calls, /^transition In Test$/m);
+      assert.doesNotMatch(r.calls, /^device stop /m);
+      assert.doesNotMatch(r.calls, /^report device-images|^upload /m);
+      const report = r.comments.at(-1).body;
+      assert.match(report, /running — results follow in a separate comment/);
+      assert.doesNotMatch(report, /<img /);
+    });
+  });
+
+  it("honours a shorter FACTORY_VERIFY_DEVICE_WAIT_MIN", () => {
+    withBash(
+      card,
+      {
+        env: env({ FACTORY_VERIFY_DEVICE_WAIT_MIN: "5" }),
+        state: state({ verifyStartedAt: minsAgo(10) }),
+      },
+      (r) => {
+        assert.match(r.log, /Testing → promote \(lanes-done\)/);
+      },
+    );
+  });
+});
+
+describe("verify_device_housekeeping and the follow-up comment", () => {
+  const RUN_DIR_RE = new RegExp(`logs/factory/device/runs/${DEVICE_RUN_ID}$`);
+  const env = (over = {}) => ({
+    HEAD,
+    ...DEVICE_ON,
+    PR_VIEW_STUB: prView(),
+    FACTORY_DEVICE_ACCOUNT_FILE: "",
+    TRACE_REPORT: "1",
+    ...over,
+  });
+  const followups = (r) => r.comments.filter((c) => /drafto-factory-device-report/.test(c.body));
+
+  it("collects the run, records the round's outcome and posts the follow-up once", () => {
+    const body = [
+      seedDeviceRun({ ledgerState: "done:PASS" }),
+      `node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 verifyDeviceRunDir "$RUN_DIR" --state-file "$STATE_FILE" >/dev/null`,
+      "verify_device_housekeeping",
+      "verify_device_housekeeping",
+      'rm -f "$RUN_DIR/followup.done"',
+      "verify_device_housekeeping",
+    ].join("\n");
+    const state = { verifyDevice: `${HEAD}:running` };
+    withBash(body, { env: env(), state }, (r) => {
+      assert.match(r.calls, /^device housekeeping --repo-root /m);
+      assert.equal(r.issue.verifyDevice, `${HEAD}:reported:pass`);
+      assert.match(r.issue.verifyDeviceRunDir, RUN_DIR_RE);
+      assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}`);
+      const posted = followups(r);
+      assert.equal(posted.length, 1, "posted once");
+      assert.match(
+        posted[0].body,
+        new RegExp(`drafto-factory-device-sha:${HEAD}:${DEVICE_RUN_ID}`),
+      );
+      assert.equal(r.calls.match(/^gh issue comment /gm)?.length, 1);
+      assert.doesNotMatch(r.calls, /^transition/m, "never moves the card");
+    });
+  });
+
+  it("publishes the run's screenshots for the follow-up only, as the device source", () => {
+    const published = JSON.stringify({ ok: true, images: [] });
+    const body = [
+      seedDeviceRun({ ledgerState: "done:PASS", evidence: true }),
+      "verify_device_housekeeping",
+    ].join("\n");
+    withBash(body, { env: env({ UPLOAD_STUB: published }) }, (r) => {
+      const uploads = r.calls.split("\n").filter((l) => l.startsWith("upload "));
+      assert.equal(uploads.length, 1);
+      assert.match(uploads[0], /--source device /);
+      assert.match(uploads[0], new RegExp(`--run-id device-${DEVICE_RUN_ID} `));
+      assert.match(r.calls, /^report device-images .*upload\.json$/m);
+      assert.equal(followups(r).length, 1);
+    });
+  });
+
+  it("skips a run whose commit is no longer the PR head, recording it as stale", () => {
+    const body = [seedDeviceRun({ ledgerState: "done:FAIL" }), "verify_device_housekeeping"].join(
+      "\n",
+    );
+    for (const view of [prView({ headRefOid: OLD }), prView({ state: "MERGED" })]) {
+      withBash(body, { env: env({ PR_VIEW_STUB: view }) }, (r) => {
+        assert.equal(followups(r).length, 0);
+        assert.doesNotMatch(r.calls, /^upload /m);
+        assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}:stale`);
+        assert.match(r.log, /no longer PR #70's open head; its results aren't posted \(stale\)/);
+      });
+    }
+  });
+
+  it("doesn't post one already on the issue under the factory's identity", () => {
+    const comments = [
+      {
+        id: 4,
+        body: `x <!-- drafto-factory-device-sha:${HEAD}:${DEVICE_RUN_ID} -->`,
+        createdAt: "t",
+        authorAssociation: "OWNER",
+      },
+    ];
+    const body = [seedDeviceRun({ ledgerState: "done:PASS" }), "verify_device_housekeeping"].join(
+      "\n",
+    );
+    withBash(body, { env: env(), comments }, (r) => {
+      assert.doesNotMatch(r.calls, /^gh issue comment /m);
+      assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}`);
+    });
+  });
+
+  it("posts nothing for a stopped run, and retries a failed post next tick", () => {
+    const stopped = [
+      seedDeviceRun({ ledgerState: "stopped:threads" }),
+      "verify_device_housekeeping",
+    ].join("\n");
+    const state = { verifyDevice: `${HEAD}:running` };
+    withBash(stopped, { env: env(), state }, (r) => {
+      assert.equal(followups(r).length, 0);
+      assert.equal(r.issue.deviceReportPosted ?? null, null);
+      assert.equal(r.issue.verifyDevice, `${HEAD}:running`, "not the round's run dir");
+    });
+    const failing = [
+      seedDeviceRun({ ledgerState: "done:PASS" }),
+      "verify_device_housekeeping",
+      'test -e "$RUN_DIR/followup.done" && echo DONE || echo PENDING',
+    ].join("\n");
+    withBash(failing, { env: env({ FAIL_COMMENT: "1" }) }, (r) => {
+      assert.equal(r.stdout.trim(), "PENDING");
+      assert.equal(r.issue.deviceReportPosted ?? null, null);
+      assert.match(
+        r.log,
+        /posting the device lane's follow-up on #7 failed; trying again next tick/,
+      );
+    });
+  });
+
+  it("maps a finished run's ledger state to a lane state", () => {
+    const cases = [
+      ["done:PASS", "reported:pass"],
+      ["done:FAIL", "reported:fail"],
+      ["timeout", "timeout"],
+      ["failed:error", "unavailable:error"],
+      ["unavailable:lost", "unavailable:lost"],
+      ["stopped:head-moved", "skipped:stopped-head-moved"],
+      ["retry:beta-build", "retry:beta-build"],
+      ["weird", ""],
+    ];
+    const body = cases.map(([s]) => `echo "[$(verify_device_outcome_state '${s}')]"`).join("\n");
+    withBash(body, {}, (r) => {
+      assert.deepEqual(
+        r.stdout.trim().split("\n"),
+        cases.map(([, want]) => `[${want}]`),
+      );
+    });
+  });
+});
+
+describe("intest_dispatch_betas: the mobile beta waits for the device lane's lock", () => {
+  const fns = ["intest_dispatch_betas", "device_lock_live", "lane_attempt_of", "lane_attempt_set"];
+  function run(lockPid, lanes = "mobile,desktop") {
+    const dir = mkdtempSync(join(tmpdir(), "factory-device-beta-"));
+    const harness = [
+      "set -euo pipefail",
+      `SCRIPT_DIR="${scriptsDir}"`,
+      `REPO_ROOT="${dir}"`,
+      `LOG_DIR="${dir}"`,
+      `LOG_FILE="${dir}/factory.log"`,
+      `STATE_FILE="${dir}/state.json"`,
+      "DRY_RUN=0",
+      `FACTORY_DEVICE_VOLUME="${dir}/vol"`,
+      `mkdir -p "${dir}/vol"`,
+      lockPid === "self"
+        ? `echo $$ > "${dir}/vol/drafto-device.lock"`
+        : lockPid
+          ? `echo ${lockPid} > "${dir}/vol/drafto-device.lock"`
+          : ":",
+      `logerr() { echo "ERR: $*" >> "$LOG_FILE"; }`,
+      `log() { echo "LOG: $*" >> "$LOG_FILE"; }`,
+      `intest_beta_gate() { echo "lanes=${lanes} skipped="; }`,
+      "intest_beta_reuse_decide() { echo ''; }",
+      "intest_reused_json() { echo '[]'; }",
+      "hosted_config_gate_pr() { return 0; }",
+      'ensure_beta_build_root() { echo "BUILD-ROOT $1" >> "$LOG_FILE"; echo "/roots/$1"; }',
+      "claim_beta_build_root() { :; }",
+      "release_beta_build_root() { :; }",
+      `node() {
+        case "$1" in
+          */dispatch-release.mjs)
+            local only="" prev="" a
+            for a in "$@"; do [[ "$prev" == "--only" ]] && only="$a"; prev="$a"; done
+            echo "DISPATCH $only" >> "$LOG_FILE"
+            echo "$only" | jq -Rc '{dispatched: [split(",")[] | {id: ., pid: 1, logPath: "x"}]}' ;;
+          *) command node "$@" ;;
+        esac
+      }`,
+      ...fns.map(extract),
+      `intest_dispatch_betas 7 70 "${HEAD}" '{"mobile":true,"desktop":true}'`,
+    ].join("\n");
+    try {
+      const r = spawnSync("/bin/bash", ["-c", harness], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, HOME: process.env.HOME },
+      });
+      assert.equal(r.status, 0, r.stderr);
+      const log = existsSync(join(dir, "factory.log"))
+        ? readFileSync(join(dir, "factory.log"), "utf8")
+        : "";
+      const state = existsSync(join(dir, "state.json"))
+        ? JSON.parse(readFileSync(join(dir, "state.json"), "utf8"))
+        : {};
+      return {
+        out: JSON.parse(r.stdout.trim().split("\n").at(-1)),
+        log,
+        issue: state.issues?.["7"] ?? {},
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("defers the mobile lane only, spending no attempt, while a live pid holds the lock", () => {
+    const r = run("self");
+    assert.match(r.log, /the device lane is running \(pid \d+\); the mobile beta lane waits/);
+    assert.match(r.log, /^DISPATCH desktop$/m);
+    assert.doesNotMatch(r.log, /BUILD-ROOT mobile/);
+    assert.deepEqual(
+      r.out.dispatched.map((d) => d.id),
+      ["desktop"],
+    );
+    assert.ok(r.out.skipped.some((s) => s.id === "mobile" && /device-lane-busy/.test(s.reason)));
+    assert.equal(r.issue.intestBetaLanes, "desktop", "mobile isn't recorded as started");
+    assert.doesNotMatch(r.issue.intestBetaAttempts ?? "", /mobile/);
+  });
+
+  it("dispatches nothing when mobile was the only lane, and records nothing", () => {
+    const r = run("self", "mobile");
+    assert.deepEqual(r.out.dispatched, []);
+    assert.doesNotMatch(r.log, /DISPATCH/);
+    assert.equal(r.issue.intestBetaSha ?? null, null);
+  });
+
+  it("dispatches as before with no lock or a dead holder", () => {
+    for (const pid of [null, 999999]) {
+      const r = run(pid);
+      assert.match(r.log, /^DISPATCH mobile,desktop$/m, String(pid));
+      assert.doesNotMatch(r.log, /device lane is running/);
     }
   });
 });

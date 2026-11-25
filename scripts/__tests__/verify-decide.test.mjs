@@ -4,7 +4,15 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { decide, holdExpired, isTerminalLaneState, laneKind } from "../lib/verify-decide.mjs";
+import {
+  ASYNC_LANES,
+  LANES,
+  asyncWaitExpired,
+  decide,
+  holdExpired,
+  isTerminalLaneState,
+  laneKind,
+} from "../lib/verify-decide.mjs";
 
 // The Testing sweep's decision table (ADR-0053). Each row is one call: the
 // module is pure, so the whole matrix — including the rule ORDER, which is
@@ -14,11 +22,14 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const cli = resolve(HERE, "..", "lib", "verify-decide.mjs");
 
 const HEAD = "a".repeat(40);
+// The device lane switched off, as bash sends it by default (ADR-0106).
+const OFF = "skipped:lane-off";
 const OLD = "b".repeat(40);
 const T0 = "2026-10-20T10:00:00Z";
 const at = (min) => new Date(Date.parse(T0) + min * 60_000).toISOString();
 
-// A card mid-round that should simply keep working its lanes.
+// A card mid-round that should simply keep working its lanes. The device lane
+// (an async lane, ADR-0106) is switched off unless a row says otherwise.
 const base = () => ({
   enabled: true,
   prState: "OPEN",
@@ -31,10 +42,11 @@ const base = () => ({
   bounces: 0,
   bounceMax: 2,
   newFeedback: false,
-  lanes: { shell: "running", browser: "none" },
+  lanes: { shell: "running", browser: "none", device: OFF },
   startedAt: T0,
   now: at(5),
   holdMaxMin: 60,
+  deviceWaitMin: 30,
 });
 
 const run = (over) => decide({ ...base(), ...over });
@@ -82,9 +94,10 @@ describe("verify-decide: the rules, in order", () => {
       reason: "lanes-pending",
       pending: ["shell", "browser"],
     });
-    assert.deepEqual(run({ lanes: { shell: "reported:pass", browser: "running" } }).pending, [
-      "browser",
-    ]);
+    assert.deepEqual(
+      run({ lanes: { shell: "reported:pass", browser: "running", device: OFF } }).pending,
+      ["browser"],
+    );
   });
 
   describe("1. a PR that isn't open is left alone", () => {
@@ -118,12 +131,12 @@ describe("verify-decide: the rules, in order", () => {
         requiredCi: "red",
         openThreads: 3,
         verifySha: "",
-        lanes: { shell: "reported:warn", browser: "running" },
+        lanes: { shell: "reported:warn", browser: "running", device: OFF },
       });
       assert.deepEqual(r, {
         action: "promote",
         reason: "verification-off",
-        lanes: { shell: "reported:warn", browser: "skipped:verification-off" },
+        lanes: { shell: "reported:warn", browser: "skipped:verification-off", device: OFF },
       });
     });
 
@@ -142,11 +155,11 @@ describe("verify-decide: the rules, in order", () => {
   describe("4. actionable feedback cuts the round short", () => {
     it("promotes, with pending lanes skipped:feedback", () => {
       assert.deepEqual(
-        run({ newFeedback: true, lanes: { shell: "timeout", browser: "running" } }),
+        run({ newFeedback: true, lanes: { shell: "timeout", browser: "running", device: OFF } }),
         {
           action: "promote",
           reason: "feedback",
-          lanes: { shell: "timeout", browser: "skipped:feedback" },
+          lanes: { shell: "timeout", browser: "skipped:feedback", device: OFF },
         },
       );
     });
@@ -217,8 +230,11 @@ describe("verify-decide: the rules, in order", () => {
     it("past the bounce cap, open threads no longer hand back (--release still gates)", () => {
       assert.equal(run({ openThreads: 2, bounces: 2 }).action, "work-lanes");
       assert.equal(
-        run({ openThreads: 2, bounces: 2, lanes: { shell: "timeout", browser: "skipped:x" } })
-          .reason,
+        run({
+          openThreads: 2,
+          bounces: 2,
+          lanes: { shell: "timeout", browser: "skipped:x", device: OFF },
+        }).reason,
         "lanes-done",
       );
     });
@@ -233,7 +249,7 @@ describe("verify-decide: the rules, in order", () => {
     });
 
     it("a verdict never hands back: a FAIL lane just counts as done", () => {
-      const r = run({ lanes: { shell: "reported:fail", browser: "reported:fail" } });
+      const r = run({ lanes: { shell: "reported:fail", browser: "reported:fail", device: OFF } });
       assert.equal(r.action, "promote");
       assert.equal(r.reason, "lanes-done");
     });
@@ -259,7 +275,7 @@ describe("verify-decide: the rules, in order", () => {
       assert.deepEqual(run({ requiredCi: "pending", now: at(60) }), {
         action: "promote",
         reason: "hold-cap",
-        lanes: { shell: "skipped:hold-cap", browser: "skipped:hold-cap" },
+        lanes: { shell: "skipped:hold-cap", browser: "skipped:hold-cap", device: OFF },
       });
     });
   });
@@ -278,39 +294,46 @@ describe("verify-decide: the rules, in order", () => {
   describe("12–13. promotion", () => {
     it("once every lane is terminal (the not-built and lane-off placeholders included)", () => {
       assert.deepEqual(
-        run({ lanes: { shell: "skipped:not-built", browser: "skipped:lane-off" } }),
+        run({ lanes: { shell: "skipped:not-built", browser: "skipped:lane-off", device: OFF } }),
         {
           action: "promote",
           reason: "lanes-done",
-          lanes: { shell: "skipped:not-built", browser: "skipped:lane-off" },
+          lanes: { shell: "skipped:not-built", browser: "skipped:lane-off", device: OFF },
         },
       );
     });
 
     it("or when the hold cap is reached with lanes still running", () => {
       assert.deepEqual(
-        run({ now: at(60), lanes: { shell: "reported:pass", browser: "running" } }),
+        run({ now: at(60), lanes: { shell: "reported:pass", browser: "running", device: OFF } }),
         {
           action: "promote",
           reason: "hold-cap",
-          lanes: { shell: "reported:pass", browser: "skipped:hold-cap" },
+          lanes: { shell: "reported:pass", browser: "skipped:hold-cap", device: OFF },
         },
       );
     });
 
     it("shows why a lane deferred until the hold cap, or how its last attempt ended, and keeps both pending until then", () => {
       assert.deepEqual(
-        run({ now: at(60), lanes: { shell: "deferred:memory", browser: "retry:error" } }).lanes,
-        { shell: "skipped:memory", browser: "skipped:after-error" },
+        run({
+          now: at(60),
+          lanes: { shell: "deferred:memory", browser: "retry:error", device: OFF },
+        }).lanes,
+        { shell: "skipped:memory", browser: "skipped:after-error", device: OFF },
       );
-      const pending = run({ lanes: { shell: "deferred:busy", browser: "reported:pass" } });
+      const pending = run({
+        lanes: { shell: "deferred:busy", browser: "reported:pass", device: OFF },
+      });
       assert.equal(pending.action, "work-lanes");
       assert.deepEqual(pending.pending, ["shell"]);
       // Feedback cuts a deferred lane short like any other pending one.
       assert.deepEqual(
-        run({ newFeedback: true, lanes: { shell: "deferred:disk", browser: "reported:pass" } })
-          .lanes,
-        { shell: "skipped:feedback", browser: "reported:pass" },
+        run({
+          newFeedback: true,
+          lanes: { shell: "deferred:disk", browser: "reported:pass", device: OFF },
+        }).lanes,
+        { shell: "skipped:feedback", browser: "reported:pass", device: OFF },
       );
     });
 
@@ -319,10 +342,11 @@ describe("verify-decide: the rules, in order", () => {
     });
 
     it("missing lanes read as pending", () => {
-      assert.deepEqual(run({ lanes: undefined }).pending, ["shell", "browser"]);
+      assert.deepEqual(run({ lanes: undefined }).pending, ["shell", "browser", "device"]);
       assert.deepEqual(run({ lanes: undefined, now: at(90) }).lanes, {
         shell: "skipped:hold-cap",
         browser: "skipped:hold-cap",
+        device: "skipped:hold-cap",
       });
     });
   });
@@ -331,6 +355,85 @@ describe("verify-decide: the rules, in order", () => {
     assert.deepEqual(decide(), { action: "skip", reason: "pr-unknown" });
     assert.deepEqual(decide(null), { action: "skip", reason: "pr-unknown" });
     assert.equal(run({ bounces: "x", bounceMax: -1, openThreads: "3" }).action, "work-lanes");
+  });
+});
+
+describe("verify-decide: the device lane, an async lane (ADR-0106 decision 6)", () => {
+  const dev = (device, over = {}) =>
+    run({ lanes: { shell: "reported:pass", browser: "skipped:not-web", device }, ...over });
+
+  it("is a lane, and the only async one", () => {
+    assert.deepEqual(LANES, ["shell", "browser", "device"]);
+    assert.deepEqual(ASYNC_LANES, ["device"]);
+    assert.equal(isTerminalLaneState("running"), false, "running is not terminal");
+  });
+
+  it("holds the card while its run is going, until deviceWaitMin", () => {
+    for (const device of ["none", "running", "deferred:beta-build", "retry:lost"]) {
+      const r = dev(device, { now: at(29) });
+      assert.equal(r.action, "work-lanes", device);
+      assert.deepEqual(r.pending, ["device"], device);
+    }
+  });
+
+  it("stops holding it after deviceWaitMin: a running run reads running", () => {
+    assert.deepEqual(dev("running", { now: at(30) }), {
+      action: "promote",
+      reason: "lanes-done",
+      lanes: { shell: "reported:pass", browser: "skipped:not-web", device: "running" },
+    });
+  });
+
+  it("reports a run that never started like a lane at the hold cap", () => {
+    assert.equal(dev("deferred:beta-build", { now: at(30) }).lanes.device, "skipped:beta-build");
+    assert.equal(dev("retry:lost", { now: at(30) }).lanes.device, "skipped:after-lost");
+    assert.equal(dev("none", { now: at(30) }).lanes.device, "skipped:async-wait");
+  });
+
+  it("doesn't hold up the other lanes, which still decide", () => {
+    const r = run({
+      now: at(45),
+      lanes: { shell: "running", browser: "reported:pass", device: "running" },
+    });
+    assert.equal(r.action, "work-lanes");
+    assert.deepEqual(r.pending, ["shell"]);
+  });
+
+  it("never outlasts the hold cap: a shorter cap wins over deviceWaitMin", () => {
+    const r = dev("running", { holdMaxMin: 20, now: at(20) });
+    assert.equal(r.action, "promote");
+    assert.equal(r.lanes.device, "running", "the run carries on past the cap");
+    assert.equal(dev("running", { holdMaxMin: 20, now: at(19) }).action, "work-lanes");
+    // A longer wait than the cap is cut to the cap.
+    assert.equal(
+      asyncWaitExpired({ startedAt: T0, now: at(60), holdMaxMin: 60, deviceWaitMin: 90 }),
+      true,
+    );
+    assert.equal(
+      asyncWaitExpired({ startedAt: T0, now: at(59), holdMaxMin: 60, deviceWaitMin: 90 }),
+      false,
+    );
+    // The hold cap, with the other lanes still running, reports it running too.
+    assert.equal(
+      run({ now: at(60), lanes: { shell: "running", browser: "none", device: "running" } }).lanes
+        .device,
+      "running",
+    );
+  });
+
+  it("a promotion that stops the run never reads it as running", () => {
+    assert.equal(dev("running", { newFeedback: true }).lanes.device, "skipped:feedback");
+    assert.equal(dev("running", { enabled: false }).lanes.device, "skipped:verification-off");
+  });
+
+  it("a missing or bad wait counts as over (doubt resolves toward promotion)", () => {
+    assert.equal(dev("running", { deviceWaitMin: undefined }).reason, "lanes-done");
+    assert.equal(dev("running", { deviceWaitMin: "x" }).reason, "lanes-done");
+  });
+
+  it("a finished run is terminal like any lane", () => {
+    assert.deepEqual(dev("reported:fail", { now: at(1) }).lanes.device, "reported:fail");
+    assert.equal(dev("skipped:not-applicable", { now: at(1) }).reason, "lanes-done");
   });
 });
 
