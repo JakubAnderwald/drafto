@@ -2481,9 +2481,11 @@ issue_already_impl_stubbed() {
 # When the spec says schema changes, the bundle also carries `migrations`
 # (implement_migration_versions, ADR-0079): the versions the implementer names
 # its new migrations with, in order, clear of main and of every other open
-# PR's. If the bundle with them can't be built, the first one (migrations
-# null) is used, with a warning: the prompt's date rule and the post-check
-# cover it.
+# PR's. When the approved plan mentions docs/adr or an ADR, it also carries
+# `adr` (implement_adr_numbers, ADR-0105): the number a new ADR takes, clear
+# of main and of every other open PR's. Each is added in a rebuild of its
+# own; one that can't be is left null, with a warning: the prompt's fallback
+# rules and the conflict pass cover it.
 build_implement_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -2493,7 +2495,7 @@ build_implement_bundle() {
   local screenshot_sources="${6:-[]}"
   local reply_markers="${7:-[]}"
   local reply_dir="${8:-}"
-  local repo_head_ref input bundle migrations with_migrations own_pr
+  local repo_head_ref input bundle migrations adr extra with_extra own_pr
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   input=$(jq -n \
     --argjson issue "$issue_entry" \
@@ -2533,22 +2535,44 @@ build_implement_bundle() {
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
      }') || return 1
   bundle=$(node "$SCRIPT_DIR/lib/factory-bundle.mjs" <<<"$input") || return 1
+  # A revision's own PR: its migrations and ADRs raise the floor instead of
+  # being claims.
+  own_pr=$(jq -r 'if type == "object" then (.number // "" | tostring) else "" end' \
+    <<<"$prior_pr" 2>/dev/null || echo "")
+  extra="{}"
   # The spec, as the bundle parses it, decides: the lookup costs a fetch and a
   # gh call per open PR, so only a card that says it changes the schema pays.
   if jq -e '.spec.schemaChanges == true' <<<"$bundle" >/dev/null 2>&1; then
-    # A revision's own PR: its migrations raise the floor instead of being claims.
-    own_pr=$(jq -r 'if type == "object" then (.number // "" | tostring) else "" end' \
-      <<<"$prior_pr" 2>/dev/null || echo "")
     migrations=$(implement_migration_versions "$own_pr")
     if [[ "$migrations" != "null" ]]; then
-      if with_migrations=$(jq -c --argjson migrations "$migrations" '. + {migrations: $migrations}' <<<"$input" \
-          | node "$SCRIPT_DIR/lib/factory-bundle.mjs"); then
-        bundle="$with_migrations"
-      else
-        logerr "WARNING: couldn't add the migration versions to the implement bundle; the implementer falls back to the date rule"
-      fi
+      extra=$(jq -c --argjson migrations "$migrations" '. + {migrations: $migrations}' <<<"$extra")
     fi
   fi
+  # The same sweep for ADR numbers, paid only by a card whose approved plan
+  # mentions an ADR in any case ("a new adr", "docs/adr/", "ADR-0079"): the
+  # spec has no field for it. A plan that only cites an existing ADR pays for
+  # a sweep it doesn't need, which is cheaper than missing one that adds an ADR.
+  if jq -e '(.body // "") | test("docs/adr|\\badrs?\\b"; "i")' <<<"$approved_plan" >/dev/null 2>&1; then
+    adr=$(implement_adr_numbers "$own_pr")
+    if [[ "$adr" != "null" ]]; then
+      extra=$(jq -c --argjson adr "$adr" '. + {adr: $adr}' <<<"$extra")
+    fi
+  fi
+  # Each field is added in its own rebuild, so a problem with one never costs
+  # the other.
+  local field with_input
+  for field in migrations adr; do
+    jq -e --arg f "$field" 'has($f)' <<<"$extra" >/dev/null 2>&1 || continue
+    if with_input=$(jq -c --argjson extra "$extra" --arg f "$field" '. + {($f): $extra[$f]}' <<<"$input") \
+        && with_extra=$(node "$SCRIPT_DIR/lib/factory-bundle.mjs" <<<"$with_input"); then
+      input="$with_input"
+      bundle="$with_extra"
+    elif [[ "$field" == "migrations" ]]; then
+      logerr "WARNING: couldn't add the migration versions to the implement bundle; the implementer falls back to the date rule"
+    else
+      logerr "WARNING: couldn't add the ADR number to the implement bundle; the implementer falls back to the next number on main"
+    fi
+  done
   printf '%s\n' "$bundle"
 }
 
@@ -2577,6 +2601,31 @@ implement_migration_versions() {
     return 0
   fi
   logerr "WARNING: couldn't pick a migration version for the implement bundle (see the log); the implementer falls back to the date rule"
+  echo "null"
+}
+
+# implement_adr_numbers [<own-pr>] — the `adr` field of the implement bundle
+# (ADR-0105): {mainNewest, next, own, claimed, skipped} from adr-allocate.mjs
+# next-adr, which fetches main and lists the ADR files every open PR adds.
+# `next` is the number the card's new ADR takes: one past main's newest, every
+# other open PR's and (with <own-pr>, on a revision) the PR's own. Two PRs that
+# took the same next free number on main conflicted on the README index once
+# one merged. Prints "null" on any failure, with a warning in the log: the
+# prompt then falls back to the next number on main, and the conflict pass
+# still catches a clash. Never fails the implement. Logs only through logerr,
+# because build_implement_bundle's stdout is the bundle.
+implement_adr_numbers() {
+  local own_pr="${1:-}" out own_args=()
+  if [[ "$own_pr" =~ ^[0-9]+$ ]]; then
+    own_args=(--own-pr "$own_pr")
+  fi
+  if out=$(node "$SCRIPT_DIR/lib/adr-allocate.mjs" next-adr --root "$REPO_ROOT" \
+      ${own_args[@]+"${own_args[@]}"} 2>>"$LOG_FILE") \
+      && jq -e '(.next | type) == "string" and (.next | test("^[0-9]{4}$"))' <<<"$out" >/dev/null 2>&1; then
+    jq -c '{mainNewest, next, own, claimed, skipped}' <<<"$out"
+    return 0
+  fi
+  logerr "WARNING: couldn't pick an ADR number for the implement bundle (see the log); the implementer falls back to the next number on main"
   echo "null"
 }
 
@@ -4615,7 +4664,7 @@ conflict_pass_verified() {
     CONFLICT_PASS_WHY="merge-check failed to run"; return 1
   fi
   if [[ "$(echo "$check" | jq -r '.resolved')" != "true" ]]; then
-    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions, migrationErrors}')"
+    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions, adrIndexDuplicates, migrationErrors}')"
     return 1
   fi
   head=$(echo "$check" | jq -r '.head // ""')
@@ -11293,7 +11342,10 @@ A human should take a look. Reset with \
       # the agent's checks run against the merged lockfile. What git merges on
       # its own is pushed without a Claude run or an attempt; the agent gets
       # the merge only when it stopped on conflicts or left two ADRs sharing a
-      # number. Every way out of the pass below rolls back what didn't land.
+      # number. The ADR index merges with git's union driver (ADR-0105), so two
+      # new index rows no longer stop it; an ADR the merged index lists twice
+      # goes to the agent like a number clash. Every way out of the pass below
+      # rolls back what didn't land.
       MERGE_JSON=""
       MERGE_BEFORE=""
       if [[ "$CONFLICTING" -eq 1 ]]; then
@@ -11308,7 +11360,10 @@ A human should take a look. Reset with \
         rm -f "$MERGE_ERR_FILE"
         MERGE_STATUS=$(echo "$MERGE_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
         MERGE_BEFORE=$(echo "$MERGE_JSON" | jq -r '.before // ""' 2>/dev/null || echo "")
-        ADR_CLASHES=$(echo "$MERGE_JSON" | jq '(.adrCollisions // []) | length' 2>/dev/null || echo "0")
+        # An ADR clash is two ADR files sharing a number, or the ADR index
+        # listing one ADR twice: the union merge (ADR-0105) keeps both sides'
+        # version of a row they both edited.
+        ADR_CLASHES=$(echo "$MERGE_JSON" | jq '((.adrCollisions // []) | length) + ((.adrIndexDuplicates // []) | length)' 2>/dev/null || echo "0")
         [[ "$ADR_CLASHES" =~ ^[0-9]+$ ]] || ADR_CLASHES=0
         log "Issue #$ISSUE_NUM: merged origin/main into PR #$PR_NUM's branch: $MERGE_STATUS (conflicted: $(echo "$MERGE_JSON" | jq -r '(.conflictedFiles // []) | join(", ")'); ADR clashes: $ADR_CLASHES)"
         case "$MERGE_STATUS" in
