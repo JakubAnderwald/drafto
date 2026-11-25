@@ -4,6 +4,8 @@
 - **Date**: 2026-11-21
 - **Authors**: Jakub Anderwald (with Claude Code)
 
+> **Update 2026-11-25 (device lane)**: The factory can now drive an Android emulator and an iOS simulator, through its opt-in device lane ([ADR-0106](./0106-factory-device-lane.md)). It uses dedicated devices, dev-backed builds of the PR head and Maestro run by a supervisor. Running the manual Mobile E2E row and driving the operator's own devices stay interactive-only, and so does the macOS app.
+
 ## Context
 
 The dark factory ([ADR-0026](./0026-dark-factory-pipeline.md)) drives a GitHub issue across the Drafto Factory board on the Mac mini, unattended:
