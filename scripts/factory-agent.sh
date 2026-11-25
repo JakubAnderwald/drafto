@@ -69,13 +69,14 @@
 # nightly-support.sh).
 #
 # Claude effort: --implement runs at ultracode (FACTORY_EFFORT — xhigh reasoning
-# + dynamic multi-agent workflows); --watch fix passes run at xhigh
+# + dynamic multi-agent workflows), and a revision run at xhigh
+# (FACTORY_REVISION_EFFORT, ADR-0101); --watch fix passes run at xhigh
 # (FACTORY_WATCH_EFFORT, ADR-0076); the read-only stages (--plan/replan, the
 # code review, the scenario writer, the browser runner, the verification shell
-# lane) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below. The
-# browser runner and the scenario writer can also run on another model
-# (FACTORY_BROWSER_MODEL / FACTORY_INTEST_MODEL, ADR-0080); see the model
-# block after it.
+# lane) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below. Every
+# call passes --model: FACTORY_MODEL (opus[1m]), or for the browser runner and
+# the scenario writer FACTORY_BROWSER_MODEL / FACTORY_INTEST_MODEL when set
+# (ADR-0080, ADR-0101); see the model block after it.
 
 set -euo pipefail
 
@@ -307,27 +308,48 @@ case "$FACTORY_PLAN_EFFORT" in
   *) echo "WARNING: invalid FACTORY_PLAN_EFFORT='$FACTORY_PLAN_EFFORT'; defaulting to xhigh" >&2
      FACTORY_PLAN_EFFORT="xhigh" ;;
 esac
+# A revision run (a card that already has a factory PR, open or closed, plus
+# new owner feedback) is a small change to code that already exists, so it runs
+# at plain xhigh, not ultracode (ADR-0101): at ultracode it fanned out workflows
+# for a one-line change. implement_effort picks between the two for each
+# --implement run, and the run-time facts' `effort` tells the agent which one.
+# Setting this to ultracode alone restores Workflows on revisions.
+FACTORY_REVISION_EFFORT="${FACTORY_REVISION_EFFORT:-xhigh}"  # --implement revision runs
+case "$FACTORY_REVISION_EFFORT" in
+  ultracode|max|xhigh|high|medium|low) : ;;
+  *) echo "WARNING: invalid FACTORY_REVISION_EFFORT='$FACTORY_REVISION_EFFORT'; defaulting to xhigh" >&2
+     FACTORY_REVISION_EFFORT="xhigh" ;;
+esac
 
-# ── Claude model knobs (ADR-0080) ───────────────────────────────────────────
-# Two read-only stages can run on another model than the CLI's default:
-# FACTORY_BROWSER_MODEL for the browser runner (all of its kinds: intest,
-# verify and plan) and FACTORY_INTEST_MODEL for the scenario writer (In Test
-# and Testing). Empty, the default, passes no --model at all, so the call runs
-# exactly as it did before these knobs. A value must be a model alias (opus,
-# sonnet, haiku, fable) or a full claude-… name, optionally with the [1m]
-# suffix; anything else warns and falls back to empty. The pattern also keeps
-# the value one safe argv token (no spaces, no leading dash). Each call site
-# builds its own optional array and expands it as ${arr[@]+"${arr[@]}"}, the
-# form bash 3.2 accepts for an empty array under `set -u`.
+# ── Claude model knobs (ADR-0080, ADR-0101) ─────────────────────────────────
+# Every factory Claude call passes --model, so the factory never runs on
+# whatever model ~/.claude/settings.json or the CLI happens to default to
+# (ADR-0101). FACTORY_MODEL is that model, opus[1m] by default. Two read-only
+# stages can run on another one: FACTORY_BROWSER_MODEL for the browser runner
+# (all of its kinds: intest, verify and plan) and FACTORY_INTEST_MODEL for the
+# scenario writer (In Test and Testing). Empty, their default, means
+# FACTORY_MODEL. A value must be a model alias (opus, sonnet, haiku, fable) or
+# a full claude-… name, optionally with the [1m] suffix; an invalid
+# FACTORY_MODEL warns and falls back to opus[1m], an invalid stage knob warns
+# and falls back to empty (FACTORY_MODEL). The pattern also keeps the value one
+# safe argv token (no spaces, no leading dash). Always quote an expansion:
+# unquoted, opus[1m] is a glob. Functions read "${FACTORY_MODEL:-opus[1m]}",
+# so a test that loads one without this block still runs under `set -u`.
+# scripts/lib/claude-model.mjs holds the same pattern for the node lanes.
 MODEL_KNOB_RE='^(claude-[a-z0-9-]+|opus|sonnet|haiku|fable)(\[1m\])?$'
+FACTORY_MODEL="${FACTORY_MODEL:-opus[1m]}"          # every call, unless a stage knob below says otherwise
+if [[ ! "$FACTORY_MODEL" =~ $MODEL_KNOB_RE ]]; then
+  echo "WARNING: invalid FACTORY_MODEL='$FACTORY_MODEL'; defaulting to opus[1m]" >&2
+  FACTORY_MODEL="opus[1m]"
+fi
 FACTORY_BROWSER_MODEL="${FACTORY_BROWSER_MODEL:-}"  # browser runner, every kind
 if [[ -n "$FACTORY_BROWSER_MODEL" && ! "$FACTORY_BROWSER_MODEL" =~ $MODEL_KNOB_RE ]]; then
-  echo "WARNING: invalid FACTORY_BROWSER_MODEL='$FACTORY_BROWSER_MODEL'; using the CLI's default model" >&2
+  echo "WARNING: invalid FACTORY_BROWSER_MODEL='$FACTORY_BROWSER_MODEL'; using FACTORY_MODEL" >&2
   FACTORY_BROWSER_MODEL=""
 fi
 FACTORY_INTEST_MODEL="${FACTORY_INTEST_MODEL:-}"    # scenario writer (In Test, Testing)
 if [[ -n "$FACTORY_INTEST_MODEL" && ! "$FACTORY_INTEST_MODEL" =~ $MODEL_KNOB_RE ]]; then
-  echo "WARNING: invalid FACTORY_INTEST_MODEL='$FACTORY_INTEST_MODEL'; using the CLI's default model" >&2
+  echo "WARNING: invalid FACTORY_INTEST_MODEL='$FACTORY_INTEST_MODEL'; using FACTORY_MODEL" >&2
   FACTORY_INTEST_MODEL=""
 fi
 
@@ -2318,14 +2340,17 @@ implement_park_blocked() {
 
 # ── Implement deadline + session resume (ADR-0084) ──────────────────────────
 # implement_runtime_facts <start-epoch> <resumed 0|1> <worktree-cli add JSON>
-#   <worktree path> — the "Run-time facts" JSON the implementer gets after its
-# bundle: its deadlines (the cap from <start-epoch>; the soft deadline
+#   <worktree path> [<effort>] — the "Run-time facts" JSON the implementer gets
+# after its bundle: its deadlines (the cap from <start-epoch>; the soft deadline
 # FACTORY_IMPLEMENT_SOFT_MARGIN_MIN before it, the margin clamped to the cap
-# minus 5 minutes) and what an earlier attempt left in the worktree. The
-# prompt's Time budget section documents every key, and a test pins them to it.
+# minus 5 minutes), the --effort this run was started at (default
+# FACTORY_EFFORT; the prompt's Revision runs section keys off it, so
+# FACTORY_REVISION_EFFORT=ultracode alone restores Workflows on revisions,
+# ADR-0101) and what an earlier attempt left in the worktree. The prompt's Time
+# budget section documents every key, and a test pins them to it.
 # Prints nothing on failure; the caller then leaves the block out.
 implement_runtime_facts() {
-  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" cap_min margin max_margin branch base unpushed uncommitted porcelain
+  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" effort="${5:-${FACTORY_EFFORT:-ultracode}}" cap_min margin max_margin branch base unpushed uncommitted porcelain
   cap_min=$(( IMPLEMENT_TIMEOUT_SEC / 60 ))
   margin="$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN"
   max_margin=$(( cap_min - 5 ))
@@ -2347,12 +2372,13 @@ implement_runtime_facts() {
   fi
   jq -n --argjson start "$start" --argjson cap "$IMPLEMENT_TIMEOUT_SEC" --argjson margin "$margin" \
     --argjson resumed "$resumed" --argjson unpushed "$unpushed" --argjson uncommitted "$uncommitted" \
-    --argjson wt "${wt_json:-null}" '{
+    --arg effort "$effort" --argjson wt "${wt_json:-null}" '{
       capMinutes: ($cap / 60 | floor),
       startedAt: ($start | todate),
       softDeadlineAt: ($start + $cap - $margin * 60 | todate),
       hardDeadlineAt: ($start + $cap | todate),
       resumed: ($resumed == 1),
+      effort: $effort,
       worktree: {
         reused: ($wt.reused == true),
         leftoversRef: ($wt.leftoversRef // null),
@@ -2632,9 +2658,16 @@ build_watch_bundle() {
 }
 
 # Build the factory_review bundle for the code-review stage. $2 approved-plan
-# obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list, $6 head SHA.
+# obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list, $6 head SHA,
+# $7 the PR's file listing (pr_file_stats; "" when it couldn't be fetched).
 # Deliberately carries no comment thread — the reviewer judges the diff, not the
 # conversation about it.
+#
+# The diff and the file lists reach jq through files (--rawfile), never argv: a
+# diff of about 1 MB or more passed with --arg made jq's exec fail with E2BIG
+# (macOS's ARG_MAX). factory-bundle.mjs then decides
+# whether the reviewer gets the diff inline or the file list (reviewDiffMode),
+# so truncateDiff's limits live in one place.
 build_review_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -2642,14 +2675,20 @@ build_review_bundle() {
   local pr_diff="${4:-}"
   local pr_files="${5:-}"
   local head_sha="${6:-}"
-  local repo_head_ref
+  local pr_file_stats="${7:-}"
+  local repo_head_ref tmp_dir rc=0
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  tmp_dir=$(mktemp -d -t factory-review-bundle.XXXXXX) || return 1
+  printf '%s' "$pr_diff" >"$tmp_dir/diff"
+  printf '%s' "$pr_files" >"$tmp_dir/files"
+  printf '%s' "$pr_file_stats" >"$tmp_dir/stats"
   jq -n \
     --argjson issue "$issue_entry" \
     --argjson plan "$approved_plan" \
     --argjson priorPr "$prior_pr" \
-    --arg prDiff "$pr_diff" \
-    --arg prFiles "$pr_files" \
+    --rawfile prDiff "$tmp_dir/diff" \
+    --rawfile prFiles "$tmp_dir/files" \
+    --rawfile prFileStats "$tmp_dir/stats" \
     --arg headSha "$head_sha" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
@@ -2668,6 +2707,7 @@ build_review_bundle() {
        priorPr: $priorPr,
        prDiff: $prDiff,
        prFiles: $prFiles,
+       prFileStats: $prFileStats,
        headSha: $headSha,
        config: {
          phase: $phase,
@@ -2676,7 +2716,9 @@ build_review_bundle() {
        },
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
      }' \
-    | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+    | node "$SCRIPT_DIR/lib/factory-bundle.mjs" || rc=$?
+  rm -rf "$tmp_dir"
+  return "$rc"
 }
 
 # Build the factory_intest bundle for the In Review → In Test hand-off. $2
@@ -5661,15 +5703,14 @@ intest_handoff() {
   log "Issue #$issue_num: scenario for ${head_sha:0:12} in $diff_mode mode${mode_reason:+ ($mode_reason)}"
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$INTEST_PROMPT_FILE")" "$bundle")
-  # --model only when FACTORY_INTEST_MODEL is set (ADR-0080).
-  local model_args=()
-  if [[ -n "${FACTORY_INTEST_MODEL:-}" ]]; then model_args=(--model "$FACTORY_INTEST_MODEL"); fi
-  log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_INTEST_MODEL:-default})"
+  # FACTORY_INTEST_MODEL when set, FACTORY_MODEL otherwise (ADR-0080, ADR-0101).
+  local intest_model="${FACTORY_INTEST_MODEL:-${FACTORY_MODEL:-opus[1m]}}"
+  log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=$intest_model)"
   out_file=$(mktemp -t factory-agent-intest.XXXXXX)
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
   ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$INTEST_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config ${model_args[@]+"${model_args[@]}"} ) \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "$intest_model" ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -5960,7 +6001,11 @@ run_browser_task() {
   input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$prompt_file")" "$bundle")
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_BROWSER_MODEL:-default})"
+  # FACTORY_BROWSER_MODEL when set, FACTORY_MODEL otherwise (ADR-0080, ADR-0101).
+  # --setting-sources "" below drops ~/.claude/settings.json, so without
+  # --model the runner would fall back to the CLI's built-in default.
+  local runner_model="${FACTORY_BROWSER_MODEL:-${FACTORY_MODEL:-opus[1m]}}"
+  log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=$runner_model)"
   # Nothing but this prompt and the guard's settings reach the runner. cwd is
   # an empty directory OUTSIDE the repo (Claude Code walks up from its cwd for
   # CLAUDE.md files and project settings); --setting-sources "" drops the user,
@@ -5982,13 +6027,10 @@ run_browser_task() {
   # account's password, and argv is visible to `ps`.
   # --tools is "" (Chrome only) unless the run has dev-inspect, which adds Bash;
   # the guard's Bash hook allows that one command and nothing else (ADR-0073).
-  # --model only when FACTORY_BROWSER_MODEL is set (ADR-0080).
-  local model_args=()
-  if [[ -n "${FACTORY_BROWSER_MODEL:-}" ]]; then model_args=(--model "$FACTORY_BROWSER_MODEL"); fi
   ( cd "$cwd" && printf '%s' "$input" | PATH="$path_prefix$PATH" CLAUDE_CALL_TIMEOUT_SEC="$FACTORY_BROWSER_TIMEOUT_SEC" \
       node "$SCRIPT_DIR/lib/run-claude.mjs" -p --chrome --permission-mode dontAsk --tools "$tools" \
       --allowedTools "$allowed" --setting-sources "" --strict-mcp-config --settings "$settings" \
-      --session-id "$uuid" ${model_args[@]+"${model_args[@]}"} --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
+      --session-id "$uuid" --model "$runner_model" --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
   browser_capabilities_cleanup "$run_dir"
   # The runner's output becomes a comment: the accounts' emails come out of it
   # here, once, before the report is rendered or read by the verification
@@ -7077,8 +7119,8 @@ plan_probe_browser_run() {
 # $1 issue, $2 pr-num, $3 pr obj, $4 head sha, $5 changed files.
 review_stage() {
   local issue_num="$1" pr_num="$2" pr_obj="$3" head_sha="$4" diff_files="$5"
-  local issue_record comments_json plan_json pr_diff bundle claude_input
-  local out_file start_iso exit_code=0
+  local issue_record comments_json plan_json pr_diff file_stats bundle claude_input
+  local review_mode out_file start_iso exit_code=0
 
   # Every DETERMINISTIC failure below records the SHA before returning. Skipping
   # the record would leave lastReviewSha != headRefOid forever: the caller
@@ -7101,28 +7143,42 @@ review_stage() {
   [[ -n "$comments_json" ]] || comments_json="[]"
   plan_json=$(extract_plan_comment "$comments_json")
   [[ -n "$plan_json" ]] || plan_json="null"
+  # The file listing is fetched every time, whatever the diff's size: the
+  # bundle, not bash, decides whether the reviewer gets the diff inline or this
+  # list. `gh pr diff` fails with HTTP 406 on a diff over 300 files or 20,000
+  # lines; the listing still works then, so that PR is reviewed from the list.
   pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
-  if [[ -z "$pr_diff" ]]; then
+  # A listing cut short by a failed page is dropped, not half-used.
+  file_stats=""
+  if ! file_stats=$(pr_file_stats "$pr_num"); then file_stats=""; fi
+  if [[ -z "$pr_diff" && -z "$file_stats" ]]; then
     log "WARNING: empty diff for PR #$pr_num; skipping review"
     review_record_sha "$issue_num" "$head_sha"
     return 0
   fi
 
   if ! bundle=$(build_review_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
-      "$diff_files" "$head_sha"); then
+      "$diff_files" "$head_sha" "$file_stats"); then
     log "ERROR: build_review_bundle failed for #$issue_num; skipping review"
     review_record_sha "$issue_num" "$head_sha"
     return 0
   fi
+  review_mode=$(printf '%s' "$bundle" | jq -r '.reviewDiffMode // "inline"' 2>/dev/null || echo "inline")
+  if [[ "$review_mode" == "file-list" ]]; then
+    log "Issue #$issue_num: PR #$pr_num's diff is too large to send inline; reviewing in file-list mode ($(printf '%s' "$bundle" | jq -r '(.prFileStats | length) + (.prFileStatsOmitted // 0)' 2>/dev/null || echo '?') files)"
+  fi
 
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$REVIEW_PROMPT_FILE")" "$bundle")
-  log "Invoking claude for #$issue_num (code review of PR #$pr_num @ ${head_sha:0:12}, cap ${REVIEW_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
+  log "Invoking claude for #$issue_num (code review of PR #$pr_num @ ${head_sha:0:12}, cap ${REVIEW_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_MODEL:-opus[1m]})"
   out_file=$(mktemp -t factory-agent-review.XXXXXX)
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
-  ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config ) \
+  # The prompt goes in on stdin, not argv, as in run_browser_task: an inline
+  # diff of up to 200 KB or a long file list would otherwise ride in one argv
+  # element, and exec fails with E2BIG once the whole prompt passes ARG_MAX.
+  ( cd "$REPO_ROOT" && printf '%s' "$claude_input" | CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "${FACTORY_MODEL:-opus[1m]}" ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -7201,6 +7257,18 @@ review_record_sha() {
   [[ -n "$head_sha" ]] || return 0
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
     lastReviewSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# Print PR <pr-num>'s changed files as `status<TAB>path<TAB>additions<TAB>
+# deletions` lines, from the REST files endpoint, paginated. That endpoint lists
+# up to 3000 files and never refuses a large diff, where `gh pr diff` (with or
+# without --name-only) fails with HTTP 406 on a diff over 300 files or 20,000
+# lines, and `gh pr view --json files` stops at 100. Same call as
+# claimedVersions in lib/migration-renumber.mjs. Non-zero when the call fails.
+pr_file_stats() {
+  local pr_num="$1"
+  gh api --paginate "repos/JakubAnderwald/drafto/pulls/$pr_num/files" \
+    --jq '.[]|[.status,.filename,.additions,.deletions]|@tsv' 2>>"$LOG_FILE"
 }
 
 # Does PR <pr-num>'s conversation carry <marker>? The PR-comment analogue of
@@ -7655,7 +7723,8 @@ verify_shell_work() {
       --repo-root "$REPO_ROOT" --run-root "$VERIFY_DIR" --prompt-file "$VERIFY_PROMPT_FILE" \
       --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
       --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --signin-lease-file "$SIGNIN_LEASE_FILE" \
-      --effort "${FACTORY_PLAN_EFFORT:-xhigh}" --install-timeout-sec "${INSTALL_TIMEOUT_SEC:-600}" \
+      --effort "${FACTORY_PLAN_EFFORT:-xhigh}" --model "${FACTORY_MODEL:-opus[1m]}" \
+      --install-timeout-sec "${INSTALL_TIMEOUT_SEC:-600}" \
       --min-free-disk-gb "${FACTORY_MIN_FREE_DISK_GB:-3}" 2>>"$LOG_FILE"); then
     log "WARNING: issue #$issue_num: the verification shell lane couldn't be started (non-fatal; retried next tick)"
     return 0
@@ -8775,12 +8844,12 @@ See \`docs/features/dark-factory.md\` for the spec contract.
 
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
-    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, cap ${PLAN_CALL_TIMEOUT}s)"
+    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, model=$FACTORY_MODEL, cap ${PLAN_CALL_TIMEOUT}s)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     CLAUDE_CALL_TIMEOUT_SEC="$PLAN_CALL_TIMEOUT" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "$FACTORY_MODEL" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
     # A run that failed produced no plan to probe for.
     [[ $EXIT_CODE -eq 0 ]] || plan_probe_finalize "$ISSUE_NUM" discard
@@ -9010,12 +9079,12 @@ and drag the card back to **Ready** to retry.
     if [[ "$PROBE_FOLD_JSON" != "null" ]]; then
       plan_probe fold-begin --issue "$ISSUE_NUM" >>"$LOG_FILE" || true
     fi
-    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, cap ${PLAN_CALL_TIMEOUT}s)"
+    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, model=$FACTORY_MODEL, cap ${PLAN_CALL_TIMEOUT}s)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     CLAUDE_CALL_TIMEOUT_SEC="$PLAN_CALL_TIMEOUT" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "$FACTORY_MODEL" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     # Whatever the run returned, a trigger it acked has been handled, so it
@@ -9533,6 +9602,22 @@ implement_lane_precheck() {
   return 1
 }
 
+# implement_effort <is_revision> — the effort for this --implement run:
+# FACTORY_REVISION_EFFORT for a revision run (1: the card already has a
+# factory PR, open or closed, and new owner feedback since lastFeedbackAt),
+# FACTORY_EFFORT otherwise (ADR-0101). A resume never crosses between the two
+# kinds: the resume task key includes the revision comments
+# (implement-resume.mjs). It does take the knob's current value, so a knob
+# changed between a run and its resume starts the resume at the new effort;
+# the run-time facts' `effort` tells the agent which.
+implement_effort() {
+  if [[ "${1:-0}" == "1" ]]; then
+    printf '%s\n' "${FACTORY_REVISION_EFFORT:-xhigh}"
+  else
+    printf '%s\n' "${FACTORY_EFFORT:-ultracode}"
+  fi
+}
+
 # implement_lane_start — start this card's claude call detached, with the
 # claude input and the flags the synchronous call would use (implement-lane.mjs
 # buildImplementArgv; a test pins the two together). The slot passes to the
@@ -9551,12 +9636,13 @@ implement_lane_start() {
   out=""
   if ctx=$(implement_lane_ctx "$start_iso" 2>>"$LOG_FILE") \
      && jq -n --arg issue "$ISSUE_NUM" --arg slot "$SLOT" --arg worktree "$WT_PATH" --arg inputFile "$input" \
-          --arg effort "$FACTORY_EFFORT" --arg mode "$mode" --arg sessionId "$IMPL_SESSION_ID" \
+          --arg effort "${IMPL_EFFORT:-${FACTORY_EFFORT:-ultracode}}" --arg model "${FACTORY_MODEL:-opus[1m]}" \
+          --arg mode "$mode" --arg sessionId "$IMPL_SESSION_ID" \
           --arg timeoutSec "$IMPLEMENT_TIMEOUT_SEC" --arg termGraceSec "$FACTORY_IMPLEMENT_TERM_GRACE_SEC" \
           --arg killGraceSec "$FACTORY_IMPLEMENT_KILL_GRACE_SEC" --arg maxRunning "$FACTORY_IMPLEMENT_MAX_RUNNING" \
           --argjson ctx "$ctx" \
           '{issue: $issue, slot: ($slot | tonumber), worktree: $worktree, inputFile: $inputFile,
-            effort: $effort, mode: $mode, sessionId: $sessionId, timeoutSec: $timeoutSec,
+            effort: $effort, model: $model, mode: $mode, sessionId: $sessionId, timeoutSec: $timeoutSec,
             termGraceSec: $termGraceSec, killGraceSec: $killGraceSec, maxRunning: $maxRunning,
             ctx: $ctx}' >"$spec" 2>>"$LOG_FILE"; then
     out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" start --spec-file "$spec" --run-root "$IMPLEMENT_RUN_ROOT" \
@@ -9567,7 +9653,7 @@ implement_lane_start() {
     run_id=$(jq -r '.runId // ""' <<<"$out")
     pid=$(jq -r '.pid // ""' <<<"$out")
     deadline=$(jq -r '.deadlineAt // ""' <<<"$out")
-    log "Issue #$ISSUE_NUM: started detached implement run $run_id (pid $pid, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s until $deadline, effort=$FACTORY_EFFORT, $IMPL_SESSION_FLAG $IMPL_SESSION_ID); a later tick collects it"
+    log "Issue #$ISSUE_NUM: started detached implement run $run_id (pid $pid, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s until $deadline, effort=${IMPL_EFFORT:-${FACTORY_EFFORT:-ultracode}}, model=${FACTORY_MODEL:-opus[1m]}, $IMPL_SESSION_FLAG $IMPL_SESSION_ID); a later tick collects it"
     lock_error=$(jq -r '.lockError // ""' <<<"$out")
     [[ -z "$lock_error" ]] || log "WARNING: #$ISSUE_NUM: couldn't git-worktree-lock $WT_PATH ($lock_error); the run goes on"
     return 0
@@ -10054,6 +10140,10 @@ Drag it back to **Ready** so the factory can plan it first.
         FEEDBACK_CONSUMED_AT=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].createdAt // ""' 2>/dev/null || echo "")
       fi
     fi
+    # A revision run is a small change to existing code: FACTORY_REVISION_EFFORT
+    # (xhigh), not the ultracode a fresh implementation gets (ADR-0101). Both the
+    # synchronous call and the detached start use it; meta.effort records it.
+    IMPL_EFFORT=$(implement_effort "$IS_REVISION")
 
     # Acquire a slot (reuse the issue's own slot on a retry).
     # Skip to the next card, never stop the sweep: a card further down may
@@ -10163,7 +10253,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # (or, resuming, the short resume note), then the run-time facts: the
     # deadlines from now and what an earlier attempt left in the worktree.
     IMPL_START_EPOCH=$(date +%s)
-    IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH")
+    IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH" "$IMPL_EFFORT")
     IMPL_FACTS_BLOCK=""
     if [[ -n "$IMPL_FACTS" ]]; then
       IMPL_FACTS_BLOCK=$(printf '\n## Run-time facts\n\n```json\n%s\n```\n' "$IMPL_FACTS")
@@ -10186,13 +10276,13 @@ Drag it back to **Ready** so the factory can plan it first.
       implement_lane_start || true
       continue
     fi
-    log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
+    log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$IMPL_EFFORT, model=$FACTORY_MODEL)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \
-        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config \
-        "$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID" ) >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$IMPL_EFFORT" --no-chrome --strict-mcp-config \
+        --model "$FACTORY_MODEL" "$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID" ) >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     implement_handle_result
   done
@@ -10693,12 +10783,12 @@ A human should take a look. Reset with \
 
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
-      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_WATCH_EFFORT)"
+      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_WATCH_EFFORT, model=$FACTORY_MODEL)"
       CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
       CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       EXIT_CODE=0
       ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
-          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_WATCH_EFFORT" --no-chrome --strict-mcp-config ) \
+          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_WATCH_EFFORT" --no-chrome --strict-mcp-config --model "$FACTORY_MODEL" ) \
           >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
       if [[ $EXIT_CODE -ne 0 ]]; then
@@ -10798,7 +10888,14 @@ A human should take a look. Reset with \
     # Required CI green. The changed files decide what "testable" even means
     # here, so fetch them once and derive the platforms.
     if ! INTEST_DIFF_FILES=$(gh pr diff "$PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
-      log "WARNING: gh pr diff #$PR_NUM failed (transient?); skipping this tick"; continue
+      # --name-only still fetches the whole diff, so a diff GitHub finds too
+      # large (HTTP 406: over 300 files or 20,000 lines) fails here on every
+      # tick and the card never reaches its code review. The files endpoint has
+      # no such limit; only when it fails too is this a transient skip.
+      if ! INTEST_DIFF_FILES=$(pr_file_stats "$PR_NUM" | cut -f2) || [[ -z "$INTEST_DIFF_FILES" ]]; then
+        log "WARNING: gh pr diff #$PR_NUM failed (transient?); skipping this tick"; continue
+      fi
+      log "Issue #$ISSUE_NUM: gh pr diff refused PR #$PR_NUM's diff (too large?); took its changed files from the files API"
     fi
     INTEST_PLATFORMS=$(printf '%s\n' "$INTEST_DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo '{}')
     WEB_TOUCHED=$(echo "$INTEST_PLATFORMS" | jq -r '.web // false' 2>/dev/null || echo "false")
