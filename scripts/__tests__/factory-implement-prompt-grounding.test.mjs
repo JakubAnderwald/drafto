@@ -322,6 +322,7 @@ describe("implementer prompt — time budget (ADR-0084)", () => {
       "softDeadlineAt",
       "hardDeadlineAt",
       "resumed",
+      "effort",
       "worktree",
       "reused",
       "leftoversRef",
@@ -380,6 +381,30 @@ describe("implementer prompt — time budget (ADR-0084)", () => {
       /before you change anything, run `git status` and `git log --oneline origin\/main\.\.HEAD`/,
     );
     assert.doesNotMatch(flat, /On a fresh implementation it is branched from `origin\/main`;/);
+  });
+});
+
+// ADR-0101: revisions run at FACTORY_REVISION_EFFORT. The "no Workflow" rule
+// follows the `effort` fact, not a hard-coded level, so setting the knob to
+// ultracode alone restores the old revision behaviour.
+describe("implementer prompt — revision effort (ADR-0101)", () => {
+  const rev = flat.slice(flat.indexOf("## Revision runs"));
+
+  it("skips Workflows on a revision only below ultracode, as the effort fact says", () => {
+    assert.match(rev, /\*\*Do the work yourself, directly, unless `effort` is `ultracode`\.\*\*/);
+    assert.match(
+      rev,
+      /When `effort` is anything but `ultracode`, or the facts are missing, start no Workflow and no background agent/,
+    );
+    assert.match(
+      rev,
+      /When it is `ultracode`, the operator chose it for revisions, and a Workflow is allowed/,
+    );
+  });
+
+  it("never names the default revision effort, so the knob alone moves the rule", () => {
+    assert.doesNotMatch(prompt, /plain xhigh/);
+    assert.doesNotMatch(rev.slice(0, rev.indexOf("Sort each `revisionComments`")), /`?xhigh`?/);
   });
 });
 

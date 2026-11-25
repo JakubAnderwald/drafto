@@ -130,4 +130,6 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0096](./0096-factory-test-run-screenshots-on-github.md)                       | Factory Test-Run Screenshots on GitHub                                          | Accepted           | 2026-11-10 |
 | [0097](./0097-notebook-names-unique-per-user-in-app.md)                        | Notebook Names Are Unique per User, Enforced in the Apps and API                | Accepted           | 2026-11-23 |
 | [0098](./0098-middleware-verifies-session-locally-with-getclaims.md)           | Middleware Verifies the Session Locally with getClaims                          | Accepted           | 2026-11-23 |
+| [0101](./0101-factory-pins-model-and-revision-effort.md)                       | Factory Pins Its Claude Model, and Revision Runs at xhigh                       | Accepted           | 2026-11-25 |
+| [0102](./0102-factory-reruns-red-ci-after-noop-pass.md)                        | Factory Re-runs Red CI a No-op Fix Pass Left, Then Parks the Card               | Accepted           | 2026-11-25 |
 | [0105](./0105-factory-adr-index-union-merge.md)                                | The Factory Union-Merges the ADR Index and Allocates ADR Numbers                | Accepted           | 2026-11-25 |

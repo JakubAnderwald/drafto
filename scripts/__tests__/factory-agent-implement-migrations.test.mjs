@@ -15,6 +15,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = resolve(HERE, "..");
@@ -44,7 +45,7 @@ function bash(snippet, env = {}) {
   try {
     const r = spawnSync("bash", ["-c", snippet], {
       encoding: "utf8",
-      env: { ...process.env, DIR: dir, ...env },
+      env: hermeticEnv({ DIR: dir, ...env }),
     });
     let calls = "";
     try {
