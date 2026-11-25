@@ -87,7 +87,9 @@ describe("factory-agent session-limit pause: static wiring (#463)", () => {
     // through, and not a non-zero exit, which the cleanup trap treats as a
     // fault).
     const spans = script.match(/pause_for_session_limit\n[\s\S]{0,200}?exit 0/g) || [];
-    assert.equal(spans.length, 4, "each pause site must exit 0 right after pausing");
+    // Five sites: --plan, the replan, /split's splitter (ADR-0104), --implement
+    // and the --watch fix pass.
+    assert.equal(spans.length, 5, "each pause site must exit 0 right after pausing");
   });
 });
 

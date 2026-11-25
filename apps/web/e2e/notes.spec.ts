@@ -175,6 +175,48 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Hello from E2E test")).toBeVisible({ timeout: 5000 });
   });
 
+  // Reloading fires both `pagehide` and `visibilitychange` (hidden), and either listener
+  // flushes, so this checks the flush as the page unloads. The unit tests check each event.
+  test("a title typed just before a reload is saved by the flush as the page unloads", async ({
+    page,
+  }) => {
+    // Fake timers, running in real time from `clockStart` until the test holds them below.
+    const clockStart = Date.now();
+    await page.clock.install({ time: clockStart });
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+    const activeNotebook = await getActiveNotebookName(page);
+
+    await page.getByRole("button", { name: "New note", exact: true }).click();
+    const titleInput = page.getByRole("textbox", { name: "Note title" });
+    await expect(titleInput).toBeVisible({ timeout: 5000 });
+    await expect(titleInput).toHaveValue("");
+
+    // Hold the page's timers, so the 500 ms autosave debounce can't fire however long the
+    // reload takes to start: only the flush as the page unloads can save this title. The
+    // target is fixed from the install time, 30 s on (Playwright's default test timeout), so
+    // a slow setup can't carry the page's clock past it first.
+    await page.clock.pauseAt(clockStart + 30_000);
+    const noteTitle = `E2E Reload Flush ${Date.now()}`;
+    await titleInput.fill(noteTitle);
+    await page.reload();
+    // The reloaded page replays the pause; let its timers run again.
+    await page.clock.resume();
+
+    // The keepalive PATCH may land just after the reloaded page fetches its list, so
+    // reload until the row shows up.
+    let attempt = 0;
+    await expect(async () => {
+      if (attempt++ > 0) await page.reload();
+      await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible({
+        timeout: 10000,
+      });
+      await selectNotebookByName(page, activeNotebook);
+      await expect(page.getByText(noteTitle)).toBeVisible({ timeout: 3000 });
+    }).toPass({ timeout: 20000, intervals: [500, 1000, 2000] });
+  });
+
   test("move a note between notebooks", async ({ page }, testInfo) => {
     // The note starts in a notebook made for this test. One picked from the sidebar
     // can be gone after the reload below: the e2e account can hold more notebooks than

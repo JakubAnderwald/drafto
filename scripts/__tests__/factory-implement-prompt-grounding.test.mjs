@@ -322,6 +322,7 @@ describe("implementer prompt — time budget (ADR-0084)", () => {
       "softDeadlineAt",
       "hardDeadlineAt",
       "resumed",
+      "effort",
       "worktree",
       "reused",
       "leftoversRef",
@@ -383,6 +384,30 @@ describe("implementer prompt — time budget (ADR-0084)", () => {
   });
 });
 
+// ADR-0101: revisions run at FACTORY_REVISION_EFFORT. The "no Workflow" rule
+// follows the `effort` fact, not a hard-coded level, so setting the knob to
+// ultracode alone restores the old revision behaviour.
+describe("implementer prompt — revision effort (ADR-0101)", () => {
+  const rev = flat.slice(flat.indexOf("## Revision runs"));
+
+  it("skips Workflows on a revision only below ultracode, as the effort fact says", () => {
+    assert.match(rev, /\*\*Do the work yourself, directly, unless `effort` is `ultracode`\.\*\*/);
+    assert.match(
+      rev,
+      /When `effort` is anything but `ultracode`, or the facts are missing, start no Workflow and no background agent/,
+    );
+    assert.match(
+      rev,
+      /When it is `ultracode`, the operator chose it for revisions, and a Workflow is allowed/,
+    );
+  });
+
+  it("never names the default revision effort, so the knob alone moves the rule", () => {
+    assert.doesNotMatch(prompt, /plain xhigh/);
+    assert.doesNotMatch(rev.slice(0, rev.indexOf("Sort each `revisionComments`")), /`?xhigh`?/);
+  });
+});
+
 describe("resume prompt (ADR-0084)", () => {
   const resumePath = resolve(
     dirname(fileURLToPath(import.meta.url)),
@@ -434,5 +459,33 @@ describe("resume prompt (ADR-0084)", () => {
       /If this run runs out of time too, bash will not resume this session again/,
     );
     assert.match(rflat, /check that `git log -1 --format=%H` equals the PR's `headRefOid`/);
+  });
+});
+
+// ADR-0103: two cards implemented in parallel took the same next free ADR
+// number, and the second conflicted on the README index once the first merged.
+describe("implementer prompt — ADR numbers (ADR-0103)", () => {
+  it("documents the adr field the bundle carries", () => {
+    assert.match(
+      prompt,
+      /"adr": \{\s*"mainNewest": .*\s*"next": .*\s*"own": \[.*\s*"claimed": \[ \{ "pr": 829, "file": "0100-<slug>\.md", "number": "0100" \} \]\s*\} \| null,/,
+    );
+  });
+
+  it("names a new ADR with bundle.adr.next, never the next free number on main", () => {
+    assert.match(
+      flat,
+      /A new ADR takes `bundle\.adr\.next` when `bundle\.adr` is set: the file is `docs\/adr\/<next>-<slug>\.md`/,
+    );
+    assert.match(flat, /Never take the next free number on main yourself/);
+    assert.match(
+      flat,
+      /When `bundle\.adr` is null, use the number after the highest in `docs\/adr\/` on `origin\/main`/,
+    );
+  });
+
+  it("keeps the index row from re-padding the table, so the union merge can work", () => {
+    assert.match(flat, /Add its row to the index in `docs\/adr\/README\.md` in number order/);
+    assert.match(flat, /no wider than the widest already in their columns/);
   });
 });

@@ -8,7 +8,8 @@
 #                Works in every phase. Phase A's only meaningful mode. Also
 #                replans Plan Review cards on new operator comments, and keeps
 #                the factory-oversize label in step with each plan's size
-#                estimate (ADR-0083).
+#                estimate (ADR-0083). An operator's `/split` comment files the
+#                plan's Proposed split as sub-cards instead (ADR-0104).
 #
 #   --implement  Pick up Status=In Progress items. Phase A: post a stub
 #                "phase=A; implementation skipped" comment per card and
@@ -69,13 +70,14 @@
 # nightly-support.sh).
 #
 # Claude effort: --implement runs at ultracode (FACTORY_EFFORT — xhigh reasoning
-# + dynamic multi-agent workflows); --watch fix passes run at xhigh
+# + dynamic multi-agent workflows), and a revision run at xhigh
+# (FACTORY_REVISION_EFFORT, ADR-0101); --watch fix passes run at xhigh
 # (FACTORY_WATCH_EFFORT, ADR-0076); the read-only stages (--plan/replan, the
 # code review, the scenario writer, the browser runner, the verification shell
-# lane) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below. The
-# browser runner and the scenario writer can also run on another model
-# (FACTORY_BROWSER_MODEL / FACTORY_INTEST_MODEL, ADR-0080); see the model
-# block after it.
+# lane) run at xhigh (FACTORY_PLAN_EFFORT). See the effort block below. Every
+# call passes --model: FACTORY_MODEL (opus[1m]), or for the browser runner and
+# the scenario writer FACTORY_BROWSER_MODEL / FACTORY_INTEST_MODEL when set
+# (ADR-0080, ADR-0101); see the model block after it.
 
 set -euo pipefail
 
@@ -222,7 +224,8 @@ fi
 
 # Automatic re-runs per PR head SHA for required checks GitHub cancelled before
 # they could judge the code (no runner acquired). Spent → one comment and a hold.
-# See rerun_infra_failures.
+# See rerun_infra_failures. Red checks a no-op fix pass left as they were spend
+# the same budget, and park the card in Blocked once it is spent (ADR-0102).
 FACTORY_CI_RERUN_MAX="${FACTORY_CI_RERUN_MAX:-2}"
 # No leading zeros: bash arithmetic reads "08" as invalid octal, and a failed
 # -ge comparison would mean an unlimited budget.
@@ -306,27 +309,48 @@ case "$FACTORY_PLAN_EFFORT" in
   *) echo "WARNING: invalid FACTORY_PLAN_EFFORT='$FACTORY_PLAN_EFFORT'; defaulting to xhigh" >&2
      FACTORY_PLAN_EFFORT="xhigh" ;;
 esac
+# A revision run (a card that already has a factory PR, open or closed, plus
+# new owner feedback) is a small change to code that already exists, so it runs
+# at plain xhigh, not ultracode (ADR-0101): at ultracode it fanned out workflows
+# for a one-line change. implement_effort picks between the two for each
+# --implement run, and the run-time facts' `effort` tells the agent which one.
+# Setting this to ultracode alone restores Workflows on revisions.
+FACTORY_REVISION_EFFORT="${FACTORY_REVISION_EFFORT:-xhigh}"  # --implement revision runs
+case "$FACTORY_REVISION_EFFORT" in
+  ultracode|max|xhigh|high|medium|low) : ;;
+  *) echo "WARNING: invalid FACTORY_REVISION_EFFORT='$FACTORY_REVISION_EFFORT'; defaulting to xhigh" >&2
+     FACTORY_REVISION_EFFORT="xhigh" ;;
+esac
 
-# ── Claude model knobs (ADR-0080) ───────────────────────────────────────────
-# Two read-only stages can run on another model than the CLI's default:
-# FACTORY_BROWSER_MODEL for the browser runner (all of its kinds: intest,
-# verify and plan) and FACTORY_INTEST_MODEL for the scenario writer (In Test
-# and Testing). Empty, the default, passes no --model at all, so the call runs
-# exactly as it did before these knobs. A value must be a model alias (opus,
-# sonnet, haiku, fable) or a full claude-… name, optionally with the [1m]
-# suffix; anything else warns and falls back to empty. The pattern also keeps
-# the value one safe argv token (no spaces, no leading dash). Each call site
-# builds its own optional array and expands it as ${arr[@]+"${arr[@]}"}, the
-# form bash 3.2 accepts for an empty array under `set -u`.
+# ── Claude model knobs (ADR-0080, ADR-0101) ─────────────────────────────────
+# Every factory Claude call passes --model, so the factory never runs on
+# whatever model ~/.claude/settings.json or the CLI happens to default to
+# (ADR-0101). FACTORY_MODEL is that model, opus[1m] by default. Two read-only
+# stages can run on another one: FACTORY_BROWSER_MODEL for the browser runner
+# (all of its kinds: intest, verify and plan) and FACTORY_INTEST_MODEL for the
+# scenario writer (In Test and Testing). Empty, their default, means
+# FACTORY_MODEL. A value must be a model alias (opus, sonnet, haiku, fable) or
+# a full claude-… name, optionally with the [1m] suffix; an invalid
+# FACTORY_MODEL warns and falls back to opus[1m], an invalid stage knob warns
+# and falls back to empty (FACTORY_MODEL). The pattern also keeps the value one
+# safe argv token (no spaces, no leading dash). Always quote an expansion:
+# unquoted, opus[1m] is a glob. Functions read "${FACTORY_MODEL:-opus[1m]}",
+# so a test that loads one without this block still runs under `set -u`.
+# scripts/lib/claude-model.mjs holds the same pattern for the node lanes.
 MODEL_KNOB_RE='^(claude-[a-z0-9-]+|opus|sonnet|haiku|fable)(\[1m\])?$'
+FACTORY_MODEL="${FACTORY_MODEL:-opus[1m]}"          # every call, unless a stage knob below says otherwise
+if [[ ! "$FACTORY_MODEL" =~ $MODEL_KNOB_RE ]]; then
+  echo "WARNING: invalid FACTORY_MODEL='$FACTORY_MODEL'; defaulting to opus[1m]" >&2
+  FACTORY_MODEL="opus[1m]"
+fi
 FACTORY_BROWSER_MODEL="${FACTORY_BROWSER_MODEL:-}"  # browser runner, every kind
 if [[ -n "$FACTORY_BROWSER_MODEL" && ! "$FACTORY_BROWSER_MODEL" =~ $MODEL_KNOB_RE ]]; then
-  echo "WARNING: invalid FACTORY_BROWSER_MODEL='$FACTORY_BROWSER_MODEL'; using the CLI's default model" >&2
+  echo "WARNING: invalid FACTORY_BROWSER_MODEL='$FACTORY_BROWSER_MODEL'; using FACTORY_MODEL" >&2
   FACTORY_BROWSER_MODEL=""
 fi
 FACTORY_INTEST_MODEL="${FACTORY_INTEST_MODEL:-}"    # scenario writer (In Test, Testing)
 if [[ -n "$FACTORY_INTEST_MODEL" && ! "$FACTORY_INTEST_MODEL" =~ $MODEL_KNOB_RE ]]; then
-  echo "WARNING: invalid FACTORY_INTEST_MODEL='$FACTORY_INTEST_MODEL'; using the CLI's default model" >&2
+  echo "WARNING: invalid FACTORY_INTEST_MODEL='$FACTORY_INTEST_MODEL'; using FACTORY_MODEL" >&2
   FACTORY_INTEST_MODEL=""
 fi
 
@@ -675,6 +699,33 @@ if ! [[ "$FACTORY_PLAN_OVERSIZE_LINES" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then
   FACTORY_PLAN_OVERSIZE_LINES=1500
 fi
 OVERSIZE_LABEL="factory-oversize"
+# The oversize hold (ADR-0103): --implement sends a card that hasn't started,
+# whose approved plan estimates at least FACTORY_PLAN_OVERSIZE_LINES, back to
+# Plan Review unless the operator added oversize-approved (oversize_hold).
+# FACTORY_OVERSIZE_HOLD=0, or FACTORY_PLAN_OVERSIZE_LINES=0, turns it off. A bad
+# value warns and falls back to 1.
+FACTORY_OVERSIZE_HOLD="${FACTORY_OVERSIZE_HOLD:-1}"
+case "$FACTORY_OVERSIZE_HOLD" in
+  0|1) ;;
+  *) echo "WARNING: invalid FACTORY_OVERSIZE_HOLD='$FACTORY_OVERSIZE_HOLD'; defaulting to 1" >&2
+     FACTORY_OVERSIZE_HOLD=1 ;;
+esac
+OVERSIZE_APPROVED_LABEL="oversize-approved"
+
+# ── /split: the factory files a plan's Proposed split (ADR-0104) ───────────
+# The operator comments `/split`, alone, on a Plan Review card. The replan
+# sweep then files the plan's Proposed split as sub-cards instead of
+# replanning (split_card): a splitter run with no tools writes each part's
+# issue body, and bash checks every body against the spec gate before it files
+# any. 0 turns it off; a `/split` comment is then ordinary feedback for the
+# planner. A bad value warns and falls back to 1.
+FACTORY_SPLIT="${FACTORY_SPLIT:-1}"
+case "$FACTORY_SPLIT" in
+  0|1) : ;;
+  *) echo "WARNING: invalid FACTORY_SPLIT='$FACTORY_SPLIT'; defaulting to 1" >&2
+     FACTORY_SPLIT=1 ;;
+esac
+SPLIT_LABEL="factory-split"
 
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
@@ -1879,6 +1930,535 @@ plan_size_label() {
   fi
 }
 
+# ── /split (ADR-0104) ───────────────────────────────────────────────────────
+# The operator comments `/split` on a Plan Review card; the replan sweep hands
+# the card to split_card instead of replanning it. The splitter (a Claude run
+# with no tools, scripts/factory-split-prompt.md) only prints text. Bash does
+# every write: it checks each body (factory-split.mjs parse, then
+# spec_missing_section), files the sub-cards, links them as sub-issues, moves
+# the first to Ready, and parks the parent in Backlog with the factory-split
+# label. One factory comment answers the /split, with an ack marker per
+# directive, so a directive never runs twice and never reads as replan
+# feedback. A run that can't be finished (gh down, a tick killed part-way)
+# resumes on the next tick from what it recorded (splitChildren, the cards
+# file), without a second Claude run.
+
+# split_directive_jq — a jq `def is_split_directive:` for "this comment asks
+# for a split": an OWNER comment whose whole body, trimmed, is `/split`.
+# Anything more (a quote, a code fence, a second line) is not a directive, so
+# it stays ordinary feedback.
+split_directive_jq() {
+  printf '%s' 'def is_split_directive: .authorAssociation == "OWNER" and (((.body // "") | gsub("^\\s+|\\s+$"; "")) == "/split");'
+}
+
+# split_acked_ids <comments-json> — the ids of the comments a factory (OWNER)
+# comment has answered as /split directives, from their
+# `<!-- drafto-factory-split-ack:<id> -->` markers: a JSON array of strings.
+split_acked_ids() {
+  echo "$1" | jq -c '[ .[] | select(.authorAssociation == "OWNER") | (.body // "")
+    | scan("<!-- drafto-factory-split-ack:([0-9]+) -->") | .[0] ] | unique'
+}
+
+# split_trigger_ids <comments-json> <plan-created-at> [<issue>] [<plan-acked-json>]
+# — the /split directives newer than the plan that nothing has answered yet: a
+# JSON array of id strings, "[]" when there are none. A directive is answered
+# by a factory comment's split ack, or by the plan itself (<plan-acked-json>,
+# the plan's replan acks): a `/split` the planner already took as feedback
+# (FACTORY_SPLIT=0 at the time, or a planner from before /split) never files
+# sub-cards later. They pass the same OWNER and support-forward gate as replan
+# feedback (owner_comments_since), so a forwarded email can't split a card.
+split_trigger_ids() {
+  local comments="$1" since="$2" issue="${3:-}" plan_acked="${4:-[]}" cands acked
+  cands=$(owner_comments_since "$comments" "$since" "$issue") || return 1
+  acked=$(split_acked_ids "$comments") || return 1
+  echo "$plan_acked" | jq -e 'type == "array"' >/dev/null 2>&1 || plan_acked='[]'
+  echo "$cands" | jq -c --argjson acked "$acked" --argjson planAcked "$plan_acked" "$(split_directive_jq)"'
+    ($acked + [ $planAcked[] | tostring ]) as $answered
+    | [ .[] | select(is_split_directive) | (.id | tostring)
+      | select(. as $i | ($answered | index($i)) | not) ]'
+}
+
+# split_drop_directives <comments-json> <ids-json> [all] — <ids-json> (the
+# replan sweep's unacked comment ids) without the /split directives in it:
+# every directive with "all" (FACTORY_SPLIT=1: split_card handles them), only
+# the ones a split already answered otherwise. Prints <ids-json> unchanged if
+# the filter fails.
+split_drop_directives() {
+  local comments="$1" ids="$2" mode="${3:-acked}" acked out
+  if acked=$(split_acked_ids "$comments") \
+      && out=$(echo "$comments" | jq -c --argjson ids "$ids" --argjson acked "$acked" --arg mode "$mode" \
+        "$(split_directive_jq)"'
+        [ .[] | select(is_split_directive) | (.id | tostring)
+          | select($mode == "all" or (. as $i | $acked | index($i))) ] as $drop
+        | $ids | map(select(. as $i | ($drop | index($i)) | not))') \
+      && [[ -n "$out" ]]; then
+    echo "$out"
+  else
+    echo "$ids"
+  fi
+}
+
+# split_dir_for <issue> — where split_card keeps the checked sub-cards between
+# ticks: under the factory's own logs/ (gitignored), like the reply dirs.
+split_dir_for() {
+  printf '%s/logs/factory/split/issue-%s' "$REPO_ROOT" "$1"
+}
+
+# split_children_record <issue> — the issue's splitChildren record
+# ("<plan comment id>:<total>:<n1>,<n2>…"), or "" when there is none.
+split_children_record() {
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$1" --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
+    | jq -r '.splitChildren // ""' 2>/dev/null || echo ""
+}
+
+# split_plan_hash <plan-body> — the sha256 of the plan body, "" if shasum fails.
+# A replan edits the plan comment in place and keeps its id, so the saved
+# sub-cards carry this hash too (plan-<id>.sha256) to tell which plan they
+# were split from.
+split_plan_hash() {
+  printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-64 || true
+}
+
+# split_ack_lines <trigger-ids-json> — one ack marker line per directive.
+split_ack_lines() {
+  echo "${1:-[]}" | jq -r '.[] | select(test("^[0-9]+$")) | "<!-- drafto-factory-split-ack:\(.) -->"' 2>/dev/null || true
+}
+
+# split_abort <issue> <trigger-ids-json> <reason> [<retry-advice>] — nothing
+# gets filed: tell the operator why, and ack the directives so the splitter
+# doesn't run again every tick. A new `/split` comment tries again.
+# <retry-advice> replaces the default "fix the plan first" advice, for a
+# failure that says nothing about the plan (a failed run).
+split_abort() {
+  local issue_num="$1" triggers="${2:-[]}" reason="${3%.}" advice="${4:-}"
+  [[ -n "$advice" ]] || advice="To try again, comment what the plan should change (the planner revises it), then comment \`/split\` again."
+  log "Issue #$issue_num: /split not filed: $reason"
+  if printf '%s' "🏭 **Split not filed.** ${reason}.
+
+Nothing was created, and the card stays in **Plan Review**. ${advice} Or file the sub-cards by hand from the plan's **Proposed split**.
+
+$(split_ack_lines "$triggers")" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
+    return 0
+  fi
+  log "WARNING: posting the /split notice on #$issue_num failed; the next tick tries the split again"
+}
+
+# split_write_cards <issue> <issue-record-json> <plan-body> <trigger-ids-json> <cards-file>
+# Run the splitter and keep its sub-cards in <cards-file> once every one passes
+# factory-split.mjs parse and the spec gate. Returns 1 when there is nothing to
+# file: split_abort has told the operator why, or (bundle or file trouble) the
+# next tick tries again. A session limit pauses the factory and ends the tick,
+# as the plan runs do.
+split_write_cards() {
+  local issue_num="$1" record="$2" plan_body="$3" triggers="${4:-[]}" cards_file="$5"
+  local bundle rc=0 input out_file start_iso parsed n i spec missing
+  bundle=$(jq -n --argjson issue "$record" --arg planBody "$plan_body" '{issue: $issue, planBody: $planBody}' \
+    | node "$SCRIPT_DIR/lib/factory-split.mjs" bundle 2>>"$LOG_FILE") || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    split_abort "$issue_num" "$triggers" "The plan has no **Proposed split** section, so there is nothing to file"
+    return 1
+  elif [[ $rc -ne 0 || -z "$bundle" ]]; then
+    log "WARNING: building the /split bundle for #$issue_num failed; the next tick tries again"
+    return 1
+  fi
+  input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+    "$(cat "$SCRIPT_DIR/factory-split-prompt.md")" "$bundle")
+  out_file=$(mktemp -t factory-split-out.XXXXXX)
+  start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  log "Invoking claude for #$issue_num (split, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_MODEL:-opus[1m]}, cap ${CLAUDE_CALL_TIMEOUT_SEC:-360}s)"
+  rc=0
+  CLAUDE_CALL_TIMEOUT_SEC="${CLAUDE_CALL_TIMEOUT_SEC:-360}" \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+      --tools "" --model "${FACTORY_MODEL:-opus[1m]}" >"$out_file" 2>>"$LOG_FILE" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
+    rm -f "$out_file"
+    if [[ $rc -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
+      pause_for_session_limit
+      log "=== factory-agent --${MODE_NAME:-plan} completed in $(( $(date +%s) - ${START_TIME:-$(date +%s)} ))s ==="
+      exit 0
+    fi
+    split_abort "$issue_num" "$triggers" "The splitter run failed (exit $rc; the factory log on the Mac mini has the details)" \
+      "This says nothing about the plan, so to try again just comment \`/split\` again."
+    return 1
+  fi
+  cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
+  parsed=$(node "$SCRIPT_DIR/lib/factory-split.mjs" parse --file "$out_file" 2>>"$LOG_FILE") || parsed=""
+  rm -f "$out_file"
+  if [[ "$(echo "$parsed" | jq -r '.ok' 2>/dev/null || echo "")" != "true" ]]; then
+    split_abort "$issue_num" "$triggers" \
+      "The splitter's sub-cards can't be filed: $(echo "$parsed" | jq -r '.reason // "its output is unreadable"' 2>/dev/null || echo "its output is unreadable")"
+    return 1
+  fi
+  n=$(echo "$parsed" | jq '.cards | length')
+  for ((i=0; i<n; i++)); do
+    spec=$(echo "$parsed" | jq -c ".cards[${i}].spec")
+    missing=$(spec_missing_section "$spec" "")
+    if [[ -n "$missing" ]]; then
+      split_abort "$issue_num" "$triggers" "The splitter's sub-card $((i+1)) fails the spec gate (missing: $missing)"
+      return 1
+    fi
+  done
+  if ! (umask 077 && echo "$parsed" | jq -c '[.cards[] | {title, body}]' >"$cards_file"); then
+    log "WARNING: couldn't save #$issue_num's sub-cards to $cards_file; the next tick tries again"
+    rm -f "$cards_file"
+    return 1
+  fi
+  log "Issue #$issue_num: the splitter wrote $n sub-cards, and all of them pass the spec gate"
+}
+
+# split_file_children <issue> <plan-comment-id> <cards-file> — file each
+# sub-card not filed yet, in order, and print all their numbers,
+# space-separated. splitChildren ("<plan comment id>:<total>:<n1>,<n2>…")
+# records each one as it is filed, so a tick that dies part-way resumes after
+# the last one it recorded. Before filing card i it looks for an OWNER issue
+# that already carries card i's hidden marker: a `gh issue create` whose reply
+# was lost still filed the issue, and a retry must not file it twice. When that
+# lookup fails it stops (returns 1) rather than risk a duplicate. Its stdout
+# is the caller's list of numbers, so it logs with logerr, never log.
+split_file_children() {
+  local issue_num="$1" plan_id="$2" cards_file="$3" total rec done_csv="" i n dep composed title url recent body_file
+  local nums=()
+  total=$(jq 'length' "$cards_file" 2>/dev/null || echo "")
+  if ! [[ "$total" =~ ^[0-9]+$ && "$total" -ge 1 ]]; then
+    logerr "WARNING: #$issue_num's saved sub-cards ($cards_file) are unreadable; remove the file and comment /split again"
+    return 1
+  fi
+  rec=$(split_children_record "$issue_num")
+  if [[ "$rec" == "$plan_id:$total:"* ]]; then
+    done_csv="${rec#"$plan_id:$total:"}"
+    [[ "$done_csv" =~ ^[0-9]+(,[0-9]+)*$ ]] || done_csv=""
+  fi
+  if [[ -n "$done_csv" ]]; then
+    IFS=',' read -ra nums <<<"$done_csv"
+  fi
+  body_file=$(mktemp -t factory-split-body.XXXXXX)
+  for ((i=${#nums[@]}; i<total; i++)); do
+    dep=""
+    if [[ $i -gt 0 ]]; then dep="${nums[$((i-1))]}"; fi
+    if ! composed=$(node "$SCRIPT_DIR/lib/factory-split.mjs" compose --cards-file "$cards_file" --index "$i" \
+        --parent "$issue_num" --plan-comment "$plan_id" --total "$total" ${dep:+--depends-on "$dep"} 2>>"$LOG_FILE"); then
+      logerr "WARNING: composing sub-card $((i+1))/$total of #$issue_num failed; the next tick tries again"
+      rm -f "$body_file"
+      return 1
+    fi
+    if ! recent=$(gh api "repos/JakubAnderwald/drafto/issues?state=all&sort=created&direction=desc&per_page=50" 2>>"$LOG_FILE") \
+        || ! n=$(printf '%s' "$recent" | node "$SCRIPT_DIR/lib/factory-split.mjs" find-child --parent "$issue_num" \
+          --plan-comment "$plan_id" --index "$i" 2>>"$LOG_FILE"); then
+      logerr "WARNING: couldn't check whether sub-card $((i+1))/$total of #$issue_num is already filed; the next tick tries again"
+      rm -f "$body_file"
+      return 1
+    fi
+    if [[ -n "$n" ]]; then
+      logerr "Issue #$issue_num: sub-card $((i+1))/$total is already filed as #$n"
+    else
+      title=$(echo "$composed" | jq -r '.title')
+      echo "$composed" | jq -r '.body' >"$body_file"
+      if ! url=$(gh issue create --repo JakubAnderwald/drafto --title "$title" --body-file "$body_file" 2>>"$LOG_FILE"); then
+        logerr "WARNING: filing sub-card $((i+1))/$total of #$issue_num failed; the next tick tries again"
+        rm -f "$body_file"
+        return 1
+      fi
+      n=$(printf '%s' "${url##*/}" | tr -d '[:space:]')
+      if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+        logerr "WARNING: gh issue create gave no issue number for sub-card $((i+1))/$total of #$issue_num; the next tick looks for it"
+        rm -f "$body_file"
+        return 1
+      fi
+      logerr "Issue #$issue_num: filed sub-card $((i+1))/$total as #$n"
+    fi
+    nums+=("$n")
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" splitChildren \
+      "$plan_id:$total:$(IFS=,; echo "${nums[*]}")" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
+      || logerr "WARNING: couldn't record #$n in #$issue_num's splitChildren; the marker check finds it next time"
+  done
+  rm -f "$body_file"
+  echo "${nums[*]}"
+}
+
+# split_link_children <parent> <numbers> — link each sub-card as a GitHub
+# sub-issue of the parent, skipping the ones already linked. Best effort: a
+# link that fails is logged, and the sub-card's "Split from" line still names
+# the parent.
+split_link_children() {
+  local parent="$1" nums="$2" linked n id
+  if ! linked=$(gh api --paginate "repos/JakubAnderwald/drafto/issues/$parent/sub_issues" --jq '.[].number' 2>>"$LOG_FILE"); then
+    log "WARNING: couldn't read #$parent's sub-issues; its sub-cards stay unlinked"
+    return 0
+  fi
+  for n in $nums; do
+    if grep -qx -- "$n" <<<"$linked"; then continue; fi
+    if id=$(gh api "repos/JakubAnderwald/drafto/issues/$n" --jq '.id' 2>>"$LOG_FILE") \
+        && [[ "$id" =~ ^[0-9]+$ ]] \
+        && gh api -X POST "repos/JakubAnderwald/drafto/issues/$parent/sub_issues" -F "sub_issue_id=$id" >>"$LOG_FILE" 2>&1; then
+      log "Issue #$parent: linked #$n as a sub-issue"
+    else
+      log "WARNING: linking #$n as a sub-issue of #$parent failed; its \"Split from\" line still names #$parent"
+    fi
+  done
+}
+
+# split_park_parent <item-id> <issue> — a split card goes to Backlog, which
+# the factory ignores, without its status:* label (Backlog has none).
+split_park_parent() {
+  local item_id="$1" issue_num="$2" current lbl remove_args=()
+  if ! node "$SCRIPT_DIR/lib/factory-project.mjs" set-status --item-id "$item_id" --status Backlog >>"$LOG_FILE" 2>&1; then
+    log "WARNING: moving #$issue_num to Backlog failed; the next tick tries again"
+    return 0
+  fi
+  if current=$(gh issue view "$issue_num" --repo JakubAnderwald/drafto --json labels --jq '.labels[].name' 2>>"$LOG_FILE"); then
+    while IFS= read -r lbl; do
+      if [[ "$lbl" == status:* ]]; then remove_args+=(--remove-label "$lbl"); fi
+    done <<<"$current"
+  fi
+  if [[ ${#remove_args[@]} -gt 0 ]] && ! gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
+      ${remove_args[@]+"${remove_args[@]}"} >>"$LOG_FILE" 2>&1; then
+    log "WARNING: removing #$issue_num's status label failed; the board says Backlog"
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
+    "$issue_num" lastStatus "Backlog" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  log "Issue #$issue_num: split; moved to Backlog"
+}
+
+# split_finish <item-id> <issue> <plan-comment-id> <trigger-ids-json> <numbers>
+# Put every sub-card on the board, move the first to Ready (unless it has
+# already moved on), label the parent factory-split, post the split comment
+# with the directives' acks, and park the parent in Backlog. Any step that
+# fails returns before the comment, so the directive stays unanswered and the
+# next tick repeats these steps; each one is safe to repeat. Once the comment
+# is posted the split is done: splitChildren becomes "done:<plan comment id>:
+# <n1>,<n2>…" and the saved cards go, so a later /split of the same plan
+# comment (a replan keeps its id) starts afresh instead of reusing them.
+split_finish() {
+  local item_id="$1" issue_num="$2" plan_id="$3" triggers="${4:-[]}" nums="$5"
+  local first="" first_status="Ready" first_line n info child_item child_status list="" count=0 dir
+  local label="${SPLIT_LABEL:-factory-split}"
+  for n in $nums; do
+    count=$((count + 1))
+    if ! info=$(node "$SCRIPT_DIR/lib/factory-project.mjs" ensure-item --issue "$n" 2>>"$LOG_FILE"); then
+      log "WARNING: couldn't put #$n on the board; the next tick tries again"
+      return 0
+    fi
+    child_status=$(echo "$info" | jq -r '.status // ""' 2>/dev/null || echo "")
+    if [[ -z "$first" ]]; then
+      first="$n"
+      child_item=$(echo "$info" | jq -r '.itemId // ""')
+      case "$child_status" in
+        "" | Backlog)
+          if ! transition_status "$child_item" "$n" "Ready"; then
+            log "WARNING: moving #$n to Ready failed; the next tick tries again"
+            return 0
+          fi
+          ;;
+        *)
+          log "Issue #$issue_num: sub-card #$n is already in $child_status; leaving it there"
+          first_status="$child_status"
+          ;;
+      esac
+      list+="- #$n (**$first_status**)"$'\n'
+    else
+      # Where the board says it is: one dragged on by hand before a resumed
+      # split finishes isn't listed as waiting in Backlog.
+      list+="- #$n (**${child_status:-Backlog}**)"$'\n'
+    fi
+  done
+  if [[ "$first_status" == "Ready" ]]; then
+    first_line="#$first is in **Ready**, so the factory plans it next."
+  else
+    first_line="#$first is already in **$first_status**."
+  fi
+  if ! gh issue edit "$issue_num" --repo JakubAnderwald/drafto --add-label "$label" >>"$LOG_FILE" 2>&1; then
+    log "WARNING: adding $label to #$issue_num failed (if the repo lacks it, run scripts/setup-factory-labels.sh)"
+  fi
+  if ! printf '%s' "🏭 **Split into $count sub-cards.**
+
+${list}
+${first_line} Each later sub-card waits in **Backlog** with a \"Depends on\" line: drag it to **Ready** once the one before it has merged. Every sub-card still goes through Plan Review.
+
+This card is now in **Backlog** with the \`$label\` label, and the factory leaves it there. Close it once its sub-cards have shipped.
+
+<!-- drafto-factory-split:$plan_id -->
+$(split_ack_lines "$triggers")" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
+    log "WARNING: posting the split comment on #$issue_num failed; the next tick tries again"
+    return 0
+  fi
+  log "Issue #$issue_num: split into $count sub-cards ($nums)"
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" splitChildren \
+    "done:$plan_id:$(echo "$nums" | tr ' ' ',')" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
+    || log "WARNING: couldn't mark #$issue_num's split done in splitChildren; a later /split of this plan would reuse its sub-cards"
+  dir=$(split_dir_for "$issue_num")
+  rm -f "$dir/plan-$plan_id.json" "$dir/plan-$plan_id.sha256"
+  split_park_parent "$item_id" "$issue_num"
+}
+
+# split_card <item-id> <issue> <issue-record-json> <plan-comment-json> <trigger-ids-json>
+# The /split of one Plan Review card: the sub-cards come from the cards file a
+# run already checked, or from a new splitter run. A cards file saved from an
+# earlier version of the plan (a replan keeps the comment id) is split again,
+# unless some of its sub-cards are already filed: those finish as saved.
+# Never fails the tick.
+split_card() {
+  local item_id="$1" issue_num="$2" record="$3" plan_json="$4" triggers="${5:-[]}"
+  local plan_id plan_body dir cards_file hash_file plan_hash nums nums_re='^[0-9]+( [0-9]+)*$'
+  plan_id=$(echo "$plan_json" | jq -r '.id | tostring' 2>/dev/null || echo "")
+  plan_body=$(echo "$plan_json" | jq -r '.body // ""' 2>/dev/null || echo "")
+  [[ "$plan_id" =~ ^[0-9]+$ ]] || return 0
+  log "Issue #$issue_num: /split in comment(s) $(echo "$triggers" | jq -r 'join(", ")' 2>/dev/null || echo "?") → filing the plan's Proposed split"
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: would split #$issue_num"
+    return 0
+  fi
+  dir=$(split_dir_for "$issue_num")
+  if ! mkdir -p "$(dirname "$dir")" || ! { [[ -d "$dir" ]] || mkdir -m 700 "$dir"; }; then
+    log "WARNING: can't create $dir; the next tick tries the split again"
+    return 0
+  fi
+  cards_file="$dir/plan-$plan_id.json"
+  hash_file="$dir/plan-$plan_id.sha256"
+  plan_hash=$(split_plan_hash "$plan_body")
+  if [[ -s "$cards_file" && -n "$plan_hash" && "$(cat "$hash_file" 2>/dev/null || true)" != "$plan_hash" ]]; then
+    if [[ "$(split_children_record "$issue_num")" == "$plan_id:"* ]]; then
+      log "Issue #$issue_num: the plan changed since its sub-cards were saved, but some are filed; finishing the saved split"
+    else
+      log "Issue #$issue_num: the plan changed since its sub-cards were saved; running the splitter again"
+      rm -f "$cards_file" "$hash_file"
+    fi
+  fi
+  if [[ ! -s "$cards_file" ]]; then
+    split_write_cards "$issue_num" "$record" "$plan_body" "$triggers" "$cards_file" || return 0
+    if ! (umask 077 && printf '%s\n' "$plan_hash" >"$hash_file"); then
+      log "WARNING: couldn't save the plan hash to $hash_file; until a sub-card is filed, the next tick may run the splitter again"
+    fi
+  fi
+  nums=$(split_file_children "$issue_num" "$plan_id" "$cards_file") || return 0
+  if ! [[ "$nums" =~ $nums_re ]]; then
+    log "WARNING: #$issue_num's sub-card numbers came back unreadable; the next tick tries again"
+    return 0
+  fi
+  split_link_children "$issue_num" "$nums"
+  split_finish "$item_id" "$issue_num" "$plan_id" "$triggers" "$nums"
+}
+
+# oversize_hold <issue> <item-id> <labels-csv> <plan-comment-json>
+#   <prior-pr-json|null> <comments-json>
+# The oversize hold (ADR-0103). --implement never starts an unsplit oversize
+# card: when the approved plan's size marker estimates at least
+# FACTORY_PLAN_OVERSIZE_LINES and the issue lacks oversize-approved, the card
+# goes back to Plan Review with one 🏭 comment saying how to release it.
+# Only a card that hasn't started is held: no prior PR, no worktree slot
+# assigned, no implement resume record, no implement run on record
+# (implementSessionId, which every implement start writes), and no
+# factory/issue-<n> branch on origin (an interactive /drive-issue session may
+# have pushed work there and handed the card back without a PR). Not
+# lastImplementAt: the Phase A stub writes it without writing code. Not the
+# attempts counter: --plan shares it, and a failed replan followed by a noop
+# one leaves it above 0 on a card that has never been implemented. A card
+# mid-run (a retry after a timeout, a revision back from In Test) never
+# bounces. Nor is a
+# plan with no size marker, or a dry run (it only logs). The marker carries the
+# plan comment id and the estimate, because a replan edits the plan in place:
+# a new estimate gets a new comment, the same one never gets a second.
+# The comment goes first and the move only once it is on the issue, so a
+# failure in either retries on the next tick without a duplicate.
+# Exit 0 = held (skip the card this tick), 1 = implement it.
+oversize_hold() {
+  local issue_num="$1" item_id="$2" labels_csv="${3:-}" plan_json="${4:-null}"
+  local prior_pr="${5:-null}" comments_json="${6:-[]}"
+  local threshold="${FACTORY_PLAN_OVERSIZE_LINES:-1500}"
+  local approved="${OVERSIZE_APPROVED_LABEL:-oversize-approved}"
+  local size est cls plan_id marker slots record pr_count remote_head
+  [[ "${FACTORY_OVERSIZE_HOLD:-1}" == "1" ]] || return 1
+  [[ "$threshold" =~ ^[0-9]+$ && "$threshold" -gt 0 ]] || return 1
+  [[ -z "$prior_pr" || "$prior_pr" == "null" ]] || return 1
+  [[ ",$labels_csv," != *",$approved,"* ]] || return 1
+  size=$(echo "$plan_json" | jq -r '.body // ""' 2>/dev/null \
+    | node "$SCRIPT_DIR/lib/plan-size.mjs" 2>>"$LOG_FILE" || echo "null")
+  est=$(echo "$size" | jq -r '.estLines // empty' 2>/dev/null || echo "")
+  cls=$(echo "$size" | jq -r '.sizeClass // empty' 2>/dev/null || echo "")
+  [[ "$est" =~ ^[0-9]+$ ]] || return 1
+  [[ "$est" -ge "$threshold" ]] || return 1
+  # Started already? A state read that fails can't tell, so the card waits a
+  # tick: it neither bounces nor starts.
+  if ! slots=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: #$issue_num: couldn't read the slots for the oversize hold; deferring the card to the next tick"
+    return 0
+  fi
+  if echo "$slots" | jq -e --arg i "$issue_num" \
+      '.slots // {} | to_entries | any(((.value.issueNumber // "") | tostring) == $i)' >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: #$issue_num: couldn't read its state for the oversize hold; deferring the card to the next tick"
+    return 0
+  fi
+  # A resume record, or any implement run on record, means it has started.
+  if [[ -n "$(echo "$record" | jq -r \
+      '[.implementResumeSession, .implementSessionId]
+       | map(select(. != null and . != "")) | first // empty' 2>/dev/null || echo "")" ]]; then
+    return 1
+  fi
+  # The caller defers a card whose find_prior_pr fails, so null means no PR was
+  # found. The hold is the one step that sends a card back, so it lists the
+  # PRs once more before it does: a failure here defers the card a tick too.
+  if ! pr_count=$(gh pr list --repo JakubAnderwald/drafto --head "factory/issue-$issue_num" \
+      --state all --json number --jq 'length' 2>>"$LOG_FILE") \
+      || ! [[ "$pr_count" =~ ^[0-9]+$ ]]; then
+    log "WARNING: #$issue_num: couldn't list its PRs for the oversize hold; deferring the card to the next tick"
+    return 0
+  fi
+  [[ "$pr_count" -eq 0 ]] || return 1
+  # Work pushed to the branch without a PR yet (an interactive session's) means
+  # it has started too. A failed ls-remote can't tell, so the card waits a tick.
+  # It is bounded like a gh call (FACTORY_GH_TIMEOUT_SEC): a stalled transport
+  # would otherwise hold the implement lock. A timeout (exit 124) is a failure.
+  if ! remote_head=$(node "$SCRIPT_DIR/lib/run-with-timeout.mjs" "${FACTORY_GH_TIMEOUT_SEC:-120}" \
+      git -C "$REPO_ROOT" ls-remote --heads origin \
+      "refs/heads/factory/issue-$issue_num" 2>>"$LOG_FILE"); then
+    log "WARNING: #$issue_num: couldn't check origin for factory/issue-$issue_num for the oversize hold; deferring the card to the next tick"
+    return 0
+  fi
+  if echo "$remote_head" | awk -v r="refs/heads/factory/issue-$issue_num" '$2 == r { found = 1 } END { exit !found }'; then
+    return 1
+  fi
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: would hold #$issue_num in Plan Review (the plan estimates ~$est added lines, at least $threshold; no $approved label)"
+    return 1
+  fi
+  plan_id=$(echo "$plan_json" | jq -r '.id // ""' 2>/dev/null || echo "")
+  marker="drafto-factory-oversize-hold:${plan_id}:${est}"
+  log "Issue #$issue_num: the approved plan estimates ~$est added lines (${cls:-?}), at least $threshold, and the issue has no $approved label → holding it in Plan Review"
+  if ! comments_have_marker "$comments_json" "$marker"; then
+    if ! gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+        --body "🏭 **Hold — this card is too big to implement in one PR.**
+
+The approved plan estimates ~$est added lines (class ${cls:-?}), at or above \
+the factory's oversize threshold of $threshold. PRs that size time out, \
+conflict with \`main\` and take the most review rounds, so the factory won't \
+start one that hasn't been split. The card is back in **Plan Review**. Either:
+
+- **Split it:** comment \`/split\` to have the factory file the sub-cards from \
+the plan's **Proposed split** (or file them yourself), or
+- **Run it as-is:** add the **\`$approved\`** label, then drag the card back \
+to **In Progress**.
+
+A plain \"approved\" comment doesn't release the hold: it starts a replan, \
+which is a paid planner run, and the card stays here. A replan never moves \
+the card either: once one brings the estimate under $threshold lines, drag \
+the card back to **In Progress** to run it.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: couldn't post the oversize-hold comment on #$issue_num; holding the card in In Progress until it is posted (next tick)"
+      return 0
+    fi
+  fi
+  if ! transition_status "$item_id" "$issue_num" "Plan Review"; then
+    log "WARNING: couldn't move #$issue_num back to Plan Review for the oversize hold; the next tick tries again"
+  fi
+  return 0
+}
+
 # Has the issue already received the Phase A implement-stub comment? Used so
 # the --implement loop doesn't spam the comment every 5 minutes.
 issue_already_impl_stubbed() {
@@ -1901,9 +2481,11 @@ issue_already_impl_stubbed() {
 # When the spec says schema changes, the bundle also carries `migrations`
 # (implement_migration_versions, ADR-0079): the versions the implementer names
 # its new migrations with, in order, clear of main and of every other open
-# PR's. If the bundle with them can't be built, the first one (migrations
-# null) is used, with a warning: the prompt's date rule and the post-check
-# cover it.
+# PR's. When the approved plan mentions docs/adr or an ADR, it also carries
+# `adr` (implement_adr_numbers, ADR-0105): the number a new ADR takes, clear
+# of main and of every other open PR's. Each is added in a rebuild of its
+# own; one that can't be is left null, with a warning: the prompt's fallback
+# rules and the conflict pass cover it.
 build_implement_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1913,7 +2495,7 @@ build_implement_bundle() {
   local screenshot_sources="${6:-[]}"
   local reply_markers="${7:-[]}"
   local reply_dir="${8:-}"
-  local repo_head_ref input bundle migrations with_migrations own_pr
+  local repo_head_ref input bundle migrations adr extra with_extra own_pr
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   input=$(jq -n \
     --argjson issue "$issue_entry" \
@@ -1953,22 +2535,44 @@ build_implement_bundle() {
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
      }') || return 1
   bundle=$(node "$SCRIPT_DIR/lib/factory-bundle.mjs" <<<"$input") || return 1
+  # A revision's own PR: its migrations and ADRs raise the floor instead of
+  # being claims.
+  own_pr=$(jq -r 'if type == "object" then (.number // "" | tostring) else "" end' \
+    <<<"$prior_pr" 2>/dev/null || echo "")
+  extra="{}"
   # The spec, as the bundle parses it, decides: the lookup costs a fetch and a
   # gh call per open PR, so only a card that says it changes the schema pays.
   if jq -e '.spec.schemaChanges == true' <<<"$bundle" >/dev/null 2>&1; then
-    # A revision's own PR: its migrations raise the floor instead of being claims.
-    own_pr=$(jq -r 'if type == "object" then (.number // "" | tostring) else "" end' \
-      <<<"$prior_pr" 2>/dev/null || echo "")
     migrations=$(implement_migration_versions "$own_pr")
     if [[ "$migrations" != "null" ]]; then
-      if with_migrations=$(jq -c --argjson migrations "$migrations" '. + {migrations: $migrations}' <<<"$input" \
-          | node "$SCRIPT_DIR/lib/factory-bundle.mjs"); then
-        bundle="$with_migrations"
-      else
-        logerr "WARNING: couldn't add the migration versions to the implement bundle; the implementer falls back to the date rule"
-      fi
+      extra=$(jq -c --argjson migrations "$migrations" '. + {migrations: $migrations}' <<<"$extra")
     fi
   fi
+  # The same sweep for ADR numbers, paid only by a card whose approved plan
+  # mentions an ADR in any case ("a new adr", "docs/adr/", "ADR-0079"): the
+  # spec has no field for it. A plan that only cites an existing ADR pays for
+  # a sweep it doesn't need, which is cheaper than missing one that adds an ADR.
+  if jq -e '(.body // "") | test("docs/adr|\\badrs?\\b"; "i")' <<<"$approved_plan" >/dev/null 2>&1; then
+    adr=$(implement_adr_numbers "$own_pr")
+    if [[ "$adr" != "null" ]]; then
+      extra=$(jq -c --argjson adr "$adr" '. + {adr: $adr}' <<<"$extra")
+    fi
+  fi
+  # Each field is added in its own rebuild, so a problem with one never costs
+  # the other.
+  local field with_input
+  for field in migrations adr; do
+    jq -e --arg f "$field" 'has($f)' <<<"$extra" >/dev/null 2>&1 || continue
+    if with_input=$(jq -c --argjson extra "$extra" --arg f "$field" '. + {($f): $extra[$f]}' <<<"$input") \
+        && with_extra=$(node "$SCRIPT_DIR/lib/factory-bundle.mjs" <<<"$with_input"); then
+      input="$with_input"
+      bundle="$with_extra"
+    elif [[ "$field" == "migrations" ]]; then
+      logerr "WARNING: couldn't add the migration versions to the implement bundle; the implementer falls back to the date rule"
+    else
+      logerr "WARNING: couldn't add the ADR number to the implement bundle; the implementer falls back to the next number on main"
+    fi
+  done
   printf '%s\n' "$bundle"
 }
 
@@ -1997,6 +2601,31 @@ implement_migration_versions() {
     return 0
   fi
   logerr "WARNING: couldn't pick a migration version for the implement bundle (see the log); the implementer falls back to the date rule"
+  echo "null"
+}
+
+# implement_adr_numbers [<own-pr>] — the `adr` field of the implement bundle
+# (ADR-0105): {mainNewest, next, own, claimed, skipped} from adr-allocate.mjs
+# next-adr, which fetches main and lists the ADR files every open PR adds.
+# `next` is the number the card's new ADR takes: one past main's newest, every
+# other open PR's and (with <own-pr>, on a revision) the PR's own. Two PRs that
+# took the same next free number on main conflicted on the README index once
+# one merged. Prints "null" on any failure, with a warning in the log: the
+# prompt then falls back to the next number on main, and the conflict pass
+# still catches a clash. Never fails the implement. Logs only through logerr,
+# because build_implement_bundle's stdout is the bundle.
+implement_adr_numbers() {
+  local own_pr="${1:-}" out own_args=()
+  if [[ "$own_pr" =~ ^[0-9]+$ ]]; then
+    own_args=(--own-pr "$own_pr")
+  fi
+  if out=$(node "$SCRIPT_DIR/lib/adr-allocate.mjs" next-adr --root "$REPO_ROOT" \
+      ${own_args[@]+"${own_args[@]}"} 2>>"$LOG_FILE") \
+      && jq -e '(.next | type) == "string" and (.next | test("^[0-9]{4}$"))' <<<"$out" >/dev/null 2>&1; then
+    jq -c '{mainNewest, next, own, claimed, skipped}' <<<"$out"
+    return 0
+  fi
+  logerr "WARNING: couldn't pick an ADR number for the implement bundle (see the log); the implementer falls back to the next number on main"
   echo "null"
 }
 
@@ -2317,14 +2946,17 @@ implement_park_blocked() {
 
 # ── Implement deadline + session resume (ADR-0084) ──────────────────────────
 # implement_runtime_facts <start-epoch> <resumed 0|1> <worktree-cli add JSON>
-#   <worktree path> — the "Run-time facts" JSON the implementer gets after its
-# bundle: its deadlines (the cap from <start-epoch>; the soft deadline
+#   <worktree path> [<effort>] — the "Run-time facts" JSON the implementer gets
+# after its bundle: its deadlines (the cap from <start-epoch>; the soft deadline
 # FACTORY_IMPLEMENT_SOFT_MARGIN_MIN before it, the margin clamped to the cap
-# minus 5 minutes) and what an earlier attempt left in the worktree. The
-# prompt's Time budget section documents every key, and a test pins them to it.
+# minus 5 minutes), the --effort this run was started at (default
+# FACTORY_EFFORT; the prompt's Revision runs section keys off it, so
+# FACTORY_REVISION_EFFORT=ultracode alone restores Workflows on revisions,
+# ADR-0101) and what an earlier attempt left in the worktree. The prompt's Time
+# budget section documents every key, and a test pins them to it.
 # Prints nothing on failure; the caller then leaves the block out.
 implement_runtime_facts() {
-  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" cap_min margin max_margin branch base unpushed uncommitted porcelain
+  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" effort="${5:-${FACTORY_EFFORT:-ultracode}}" cap_min margin max_margin branch base unpushed uncommitted porcelain
   cap_min=$(( IMPLEMENT_TIMEOUT_SEC / 60 ))
   margin="$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN"
   max_margin=$(( cap_min - 5 ))
@@ -2346,12 +2978,13 @@ implement_runtime_facts() {
   fi
   jq -n --argjson start "$start" --argjson cap "$IMPLEMENT_TIMEOUT_SEC" --argjson margin "$margin" \
     --argjson resumed "$resumed" --argjson unpushed "$unpushed" --argjson uncommitted "$uncommitted" \
-    --argjson wt "${wt_json:-null}" '{
+    --arg effort "$effort" --argjson wt "${wt_json:-null}" '{
       capMinutes: ($cap / 60 | floor),
       startedAt: ($start | todate),
       softDeadlineAt: ($start + $cap - $margin * 60 | todate),
       hardDeadlineAt: ($start + $cap | todate),
       resumed: ($resumed == 1),
+      effort: $effort,
       worktree: {
         reused: ($wt.reused == true),
         leftoversRef: ($wt.leftoversRef // null),
@@ -2631,9 +3264,16 @@ build_watch_bundle() {
 }
 
 # Build the factory_review bundle for the code-review stage. $2 approved-plan
-# obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list, $6 head SHA.
+# obj|null, $3 prior-PR obj, $4 raw PR diff, $5 changed-file list, $6 head SHA,
+# $7 the PR's file listing (pr_file_stats; "" when it couldn't be fetched).
 # Deliberately carries no comment thread — the reviewer judges the diff, not the
 # conversation about it.
+#
+# The diff and the file lists reach jq through files (--rawfile), never argv: a
+# diff of about 1 MB or more passed with --arg made jq's exec fail with E2BIG
+# (macOS's ARG_MAX). factory-bundle.mjs then decides
+# whether the reviewer gets the diff inline or the file list (reviewDiffMode),
+# so truncateDiff's limits live in one place.
 build_review_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -2641,14 +3281,20 @@ build_review_bundle() {
   local pr_diff="${4:-}"
   local pr_files="${5:-}"
   local head_sha="${6:-}"
-  local repo_head_ref
+  local pr_file_stats="${7:-}"
+  local repo_head_ref tmp_dir rc=0
   repo_head_ref=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  tmp_dir=$(mktemp -d -t factory-review-bundle.XXXXXX) || return 1
+  printf '%s' "$pr_diff" >"$tmp_dir/diff"
+  printf '%s' "$pr_files" >"$tmp_dir/files"
+  printf '%s' "$pr_file_stats" >"$tmp_dir/stats"
   jq -n \
     --argjson issue "$issue_entry" \
     --argjson plan "$approved_plan" \
     --argjson priorPr "$prior_pr" \
-    --arg prDiff "$pr_diff" \
-    --arg prFiles "$pr_files" \
+    --rawfile prDiff "$tmp_dir/diff" \
+    --rawfile prFiles "$tmp_dir/files" \
+    --rawfile prFileStats "$tmp_dir/stats" \
     --arg headSha "$head_sha" \
     --arg allowlist "$SUPPORT_ALLOWLIST" \
     --arg oauthUserEmail "$OAUTH_USER_EMAIL" \
@@ -2667,6 +3313,7 @@ build_review_bundle() {
        priorPr: $priorPr,
        prDiff: $prDiff,
        prFiles: $prFiles,
+       prFileStats: $prFileStats,
        headSha: $headSha,
        config: {
          phase: $phase,
@@ -2675,7 +3322,9 @@ build_review_bundle() {
        },
        repo: { nameWithOwner: $repoNwo, headRef: $headRef }
      }' \
-    | node "$SCRIPT_DIR/lib/factory-bundle.mjs"
+    | node "$SCRIPT_DIR/lib/factory-bundle.mjs" || rc=$?
+  rm -rf "$tmp_dir"
+  return "$rc"
 }
 
 # Build the factory_intest bundle for the In Review → In Test hand-off. $2
@@ -4015,7 +4664,7 @@ conflict_pass_verified() {
     CONFLICT_PASS_WHY="merge-check failed to run"; return 1
   fi
   if [[ "$(echo "$check" | jq -r '.resolved')" != "true" ]]; then
-    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions, migrationErrors}')"
+    CONFLICT_PASS_WHY="unresolved: $(echo "$check" | jq -c '{inProgress, unmergedFiles, uncommittedFiles, mainIsAncestor, filesWithMarkers, adrCollisions, adrIndexDuplicates, migrationErrors}')"
     return 1
   fi
   head=$(echo "$check" | jq -r '.head // ""')
@@ -4237,11 +4886,12 @@ is_ci_infra_step() {
 }
 
 # The GitHub Actions run IDs behind the failing required checks, deduped, one per
-# line. Only meaningful once classify_failing_required said "infra", which
-# guarantees every one of them is an Actions job.
+# line. After an "infra" classification every one of them is an Actions job; a
+# red one a no-op fix pass left (ADR-0102) may not be, and a check with no
+# Actions run URL (an outside service's status, or none at all) is skipped.
 pr_infra_rerun_ids() {
   pr_failing_required_checks "$1" | jq -r '
-    [ .[] | (.url | capture("/actions/runs/(?<id>[0-9]+)") | .id) ] | unique[]' 2>/dev/null || true
+    [ .[] | ((.url // "") | capture("/actions/runs/(?<id>[0-9]+)")? | .id) ] | unique[]' 2>/dev/null || true
 }
 
 # Re-runs already spent on <head_sha> (state field ciRerun = "<sha>:<count>"). 0
@@ -4263,10 +4913,18 @@ ci_rerun_count() {
 # the run also carries non-required jobs (Mobile/Desktop Checks), so it waits on
 # the RUN's status, not the required checks'. The attempt is counted BEFORE
 # calling gh, so a re-run GitHub keeps refusing still spends the budget instead
-# of retrying every tick forever.
+# of retrying every tick forever. <kind> (default "infra") only words the log:
+# "noop" is red CI a no-op fix pass left as it was (recover_noop_red_ci,
+# ADR-0102), which spends the same budget.
 rerun_infra_failures() {
-  local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4"
-  local run_ids count id status
+  local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4" kind="${5:-infra}"
+  local run_ids count id status what why
+  what="cancelled required check(s)"
+  why="were cancelled before they ran the code (no runner, or timed out while setting up)"
+  if [[ "$kind" == "noop" ]]; then
+    what="red required check(s) a no-op fix pass left as they were"
+    why="are still red on the head a no-op fix pass left unchanged (flaky?)"
+  fi
   run_ids=$(pr_infra_rerun_ids "$pr_view")
   [[ -n "$run_ids" ]] || return 1
   while IFS= read -r id; do
@@ -4278,7 +4936,7 @@ rerun_infra_failures() {
       return 0
     fi
     if [[ "$status" != "completed" ]]; then
-      log "Issue #$issue_num: PR #$pr_num has cancelled required check(s) but run $id is still $status; re-running once it finishes"
+      log "Issue #$issue_num: PR #$pr_num has $what but run $id is still $status; re-running once it finishes"
       return 0
     fi
   done <<< "$run_ids"
@@ -4288,12 +4946,12 @@ rerun_infra_failures() {
   fi
   count=$((count + 1))
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "DRY-RUN: would re-run cancelled required checks on PR #$pr_num (run(s) $(echo "$run_ids" | tr '\n' ' '), attempt $count/$FACTORY_CI_RERUN_MAX)"
+    log "DRY-RUN: would re-run $what on PR #$pr_num (run(s) $(echo "$run_ids" | tr '\n' ' '), attempt $count/$FACTORY_CI_RERUN_MAX)"
     return 0
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciRerun "$head_sha:$count" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  log "Issue #$issue_num: PR #$pr_num required check(s) were cancelled before they ran the code (no runner, or timed out while setting up); re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
+  log "Issue #$issue_num: PR #$pr_num required check(s) $why; re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
   while IFS= read -r id; do
     gh run rerun "$id" --failed --repo JakubAnderwald/drafto >>"$LOG_FILE" 2>&1 \
       || log "WARNING: gh run rerun $id --failed refused for PR #$pr_num (counted against the re-run budget)"
@@ -4345,6 +5003,165 @@ recover_cancelled_ci() {
   rerun_infra_failures "$issue_num" "$pr_num" "$head_sha" "$pr_view" && return 0
   log "Issue #$issue_num: PR #$pr_num required check(s) still couldn't run after $(ci_rerun_count "$issue_num" "$head_sha") re-run(s); holding in $where"
   comment_ci_infra_hold "$issue_num" "$pr_num" "$head_sha" "$pr_view" "$where"
+}
+
+# ── Red CI a no-op fix pass left as it was (ADR-0102) ───────────────────────
+# A --watch fix pass that ends `noop` on red CI found nothing in the code to
+# change. Another Claude pass on the same head and the same red checks would
+# see the same thing (#899 spent ten of them), so bash records what the pass
+# looked at (state field ciNoop) and, the next time it sees exactly that, re-runs
+# the checks itself under the ciRerun budget (FACTORY_CI_RERUN_MAX). Once that
+# is spent the card goes to Blocked with one comment. A new push changes the
+# head SHA and re-arms the card; so does clearing ciNoop by hand.
+
+# pr_ci_noop_key <pr-view-json> — "<head sha>:<failing required check names,
+# sorted, newline-joined>", or nothing when the head or the failing set is
+# unknown. Newline, not comma: a matrix job's name ("test (web, mobile)") can
+# hold a comma, and splitting on it would match the halves of a name.
+pr_ci_noop_key() {
+  local pr_view="$1" sha names
+  sha=$(echo "$pr_view" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
+  [[ -n "$sha" ]] || return 0
+  names=$(pr_failing_required_checks "$pr_view" | jq -r '[ .[].name ] | unique | join("\n")' 2>/dev/null || echo "")
+  [[ -n "$names" ]] || return 0
+  echo "$sha:$names"
+}
+
+# record_ci_noop <issue> <pr-view-json> — called by the noop arm on red CI.
+record_ci_noop() {
+  local issue_num="$1" key
+  key=$(pr_ci_noop_key "$2")
+  [[ -n "$key" ]] || return 0
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: would record ciNoop for #$issue_num ($key)"
+    return 0
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciNoop "$key" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# ci_noop_repeat <issue> <pr-view-json> — exit 0 when the PR is red on the same
+# head SHA a no-op fix pass already saw, and every failing required check is one
+# that pass saw red. A subset counts: while a re-run is in flight its faster
+# jobs turn red again before the slower ones finish, and a re-run that greens
+# some of the checks leaves red the agent already judged. Both go to
+# rerun_infra_failures, which waits while the run is in progress. A red check
+# the pass didn't see, or an unreadable record, is no match: the fix loop runs
+# as before.
+ci_noop_repeat() {
+  local issue_num="$1" key record
+  key=$(pr_ci_noop_key "$2")
+  [[ -n "$key" ]] || return 1
+  record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.ciNoop // ""' 2>/dev/null || echo "")
+  [[ -n "$record" && "${record%%:*}" == "${key%%:*}" ]] || return 1
+  [[ "$record" == "$key" ]] && return 0
+  jq -en --arg now "${key#*:}" --arg seen "${record#*:}" '
+    ($seen | split("\n")) as $s
+    | ($now | split("\n")) | length > 0 and all(. as $n | ($s | index($n)) != null)' \
+    >/dev/null 2>&1
+}
+
+# comment_ci_noop_hold <issue> <item-id> <pr> <head-sha> <pr-view-json>
+# The re-runs are spent and the checks are still red: comment once per head SHA
+# (drafto-factory-ci-noop-hold:<sha12>) with the gh run rerun commands, move the
+# card to Blocked and free its worktree slot. It holds no lock on anything a
+# person needs, and the fix agent has nothing left to try. The slot is kept
+# when the worktree holds commits the PR lacks (worktree_within_head, as
+# free_waiting_slot does): a noop pass may have committed without pushing, and
+# removing the worktree would strand them. A tick that can't
+# read the issue's comments, or can't post, leaves the card for the next tick
+# rather than park it without the notice. Those transient paths still return 0:
+# the --watch loop runs under `set -e`, and a non-zero status there would end
+# the whole tick (every later card skipped) and file a factory-failure issue.
+comment_ci_noop_hold() {
+  local issue_num="$1" item_id="$2" pr_num="$3" head_sha="$4" pr_view="$5"
+  local sha12="${head_sha:0:12}" rc=0 summary commands elsewhere count tried
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: would comment on #$issue_num and move it to Blocked (red CI on ${sha12} after a no-op fix pass and the re-runs)"
+    return 0
+  fi
+  issue_marker_check "$issue_num" "drafto-factory-ci-noop-hold:$sha12" || rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    log "WARNING: couldn't read #$issue_num's comments (transient?); holding the card in In Review until the next tick"
+    return 0
+  fi
+  if [[ "$rc" -eq 1 ]]; then
+    count=$(ci_rerun_count "$issue_num" "$head_sha")
+    # ciRerun is one budget per head, shared with the cancelled-check path
+    # (rerun_infra_failures), so the count may include re-runs of other checks.
+    if [[ "$count" -gt 0 ]]; then
+      tried="The factory has used $count automatic re-run(s) on this commit (\`FACTORY_CI_RERUN_MAX\` is ${FACTORY_CI_RERUN_MAX:-2}, shared with re-runs of cancelled checks), and these checks are still red."
+    else
+      tried="The factory didn't re-run them (\`FACTORY_CI_RERUN_MAX\` is ${FACTORY_CI_RERUN_MAX:-2}, or none of them is a GitHub Actions job)."
+    fi
+    summary=$(pr_failing_required_summary "$pr_view" | sed 's/^/- /')
+    commands=$(pr_infra_rerun_ids "$pr_view" | sed 's/^/gh run rerun /; s/$/ --failed --repo JakubAnderwald\/drafto/')
+    # A red check with no Actions run behind it (an outside service's status)
+    # has no gh command: name it, so the operator re-runs it where it runs.
+    elsewhere=$(pr_failing_required_checks "$pr_view" | jq -r '
+      .[] | select((.url // "") | test("/actions/runs/[0-9]+") | not)
+      | "# " + .name + ": not a GitHub Actions job; re-run it where it runs"' 2>/dev/null || echo "")
+    if [[ -n "$elsewhere" && -n "$commands" ]]; then
+      commands+=$'\n'"$elsewhere"
+    elif [[ -n "$elsewhere" ]]; then
+      commands="$elsewhere"
+    fi
+    if ! gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+      --body "🏭 **CI is still red on \`$sha12\`, and the fix agent found nothing to change.**
+
+A fix pass on PR #$pr_num ended \`noop\` with these required checks red:
+
+$summary
+
+$tried To try them again:
+
+\`\`\`bash
+$commands
+\`\`\`
+
+The card is in **Blocked** and its worktree slot is free. Push a fix and drag the \
+card back to **In Review** (the new commit re-arms the factory), or re-run the \
+checks and drag the card back once they're green. To give the fix agent another pass on this same commit, clear \
+the record first: \`node scripts/lib/state-cli.mjs factory:set-issue-field $issue_num ciNoop \"\" --state-file logs/factory-state.json\` \
+in \`drafto-factory\`.
+
+<!-- drafto-factory-ci-noop-hold:$sha12 -->" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: couldn't post the red-CI hold notice on #$issue_num (transient?); holding the card in In Review until the next tick"
+      return 0
+    fi
+  fi
+  transition_status "$item_id" "$issue_num" "Blocked" || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastError \
+    "red CI on $sha12: a no-op fix pass and the re-runs left it red" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  if ! worktree_within_head "$issue_num" "$head_sha"; then
+    logerr "Issue #$issue_num: parked in Blocked, but its worktree has commits the PR lacks; keeping its slot"
+    return 0
+  fi
+  release_slot_and_worktree "$issue_num"
+}
+
+# clear_ci_noop <issue> — forget the no-op record (ADR-0102) when a card is
+# handed back to In Review for red CI from a later column (--release, the
+# Testing stage). The hand-back promises the fix loop, and without this the
+# record would send the card straight to Blocked on the same head.
+clear_ci_noop() {
+  local issue_num="$1"
+  [[ "${DRY_RUN:-0}" -eq 1 ]] && return 0
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciNoop "" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# recover_noop_red_ci <issue> <item-id> <pr> <head-sha> <pr-view-json> — --watch,
+# once ci_noop_repeat matched: re-run the red checks (no Claude run, no fix
+# attempt), or, the budget spent, comment once and park the card in Blocked.
+recover_noop_red_ci() {
+  local issue_num="$1" item_id="$2" pr_num="$3" head_sha="$4" pr_view="$5"
+  log "Issue #$issue_num: PR #$pr_num is red on ${head_sha:0:12} with the checks a no-op fix pass already looked at; re-running them in bash, no Claude run (ADR-0102)"
+  rerun_infra_failures "$issue_num" "$pr_num" "$head_sha" "$pr_view" noop && return 0
+  log "Issue #$issue_num: PR #$pr_num required check(s) still red after $(ci_rerun_count "$issue_num" "$head_sha") re-run(s); moving to Blocked"
+  comment_ci_noop_hold "$issue_num" "$item_id" "$pr_num" "$head_sha" "$pr_view"
 }
 
 # Which beta lanes may be dispatched for an In Test card, given the platforms in
@@ -5492,15 +6309,14 @@ intest_handoff() {
   log "Issue #$issue_num: scenario for ${head_sha:0:12} in $diff_mode mode${mode_reason:+ ($mode_reason)}"
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$INTEST_PROMPT_FILE")" "$bundle")
-  # --model only when FACTORY_INTEST_MODEL is set (ADR-0080).
-  local model_args=()
-  if [[ -n "${FACTORY_INTEST_MODEL:-}" ]]; then model_args=(--model "$FACTORY_INTEST_MODEL"); fi
-  log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_INTEST_MODEL:-default})"
+  # FACTORY_INTEST_MODEL when set, FACTORY_MODEL otherwise (ADR-0080, ADR-0101).
+  local intest_model="${FACTORY_INTEST_MODEL:-${FACTORY_MODEL:-opus[1m]}}"
+  log "Invoking claude for #$issue_num (In Test scenario, cap ${INTEST_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=$intest_model)"
   out_file=$(mktemp -t factory-agent-intest.XXXXXX)
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
   ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$INTEST_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config ${model_args[@]+"${model_args[@]}"} ) \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "$intest_model" ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -5791,7 +6607,11 @@ run_browser_task() {
   input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$prompt_file")" "$bundle")
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_BROWSER_MODEL:-default})"
+  # FACTORY_BROWSER_MODEL when set, FACTORY_MODEL otherwise (ADR-0080, ADR-0101).
+  # --setting-sources "" below drops ~/.claude/settings.json, so without
+  # --model the runner would fall back to the CLI's built-in default.
+  local runner_model="${FACTORY_BROWSER_MODEL:-${FACTORY_MODEL:-opus[1m]}}"
+  log "Invoking the browser runner ($kind, session $uuid, cap ${FACTORY_BROWSER_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=$runner_model)"
   # Nothing but this prompt and the guard's settings reach the runner. cwd is
   # an empty directory OUTSIDE the repo (Claude Code walks up from its cwd for
   # CLAUDE.md files and project settings); --setting-sources "" drops the user,
@@ -5813,13 +6633,10 @@ run_browser_task() {
   # account's password, and argv is visible to `ps`.
   # --tools is "" (Chrome only) unless the run has dev-inspect, which adds Bash;
   # the guard's Bash hook allows that one command and nothing else (ADR-0073).
-  # --model only when FACTORY_BROWSER_MODEL is set (ADR-0080).
-  local model_args=()
-  if [[ -n "${FACTORY_BROWSER_MODEL:-}" ]]; then model_args=(--model "$FACTORY_BROWSER_MODEL"); fi
   ( cd "$cwd" && printf '%s' "$input" | PATH="$path_prefix$PATH" CLAUDE_CALL_TIMEOUT_SEC="$FACTORY_BROWSER_TIMEOUT_SEC" \
       node "$SCRIPT_DIR/lib/run-claude.mjs" -p --chrome --permission-mode dontAsk --tools "$tools" \
       --allowedTools "$allowed" --setting-sources "" --strict-mcp-config --settings "$settings" \
-      --session-id "$uuid" ${model_args[@]+"${model_args[@]}"} --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
+      --session-id "$uuid" --model "$runner_model" --effort "$FACTORY_PLAN_EFFORT" ) >"$BROWSER_OUT" 2>>"$LOG_FILE" || exit_code=$?
   browser_capabilities_cleanup "$run_dir"
   # The runner's output becomes a comment: the accounts' emails come out of it
   # here, once, before the report is rendered or read by the verification
@@ -6908,8 +7725,8 @@ plan_probe_browser_run() {
 # $1 issue, $2 pr-num, $3 pr obj, $4 head sha, $5 changed files.
 review_stage() {
   local issue_num="$1" pr_num="$2" pr_obj="$3" head_sha="$4" diff_files="$5"
-  local issue_record comments_json plan_json pr_diff bundle claude_input
-  local out_file start_iso exit_code=0
+  local issue_record comments_json plan_json pr_diff file_stats bundle claude_input
+  local review_mode out_file start_iso exit_code=0
 
   # Every DETERMINISTIC failure below records the SHA before returning. Skipping
   # the record would leave lastReviewSha != headRefOid forever: the caller
@@ -6932,28 +7749,42 @@ review_stage() {
   [[ -n "$comments_json" ]] || comments_json="[]"
   plan_json=$(extract_plan_comment "$comments_json")
   [[ -n "$plan_json" ]] || plan_json="null"
+  # The file listing is fetched every time, whatever the diff's size: the
+  # bundle, not bash, decides whether the reviewer gets the diff inline or this
+  # list. `gh pr diff` fails with HTTP 406 on a diff over 300 files or 20,000
+  # lines; the listing still works then, so that PR is reviewed from the list.
   pr_diff=$(gh pr diff "$pr_num" --repo JakubAnderwald/drafto 2>>"$LOG_FILE" || echo "")
-  if [[ -z "$pr_diff" ]]; then
+  # A listing cut short by a failed page is dropped, not half-used.
+  file_stats=""
+  if ! file_stats=$(pr_file_stats "$pr_num"); then file_stats=""; fi
+  if [[ -z "$pr_diff" && -z "$file_stats" ]]; then
     log "WARNING: empty diff for PR #$pr_num; skipping review"
     review_record_sha "$issue_num" "$head_sha"
     return 0
   fi
 
   if ! bundle=$(build_review_bundle "$issue_record" "$plan_json" "$pr_obj" "$pr_diff" \
-      "$diff_files" "$head_sha"); then
+      "$diff_files" "$head_sha" "$file_stats"); then
     log "ERROR: build_review_bundle failed for #$issue_num; skipping review"
     review_record_sha "$issue_num" "$head_sha"
     return 0
   fi
+  review_mode=$(printf '%s' "$bundle" | jq -r '.reviewDiffMode // "inline"' 2>/dev/null || echo "inline")
+  if [[ "$review_mode" == "file-list" ]]; then
+    log "Issue #$issue_num: PR #$pr_num's diff is too large to send inline; reviewing in file-list mode ($(printf '%s' "$bundle" | jq -r '(.prFileStats | length) + (.prFileStatsOmitted // 0)' 2>/dev/null || echo '?') files)"
+  fi
 
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
     "$(cat "$REVIEW_PROMPT_FILE")" "$bundle")
-  log "Invoking claude for #$issue_num (code review of PR #$pr_num @ ${head_sha:0:12}, cap ${REVIEW_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT)"
+  log "Invoking claude for #$issue_num (code review of PR #$pr_num @ ${head_sha:0:12}, cap ${REVIEW_TIMEOUT_SEC}s, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_MODEL:-opus[1m]})"
   out_file=$(mktemp -t factory-agent-review.XXXXXX)
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
-  ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config ) \
+  # The prompt goes in on stdin, not argv, as in run_browser_task: an inline
+  # diff of up to 200 KB or a long file list would otherwise ride in one argv
+  # element, and exec fails with E2BIG once the whole prompt passes ARG_MAX.
+  ( cd "$REPO_ROOT" && printf '%s' "$claude_input" | CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "${FACTORY_MODEL:-opus[1m]}" ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
@@ -7032,6 +7863,18 @@ review_record_sha() {
   [[ -n "$head_sha" ]] || return 0
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" \
     lastReviewSha "$head_sha" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# Print PR <pr-num>'s changed files as `status<TAB>path<TAB>additions<TAB>
+# deletions` lines, from the REST files endpoint, paginated. That endpoint lists
+# up to 3000 files and never refuses a large diff, where `gh pr diff` (with or
+# without --name-only) fails with HTTP 406 on a diff over 300 files or 20,000
+# lines, and `gh pr view --json files` stops at 100. Same call as
+# claimedVersions in lib/migration-renumber.mjs. Non-zero when the call fails.
+pr_file_stats() {
+  local pr_num="$1"
+  gh api --paginate "repos/JakubAnderwald/drafto/pulls/$pr_num/files" \
+    --jq '.[]|[.status,.filename,.additions,.deletions]|@tsv' 2>>"$LOG_FILE"
 }
 
 # Does PR <pr-num>'s conversation carry <marker>? The PR-comment analogue of
@@ -7486,7 +8329,8 @@ verify_shell_work() {
       --repo-root "$REPO_ROOT" --run-root "$VERIFY_DIR" --prompt-file "$VERIFY_PROMPT_FILE" \
       --account-file "$FACTORY_BROWSER_ACCOUNT_FILE" \
       --signin-key-file "$FACTORY_BROWSER_SIGNIN_KEY_FILE" --signin-lease-file "$SIGNIN_LEASE_FILE" \
-      --effort "${FACTORY_PLAN_EFFORT:-xhigh}" --install-timeout-sec "${INSTALL_TIMEOUT_SEC:-600}" \
+      --effort "${FACTORY_PLAN_EFFORT:-xhigh}" --model "${FACTORY_MODEL:-opus[1m]}" \
+      --install-timeout-sec "${INSTALL_TIMEOUT_SEC:-600}" \
       --min-free-disk-gb "${FACTORY_MIN_FREE_DISK_GB:-3}" 2>>"$LOG_FILE"); then
     log "WARNING: issue #$issue_num: the verification shell lane couldn't be started (non-fatal; retried next tick)"
     return 0
@@ -7810,6 +8654,8 @@ verify_hand_back() {
   else
     log "Issue #$issue_num: Testing → In Review ($reason, ${head_sha:0:12})"
   fi
+  # A red hand-back promises the fix loop: forget an earlier no-op record.
+  [[ "$reason" == "ci-red" ]] && clear_ci_noop "$issue_num"
   case "$reason" in
     head-moved) why="PR #$pr_num's head moved to \`${head_sha:0:12}\` while the previous commit was being verified." ;;
     ci-red) why="A required check is red on PR #$pr_num at \`${head_sha:0:12}\`." ;;
@@ -8604,12 +9450,12 @@ See \`docs/features/dark-factory.md\` for the spec contract.
 
     CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
       "$PROMPT_TEXT" "$BUNDLE")
-    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, cap ${PLAN_CALL_TIMEOUT}s)"
+    log "Invoking claude for #$ISSUE_NUM (--plan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, model=$FACTORY_MODEL, cap ${PLAN_CALL_TIMEOUT}s)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     CLAUDE_CALL_TIMEOUT_SEC="$PLAN_CALL_TIMEOUT" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "$FACTORY_MODEL" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
     # A run that failed produced no plan to probe for.
     [[ $EXIT_CODE -eq 0 ]] || plan_probe_finalize "$ISSUE_NUM" discard
@@ -8764,9 +9610,35 @@ and drag the card back to **Ready** to retry.
     # since, is caught up without waiting for another replan.
     plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" "$PLAN_BODY"
 
+    # /split (ADR-0104), before any replan: the operator's `/split` comment
+    # files the plan's Proposed split as sub-cards, and the card leaves Plan
+    # Review for Backlog. A card already split (its label and its split
+    # comment) that is back in Plan Review only goes back to Backlog.
     ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
     if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
+    if [[ "${FACTORY_SPLIT:-1}" -eq 1 ]]; then
+      if [[ ",$ITEM_LABELS," == *",$SPLIT_LABEL,"* ]] \
+          && comments_have_marker "$COMMENTS_JSON" "drafto-factory-split:$PLAN_COMMENT_ID"; then
+        log "Issue #$ISSUE_NUM: already split ($SPLIT_LABEL); moving it back to Backlog"
+        [[ "$DRY_RUN" -eq 1 ]] || split_park_parent "$ITEM_ID" "$ISSUE_NUM"
+        continue
+      fi
+      SPLIT_TRIGGERS=$(split_trigger_ids "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ISSUE_NUM" "$ACKED_JSON") || SPLIT_TRIGGERS="[]"
+      if [[ "$(echo "$SPLIT_TRIGGERS" | jq 'length' 2>/dev/null || echo 0)" != "0" ]]; then
+        split_card "$ITEM_ID" "$ISSUE_NUM" "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$SPLIT_TRIGGERS"
+        continue
+      fi
+    fi
+
     UNACKED_JSON=$(unacked_owner_comments "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ACKED_JSON" "$ISSUE_NUM")
+    # A /split directive is never replan feedback: with FACTORY_SPLIT=1
+    # split_card handles it above, and one a split already answered stays
+    # answered even with the knob off.
+    if [[ "${FACTORY_SPLIT:-1}" -eq 1 ]]; then
+      UNACKED_JSON=$(split_drop_directives "$COMMENTS_JSON" "$UNACKED_JSON" all)
+    else
+      UNACKED_JSON=$(split_drop_directives "$COMMENTS_JSON" "$UNACKED_JSON")
+    fi
     UNACKED_COUNT=$(echo "$UNACKED_JSON" | jq 'length' 2>/dev/null || echo "0")
     # A finished plan-stage probe the plan hasn't folded in yet is a trigger of
     # its own, with no comment to answer (ADR-0071). Its report and notices
@@ -8839,12 +9711,12 @@ and drag the card back to **Ready** to retry.
     if [[ "$PROBE_FOLD_JSON" != "null" ]]; then
       plan_probe fold-begin --issue "$ISSUE_NUM" >>"$LOG_FILE" || true
     fi
-    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, cap ${PLAN_CALL_TIMEOUT}s)"
+    log "Invoking claude for #$ISSUE_NUM (--plan replan, phase=$PHASE, effort=$FACTORY_PLAN_EFFORT, model=$FACTORY_MODEL, cap ${PLAN_CALL_TIMEOUT}s)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     CLAUDE_CALL_TIMEOUT_SEC="$PLAN_CALL_TIMEOUT" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config --model "$FACTORY_MODEL" \
         >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     # Whatever the run returned, a trigger it acked has been handled, so it
@@ -9362,6 +10234,22 @@ implement_lane_precheck() {
   return 1
 }
 
+# implement_effort <is_revision> — the effort for this --implement run:
+# FACTORY_REVISION_EFFORT for a revision run (1: the card already has a
+# factory PR, open or closed, and new owner feedback since lastFeedbackAt),
+# FACTORY_EFFORT otherwise (ADR-0101). A resume never crosses between the two
+# kinds: the resume task key includes the revision comments
+# (implement-resume.mjs). It does take the knob's current value, so a knob
+# changed between a run and its resume starts the resume at the new effort;
+# the run-time facts' `effort` tells the agent which.
+implement_effort() {
+  if [[ "${1:-0}" == "1" ]]; then
+    printf '%s\n' "${FACTORY_REVISION_EFFORT:-xhigh}"
+  else
+    printf '%s\n' "${FACTORY_EFFORT:-ultracode}"
+  fi
+}
+
 # implement_lane_start — start this card's claude call detached, with the
 # claude input and the flags the synchronous call would use (implement-lane.mjs
 # buildImplementArgv; a test pins the two together). The slot passes to the
@@ -9380,12 +10268,13 @@ implement_lane_start() {
   out=""
   if ctx=$(implement_lane_ctx "$start_iso" 2>>"$LOG_FILE") \
      && jq -n --arg issue "$ISSUE_NUM" --arg slot "$SLOT" --arg worktree "$WT_PATH" --arg inputFile "$input" \
-          --arg effort "$FACTORY_EFFORT" --arg mode "$mode" --arg sessionId "$IMPL_SESSION_ID" \
+          --arg effort "${IMPL_EFFORT:-${FACTORY_EFFORT:-ultracode}}" --arg model "${FACTORY_MODEL:-opus[1m]}" \
+          --arg mode "$mode" --arg sessionId "$IMPL_SESSION_ID" \
           --arg timeoutSec "$IMPLEMENT_TIMEOUT_SEC" --arg termGraceSec "$FACTORY_IMPLEMENT_TERM_GRACE_SEC" \
           --arg killGraceSec "$FACTORY_IMPLEMENT_KILL_GRACE_SEC" --arg maxRunning "$FACTORY_IMPLEMENT_MAX_RUNNING" \
           --argjson ctx "$ctx" \
           '{issue: $issue, slot: ($slot | tonumber), worktree: $worktree, inputFile: $inputFile,
-            effort: $effort, mode: $mode, sessionId: $sessionId, timeoutSec: $timeoutSec,
+            effort: $effort, model: $model, mode: $mode, sessionId: $sessionId, timeoutSec: $timeoutSec,
             termGraceSec: $termGraceSec, killGraceSec: $killGraceSec, maxRunning: $maxRunning,
             ctx: $ctx}' >"$spec" 2>>"$LOG_FILE"; then
     out=$(node "$SCRIPT_DIR/lib/implement-lane.mjs" start --spec-file "$spec" --run-root "$IMPLEMENT_RUN_ROOT" \
@@ -9396,7 +10285,7 @@ implement_lane_start() {
     run_id=$(jq -r '.runId // ""' <<<"$out")
     pid=$(jq -r '.pid // ""' <<<"$out")
     deadline=$(jq -r '.deadlineAt // ""' <<<"$out")
-    log "Issue #$ISSUE_NUM: started detached implement run $run_id (pid $pid, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s until $deadline, effort=$FACTORY_EFFORT, $IMPL_SESSION_FLAG $IMPL_SESSION_ID); a later tick collects it"
+    log "Issue #$ISSUE_NUM: started detached implement run $run_id (pid $pid, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s until $deadline, effort=${IMPL_EFFORT:-${FACTORY_EFFORT:-ultracode}}, model=${FACTORY_MODEL:-opus[1m]}, $IMPL_SESSION_FLAG $IMPL_SESSION_ID); a later tick collects it"
     lock_error=$(jq -r '.lockError // ""' <<<"$out")
     [[ -z "$lock_error" ]] || log "WARNING: #$ISSUE_NUM: couldn't git-worktree-lock $WT_PATH ($lock_error); the run goes on"
     return 0
@@ -9844,7 +10733,23 @@ Drag it back to **Ready** so the factory can plan it first.
       continue
     fi
 
-    PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
+    # A failed lookup (gh down, pipefail) would end the whole tick under set -e,
+    # and passing it on as null would read as "no PR". Defer the card instead.
+    if ! PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); then
+      log "WARNING: #$ISSUE_NUM: couldn't look up its PR; deferring the card to the next tick"
+      continue
+    fi
+    [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
+
+    # Oversize hold (ADR-0103): a card that hasn't started, whose approved plan
+    # is oversize and which has no oversize-approved label, goes back to Plan
+    # Review before a slot or a worktree is spent on it. The labels are the
+    # board item's plus the issue's own, read just above.
+    if oversize_hold "$ISSUE_NUM" "$ITEM_ID" \
+        "$ITEM_LABELS,$(echo "$ISSUE_RECORD" | jq -r '.labels // [] | join(",")' 2>/dev/null || true)" \
+        "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$COMMENTS_JSON"; then
+      continue
+    fi
 
     # Migration approval (ADR-0078), before Claude runs on a card that came back
     # with an open PR (a revision from In Test, a retry): the label covers the
@@ -9883,6 +10788,10 @@ Drag it back to **Ready** so the factory can plan it first.
         FEEDBACK_CONSUMED_AT=$(echo "$REVISION_COMMENTS" | jq -r 'sort_by(.createdAt) | .[-1].createdAt // ""' 2>/dev/null || echo "")
       fi
     fi
+    # A revision run is a small change to existing code: FACTORY_REVISION_EFFORT
+    # (xhigh), not the ultracode a fresh implementation gets (ADR-0101). Both the
+    # synchronous call and the detached start use it; meta.effort records it.
+    IMPL_EFFORT=$(implement_effort "$IS_REVISION")
 
     # Acquire a slot (reuse the issue's own slot on a retry).
     # Skip to the next card, never stop the sweep: a card further down may
@@ -9992,7 +10901,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # (or, resuming, the short resume note), then the run-time facts: the
     # deadlines from now and what an earlier attempt left in the worktree.
     IMPL_START_EPOCH=$(date +%s)
-    IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH")
+    IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH" "$IMPL_EFFORT")
     IMPL_FACTS_BLOCK=""
     if [[ -n "$IMPL_FACTS" ]]; then
       IMPL_FACTS_BLOCK=$(printf '\n## Run-time facts\n\n```json\n%s\n```\n' "$IMPL_FACTS")
@@ -10015,13 +10924,13 @@ Drag it back to **Ready** so the factory can plan it first.
       implement_lane_start || true
       continue
     fi
-    log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$FACTORY_EFFORT)"
+    log "Invoking claude for #$ISSUE_NUM (--implement, slot $SLOT, cap ${IMPLEMENT_TIMEOUT_SEC}s, effort=$IMPL_EFFORT, model=$FACTORY_MODEL)"
     CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
     CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     EXIT_CODE=0
     ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$IMPLEMENT_TIMEOUT_SEC" CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \
-        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT" --no-chrome --strict-mcp-config \
-        "$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID" ) >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
+        node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$IMPL_EFFORT" --no-chrome --strict-mcp-config \
+        --model "$FACTORY_MODEL" "$IMPL_SESSION_FLAG" "$IMPL_SESSION_ID" ) >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
     implement_handle_result
   done
@@ -10288,6 +11197,20 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
           log "WARNING: couldn't look up PR #$PR_NUM's cancelled jobs (transient?); skipping this tick"
           continue ;;
       esac
+      # Red CI a no-op fix pass already looked at, on the same head with the
+      # same failing checks or some of them (ADR-0102): another Claude pass
+      # would find nothing new. Re-run the checks in bash, or park the card in
+      # Blocked once the re-runs are spent. `|| true`: this loop runs under
+      # `set -e`, and one card's hiccup must not end the tick for the rest.
+      # The migration renumber gate (ADR-0077) runs first, as it does before a
+      # fix pass: main may have merged a newer migration since the noop pass,
+      # and a re-run can't fix that.
+      if ci_noop_repeat "$ISSUE_NUM" "$PR_VIEW"; then
+        migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$WATCH_HEAD_SHA" "In Review" || true
+        [[ "$MIGRATION_RENUMBER_RESULT" == "renumbered" ]] && continue
+        recover_noop_red_ci "$ISSUE_NUM" "$ITEM_ID" "$PR_NUM" "$WATCH_HEAD_SHA" "$PR_VIEW" || true
+        continue
+      fi
     fi
 
     if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 || "$CONFLICTING" -eq 1 ]]; then
@@ -10419,7 +11342,10 @@ A human should take a look. Reset with \
       # the agent's checks run against the merged lockfile. What git merges on
       # its own is pushed without a Claude run or an attempt; the agent gets
       # the merge only when it stopped on conflicts or left two ADRs sharing a
-      # number. Every way out of the pass below rolls back what didn't land.
+      # number. The ADR index merges with git's union driver (ADR-0105), so two
+      # new index rows no longer stop it; an ADR the merged index lists twice
+      # goes to the agent like a number clash. Every way out of the pass below
+      # rolls back what didn't land.
       MERGE_JSON=""
       MERGE_BEFORE=""
       if [[ "$CONFLICTING" -eq 1 ]]; then
@@ -10434,7 +11360,10 @@ A human should take a look. Reset with \
         rm -f "$MERGE_ERR_FILE"
         MERGE_STATUS=$(echo "$MERGE_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
         MERGE_BEFORE=$(echo "$MERGE_JSON" | jq -r '.before // ""' 2>/dev/null || echo "")
-        ADR_CLASHES=$(echo "$MERGE_JSON" | jq '(.adrCollisions // []) | length' 2>/dev/null || echo "0")
+        # An ADR clash is two ADR files sharing a number, or the ADR index
+        # listing one ADR twice: the union merge (ADR-0105) keeps both sides'
+        # version of a row they both edited.
+        ADR_CLASHES=$(echo "$MERGE_JSON" | jq '((.adrCollisions // []) | length) + ((.adrIndexDuplicates // []) | length)' 2>/dev/null || echo "0")
         [[ "$ADR_CLASHES" =~ ^[0-9]+$ ]] || ADR_CLASHES=0
         log "Issue #$ISSUE_NUM: merged origin/main into PR #$PR_NUM's branch: $MERGE_STATUS (conflicted: $(echo "$MERGE_JSON" | jq -r '(.conflictedFiles // []) | join(", ")'); ADR clashes: $ADR_CLASHES)"
         case "$MERGE_STATUS" in
@@ -10508,12 +11437,12 @@ A human should take a look. Reset with \
 
       CLAUDE_INPUT=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
         "$WATCH_PROMPT_TEXT" "$BUNDLE")
-      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_WATCH_EFFORT)"
+      log "Invoking claude for #$ISSUE_NUM (--watch fix, slot $SLOT, cap ${WATCH_TIMEOUT_SEC}s, effort=$FACTORY_WATCH_EFFORT, model=$FACTORY_MODEL)"
       CLAUDE_OUTPUT_FILE=$(mktemp -t factory-agent-out.XXXXXX)
       CLAUDE_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       EXIT_CODE=0
       ( cd "$WT_PATH" && CLAUDE_CALL_TIMEOUT_SEC="$WATCH_TIMEOUT_SEC" \
-          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_WATCH_EFFORT" --no-chrome --strict-mcp-config ) \
+          node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_WATCH_EFFORT" --no-chrome --strict-mcp-config --model "$FACTORY_MODEL" ) \
           >"$CLAUDE_OUTPUT_FILE" 2>>"$LOG_FILE" || EXIT_CODE=$?
 
       if [[ $EXIT_CODE -ne 0 ]]; then
@@ -10576,9 +11505,13 @@ A human should take a look. Reset with \
           # runner checks never get here (re-run above), so what's left is a red
           # the agent can't fix: spend an attempt so it ends in Blocked, not an
           # endless loop (--release hands red Approved cards back here — ADR-0041).
+          # Also record the head and the red checks (ciNoop): the next tick that
+          # sees the same re-runs them in bash instead of another Claude pass,
+          # and parks the card in Blocked once the re-runs are spent (ADR-0102).
           if [[ "$FAILING" -gt 0 ]]; then
             log "Issue #$ISSUE_NUM: no-op fix pass on $FAILING failing required check(s); spending one attempt"
             node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            record_ci_noop "$ISSUE_NUM" "$PR_VIEW"
           fi
           ;;
         blocked)
@@ -10609,7 +11542,14 @@ A human should take a look. Reset with \
     # Required CI green. The changed files decide what "testable" even means
     # here, so fetch them once and derive the platforms.
     if ! INTEST_DIFF_FILES=$(gh pr diff "$PR_NUM" --repo JakubAnderwald/drafto --name-only 2>>"$LOG_FILE"); then
-      log "WARNING: gh pr diff #$PR_NUM failed (transient?); skipping this tick"; continue
+      # --name-only still fetches the whole diff, so a diff GitHub finds too
+      # large (HTTP 406: over 300 files or 20,000 lines) fails here on every
+      # tick and the card never reaches its code review. The files endpoint has
+      # no such limit; only when it fails too is this a transient skip.
+      if ! INTEST_DIFF_FILES=$(pr_file_stats "$PR_NUM" | cut -f2) || [[ -z "$INTEST_DIFF_FILES" ]]; then
+        log "WARNING: gh pr diff #$PR_NUM failed (transient?); skipping this tick"; continue
+      fi
+      log "Issue #$ISSUE_NUM: gh pr diff refused PR #$PR_NUM's diff (too large?); took its changed files from the files API"
     fi
     INTEST_PLATFORMS=$(printf '%s\n' "$INTEST_DIFF_FILES" | node "$SCRIPT_DIR/lib/dispatch-release.mjs" derive-platforms --diff-file - 2>>"$LOG_FILE" || echo '{}')
     WEB_TOUCHED=$(echo "$INTEST_PLATFORMS" | jq -r '.web // false' 2>/dev/null || echo "false")
@@ -11409,7 +12349,9 @@ comes back to In Test for your approval once CI is green again.
       fi
       # Same hand-back as an unresolved review thread (below): --watch is the
       # only mode that runs the fix loop and it never looks at Approved cards.
+      # The comment promises the fix loop, so forget an earlier no-op record.
       transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
+      clear_ci_noop "$ISSUE_NUM"
       continue
     fi
     if ! ci_required_green "$PR_VIEW"; then

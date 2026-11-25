@@ -412,6 +412,7 @@ describe("build_watch_bundle carries the merge result", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [],
       nextFreeAdr: "0062",
+      adrIndexDuplicates: [],
       migrationErrors: [
         { reason: "stale", file: "20261101000001_q.sql", suggested: "20261113000001" },
       ],
@@ -577,10 +578,33 @@ done`,
     });
   });
 
-  it("counts a migration-order error left by the agent as unresolved", () => {
+  it("counts a migration-order error or an index duplicate left by the agent as unresolved", () => {
     assert.match(
       script,
-      /CONFLICT_PASS_WHY="unresolved: \$\(echo "\$check" \| jq -c '\{[^}]*adrCollisions, migrationErrors\}'\)"/,
+      /CONFLICT_PASS_WHY="unresolved: \$\(echo "\$check" \| jq -c '\{[^}]*adrCollisions, adrIndexDuplicates, migrationErrors\}'\)"/,
+    );
+  });
+
+  // ADR-0103: the union merge keeps both sides' version of an index row they
+  // both edited. That merge is clean for git, so it would be pushed as it
+  // stands; it goes to the agent like an ADR file clash instead.
+  it("counts an ADR the merged index lists twice as an ADR clash", () => {
+    const count = (json) =>
+      run(
+        [],
+        `MERGE_JSON='${JSON.stringify(json)}'
+${watchBlock.match(/^\s*ADR_CLASHES=\$\(echo "\$MERGE_JSON".*$/m)[0]}
+echo "CLASHES=$ADR_CLASHES"`,
+      ).match(/CLASHES=(\d+)/)[1];
+    assert.equal(count({ adrCollisions: [], adrIndexDuplicates: [] }), "0");
+    assert.equal(count({}), "0");
+    assert.equal(count({ adrIndexDuplicates: [{ number: "0099", rows: 2 }] }), "1");
+    assert.equal(
+      count({
+        adrCollisions: [{ number: "0099", files: ["0099-a.md", "0099-b.md"] }],
+        adrIndexDuplicates: [{ number: "0099", rows: 2 }],
+      }),
+      "2",
     );
   });
 

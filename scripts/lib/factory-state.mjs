@@ -236,6 +236,17 @@ function emptyIssue() {
     // as "<head sha>:<count>". Head-SHA keyed like the rest: a new push re-arms
     // the FACTORY_CI_RERUN_MAX budget. See rerun_infra_failures.
     ciRerun: null,
+    // Red CI a --watch fix pass ended `noop` on (ADR-0102), as "<head sha>:<the
+    // failing required check names, sorted, newline-joined>". Seeing that
+    // again, --watch re-runs the checks in bash (ciRerun budget) instead of
+    // another Claude pass, then parks the card in Blocked. A new push re-arms
+    // it; so does clearing the field. See recover_noop_red_ci.
+    ciNoop: null,
+    // /split (ADR-0104): the sub-cards filed so far for one split, as
+    // "<plan comment id>:<total>:<n1>,<n2>…", in order. A split that stopped
+    // part-way resumes after the last one, so a retry files no duplicate; a
+    // new plan comment starts a fresh record.
+    splitChildren: null,
     // In Test browser run (Claude in Chrome on the Vercel preview). Head-SHA
     // keyed again: browserRunSha is the head the report comment was posted
     // for, so each commit gets one report; browserRunAttempts is
@@ -774,6 +785,12 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // Cancelled-check re-run budget. A rejected write leaves the count at zero,
   // so the factory would re-run CI on every tick and never tell the operator.
   "ciRerun",
+  // No-op-on-red record (ADR-0102). A rejected write sends every red tick back
+  // to a Claude fix pass, as before it existed.
+  "ciNoop",
+  // /split's record of the sub-cards it filed (ADR-0104). A rejected write
+  // only costs a look-up: the next run finds a filed sub-card by its marker.
+  "splitChildren",
   // In Test browser run keys. A rejected browserRunSha re-runs the browser
   // (and re-posts its report) every tick; a rejected browserRunAttempts lets
   // a run that keeps failing retry forever.

@@ -235,7 +235,8 @@ an unverified guess as settled fact.>
 ### Size
 
 <Your estimate of the PR this plan produces: added lines as a range (count
-every line the diff will add: code, tests, docs, migrations), the number of
+every line the diff will add: code, tests and their fixtures, docs and ADRs,
+new helpers, migrations, and edits to prompts and the runbook), the number of
 files, the platforms, and a class: `S` (under 200 lines), `M` (200–699), `L`
 (700–1,499) or `XL` (1,500 and up). It follows **Confidence**, and
 **Browser probe** when the plan has one.>
@@ -248,9 +249,11 @@ Class **L**, ~900–1,300 added lines across ~14 files; web, mobile, desktop.
 each ship on their own, in merge order. For each: a title (`feat: …`), one
 line of what, its acceptance criteria and its platforms. Then one line,
 **If approved as-is:**, saying which slice this card keeps when the operator
-approves the plan unchanged (normally all of them, in one PR). The operator
-files any sub-issues by hand; you never file issues, and neither does the
-factory.>
+approves the plan unchanged (normally all of them, in one PR). You never file
+issues. The operator either files the sub-cards by hand or comments `/split`,
+and then the factory files one sub-card per part from this section (ADR-0104).
+So give each part a concrete title, and enough of what it does and its
+acceptance criteria that it can be written up as a full issue on its own.>
 
 1. `feat: …` — <what>. Acceptance: <criteria>. Platforms: web.
 2. `feat: …` — <what>. Acceptance: <criteria>. Platforms: web, mobile, desktop.
@@ -331,11 +334,21 @@ Constraints:
   range (`1100`, not `1,100` or `900-1300`). Bash reads it to label an
   oversize card `factory-oversize`, so re-emit it, re-estimated, on every
   replan, as you do the ack markers. Write exactly one.
+- Estimates run low: past factory PRs added 1.1–2.4× the top of their plan's
+  range, mostly in tests, fixtures, docs and ADRs, helpers, and prompt and
+  runbook edits. Count those, and put `<estLines>` near the top of your range,
+  not its middle.
+- An `XL` card is held. When the estimate is at or above the factory's
+  oversize threshold (1,500 lines by default), an approved card goes back to
+  Plan Review instead of being implemented, until it is split or the operator
+  adds the `oversize-approved` label (ADR-0103). Never lower `<estLines>` to
+  stay under the threshold: the hold exists for exactly those cards.
 - A plan of class `L` or `XL` also has a **Proposed split** section. It is
   advice only: never file an issue for a part (`gh issue create` stays
-  refused), and if a comment asks you to split the card, reply that the
-  operator files the sub-issues by hand from the **Proposed split**. Size the
-  work honestly; don't shrink an estimate to avoid one.
+  refused), and if a comment asks you to split the card, reply that a comment
+  of just `/split` has the factory file the sub-cards from the **Proposed
+  split**, or that the operator can file them by hand. Size the work honestly;
+  don't shrink an estimate to avoid one.
 - Do NOT promise behaviour the spec doesn't list. If the spec's "Acceptance
   criteria" doesn't mention a thing, your plan shouldn't add it. Exception: the
   privacy-page update required by the Privacy check (Decision flow step 3) is

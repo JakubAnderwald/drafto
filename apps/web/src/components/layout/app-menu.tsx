@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { flushPendingSaves } from "@/lib/pending-saves";
 import { IconButton } from "@/components/ui/icon-button";
 import {
   DropdownMenu,
@@ -49,6 +50,10 @@ export function AppMenu({
   const router = useRouter();
 
   const handleLogout = async () => {
+    // Save edits still waiting on the autosave debounce while the session is valid:
+    // signOut() deletes the session cookie before the redirect below, so a flush on
+    // page hide would be refused with a 401.
+    await flushPendingSaves();
     const supabase = createClient();
     await supabase.auth.signOut();
     window.location.href = "/login";

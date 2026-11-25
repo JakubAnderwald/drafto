@@ -358,6 +358,29 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["9"].ciRerun, null);
   });
 
+  it("tracks ciNoop (red CI a no-op fix pass left, ADR-0102) and clears it", () => {
+    // The key carries the head SHA and check names with spaces, `&` and commas
+    // between them; the operator's re-arm is `factory:set-issue-field <n> ciNoop ""`.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 899).ciNoop, null);
+    const key = "5a5201f119ea5c7020b17bc5f098ceed4841c80f:E2E Tests,Unit & Integration Tests";
+    setIssueField(s, 899, "ciNoop", key);
+    assert.equal(s.issues["899"].ciNoop, key);
+    setIssueField(s, 899, "ciNoop", "");
+    assert.equal(s.issues["899"].ciNoop, null);
+  });
+
+  it("tracks splitChildren (/split's filed sub-cards, ADR-0104) and clears it", () => {
+    // split_file_children records each sub-card as it files it, so a split that
+    // stopped part-way resumes without filing a duplicate.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 9).splitChildren, null);
+    setIssueField(s, 9, "splitChildren", "3456789012:3:1001,1002");
+    assert.equal(s.issues["9"].splitChildren, "3456789012:3:1001,1002");
+    setIssueField(s, 9, "splitChildren", "");
+    assert.equal(s.issues["9"].splitChildren, null);
+  });
+
   it("tracks the migration renumber gate's fields (ADR-0077)", () => {
     // The gate won't renumber unless it can record the count, and carry-over
     // reads the rest; a rejected write must not fail silently.

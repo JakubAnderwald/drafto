@@ -211,8 +211,34 @@ describe("bundle wiring", () => {
     assert.equal(bundle.comments, undefined);
   });
 
-  it("tells the reviewer when the diff was truncated", () => {
-    // Otherwise it reviews the first 4000 lines and calls the PR clean.
+  it("sends a diff too large to inline as a file list, and says so", () => {
+    // A truncated 200 KB diff cost the most per review and was fetched again in
+    // full anyway. The reviewer gets the files with their stats instead, and
+    // prDiffTruncated still tells it the bundle holds no complete diff —
+    // otherwise it reviews what it has and calls the PR clean.
+    const big = Array.from({ length: 5000 }, (_, i) => `+line ${i}`).join("\n");
+    const bundle = buildFactoryReviewBundle({
+      issue,
+      approvedPlan: null,
+      prDiff: big,
+      prFileStats: "modified\tscripts/x.sh\t5000\t0",
+      headSha: "abc123",
+      config: {},
+      repo: {},
+      nowIso: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(bundle.reviewDiffMode, "file-list");
+    assert.equal(bundle.prDiffEnveloped, "<pr-diff></pr-diff>");
+    assert.deepEqual(bundle.prFileStats, [
+      { status: "modified", path: "scripts/x.sh", additions: 5000, deletions: 0 },
+    ]);
+    assert.equal(bundle.prDiffTruncated, true);
+    assert.equal(bundle.prDiffOmittedLines, 5000);
+  });
+
+  it("keeps a truncated diff inline when there is no file listing to send", () => {
+    // The files call failed: the reviewer still gets the first 4000 lines,
+    // flagged as partial, as before file-list mode existed.
     const big = Array.from({ length: 5000 }, (_, i) => `+line ${i}`).join("\n");
     const bundle = buildFactoryReviewBundle({
       issue,
@@ -223,8 +249,11 @@ describe("bundle wiring", () => {
       repo: {},
       nowIso: "2026-01-01T00:00:00Z",
     });
+    assert.equal(bundle.reviewDiffMode, "inline");
     assert.equal(bundle.prDiffTruncated, true);
     assert.ok(bundle.prDiffOmittedLines > 0);
+    assert.match(bundle.prDiffEnveloped, /\+line 3999/);
+    assert.deepEqual(bundle.prFileStats, []);
   });
 
   it("rejects a bundle with no issue number", () => {
