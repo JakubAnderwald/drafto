@@ -28,6 +28,7 @@ import { mint } from "../lib/browser-signin.mjs";
 import { buildFactoryBrowserRunBundle } from "../lib/factory-bundle.mjs";
 import { setupInspect } from "../lib/verify-lane.mjs";
 import { INSPECT_CFG } from "../lib/verify-guard.mjs";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = readFileSync(path.join(HERE, "..", "factory-agent.sh"), "utf8");
@@ -368,7 +369,7 @@ browser_admin_link intest 1 ${SHA} ${PREVIEW} '{"hasAdminSteps":true}'; echo "$B
 FACTORY_BROWSER_ADMIN=1 browser_admin_link plan 1 ${SHA} ${PREVIEW} '{"hasAdminSteps":true}'; echo "$BROWSER_ADMIN_BUNDLE"
 FACTORY_BROWSER_ADMIN=1 browser_admin_link intest 1 ${SHA} ${PREVIEW} '{"hasAdminSteps":false}'; echo "$BROWSER_ADMIN_BUNDLE"
 `;
-    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     assert.equal(r.status, 0, r.stderr);
     assert.deepEqual(r.stdout.trim().split("\n"), [
       '{"hasAdminSteps":true}',
@@ -388,7 +389,7 @@ ${extract("browser_admin_link")}
 FACTORY_BROWSER_ADMIN=1 browser_admin_link verify 1 ${SHA} ${PREVIEW} '{"hasAdminSteps":true}'
 echo "BUNDLE=$BROWSER_ADMIN_BUNDLE OWNER=$BROWSER_ADMIN_LEASE_OWNER"
 `;
-    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     assert.equal(r.status, 0, r.stderr);
     // The log line goes to stdout, but never into the bundle.
     assert.match(r.stdout, /admin steps will be SKIP/);
@@ -411,7 +412,7 @@ FACTORY_BROWSER_ADMIN=1 browser_admin_link verify 7 ${SHA} ${PREVIEW} '{"hasAdmi
 echo "OWNER=$BROWSER_ADMIN_LEASE_OWNER"
 echo "$BROWSER_ADMIN_BUNDLE" | jq -c '{a: .adminAccount, c: .capabilities.admin}'
 `;
-    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /OWNER=browser-admin:verify:7:cccccccccccc/);
     assert.match(r.stdout, /"email":"admin@example.com"/);

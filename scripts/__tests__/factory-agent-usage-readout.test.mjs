@@ -11,6 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const scriptsDir = resolve(HERE, "..");
@@ -135,7 +136,7 @@ echo "rc=$?"
 `;
     const r = spawnSync("/bin/bash", ["-c", snippet], {
       encoding: "utf8",
-      env: { ...process.env, ...env },
+      env: hermeticEnv(env),
     });
     const callLog = existsSync(calls) ? readFileSync(calls, "utf8") : "";
     const last = existsSync(lastFile) ? readFileSync(lastFile, "utf8") : null;
