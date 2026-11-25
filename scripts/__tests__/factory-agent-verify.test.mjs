@@ -1600,6 +1600,23 @@ describe("verify_shell_work (real helper, lane module stubbed)", () => {
     });
   });
 
+  it("hands the lane FACTORY_MODEL, opus[1m] when unset (ADR-0099)", () => {
+    const started = JSON.stringify({ started: true, runId: "7-aaaaaaaaaaaa-x" });
+    for (const [model, want] of [
+      [undefined, "opus[1m]"],
+      ["claude-sonnet-5-5", "claude-sonnet-5-5"],
+    ]) {
+      const over = { LANE_START_STUB: started };
+      if (model !== undefined) over.FACTORY_MODEL = model;
+      withBash(work(), { env: env(over) }, (r) => {
+        const line = r.calls.split("\n").find((l) => l.startsWith("lane start "));
+        assert.ok(line, r.calls);
+        assert.ok(line.includes(` --model ${want} `), line);
+        assert.ok(line.includes(" --effort xhigh "), line);
+      });
+    }
+  });
+
   it("does nothing for a terminal state, a lane switched off or not built, or under --dry-run", () => {
     for (const state of [
       "reported:pass",

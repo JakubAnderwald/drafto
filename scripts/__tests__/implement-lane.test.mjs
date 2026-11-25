@@ -189,6 +189,50 @@ describe("buildImplementArgv / buildImplementEnv", () => {
     );
   });
 
+  it("puts --model right before the session flag when given, nothing when absent (ADR-0099)", () => {
+    assert.deepEqual(
+      buildImplementArgv({ effort: "xhigh", model: "opus[1m]", mode: "fresh", sessionId: SID }),
+      [
+        "--dangerously-skip-permissions",
+        "--effort",
+        "xhigh",
+        "--no-chrome",
+        "--strict-mcp-config",
+        "--model",
+        "opus[1m]",
+        "--session-id",
+        SID,
+      ],
+    );
+    assert.deepEqual(
+      buildImplementArgv({
+        effort: "high",
+        model: "claude-sonnet-5-5",
+        mode: "resume",
+        sessionId: SID,
+      }).slice(-4),
+      ["--model", "claude-sonnet-5-5", "--resume", SID],
+    );
+    for (const model of [undefined, null, ""]) {
+      assert.ok(
+        !buildImplementArgv({ effort: "high", model, mode: "fresh", sessionId: SID }).includes(
+          "--model",
+        ),
+        JSON.stringify(model),
+      );
+    }
+  });
+
+  it("refuses a model the bash side would never pass", () => {
+    for (const model of ["--chrome", "sonnet --chrome", "Sonnet", "gpt-5", "opus[2m]", 7]) {
+      assert.throws(
+        () => buildImplementArgv({ effort: "high", model, mode: "fresh", sessionId: SID }),
+        /invalid model/,
+        JSON.stringify(model),
+      );
+    }
+  });
+
   it("refuses an effort, mode or session id the bash side would never pass", () => {
     assert.throws(() => buildImplementArgv({ effort: "$(id)", mode: "fresh", sessionId: SID }));
     assert.throws(() => buildImplementArgv({ effort: "high", mode: "fork", sessionId: SID }));
@@ -766,6 +810,26 @@ describe("start", () => {
     await assert.rejects(start(env3, fakeDeps()), /invalid effort/);
     fs.writeFileSync(env3.specFile, JSON.stringify({ ...env3.spec, maxRunning: "3" }));
     await assert.rejects(start(env3, fakeDeps()), /maxRunning above 2/);
+    fs.writeFileSync(env3.specFile, JSON.stringify({ ...env3.spec, model: "--chrome" }));
+    await assert.rejects(start(env3, fakeDeps()), /invalid model/);
+  });
+
+  it("carries the spec's model into meta.argv and meta.model (ADR-0099)", async () => {
+    const env = await setup();
+    fs.writeFileSync(
+      env.specFile,
+      JSON.stringify({ ...env.spec, effort: "xhigh", model: "opus[1m]" }),
+    );
+    const out = await start(env, fakeDeps());
+    assert.equal(out.started, true, JSON.stringify(out));
+    const meta = JSON.parse(fs.readFileSync(join(out.runDir, "meta.json"), "utf8"));
+    assert.equal(meta.effort, "xhigh");
+    assert.equal(meta.model, "opus[1m]");
+    assert.deepEqual(
+      meta.argv,
+      buildImplementArgv({ effort: "xhigh", model: "opus[1m]", mode: "fresh", sessionId: SID }),
+    );
+    assert.deepEqual(meta.argv.slice(-4), ["--model", "opus[1m]", "--session-id", SID]);
   });
 });
 

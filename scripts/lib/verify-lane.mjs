@@ -43,8 +43,9 @@
 //   start --issue N --pr P --sha S --platforms '<json>' --state-file F
 //         --repo-root R --run-root D [--prompt-file F] [--account-file F]
 //         [--signin-key-file F] [--signin-lease-file F] [--bypass-file F] [--effort E]
+//         [--model M]
 //         [--install-timeout-sec N] [--min-free-disk-gb N] [--dry-run 0|1] [--now ISO]
-//       → {started: true, runId, runDir, worktree, deadlineAt, attempt, preview, bypass}
+//       → {started: true, runId, runDir, worktree, deadlineAt, attempt, model, preview, bypass}
 //         or {started: false, reason, …}. Refusal reasons: off, factory-paused,
 //         lane-paused, running (this card's run is in flight), busy (another
 //         card's), attempts, no-round, scenario-wait, hold-cap, hold-cap-near, memory, disk,
@@ -99,6 +100,7 @@ import { ghTimeoutMs } from "./gh-timeout.mjs";
 import { freeDiskGb, memoryPressure } from "./host-resources.mjs";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
+import { DEFAULT_MODEL, isValidModel } from "./claude-model.mjs";
 import {
   detectSessionLimit,
   findTranscriptById,
@@ -215,6 +217,7 @@ export function readKnobs(env = process.env, flags = {}) {
   const home = env.HOME || os.homedir();
   const pick = (flag, envKey) => flags[flag] ?? env[envKey];
   const effort = pick("effort", "FACTORY_PLAN_EFFORT");
+  const model = pick("model", "FACTORY_MODEL");
   return {
     timeoutMin: positiveInt(env.FACTORY_VERIFY_SHELL_TIMEOUT_MIN, 30),
     maxAttempts: positiveInt(env.FACTORY_VERIFY_MAX_ATTEMPTS, 2),
@@ -224,6 +227,10 @@ export function readKnobs(env = process.env, flags = {}) {
     minFreeDiskGb: nonNegativeInt(pick("min-free-disk-gb", "FACTORY_MIN_FREE_DISK_GB"), 3),
     limitFallbackMin: positiveInt(env.FACTORY_LIMIT_FALLBACK_MIN, 30),
     effort: EFFORTS.includes(effort) ? effort : "xhigh",
+    // The session runs with --setting-sources "", so without --model it would
+    // take the CLI's built-in default (ADR-0099). Garbage falls back to
+    // factory-agent.sh's default, like FACTORY_MODEL itself.
+    model: isValidModel(model) ? model : DEFAULT_MODEL,
     bypassFile: expandTilde(
       pick("bypass-file", "FACTORY_VERIFY_BYPASS_FILE") ||
         path.join(home, "drafto-secrets", "vercel-bypass.env"),
@@ -343,14 +350,21 @@ export function laneEnv(env, { binDirs = [], ghConfigDir = null, extra = {} } = 
 
 // ── claude flags ────────────────────────────────────────────────────────────
 
-/** The one argument list the lane's claude call ever gets (via run-claude.mjs). */
-export function buildClaudeArgs({ settingsPath, sessionId, effort }) {
+/**
+ * The one argument list the lane's claude call ever gets (via run-claude.mjs).
+ * <model> is optional: a run started before ADR-0099 has none in its meta.json
+ * and gets no --model; set, `--model <model>` comes last, after --effort.
+ */
+export function buildClaudeArgs({ settingsPath, sessionId, effort, model }) {
   if (typeof settingsPath !== "string" || !path.isAbsolute(settingsPath)) {
     throw new Error("buildClaudeArgs: settingsPath must be absolute");
   }
   if (!UUID_RE.test(String(sessionId)))
     throw new Error("buildClaudeArgs: sessionId must be a UUID");
   if (!EFFORTS.includes(effort)) throw new Error(`buildClaudeArgs: invalid effort ${effort}`);
+  if (model !== undefined && model !== null && !isValidModel(model)) {
+    throw new Error(`buildClaudeArgs: invalid model ${model}`);
+  }
   return [
     "-p",
     "--no-chrome",
@@ -369,6 +383,7 @@ export function buildClaudeArgs({ settingsPath, sessionId, effort }) {
     sessionId,
     "--effort",
     effort,
+    ...(model ? ["--model", model] : []),
   ];
 }
 
@@ -400,6 +415,9 @@ export function assertSafeClaudeArgs(args) {
     throw new Error(`claude tools must be exactly ${LANE_TOOL_LIST}`);
   }
   if (!args.includes("--settings")) throw new Error("claude args must load the guard settings");
+  if (args.includes("--model") && !isValidModel(at("--model"))) {
+    throw new Error("claude args must name a valid --model");
+  }
 }
 
 // ── bypass secret ───────────────────────────────────────────────────────────
@@ -1402,6 +1420,7 @@ export async function runStart(opts, deps) {
       deadlineAt,
       sessionId: deps.uuid(),
       effort: knobs.effort,
+      model: knobs.model,
       installTimeoutSec: knobs.installTimeoutSec,
       previewOrigin,
       qaTag,
@@ -1455,6 +1474,7 @@ export async function runStart(opts, deps) {
       worktree,
       deadlineAt,
       attempt: reservation.attempt,
+      model: knobs.model,
       preview: Boolean(previewOrigin),
       bypass: bypassProblem ?? "ok",
     };
@@ -2009,6 +2029,7 @@ export async function runSupervise({ runDir }, { env = process.env } = {}) {
       settingsPath: meta.paths.guardSettings,
       sessionId: meta.sessionId,
       effort: meta.effort,
+      model: meta.model,
     });
     // meta.json is a file on disk by now, not the array start built: the guard
     // on the flags belongs at the one place claude is started.

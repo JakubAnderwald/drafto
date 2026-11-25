@@ -54,7 +54,7 @@ describe("implement resume: wiring in the --implement block", () => {
   it("passes the session flag as plain strings and the 30 s kill grace on the implement call only", () => {
     assert.match(
       IMPLEMENT,
-      /CLAUDE_CALL_KILL_GRACE_SEC="\$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \\\n\s*node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p "\$CLAUDE_INPUT" --dangerously-skip-permissions --effort "\$FACTORY_EFFORT" --no-chrome --strict-mcp-config \\\n\s*"\$IMPL_SESSION_FLAG" "\$IMPL_SESSION_ID" \)/,
+      /CLAUDE_CALL_KILL_GRACE_SEC="\$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \\\n\s*node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p "\$CLAUDE_INPUT" --dangerously-skip-permissions --effort "\$IMPL_EFFORT" --no-chrome --strict-mcp-config \\\n\s*--model "\$FACTORY_MODEL" "\$IMPL_SESSION_FLAG" "\$IMPL_SESSION_ID" \)/,
     );
     assert.equal(script.split("CLAUDE_CALL_KILL_GRACE_SEC=").length - 1, 1);
     // Claude's descendants die with it at the cap (#842 review); other calls

@@ -81,6 +81,7 @@ import { fileURLToPath } from "node:url";
 import { constants as osConstants } from "node:os";
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
+import { isValidModel } from "./claude-model.mjs";
 import { SESSION_ID_RE } from "./session-limit.mjs";
 import { memoryPressure } from "./host-resources.mjs";
 import { descendants, groupRunState, isLiveRow, processTable } from "./supervisor-proc.mjs";
@@ -141,9 +142,14 @@ const RUN_DIR_NAME_RE = /^[1-9][0-9]*-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
 //       CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \
 //       node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" <the flags below> )
 // and implement-lane-parity.test.mjs pins the two to each other.
+// <model> (ADR-0099) is optional: absent or "", no --model, as before it
+// existed; set, `--model <model>` goes right before the session flag.
 
-export function buildImplementArgv({ effort, mode, sessionId }) {
+export function buildImplementArgv({ effort, model, mode, sessionId }) {
   if (!EFFORTS.includes(effort)) throw new Error(`invalid effort: ${effort}`);
+  if (model !== undefined && model !== null && model !== "" && !isValidModel(model)) {
+    throw new Error(`invalid model: ${model}`);
+  }
   if (!Object.hasOwn(SESSION_FLAGS, mode)) throw new Error(`invalid mode: ${mode} (fresh|resume)`);
   if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) {
     throw new Error(`invalid session id: ${sessionId}`);
@@ -154,6 +160,7 @@ export function buildImplementArgv({ effort, mode, sessionId }) {
     effort,
     "--no-chrome",
     "--strict-mcp-config",
+    ...(model ? ["--model", model] : []),
     SESSION_FLAGS[mode],
     sessionId,
   ];
@@ -667,6 +674,7 @@ export function readSpec(fs, file) {
   }
   const argv = buildImplementArgv({
     effort: spec.effort,
+    model: spec.model,
     mode: spec.mode,
     sessionId: spec.sessionId,
   });
@@ -682,6 +690,7 @@ export function readSpec(fs, file) {
     worktree: spec.worktree,
     inputFile: spec.inputFile,
     effort: spec.effort,
+    model: spec.model || null,
     mode: spec.mode,
     sessionId: spec.sessionId,
     argv,
@@ -820,6 +829,7 @@ export async function runStart({ specFile, stateFile, runRoot, repoRoot }, deps)
       killGraceSec: spec.killGraceSec,
       mode: spec.mode,
       effort: spec.effort,
+      model: spec.model,
       sessionId: spec.sessionId,
       node: process.execPath,
       runClaude: RUN_CLAUDE,

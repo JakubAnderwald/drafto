@@ -251,6 +251,12 @@ the reporter tested the In Test preview and is responding to it. In that case:
   already checked out in your worktree with the prior implementation's commits.
   **Make the requested changes on top of what's there** — do not start over,
   do not reset, do not branch.
+- **Do the work yourself, directly.** A revision is a small change to code that
+  already exists, and the factory runs it at plain xhigh effort, not the
+  ultracode a fresh implementation gets. Start no Workflow
+  and no background agent: read the feedback, make the change, run the
+  verification matrix, push. The Workflow steps under **Time budget** don't
+  apply here.
 - Sort each `revisionComments` entry into one of three kinds. The approved plan
   still bounds scope and phase for all of them.
   1. **A change request** — treat it as **authoritative**, layered on the

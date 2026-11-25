@@ -556,10 +556,22 @@ describe("start: a run", () => {
     assert.equal(m.laneFacts.bypass, "ok");
     assert.equal(m.sessionId, SESSION);
     assert.equal(m.effort, "xhigh");
+    // FACTORY_MODEL's default: the start was given no --model (ADR-0099).
+    assert.equal(m.model, "opus[1m]");
     assert.equal(m.bins.claude, "/fake/bin/claude");
     assert.equal(m.previewOrigin, ORIGIN);
     // Unique per run (the run id's HHMMSS), carrying the lane's revocable prefix.
     assert.equal(m.qaTag, `${QA_TAG_PREFIX}${ISSUE}-${SHA.slice(0, 7)}-100000`);
+  });
+
+  it("records the --model it was started with in meta.json and its answer (ADR-0099)", async () => {
+    await writeState(readyCard);
+    const { deps } = makeDeps();
+    const r = await runStart(startOpts({ flags: { model: "claude-sonnet-5-5" } }), deps);
+    assert.equal(r.started, true, JSON.stringify(r));
+    assert.equal(r.model, "claude-sonnet-5-5");
+    const m = JSON.parse(readFileSync(path.join(r.runDir, "meta.json"), "utf8"));
+    assert.equal(m.model, "claude-sonnet-5-5");
   });
 
   it("gives the lane only the factory's scenario for this head, enveloped, and no other comment", async () => {
@@ -709,6 +721,46 @@ describe("the claude call's flags (lock-in)", () => {
     ]) {
       assert.throws(() => assertSafeClaudeArgs(bad), undefined, JSON.stringify(bad));
     }
+  });
+
+  it("ends with --model after --effort when a model is given, and stays safe (ADR-0099)", () => {
+    const withModel = buildClaudeArgs({
+      settingsPath: "/run/guard-settings.json",
+      sessionId: SESSION,
+      effort: "xhigh",
+      model: "opus[1m]",
+    });
+    assert.deepEqual(withModel, [...args, "--model", "opus[1m]"]);
+    assertSafeClaudeArgs(withModel);
+    // A meta.json written before the model existed has none: no flag.
+    for (const model of [undefined, null]) {
+      assert.deepEqual(
+        buildClaudeArgs({
+          settingsPath: "/run/guard-settings.json",
+          sessionId: SESSION,
+          effort: "xhigh",
+          model,
+        }),
+        args,
+      );
+    }
+  });
+
+  it("refuses a model that isn't one safe model name, in the builder and the final check", () => {
+    for (const model of ["--chrome", "sonnet --chrome", "", "Sonnet", "opus[2m]"]) {
+      assert.throws(
+        () => buildClaudeArgs({ settingsPath: "/s", sessionId: SESSION, effort: "xhigh", model }),
+        /invalid model/,
+        JSON.stringify(model),
+      );
+      // --chrome is refused as a flag of its own before the model check.
+      assert.throws(
+        () => assertSafeClaudeArgs([...args, "--model", model]),
+        /valid --model|refusing claude flag/,
+        JSON.stringify(model),
+      );
+    }
+    assert.throws(() => assertSafeClaudeArgs([...args, "--model"]), /valid --model/);
   });
 
   it("refuses a non-UUID session, a relative settings path and an unknown effort", () => {
@@ -1036,6 +1088,20 @@ describe("readKnobs", () => {
       readKnobs({ HOME: "/h" }, { effort: "high", "min-free-disk-gb": "0" }).minFreeDiskGb,
       0,
     );
+  });
+
+  it("reads the model from --model over FACTORY_MODEL, and falls back to opus[1m] (ADR-0099)", () => {
+    assert.equal(readKnobs({ HOME: "/h" }).model, "opus[1m]");
+    assert.equal(readKnobs({ HOME: "/h", FACTORY_MODEL: "sonnet" }).model, "sonnet");
+    assert.equal(
+      readKnobs({ HOME: "/h", FACTORY_MODEL: "sonnet" }, { model: "claude-opus-4-1-20250805" })
+        .model,
+      "claude-opus-4-1-20250805",
+    );
+    for (const bad of ["--chrome", "opus --chrome", "", "Opus"]) {
+      assert.equal(readKnobs({ HOME: "/h" }, { model: bad }).model, "opus[1m]", bad);
+      assert.equal(readKnobs({ HOME: "/h", FACTORY_MODEL: bad }).model, "opus[1m]", bad);
+    }
   });
 });
 

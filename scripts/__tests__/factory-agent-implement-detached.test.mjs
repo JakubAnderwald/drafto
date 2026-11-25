@@ -122,6 +122,9 @@ describe("the loop tail: knob 0 runs the synchronous call, knob 1 only starts", 
       "ISSUE_NUM=7; SLOT=1; IMPL_RESUMED=0; WT_JSON='{}'; PROMPT_TEXT='prompt'; BUNDLE='{}'",
       `RESUME_PROMPT_TEXT=''; IMPL_SESSION_FLAG=--session-id; IMPL_SESSION_ID=${SID}`,
       "IMPLEMENT_TIMEOUT_SEC=2700; FACTORY_EFFORT=ultracode; FACTORY_IMPLEMENT_TERM_GRACE_SEC=30",
+      // Set by the loop before the tail (implement_effort, ADR-0099), and the
+      // model knob block.
+      "IMPL_EFFORT=ultracode; FACTORY_MODEL='opus[1m]'",
       'rec() { printf "%s\\n" "$*" >>"$CALLS"; }',
       'log() { printf "%s\\n" "$*" >>"$LOG_FILE"; }',
       "implement_runtime_facts() { echo '{\"capMinutes\":45}'; }",
@@ -146,15 +149,15 @@ describe("the loop tail: knob 0 runs the synchronous call, knob 1 only starts", 
     assert.deepEqual(
       lines.filter((l) => /^(run-claude|handler|detached)/.test(l)),
       [
-        `run-claude --dangerously-skip-permissions --effort ultracode --no-chrome --strict-mcp-config --session-id ${SID}`,
+        `run-claude --dangerously-skip-permissions --effort ultracode --no-chrome --strict-mcp-config --model opus[1m] --session-id ${SID}`,
         "handler exit=0 out=summary",
-        `run-claude --dangerously-skip-permissions --effort ultracode --no-chrome --strict-mcp-config --session-id ${SID}`,
+        `run-claude --dangerously-skip-permissions --effort ultracode --no-chrome --strict-mcp-config --model opus[1m] --session-id ${SID}`,
         "handler exit=0 out=summary",
       ],
     );
     assert.match(
       log,
-      /Invoking claude for #7 \(--implement, slot 1, cap 2700s, effort=ultracode\)/,
+      /Invoking claude for #7 \(--implement, slot 1, cap 2700s, effort=ultracode, model=opus\[1m\]\)/,
     );
   });
 
@@ -666,7 +669,9 @@ describe("implement_lane_ctx → implement_lane_restore round trip", () => {
 
 describe("implement_lane_start", () => {
   const START_FNS = ["implement_lane_ctx", "implement_lane_start"].map(fnText);
-  function runStart({ answer, resumed = 0 }) {
+  // <effort>/<model>: IMPL_EFFORT and FACTORY_MODEL as the loop and the knob
+  // block set them; null leaves the variable unset (the function's defaults).
+  function runStart({ answer, resumed = 0, effort = "ultracode", model = "opus[1m]" }) {
     const dir = tempDir();
     const calls = join(dir, "calls");
     const snippet = [
@@ -679,6 +684,8 @@ describe("implement_lane_start", () => {
       "BUNDLE='{}'; AFFECTED=web; PARITY_OVERRIDE=; IS_REVISION=0; FEEDBACK_CONSUMED_AT=; REPLY_MARKERS='[]'",
       "FACTORY_EFFORT=ultracode; IMPLEMENT_TIMEOUT_SEC=2700; FACTORY_IMPLEMENT_TERM_GRACE_SEC=30",
       "FACTORY_IMPLEMENT_KILL_GRACE_SEC=300; FACTORY_IMPLEMENT_MAX_RUNNING=1",
+      effort === null ? "unset IMPL_EFFORT" : `IMPL_EFFORT=${effort}`,
+      model === null ? "unset FACTORY_MODEL" : `FACTORY_MODEL='${model}'`,
       `CLAUDE_INPUT=$'the prompt\\n\\n## Context\\n\\n'`,
       'rec() { printf "%s\\n" "$*" >>"$CALLS"; }',
       'log() { printf "%s\\n" "$*" >>"$LOG_FILE"; }',
@@ -688,10 +695,10 @@ describe("implement_lane_start", () => {
       ...START_FNS,
       'rc=0; implement_lane_start || rc=$?; echo "rc=$rc"',
     ].join("\n");
-    const r = spawnSync("bash", ["-c", snippet], {
-      encoding: "utf8",
-      env: { ...process.env, FAKE_ANSWER: answer },
-    });
+    const env = { ...process.env, FAKE_ANSWER: answer };
+    delete env.FACTORY_MODEL;
+    delete env.IMPL_EFFORT;
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env });
     assert.equal(r.status, 0, r.stderr);
     return {
       out: r.stdout.trim(),
@@ -713,6 +720,7 @@ describe("implement_lane_start", () => {
       slot: 1,
       worktree: "/wt/7",
       effort: "ultracode",
+      model: "opus[1m]",
       mode: "fresh",
       sessionId: SID,
       timeoutSec: "2700",
@@ -726,9 +734,31 @@ describe("implement_lane_start", () => {
     assert.equal(r.input, "the prompt\n\n## Context\n\n");
     assert.match(
       r.log,
-      /^Issue #7: started detached implement run R1 \(pid 4242, slot 1, cap 2700s until 2026-11-17T10:45:00Z, effort=ultracode, --session-id /m,
+      /^Issue #7: started detached implement run R1 \(pid 4242, slot 1, cap 2700s until 2026-11-17T10:45:00Z, effort=ultracode, model=opus\[1m\], --session-id /m,
     );
     assert.equal(r.calls, "");
+  });
+
+  it("hands over this run's effort and model: a revision at xhigh, another model (ADR-0099)", () => {
+    const r = runStart({
+      answer: '{"started":true,"runId":"R1","pid":1}',
+      effort: "xhigh",
+      model: "claude-sonnet-5-5",
+    });
+    assert.equal(r.spec.effort, "xhigh");
+    assert.equal(r.spec.model, "claude-sonnet-5-5");
+    assert.match(r.log, /effort=xhigh, model=claude-sonnet-5-5, --session-id /);
+  });
+
+  it("falls back to FACTORY_EFFORT and opus[1m] under set -u when neither is set", () => {
+    const r = runStart({
+      answer: '{"started":true,"runId":"R1","pid":1}',
+      effort: null,
+      model: null,
+    });
+    assert.equal(r.out, "rc=0");
+    assert.equal(r.spec.effort, "ultracode");
+    assert.equal(r.spec.model, "opus[1m]");
   });
 
   it("a resume starts in resume mode", () => {
