@@ -649,7 +649,7 @@ gh() {
 ${extract("preview_url_for_sha")}
 preview_url_for_sha ${SHA}
 `;
-    return spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    return spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
   }
 
   it("returns the per-commit vercel[bot] preview URL", () => {
@@ -1103,7 +1103,7 @@ echo "rc=$rc"
 `;
     const r = spawnSync("/bin/bash", ["-c", snippet], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${swiftc.bin}:${process.env.PATH}` },
+      env: hermeticEnv({ PATH: `${swiftc.bin}:${process.env.PATH}` }),
     });
     const callLog = existsSync(calls) ? readFileSync(calls, "utf8") : "";
     const finalState = JSON.parse(readFileSync(stateFile, "utf8")).issues["501"] ?? {};
@@ -2388,7 +2388,7 @@ ${Object.entries(rcs)
 ${extract("browser_kind_enabled")}
 ${block}
 `;
-    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     const callLog = existsSync(calls) ? readFileSync(calls, "utf8") : "";
     rmSync(dir, { recursive: true, force: true });
     return { r, callLog, runs: callLog.split("\n").filter((l) => l.startsWith("run ")) };

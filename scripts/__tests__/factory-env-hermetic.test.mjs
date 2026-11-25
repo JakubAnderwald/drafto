@@ -18,10 +18,12 @@ import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const scriptsDir = resolve(HERE, "..");
 
-// What the live plist (eu.drafto.factory.plist) exports, plus a non-default
-// value for each other knob these files' harnesses read.
+// Every key the live plist (eu.drafto.factory.plist) exports, plus a
+// non-default value for each other knob these files' harnesses read.
 const FACTORY_KNOBS = {
   FACTORY_PHASE: "C",
+  FACTORY_PLAN_TIMEOUT_SEC: "900",
+  FACTORY_MIN_FREE_DISK_GB: "999",
   FACTORY_BROWSER_UPLOADS: "1",
   FACTORY_BROWSER_JS: "1",
   FACTORY_BROWSER_ADMIN: "1",
@@ -41,6 +43,8 @@ const FACTORY_KNOBS = {
   FACTORY_IMPLEMENT_SOFT_MARGIN_MIN: "22",
   FACTORY_USAGE_READOUT: "0",
   FACTORY_USAGE_SUPABASE_URL: "https://supabase.com/dashboard/org/abcdefghijklmnop/usage",
+  FACTORY_LSOF_BIN: "/nonexistent/lsof",
+  FACTORY_GH_TIMEOUT_SEC: "7",
 };
 
 const SENSITIVE_FILES = [
@@ -49,7 +53,17 @@ const SENSITIVE_FILES = [
   "factory-agent-implement-detached.test.mjs",
   "factory-agent-implement-resume.test.mjs",
   "factory-agent-usage-readout.test.mjs",
+  // The FACTORY_LSOF_BIN leak that started this, and the other converted
+  // harnesses, so a later `...process.env` there goes red too.
+  "factory-agent-intest.test.mjs",
+  "factory-agent-install.test.mjs",
+  "gh-timeout.test.mjs",
+  "factory-support-forward-gate.test.mjs",
 ];
+
+// The nested run must end on its own; a hung case fails this test instead of
+// stalling the whole suite.
+const NESTED_TIMEOUT_MS = 10 * 60 * 1000;
 
 describe("hermeticEnv", () => {
   it("drops every FACTORY_* key and keeps the rest of the caller's env", () => {
@@ -87,9 +101,24 @@ describe("the factory's exported knobs don't change the suite's results", () => 
     delete env.NODE_TEST_CONTEXT;
     const r = spawnSync(
       process.execPath,
-      ["--test", "--test-reporter=spec", ...SENSITIVE_FILES.map((f) => join("__tests__", f))],
-      { cwd: scriptsDir, encoding: "utf8", env, maxBuffer: 64 * 1024 * 1024 },
+      [
+        "--test",
+        // Two files at a time: the outer suite runs these same files alongside,
+        // and timing-sensitive tests elsewhere flake under the extra CPU load.
+        "--test-concurrency=2",
+        "--test-reporter=spec",
+        ...SENSITIVE_FILES.map((f) => join("__tests__", f)),
+      ],
+      {
+        cwd: scriptsDir,
+        encoding: "utf8",
+        env,
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: NESTED_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+      },
     );
+    assert.equal(r.signal, null, `nested run killed (${r.signal}) after ${NESTED_TIMEOUT_MS}ms`);
     const out = `${r.stdout}\n${r.stderr}`;
     const failures = out.slice(Math.max(0, out.indexOf("✖ failing tests:")));
     assert.equal(r.status, 0, failures.slice(-8000));

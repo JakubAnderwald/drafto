@@ -737,7 +737,7 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       "_arms",
       'echo "exit-ok"',
     ].join("\n");
-    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     const read = (f) => {
       try {
         return readFileSync(f, "utf8");
