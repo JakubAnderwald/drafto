@@ -62,6 +62,30 @@ describe("compareNewestFirst", () => {
     expect(sortedIds(rows)).toEqual(["later", "earlier"]);
   });
 
+  it("orders two timestamps within the same millisecond by their microseconds", () => {
+    const earlier = row("earlier", "2026-11-24T10:00:00.123100+00:00");
+    const later = row("later", "2026-11-24T10:00:00.123900+00:00");
+
+    // A notebook appended after the one it shares a millisecond with still sorts above it.
+    expect(sortedIds([earlier, later])).toEqual(["later", "earlier"]);
+    expect(sortedIds([later, earlier])).toEqual(["later", "earlier"]);
+    expect(compareNewestFirst(later, earlier)).toBeLessThan(0);
+  });
+
+  it("compares sub-millisecond digits across offsets and fraction lengths", () => {
+    // 11:00:00.1234567+01:00 is 10:00:00.123456Z (digits past microseconds are dropped).
+    const plusOne = row("plus-one", "2026-11-24T11:00:00.1234567+01:00");
+    const utc = row("utc", "2026-11-24T10:00:00.123457Z");
+
+    expect(sortedIds([plusOne, utc])).toEqual(["utc", "plus-one"]);
+    expect(
+      compareNewestFirst(
+        row("a", "2026-11-24T10:00:00.1234560Z"),
+        row("b", "2026-11-24T10:00:00.123456+00:00"),
+      ),
+    ).toBe(0);
+  });
+
   it("orders a PostgREST microsecond timestamp against a Z ISO string", () => {
     const postgrest = row("postgrest", "2026-11-24T10:00:00.123456+00:00");
     const iso = row("iso", "2026-11-24T10:00:00.5Z");
