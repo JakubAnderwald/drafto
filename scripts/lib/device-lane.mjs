@@ -1583,6 +1583,7 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
         stderrFile: log,
       },
     );
+  await warmUp(ctx, { root, platform, maestro });
   for (const [i, flow] of flows.entries()) {
     const index = i + 1;
     const nn = String(index).padStart(2, "0");
@@ -1604,7 +1605,15 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
       continue;
     }
     ctx.log(`maestro: ${platform} ${flowName(flow)} starting`);
-    const r = await maestro(path.join(root, flow), junit, log);
+    let r = await maestro(path.join(root, flow), junit, log);
+    let retried = false;
+    if (r.code !== 0 && !r.timedOut && isAdbDrop(readText(deps.fs, log))) {
+      // An adb drop is the harness, not the app: one more try, recorded.
+      ctx.log(`maestro: ${platform} ${flowName(flow)} lost the device (adb); retrying once`);
+      rmQuiet(deps.fs, junit);
+      retried = true;
+      r = await maestro(path.join(root, flow), junit, log);
+    }
     const durationS = Math.round((deps.nowMs() - started) / 1000);
     const parsed = filterJunit(readText(deps.fs, junit), { secrets });
     let status;
@@ -1623,6 +1632,7 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
       status = r.code === 0 ? "PASS" : "ERROR";
       if (status === "ERROR") failure = `maestro exited ${r.code} with no JUnit report`;
     }
+    if (retried && failure) failure = `${failure} (after one retry for an adb drop)`;
     for (const line of parsed.lines) ctx.log(`maestro: ${platform} ${line}`);
     results.push({ name: flowName(flow), status, durationS, failure });
     await captureShot(ctx, { platform, deviceId, index, flow });
@@ -1632,6 +1642,50 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
 }
 
 export const SIGN_IN_PRELUDE = `${E2E_DIR}/.device-lane-sign-in.yaml`;
+export const WARMUP_FLOW = `${E2E_DIR}/.device-lane-warmup.yaml`;
+const WARMUP_ATTEMPTS = 2;
+
+/** Maestro's signature for the device dropping off adb mid-command. */
+export function isAdbDrop(logText) {
+  return /device offline|device '[^']*' not found/i.test(logText || "");
+}
+
+/** A launch and a stop of the app: no assertions, no account. */
+export function warmUpYaml() {
+  return [
+    "appId: eu.drafto.mobile",
+    "---",
+    "# Written by the factory's device lane (device-lane.mjs) into its build root.",
+    "# The first Maestro session after a cold boot installs Maestro's driver, and",
+    "# the device can drop off adb while it does: this run takes that hit.",
+    "- launchApp",
+    "- stopApp",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Maestro's first session on a freshly booted device installs its driver, and
+ * adb can drop the device meanwhile ("device offline"), failing whatever flow
+ * runs first. A throwaway launch-and-stop absorbs that. Its result is only
+ * logged: a real launch failure shows up again in the first flow.
+ */
+async function warmUp(ctx, { root, platform, maestro }) {
+  const fs = ctx.deps.fs;
+  const flow = path.join(root, WARMUP_FLOW);
+  fs.writeFileSync(flow, warmUpYaml());
+  for (let attempt = 1; attempt <= WARMUP_ATTEMPTS; attempt++) {
+    const r = await maestro(
+      flow,
+      path.join(ctx.rawDir, `00-warm-up-${attempt}.junit.xml`),
+      path.join(ctx.rawDir, `00-warm-up-${attempt}.log`),
+    );
+    const ok = r.code === 0 && !r.timedOut;
+    ctx.log(`maestro: ${platform} warm-up ${attempt}: ${ok ? "ok" : `exit ${r.code}`}`);
+    if (ok) return true;
+  }
+  return false;
+}
 
 /**
  * The lane's sign-in before a flow that assumes a signed-in app: the repo's

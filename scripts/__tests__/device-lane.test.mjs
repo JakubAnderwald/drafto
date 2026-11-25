@@ -63,6 +63,9 @@ import {
   takePidLock,
   PGIDS_FILE,
   SIGN_IN_PRELUDE,
+  WARMUP_FLOW,
+  isAdbDrop,
+  warmUpYaml,
   ensureDeviceWorktrees,
   installEnv,
   killGroup,
@@ -700,7 +703,8 @@ describe("supervisor", () => {
     h.prView.files = [{ path: "apps/mobile/src/app.tsx" }];
     const { runDir } = await startAndSupervise();
     const maestro = callsOf("maestro");
-    assert.equal(maestro.length, 2);
+    // Per platform: the warm-up, then the smoke flow.
+    assert.equal(maestro.length, 4);
     for (const c of maestro) {
       assert.equal(c.env.MAESTRO_E2E_TEST_PASSWORD, PASSWORD);
       assert.ok(c.args.includes(`E2E_TEST_EMAIL=${EMAIL}`));
@@ -1415,6 +1419,7 @@ describe("review fixes", () => {
         path.relative(deviceRootFor(h.knobs, "ios"), c.args[3]),
       );
       assert.deepEqual(flows, [
+        WARMUP_FLOW,
         "apps/mobile/e2e/ios-all.yaml",
         SIGN_IN_PRELUDE,
         "apps/mobile/e2e/02-create-notebook.yaml",
@@ -1449,6 +1454,50 @@ describe("review fixes", () => {
       assert.match(row.failure, /sign-in before this flow failed/);
       assert.ok(!callsOf("maestro").some((c) => c.args[3].endsWith("02-create-notebook.yaml")));
       assert.equal(output.platforms.ios.verdict, "ERROR");
+    });
+
+    it("warms Maestro up before the first flow, and a failed warm-up only logs", async () => {
+      h.prView.files = [{ path: "apps/mobile/src/app.tsx" }];
+      h.onRun = (cmd, args) =>
+        path.basename(cmd) === "maestro" && args[3].endsWith(WARMUP_FLOW)
+          ? { code: 1, stdout: "", timedOut: false }
+          : null;
+      const { output } = await startAndSupervise({ platforms: "ios" });
+      const flows = callsOf("maestro").map((c) => path.basename(c.args[3]));
+      assert.deepEqual(flows, [
+        path.basename(WARMUP_FLOW),
+        path.basename(WARMUP_FLOW),
+        "ios-all.yaml",
+      ]);
+      assert.equal(output.platforms.ios.flows[0].name, "ios-all.yaml");
+      const yaml = warmUpYaml();
+      assert.match(yaml, /^appId: eu\.drafto\.mobile$/m);
+      assert.match(yaml, /^- launchApp$/m);
+      assert.ok(!/E2E_TEST|clearKeychain|runScript/.test(yaml));
+    });
+
+    it("retries a flow once when the device dropped off adb, and says so if it still fails", async () => {
+      h.prView.files = [{ path: "apps/mobile/src/app.tsx" }];
+      let smokeRuns = 0;
+      h.onRun = (cmd, args, opts) => {
+        if (path.basename(cmd) !== "maestro" || !args[3].endsWith("ios-all.yaml")) return null;
+        smokeRuns += 1;
+        writeFileSync(opts.stdoutFile, "java.io.IOException: device offline\n");
+        return { code: 1, stdout: "", timedOut: false };
+      };
+      const { output } = await startAndSupervise({ platforms: "ios" });
+      assert.equal(smokeRuns, 2);
+      assert.match(output.platforms.ios.flows[0].failure, /after one retry for an adb drop/);
+    });
+
+    it("recognises Maestro's adb-drop signatures only", () => {
+      assert.equal(
+        isAdbDrop("Command failed (host:transport:emulator-5580): device offline"),
+        true,
+      );
+      assert.equal(isAdbDrop("adb: device 'emulator-5580' not found"), true);
+      assert.equal(isAdbDrop('Assertion is false: "Saved" is visible'), false);
+      assert.equal(isAdbDrop(""), false);
     });
   });
 
