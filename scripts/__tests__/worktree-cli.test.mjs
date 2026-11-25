@@ -808,6 +808,138 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
     json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
   });
 
+  // The README as it really is: prose, then the table with its header and
+  // separator, then the rows. Union would keep both wordings of any line both
+  // sides changed, and nothing counts prose, so merge-main uses it only when
+  // the index conflicts on rows alone.
+  describe("an index with prose around the table", () => {
+    const intro = "This directory holds the ADRs.\n";
+    const header = "| #    | Title |\n| ---- | ----- |\n";
+    const outro = "\nAdd a row for each new ADR.\n";
+    // The README with <rows> (the table's rows, one string) and an intro line.
+    const readme = (rows, { lead = intro, tail = outro, head = header } = {}) =>
+      `# ADRs\n\n${lead}\n${head}${rows}${tail}`;
+    let rows;
+
+    // The PR branches from main as it is now, so the merge base holds the
+    // prose too (the worktrees above branch from the seed).
+    function prFromMain(issue, files) {
+      gitIn(repo, ["pull", "-q", "--ff-only", "origin", "main"]);
+      return prWorktree(issue, files);
+    }
+
+    before(() => {
+      rows = mainIndex();
+      advanceMain({ "docs/adr/README.md": readme(rows) });
+    });
+
+    it("still merges rows two sides appended cleanly", () => {
+      const wt = prFromMain(216, {
+        "docs/adr/README.md": readme(`${rows}| [0009](./0009-from-the-pr.md) | pr |\n`),
+      });
+      advanceMain({
+        "docs/adr/README.md": readme(`${rows}| [0008](./0008-from-main.md) | main |\n`),
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "clean");
+      assert.equal(out.adrIndexUnion, true);
+      assert.equal(out.adrIndexReordered, true);
+      assert.equal(
+        gitIn(wt, ["show", "HEAD:docs/adr/README.md"]),
+        readme(
+          `${rows}| [0008](./0008-from-main.md) | main |\n` +
+            "| [0009](./0009-from-the-pr.md) | pr |\n",
+        ),
+      );
+      json(runCli(["push", "--path", wt]));
+      rows = `${rows}| [0008](./0008-from-main.md) | main |\n`;
+    });
+
+    it("lets a prose line both sides rewrote conflict instead of keeping both", () => {
+      const wt = prFromMain(217, {
+        "docs/adr/README.md": readme(`${rows}| [0011](./0011-from-the-pr.md) | pr |\n`, {
+          lead: "This directory holds the PR wording.\n",
+        }),
+      });
+      const mainSha = advanceMain({
+        "docs/adr/README.md": readme(`${rows}| [0010](./0010-from-main.md) | main |\n`, {
+          lead: "This directory holds the main wording.\n",
+        }),
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "conflicts", "never a clean merge bash would push unread");
+      assert.equal(out.adrIndexUnion, false);
+      assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+      assert.deepEqual(out.adrIndexDuplicates, []);
+      assert.equal(out.adrIndexReordered, false);
+      assert.match(readFileSync(join(wt, "docs/adr/README.md"), "utf8"), /^<{7} /m);
+
+      // A pass that commits the file with both wordings and the markers left in
+      // is refused, as for any conflicted file.
+      gitIn(wt, ["add", "docs/adr/README.md"]);
+      gitIn(wt, ["commit", "-q", "--no-edit"]);
+      const check = json(
+        runCli([
+          "merge-check",
+          "--path",
+          wt,
+          "--main-sha",
+          mainSha,
+          "--files-json",
+          JSON.stringify(out.conflictedFiles),
+        ]),
+      );
+      assert.deepEqual(check.filesWithMarkers, ["docs/adr/README.md"]);
+      assert.equal(check.resolved, false);
+      json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+      assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), out.before);
+      rows = `${rows}| [0010](./0010-from-main.md) | main |\n`;
+    });
+
+    it("lets a prose line next to the new rows conflict instead of keeping both", () => {
+      // The rows alone don't clash, but the note right under the table is
+      // next to the PR's new row, so git's hunk spans both, and union would
+      // keep the old wording beside main's new one.
+      const note = "Add a row for each new ADR.\n";
+      advanceMain({ "docs/adr/README.md": readme(rows, { tail: note }) });
+      const wt = prFromMain(218, {
+        "docs/adr/README.md": readme(`${rows}| [0012](./0012-from-the-pr.md) | pr |\n`, {
+          tail: note,
+        }),
+      });
+      advanceMain({
+        "docs/adr/README.md": readme(rows, { tail: "Add one row per ADR, in order.\n" }),
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "conflicts");
+      assert.equal(out.adrIndexUnion, false);
+      assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+      json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+    });
+
+    it("lets a re-padded table conflict instead of repeating its header", () => {
+      // Prettier re-pads every row and the header when a new row is wider, so
+      // union would repeat the whole table, header and separator included.
+      const tail = "Add one row per ADR, in order.\n";
+      const wide = "| #     | Title  |\n| ----- | ------ |\n";
+      const pad = (text) => text.replace(/^\| \[(\d{4})\]/gm, "|  [$1]");
+      const wt = prFromMain(219, {
+        "docs/adr/README.md": readme(pad(`${rows}| [0014](./0014-from-the-pr.md) | pr |\n`), {
+          head: wide,
+          tail,
+        }),
+      });
+      advanceMain({
+        "docs/adr/README.md": readme(`${rows}| [0013](./0013-from-main.md) | main |\n`, { tail }),
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "conflicts");
+      assert.equal(out.adrIndexUnion, false);
+      assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+      json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+    });
+  });
+
   it("merge-check reads a path with a comma in it whole", () => {
     const wt = worktreePathForIssue(repo, 202);
     write(wt, "docs/a,b.md", "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n");

@@ -219,12 +219,18 @@ flow below and do this instead, then emit the directive line (step 7):
 
    Rows of `docs/adr/README.md` don't conflict: bash merges it with git's union
    driver, which keeps every line either side wrote, and puts the rows in number
-   order when it can (ADR-0103). Each entry in
+   order when it can (ADR-0103). It does that only when the two sides clash on
+   index rows alone. When both also changed another line (the intro, a note,
+   or the table header a re-padded table rewrites), the README is in
+   `mergeConflict.conflictedFiles` with ordinary conflict markers: settle the
+   prose like any other file, and the rows as below. Each entry in
    `mergeConflict.adrIndexDuplicates` is an ADR the merged index now lists on
-   `rows` rows, because both sides changed its row: a status change, or a row
-   that widened a column so Prettier re-padded every row. Keep exactly one row
-   per ADR, in number order: main's row as main has it, plus whatever the PR
-   changed in that row (step 1 shows both sides), and the PR's own new row. Then
+   `rows` rows, because both sides changed its row, such as a status change on
+   each side. Keep exactly one row per ADR, in number order: main's row as main
+   has it, plus whatever the PR changed in that row (step 1 shows both sides),
+   and the PR's own new row. When one side re-padded the table, both sides'
+   copies of it can end up in the file: keep one `| # | Title | ...` header and
+   one `| --- |` separator line, above the rows. Then
    run `pnpm exec prettier --write docs/adr/README.md` and check that every ADR
    on main is still listed once.
 

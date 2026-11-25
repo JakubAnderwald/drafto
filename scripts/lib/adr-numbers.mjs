@@ -90,11 +90,36 @@ export function adrIndexNumbers(text) {
     .filter(Boolean);
 }
 
+// Whether every conflicting hunk of a 3-way merge of the index is made of index
+// rows only. <merged> is `git merge-file -p --diff3 --marker-size=<markerSize>`
+// output: each hunk is `<<<…` ours `|||…` base `===…` theirs `>>>…`, and every
+// line of all three sides must be a row. The union driver is safe there: it
+// keeps both sides' rows, and a row both sides edited shows up as an ADR listed
+// twice (adrIndexDuplicates). On any other line, such as the intro, the "when
+// to write an ADR" list, or the table's header and separator that a re-padded
+// table rewrites, union would quietly keep both wordings (ADR-0103).
+export function conflictsOnlyOnIndexRows(merged, markerSize) {
+  const marker = (ch) => new RegExp(`^\\${ch}{${markerSize}}(?: |$)`);
+  const open = marker("<");
+  const middle = [marker("|"), marker("=")];
+  const close = marker(">");
+  let inHunk = false;
+  for (const line of String(merged ?? "").split("\n")) {
+    if (!inHunk) {
+      if (open.test(line)) inHunk = true;
+      continue;
+    }
+    if (close.test(line)) inHunk = false;
+    else if (!middle.some((re) => re.test(line)) && !INDEX_ROW.test(line)) return false;
+  }
+  return !inHunk;
+}
+
 // Numbers the index lists on more than one row: [{ number, rows }], in number
 // order. The factory merges the index with git's union driver (ADR-0103), which
 // keeps every line either side added. Two PRs that both edited one row (a
-// status change, a re-padded table) leave two rows for one ADR, which only a
-// person or the conflict pass can reconcile.
+// status change on each side) leave two rows for one ADR, which only a person
+// or the conflict pass can reconcile.
 export function adrIndexDuplicates(text) {
   const counts = new Map();
   for (const number of adrIndexNumbers(text)) counts.set(number, (counts.get(number) ?? 0) + 1);

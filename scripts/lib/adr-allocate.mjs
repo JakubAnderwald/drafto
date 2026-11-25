@@ -58,6 +58,7 @@ export function nextAdr({ cwd = DEFAULT_ROOT, ownPr = null, remote = "origin", g
     cwd,
     pathRe: ADR_CLAIM_PATH_RE,
     what: "ADR numbers",
+    who: "adr-allocate",
   });
   if (sweep.gaveUp) throw new Error(gaveUpReason(sweep));
   const { claimed, skipped } = sweep;

@@ -5,5 +5,7 @@
 # carries: an old branch has no .gitattributes of its own. The union driver
 # keeps every line both sides added, so two PRs that each appended a row to the
 # ADR index merge cleanly instead of stopping the merge for a Claude run.
-# merge-main then checks the result for an ADR listed twice.
+# merge-main passes it only when a preview merge of the index conflicts on
+# index rows alone: on any other line union would keep both wordings. It then
+# checks the result for an ADR listed twice.
 docs/adr/README.md merge=union

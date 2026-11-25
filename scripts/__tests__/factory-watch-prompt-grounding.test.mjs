@@ -308,6 +308,13 @@ describe("watcher prompt — conflict pass (ADR-0061)", () => {
       /bash merges it with git's union driver, which keeps every line either side wrote/,
     );
     assert.match(flat, /Keep exactly one row per ADR, in number order: main's row as main has it/);
+    // Union only when the two sides clash on rows alone; prose conflicts as usual.
+    assert.match(flat, /It does that only when the two sides clash on index rows alone/);
+    assert.match(
+      flat,
+      /the README is in `mergeConflict\.conflictedFiles` with ordinary conflict markers/,
+    );
+    assert.match(flat, /keep one `\| # \| Title \| \.\.\.` header and one `\| --- \|` separator/);
     assert.match(
       flat,
       /`pnpm exec prettier --write docs\/adr\/README\.md` to re-pad the ADR index/,

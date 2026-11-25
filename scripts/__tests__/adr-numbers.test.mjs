@@ -7,6 +7,7 @@ import {
   adrIndexNumbers,
   adrIndexSorted,
   allocateAdrNumber,
+  conflictsOnlyOnIndexRows,
   newAdrCollisions,
   newAdrIndexDuplicates,
   newestAdrNumber,
@@ -129,5 +130,55 @@ describe("the ADR index", () => {
     assert.equal(sortAdrIndex(head + row("0002") + row("0001") + row("0002", "again")), null);
     assert.equal(sortAdrIndex(head + row("0002") + "\n" + row("0001")), null);
     assert.equal(sortAdrIndex(""), null);
+  });
+
+  // `git merge-file -p --diff3` output: union is safe only when every line of
+  // every conflicting hunk, on all three sides, is an index row (ADR-0103).
+  describe("conflictsOnlyOnIndexRows", () => {
+    const hunk = (ours, base, theirs) =>
+      `<<<<<<< ours\n${ours}||||||| base\n${base}=======\n${theirs}>>>>>>> theirs\n`;
+
+    it("accepts rows both sides appended, or a row both sides edited", () => {
+      assert.equal(conflictsOnlyOnIndexRows(head + row("0001"), 7), true);
+      assert.equal(
+        conflictsOnlyOnIndexRows(head + row("0001") + hunk(row("0003"), "", row("0002")), 7),
+        true,
+      );
+      assert.equal(
+        conflictsOnlyOnIndexRows(
+          head + hunk(row("0001", "pr"), row("0001"), row("0001", "main")) + "\nfooter\n",
+          7,
+        ),
+        true,
+      );
+    });
+
+    it("refuses a hunk with any other line on any side", () => {
+      const intro = (t) => `This directory holds the ${t}.\n`;
+      // Both sides reworded the intro.
+      assert.equal(
+        conflictsOnlyOnIndexRows(hunk(intro("pr"), intro("base"), intro("main")) + head, 7),
+        false,
+      );
+      // A re-padded table: the header and separator are in the hunk.
+      assert.equal(
+        conflictsOnlyOnIndexRows(
+          hunk("| #  | Title |\n| -- | ----- |\n" + row("0002"), "", row("0003")),
+          7,
+        ),
+        false,
+      );
+      // The note under the table, only on the base side.
+      assert.equal(conflictsOnlyOnIndexRows(hunk(row("0002"), "note\n", "new note\n"), 7), false);
+      // A blank line counts too.
+      assert.equal(conflictsOnlyOnIndexRows(hunk(row("0002") + "\n", "", row("0003")), 7), false);
+    });
+
+    it("refuses an unterminated hunk, and reads markers of the size it is given", () => {
+      assert.equal(conflictsOnlyOnIndexRows(`<<<<<<< ours\n${row("0002")}`, 7), false);
+      const big = `${"<".repeat(9)} ours\n${row("0002")}${"=".repeat(9)}\nprose\n${">".repeat(9)} theirs\n`;
+      assert.equal(conflictsOnlyOnIndexRows(big, 9), false);
+      assert.equal(conflictsOnlyOnIndexRows(big.replace("prose", row("0003").trim()), 9), true);
+    });
   });
 });

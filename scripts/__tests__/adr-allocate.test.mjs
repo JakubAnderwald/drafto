@@ -66,9 +66,14 @@ describe("claimedVersions with the ADR path", () => {
       warn: (m) => warnings.push(m),
       pathRe: ADR_CLAIM_PATH_RE,
       what: "ADR numbers",
+      who: "adr-allocate",
     });
     assert.deepEqual(r.skipped, [801]);
-    assert.match(warnings.join("\n"), /couldn't list PR #801's files, so its ADR numbers/);
+    assert.match(
+      warnings.join("\n"),
+      /^adr-allocate: couldn't list PR #801's files, so its ADR numbers/,
+    );
+    assert.doesNotMatch(warnings.join("\n"), /migration/);
   });
 });
 

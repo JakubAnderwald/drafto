@@ -1053,9 +1053,9 @@ const CLAIM_STATUSES = new Set(["added", "renamed"]);
 // sweep; the plan just doesn't avoid that PR's versions. `prs` is the open PRs
 // when the caller already listed them ([{number}]); without it a failing `gh
 // pr list` throws. Once `deadline` (a `now()` time) passes, no more PRs are
-// read: `gaveUp` is true and `checked` of `total` PRs were read. `pathRe` and
-// `what` sweep other files the same way: adr-allocate.mjs passes docs/adr's
-// numbered ADRs (ADR-0103).
+// read: `gaveUp` is true and `checked` of `total` PRs were read. `pathRe`,
+// `what` and `who` (the warning's prefix) sweep other files the same way:
+// adr-allocate.mjs passes docs/adr's numbered ADRs (ADR-0103).
 export function claimedVersions({
   excludePr,
   gh = runGh,
@@ -1065,6 +1065,7 @@ export function claimedVersions({
   now = Date.now,
   pathRe = CLAIM_PATH_RE,
   what = "migration versions",
+  who = "migration-renumber",
 } = {}) {
   const list =
     prs ??
@@ -1099,7 +1100,7 @@ export function claimedVersions({
       }
       skipped.push(number);
       warn(
-        `migration-renumber: couldn't list PR #${number}'s files, so its ${what} ` +
+        `${who}: couldn't list PR #${number}'s files, so its ${what} ` +
           `aren't avoided: ${err.message}`,
       );
       continue;
@@ -1369,9 +1370,9 @@ const SWEEP_GH_BUDGET_MS = 60_000;
 // claimedVersions() under SWEEP_GH_BUDGET_MS: each call gets at most
 // SWEEP_GH_TIMEOUT_MS and what's left of the budget; past it no more PRs are
 // read and the result has gaveUp. An injected `gh` (tests) skips the per-call
-// cap but not the deadline. `pathRe` and `what` pass through to
+// cap but not the deadline. `pathRe`, `what` and `who` pass through to
 // claimedVersions (the ADR sweep, ADR-0103).
-export function sweepClaims({ excludePr, gh, now = Date.now, cwd, pathRe, what } = {}) {
+export function sweepClaims({ excludePr, gh, now = Date.now, cwd, pathRe, what, who } = {}) {
   const deadline = now() + SWEEP_GH_BUDGET_MS;
   const call =
     gh ??
@@ -1387,6 +1388,7 @@ export function sweepClaims({ excludePr, gh, now = Date.now, cwd, pathRe, what }
     now,
     ...(pathRe ? { pathRe } : {}),
     ...(what ? { what } : {}),
+    ...(who ? { who } : {}),
   });
 }
 
