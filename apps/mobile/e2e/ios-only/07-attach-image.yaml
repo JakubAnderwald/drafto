@@ -3,7 +3,8 @@ appId: eu.drafto.mobile
 # iOS: attach an image to a note, then check that it syncs.
 # Guards the 1.4.4 regression where pushing an attachment failed on every sync
 # ("N pending changes" that never cleared) and the toast covered the back button.
-# Assumes user is already logged in (run after 01-login or ios-all).
+# Signs in when the app shows Log In (helpers/sign-in-if-needed.yaml): pass
+# -e E2E_TEST_EMAIL / E2E_TEST_PASSWORD.
 # iPhone simulator only: on iPad the system photo picker runs out of process and
 # Maestro can't see its cells (checked on the iOS 27 iPad Pro 11").
 # Grant photo access first, or the system prompt (which Maestro can't always
@@ -15,11 +16,7 @@ appId: eu.drafto.mobile
 - addMedia:
     - "../fixtures/attachment-photo.jpg"
 
-- launchApp
-- extendedWaitUntil:
-    visible:
-      id: "search-button"
-    timeout: 30000
+- runFlow: ../helpers/sign-in-if-needed.yaml
 
 # A notebook with one note to attach to
 - tapOn:

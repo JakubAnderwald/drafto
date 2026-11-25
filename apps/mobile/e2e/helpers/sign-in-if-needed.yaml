@@ -1,0 +1,90 @@
+appId: eu.drafto.mobile
+---
+# Subflow: launch the app and end on the Notebooks tab, signed in as the shared
+# E2E user. A device that is already signed in keeps its session; one on Log In
+# signs in. Used through runFlow by the android-only/ and ios-only/ flows that
+# need a session, so a folder run passes in any order (Maestro runs a folder's
+# flows in no fixed order, and some of them, such as
+# android-only/07-auth-callback-link.yaml, leave the device signed out).
+#
+# For the sign-in: -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=..., or
+# MAESTRO_E2E_TEST_PASSWORD in the environment instead of the password argument
+# (Maestro passes MAESTRO_* shell variables to flows, and `ps` doesn't show
+# them). They are read only on Log In, so a signed-in device needs neither.
+#
+# It signs in only the shared E2E user, never the dedicated sign-out account:
+# that one goes through helpers/sign-in-clean.yaml, which starts clean.
+
+- launchApp
+
+# Either screen, once the JavaScript has loaded and the session is restored.
+- extendedWaitUntil:
+    visible: "Log In|Notebooks"
+    timeout: 60000
+
+- runFlow:
+    when:
+      visible: "Log In"
+    commands:
+      # Non-empty too: `-e E2E_TEST_EMAIL="$E2E_TEST_EMAIL"` from a shell that
+      # never loaded the account passes an empty string.
+      - assertTrue:
+          condition: ${typeof E2E_TEST_EMAIL !== 'undefined' && E2E_TEST_EMAIL !== '' && ((typeof E2E_TEST_PASSWORD !== 'undefined' && E2E_TEST_PASSWORD !== '') || (typeof MAESTRO_E2E_TEST_PASSWORD !== 'undefined' && MAESTRO_E2E_TEST_PASSWORD !== ''))}
+          label: "Signed out: pass -e E2E_TEST_EMAIL=... -e E2E_TEST_PASSWORD=... (or MAESTRO_E2E_TEST_PASSWORD in the environment)"
+      # Sign in, clear iOS's save-password sheet, reach Notebooks: retried as a
+      # whole, as in helpers/sign-in-clean.yaml. The sheet is drawn out of
+      # process and hides the app from Maestro, so a fixed wait and a restart
+      # clear it; a restart that beats a slow sign-in lands back on Log In, and
+      # the next attempt signs in again. Bounded: 3 attempts.
+      # A failed attempt can leave its text in the fields (Android doesn't
+      # restart after signing in), and typing adds to it. eraseText can't empty
+      # them: it deletes backwards from wherever the tap left the cursor. So an
+      # attempt that finds Log In restarts the app first, and the form comes
+      # back empty. On the first attempt that repeats the launch above, which
+      # costs one cold start on a signed-out device only. A restart that lands
+      # on Notebooks (a slow sign-in finished after all) skips the sign-in.
+      - retry:
+          maxRetries: 2
+          commands:
+            - runFlow:
+                when:
+                  visible: "Log In"
+                commands:
+                  - stopApp
+                  - launchApp
+                  - extendedWaitUntil:
+                      visible: "Log In|Notebooks"
+                      timeout: 60000
+            - runFlow:
+                when:
+                  visible: "Log In"
+                commands:
+                  - tapOn:
+                      id: "email-input"
+                  - inputText: ${E2E_TEST_EMAIL}
+                  - tapOn: "Sign in to your Drafto account"
+                  - tapOn:
+                      id: "password-input"
+                  - inputText: "${typeof E2E_TEST_PASSWORD !== 'undefined' && E2E_TEST_PASSWORD !== '' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}"
+                  - tapOn: "Sign in to your Drafto account"
+                  - tapOn:
+                      id: "login-button"
+            - runFlow:
+                when:
+                  platform: iOS
+                commands:
+                  - extendedWaitUntil:
+                      visible: "never-present-just-wait"
+                      timeout: 8000
+                      optional: true
+                  - stopApp
+                  - launchApp
+            - extendedWaitUntil:
+                visible: "Notebooks"
+                timeout: 30000
+
+- extendedWaitUntil:
+    visible:
+      id: "search-button"
+    timeout: 30000
+- waitForAnimationToEnd
