@@ -1,4 +1,4 @@
-# 0102 — `/split`: the Factory Files a Plan's Proposed Split
+# 0104 — `/split`: the Factory Files a Plan's Proposed Split
 
 - **Status**: Accepted
 - **Date**: 2026-11-25

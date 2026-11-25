@@ -10,7 +10,7 @@ import { parsePlanSize } from "../lib/factory-bundle.mjs";
 // nothing at plan time flagged them, so every plan carries a size estimate and
 // a marker bash reads to label the card. A large plan proposes a split, as
 // advice: the planner never files issues. The operator files the sub-cards by
-// hand, or comments `/split` and the factory files them (ADR-0102).
+// hand, or comments `/split` and the factory files them (ADR-0104).
 
 const promptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "factory-plan-prompt.md");
 const prompt = readFileSync(promptPath, "utf8");
@@ -80,7 +80,7 @@ describe("planner prompt — Proposed split is advice only", () => {
   it("tells the planner it never files issues, and that /split has the factory file them", () => {
     assert.match(
       flat,
-      /You never file issues\. The operator either files the sub-cards by hand or comments `\/split`, and then the factory files one sub-card per part from this section \(ADR-0102\)/,
+      /You never file issues\. The operator either files the sub-cards by hand or comments `\/split`, and then the factory files one sub-card per part from this section \(ADR-0104\)/,
     );
     assert.match(flat, /give each part a concrete title/);
     assert.match(

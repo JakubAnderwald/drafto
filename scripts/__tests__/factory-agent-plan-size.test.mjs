@@ -218,7 +218,7 @@ describe("factory-agent.sh plan size: the threshold knob", () => {
     }
   });
 
-  it("splits only through /split (ADR-0102), never through the planner's run", () => {
+  it("splits only through /split (ADR-0104), never through the planner's run", () => {
     // ADR-0083 dropped a split the planner wrote out (FACTORY_PLAN_SPLIT, a
     // split dir, action=split). /split is bash's own step instead: a
     // separate, tool-less splitter run, and bash files what it checked.

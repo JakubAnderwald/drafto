@@ -9,7 +9,7 @@
 #                replans Plan Review cards on new operator comments, and keeps
 #                the factory-oversize label in step with each plan's size
 #                estimate (ADR-0083). An operator's `/split` comment files the
-#                plan's Proposed split as sub-cards instead (ADR-0102).
+#                plan's Proposed split as sub-cards instead (ADR-0104).
 #
 #   --implement  Pick up Status=In Progress items. Phase A: post a stub
 #                "phase=A; implementation skipped" comment per card and
@@ -677,7 +677,7 @@ if ! [[ "$FACTORY_PLAN_OVERSIZE_LINES" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then
 fi
 OVERSIZE_LABEL="factory-oversize"
 
-# ── /split: the factory files a plan's Proposed split (ADR-0102) ───────────
+# ── /split: the factory files a plan's Proposed split (ADR-0104) ───────────
 # The operator comments `/split`, alone, on a Plan Review card. The replan
 # sweep then files the plan's Proposed split as sub-cards instead of
 # replanning (split_card): a splitter run with no tools writes each part's
@@ -1895,7 +1895,7 @@ plan_size_label() {
   fi
 }
 
-# ── /split (ADR-0102) ───────────────────────────────────────────────────────
+# ── /split (ADR-0104) ───────────────────────────────────────────────────────
 # The operator comments `/split` on a Plan Review card; the replan sweep hands
 # the card to split_card instead of replanning it. The splitter (a Claude run
 # with no tools, scripts/factory-split-prompt.md) only prints text. Bash does
@@ -9170,7 +9170,7 @@ and drag the card back to **Ready** to retry.
     # since, is caught up without waiting for another replan.
     plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" "$PLAN_BODY"
 
-    # /split (ADR-0102), before any replan: the operator's `/split` comment
+    # /split (ADR-0104), before any replan: the operator's `/split` comment
     # files the plan's Proposed split as sub-cards, and the card leaves Plan
     # Review for Backlog. A card already split (its label and its split
     # comment) that is back in Plan Review only goes back to Backlog.

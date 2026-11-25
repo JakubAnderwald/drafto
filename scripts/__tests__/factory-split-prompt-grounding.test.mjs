@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseSpec } from "../lib/factory-bundle.mjs";
 import { SPEC_HEADINGS, SPLIT_BEGIN, SPLIT_END } from "../lib/factory-split.mjs";
 
-// The /split splitter (ADR-0102) writes issue bodies that parseSpec and the
+// The /split splitter (ADR-0104) writes issue bodies that parseSpec and the
 // spec gate read as if the issue form had rendered them. Its prompt, the
 // validator and the form must agree on the headings and the platform boxes,
 // or every split would be rejected (or, worse, mis-parsed).

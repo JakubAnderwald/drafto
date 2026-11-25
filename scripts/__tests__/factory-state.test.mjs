@@ -358,7 +358,7 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["9"].ciRerun, null);
   });
 
-  it("tracks splitChildren (/split's filed sub-cards, ADR-0102) and clears it", () => {
+  it("tracks splitChildren (/split's filed sub-cards, ADR-0104) and clears it", () => {
     // split_file_children records each sub-card as it files it, so a split that
     // stopped part-way resumes without filing a duplicate.
     const s = emptyFactoryState();

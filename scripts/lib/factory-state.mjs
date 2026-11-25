@@ -236,7 +236,7 @@ function emptyIssue() {
     // as "<head sha>:<count>". Head-SHA keyed like the rest: a new push re-arms
     // the FACTORY_CI_RERUN_MAX budget. See rerun_infra_failures.
     ciRerun: null,
-    // /split (ADR-0102): the sub-cards filed so far for one split, as
+    // /split (ADR-0104): the sub-cards filed so far for one split, as
     // "<plan comment id>:<total>:<n1>,<n2>…", in order. A split that stopped
     // part-way resumes after the last one, so a retry files no duplicate; a
     // new plan comment starts a fresh record.
@@ -779,7 +779,7 @@ const MUTABLE_ISSUE_FIELDS = new Set([
   // Cancelled-check re-run budget. A rejected write leaves the count at zero,
   // so the factory would re-run CI on every tick and never tell the operator.
   "ciRerun",
-  // /split's record of the sub-cards it filed (ADR-0102). A rejected write
+  // /split's record of the sub-cards it filed (ADR-0104). A rejected write
   // only costs a look-up: the next run finds a filed sub-card by its marker.
   "splitChildren",
   // In Test browser run keys. A rejected browserRunSha re-runs the browser

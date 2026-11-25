@@ -76,7 +76,7 @@ describe("factory-agent Claude effort", () => {
   });
 
   it("runs the /split splitter at the read-only (plan) effort, with no tools, on a pinned model", () => {
-    // ADR-0102: the splitter only prints text; bash files what it checked.
+    // ADR-0104: the splitter only prints text; bash files what it checked.
     const block = script.match(/Invoking claude for #\$issue_num \(split[\s\S]{0,800}/);
     assert.ok(block, "split claude invocation not found");
     assert.match(block[0], /effort=\$FACTORY_PLAN_EFFORT, model=\$\{FACTORY_MODEL:-opus\[1m\]\}/);

@@ -1496,7 +1496,7 @@ Every plan has a **Size** section and ends with `<!-- drafto-factory-plan-size:<
 
 ## `/split`: filing a plan's Proposed split
 
-An OWNER comment whose whole body is `/split` makes the `--plan` replan sweep file the plan's **Proposed split** as sub-cards instead of replanning ([ADR-0102](../adr/0102-factory-split-command.md); what you see on the issue is in [dark-factory.md](../features/dark-factory.md#splitting-a-card-with-split)). The sweep checks for it right after `plan_size_label`, before the replan logic.
+An OWNER comment whose whole body is `/split` makes the `--plan` replan sweep file the plan's **Proposed split** as sub-cards instead of replanning ([ADR-0104](../adr/0104-factory-split-command.md); what you see on the issue is in [dark-factory.md](../features/dark-factory.md#splitting-a-card-with-split)). The sweep checks for it right after `plan_size_label`, before the replan logic.
 
 - **Finding the directive.** `split_trigger_ids` takes the directives newer than the plan that pass `owner_comments_since` (OWNER plus the support-forward gate) and that no OWNER comment acks with `<!-- drafto-factory-split-ack:<id> -->`. `split_drop_directives` keeps every directive out of the replan's trigger list.
 - **The splitter run.** `split_write_cards` runs `scripts/factory-split-prompt.md` through `run-claude.mjs` with `--tools ""`, at `FACTORY_PLAN_EFFORT` on `${FACTORY_MODEL:-opus[1m]}`, capped like a plan run. The log line is `Invoking claude for #<n> (split, …)`.

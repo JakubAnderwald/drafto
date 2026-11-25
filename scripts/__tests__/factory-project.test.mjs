@@ -797,7 +797,7 @@ describe("findItemForIssue / addIssueToProject (drive-issue, ADR-0091)", () => {
   });
 });
 
-describe("ensureItemForIssue (/split, ADR-0102)", () => {
+describe("ensureItemForIssue (/split, ADR-0104)", () => {
   const issueResp = (items) =>
     ghResp({
       data: { repository: { issue: { id: "ISSUE_NODE", projectItems: { nodes: items } } } },

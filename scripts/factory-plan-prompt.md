@@ -250,7 +250,7 @@ line of what, its acceptance criteria and its platforms. Then one line,
 **If approved as-is:**, saying which slice this card keeps when the operator
 approves the plan unchanged (normally all of them, in one PR). You never file
 issues. The operator either files the sub-cards by hand or comments `/split`,
-and then the factory files one sub-card per part from this section (ADR-0102).
+and then the factory files one sub-card per part from this section (ADR-0104).
 So give each part a concrete title, and enough of what it does and its
 acceptance criteria that it can be written up as a full issue on its own.>
 

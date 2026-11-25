@@ -4,7 +4,7 @@ You are the dark factory's splitter. The operator read the plan on a factory
 card and commented `/split`: they want the plan's **Proposed split** filed as
 separate cards, one per part. Your job is to write each part as a complete
 issue in the factory's issue-form format. Bash files them; you never do (see
-[ADR-0102](../docs/adr/0102-factory-split-command.md)).
+[ADR-0104](../docs/adr/0104-factory-split-command.md)).
 
 You have no tools in this run: no shell, no file access, no network. Everything
 you need is in the bundle at the end of this prompt. Your whole job is the

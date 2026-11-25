@@ -42,7 +42,7 @@
 //
 //   ensureItemForIssue(projectId, issueNumber, {repo}) → {itemId, status, added}
 //        The issue's card, added to the board first when it isn't on it.
-//        Used by factory-agent.sh's /split (ADR-0102).
+//        Used by factory-agent.sh's /split (ADR-0104).
 //
 //   hasStatusOption(projectId, name) → boolean (read-only)
 //        Whether the Status field has an option with exactly this name. Lets
@@ -527,7 +527,7 @@ export async function addIssueToProject(projectId, contentId) {
 // there: {itemId, status, added}. `added` is true when this call put it there
 // (its Status is then whatever the board's "Item added to project" workflow
 // sets, normally Backlog). Throws when the issue doesn't exist. Used by
-// factory-agent.sh's /split (ADR-0102), which files sub-cards with plain
+// factory-agent.sh's /split (ADR-0104), which files sub-cards with plain
 // `gh issue create` and then makes sure each one is on the board, so a card
 // filed without its board membership is caught up on the next tick.
 export async function ensureItemForIssue(projectId, issueNumber, { repo = DEFAULT_REPO } = {}) {

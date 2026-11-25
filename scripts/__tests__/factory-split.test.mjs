@@ -20,7 +20,7 @@ import {
   parseSplitOutput,
 } from "../lib/factory-split.mjs";
 
-// /split (ADR-0102): the splitter's output is model text that bash files as
+// /split (ADR-0104): the splitter's output is model text that bash files as
 // public issues under the operator's identity, so everything it prints is
 // checked here before bash runs the spec gate and files anything.
 

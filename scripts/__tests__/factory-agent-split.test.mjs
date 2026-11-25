@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// factory-agent.sh's side of /split (ADR-0102): the directive, its acks, and
+// factory-agent.sh's side of /split (ADR-0104): the directive, its acks, and
 // split_card's write sequence. The real split_* functions run under /bin/bash
 // (3.2 on the Mac mini) with `set -euo pipefail`. gh, the board CLI and claude
 // are HARD stubs (fixtures/split/stubs.sh): split_card files public issues,

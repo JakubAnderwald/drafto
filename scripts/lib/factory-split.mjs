@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// /split (ADR-0102): the operator comments `/split` on a Plan Review card, and
+// /split (ADR-0104): the operator comments `/split` on a Plan Review card, and
 // the factory files the plan's **Proposed split** as sub-cards. A Claude run
 // (scripts/factory-split-prompt.md, no tools at all) expands each part into a
 // full issue-form body; everything else is bash and this module. Nothing the
