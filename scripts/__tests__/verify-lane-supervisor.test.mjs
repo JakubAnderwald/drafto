@@ -219,6 +219,7 @@ function makeRun(
     deadlineAt: new Date(Date.now() + deadlineInMs).toISOString(),
     sessionId: "12345678-1234-4123-8123-1234567890ab",
     effort: "low",
+    model: "opus[1m]",
     installTimeoutSec: 30,
     previewOrigin,
     qaTag: "factory-shell-7-aaaaaaa",
@@ -340,6 +341,9 @@ describe("_supervise", () => {
       meta.sessionId,
       "--effort",
       "low",
+      // ADR-0101: the session has no setting sources, so the model is explicit.
+      "--model",
+      "opus[1m]",
     ]);
     const env = readJson(path.join(fakeBin, "claude-env.json"));
     for (const k of ["GH_TOKEN", "SUPABASE_ACCESS_TOKEN", "RESEND_API_KEY"])

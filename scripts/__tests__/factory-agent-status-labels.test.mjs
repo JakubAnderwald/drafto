@@ -16,6 +16,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const agentPath = resolve(HERE, "..", "factory-agent.sh");
@@ -70,7 +71,7 @@ function runTransition({ newStatus, issueLabels = [], viewFails = false }) {
     // stay a literal backslash-n.
     const res = spawnSync("/bin/bash", ["-c", harness], {
       encoding: "utf8",
-      env: { ...process.env, ISSUE_LABELS: issueLabels.join("\n") },
+      env: hermeticEnv({ ISSUE_LABELS: issueLabels.join("\n") }),
     });
     assert.equal(res.status, 0, res.stderr);
     const lines = readFileSync(calls, "utf8").split("\n").filter(Boolean);
