@@ -19,7 +19,7 @@ It is not part of the [test matrix](../architecture/testing.md), because it writ
 
 It asks for a typed `YES` and the sudo password before it changes anything.
 
-An agent may write or adapt a scenario and run `--preflight`, which is read-only. It never starts the full run itself.
+An agent may write or adapt a scenario and run `--preflight`, which is read-only. The one thing it presses is TestFlight's first-launch Continue, which changes no data (see [Getting the build from TestFlight](#getting-the-build-from-testflight)). It never starts the full run itself.
 
 ## One-time setup (the Mac mini already has it)
 
@@ -38,6 +38,9 @@ The Swift helpers (`axq`, `ocr`, `luma`) are compiled into `apps/desktop/e2e/in-
 - **A build that won't open** fails in four ways at once. `open` fails with `-10673`. A dialog says "The beta app … is no longer available. The provisioning profile is invalid". `taskgated-helper` logs `Profile does not have matching hash` and `Disallowing: eu.drafto.mobile`. On 2026-11-01 this happened to build 73 after TestFlight's install-on-quit.
   - Fix: install another build in TestFlight, then reinstall the one you want from **Previous builds**. Each reinstall registers that build's profile.
   - Don't retry `open`. Each failure queues one more dialog, and a launch made while they're queued stays suspended (`ps` state `T`). Dismiss them all, kill the suspended process, then open the app again.
+- **A new build's first launch stops at TestFlight's pages.** The first time a build opens, macOS shows its "What to Test" notes, then a "Share feedback" page, each with **Continue** (Polish: **Dalej**) on the right. `CoreServicesUIAgent` owns these windows, not Drafto. Until the last Continue is pressed, Drafto runs with no window, so anything that reads Drafto's window finds nothing or waits forever.
+  - Preflight presses Continue through them (`preflight_testflight_pages` in `lib/app.sh`), and so does `run-e2e.sh`. Both use `dismiss_testflight_notes` in `apps/desktop/e2e/lib/testflight-notes.sh`.
+  - It acts only while Drafto has no window, or on a page that names Drafto: one left over from an earlier launch can sit over the window, where a click would land on it. The pages' button titles aren't exposed to accessibility, so it finds Continue by position, as the right-hand of the two buttons.
 - **TestFlight can be driven:** `bin/axq <TestFlight pid> press <path>` works on its buttons. Unlike in Drafto, AXPress is supported there. Find the paths with `bin/axq <pid> dump`.
 
 ## Running a scenario
@@ -53,6 +56,7 @@ Preflight checks:
 - the installed build equals the `drafto-factory-intest-build:macos:<n>` marker on the issue;
 - the PR head equals `drafto-factory-scenario-sha`;
 - the issue still has `status:in-test`;
+- TestFlight's first-launch pages, if they are up, are dismissed so Drafto gets its window;
 - the running Drafto is that installed bundle and was started after it was installed, since a TestFlight update replaces the bundle under a still-running old process;
 - the accessibility tree, OCR, the local database and production auth are all reachable;
 - the Supabase CLI token is available.

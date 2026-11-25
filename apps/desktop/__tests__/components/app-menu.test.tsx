@@ -5,6 +5,12 @@ import { render, fireEvent, act } from "../helpers/test-utils";
 import { AppMenu } from "@/components/sidebar/app-menu";
 import { DELETE_ACCOUNT_OFFLINE_NOTE } from "@/components/sidebar/delete-account-panel";
 
+// The native focus command the open menu dispatches.
+const mockFocusView = jest.fn();
+jest.mock("@/lib/focus-view", () => ({
+  focusView: (view: unknown) => mockFocusView(view),
+}));
+
 // The panel asks the auth provider whether the Apple step applies; the provider opens the database.
 jest.mock("@/hooks/use-apple-deletion-confirmation", () => ({
   useAppleDeletionConfirmation: () => ({ required: false, userId: null }),
@@ -172,40 +178,43 @@ describe("AppMenu", () => {
       jest.useRealTimers();
     });
 
-    // The mocked View's `focus` is what `menuRef.current.focus()` calls.
-    function menuFocus(utils: ReturnType<typeof renderMenu>) {
+    beforeEach(() => {
+      mockFocusView.mockClear();
+    });
+
+    // The instance `menuRef` holds: the View component rendered with the menu's testID.
+    function menuInstance(utils: ReturnType<typeof renderMenu>) {
       const [menu] = utils.UNSAFE_root.findAll(
         (node) => node.props.testID === "app-menu" && typeof node.type !== "string",
       );
-      const focus = (menu.instance as { focus: jest.Mock }).focus;
-      focus.mockClear();
-      return focus;
+      return menu.instance;
     }
 
     it("moves keyboard focus to the menu once it has mounted, so Escape reaches it", () => {
       const utils = renderMenu();
 
       fireEvent.press(utils.getByTestId("app-menu-trigger"));
-      const focus = menuFocus(utils);
-      expect(focus).not.toHaveBeenCalled();
+      expect(mockFocusView).not.toHaveBeenCalled();
 
       act(() => {
         jest.advanceTimersByTime(50);
       });
-      expect(focus).toHaveBeenCalledTimes(1);
+      // Through the native focus command: `View#focus()` does nothing for a plain view on
+      // react-native-macos 0.83.
+      expect(mockFocusView).toHaveBeenCalledTimes(1);
+      expect(mockFocusView).toHaveBeenCalledWith(menuInstance(utils));
     });
 
     it("does not focus a menu that closed before the focus was due", () => {
       const utils = renderMenu();
 
       fireEvent.press(utils.getByTestId("app-menu-trigger"));
-      const focus = menuFocus(utils);
       fireEvent.press(utils.getByTestId("app-menu-trigger"));
 
       act(() => {
         jest.advanceTimersByTime(50);
       });
-      expect(focus).not.toHaveBeenCalled();
+      expect(mockFocusView).not.toHaveBeenCalled();
     });
   });
 

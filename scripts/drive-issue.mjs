@@ -157,7 +157,8 @@ export const HANDBACK_NEXT = Object.freeze({
   Ready: "--plan runs the spec gate and writes a plan.",
   "Plan Review":
     "it waits for you to drag the card to In Progress (your comments trigger a replan).",
-  "In Progress": "--implement builds the approved plan on factory/issue-<n>.",
+  "In Progress":
+    "--implement builds the approved plan on factory/issue-<n>; an unstarted card whose plan is oversize goes back to Plan Review unless it has oversize-approved (ADR-0103).",
   "In Review": "--watch fixes CI and review threads, runs its code review, then hands the card on.",
   Testing: "the verification lane runs the scenario and posts its report.",
   "In Test":
