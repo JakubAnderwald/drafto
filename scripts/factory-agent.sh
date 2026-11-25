@@ -9392,9 +9392,11 @@ implement_lane_precheck() {
 # implement_effort <is_revision> — the effort for this --implement run:
 # FACTORY_REVISION_EFFORT for a revision run (1: the card already has a
 # factory PR, open or closed, and new owner feedback since lastFeedbackAt),
-# FACTORY_EFFORT otherwise (ADR-0101). A resumed run gets the same
-# answer as the run it resumes: the resume task key includes the revision
-# comments (implement-resume.mjs), so a resume never crosses between the two.
+# FACTORY_EFFORT otherwise (ADR-0101). A resume never crosses between the two
+# kinds: the resume task key includes the revision comments
+# (implement-resume.mjs). It does take the knob's current value, so a knob
+# changed between a run and its resume starts the resume at the new effort;
+# the run-time facts' `effort` tells the agent which.
 implement_effort() {
   if [[ "${1:-0}" == "1" ]]; then
     printf '%s\n' "${FACTORY_REVISION_EFFORT:-xhigh}"

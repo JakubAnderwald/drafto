@@ -213,7 +213,7 @@ describe("buildImplementArgv / buildImplementEnv", () => {
       }).slice(-4),
       ["--model", "claude-sonnet-5-5", "--resume", SID],
     );
-    for (const model of [undefined, null, ""]) {
+    for (const model of [undefined, null]) {
       assert.ok(
         !buildImplementArgv({ effort: "high", model, mode: "fresh", sessionId: SID }).includes(
           "--model",
@@ -224,7 +224,9 @@ describe("buildImplementArgv / buildImplementEnv", () => {
   });
 
   it("refuses a model the bash side would never pass", () => {
-    for (const model of ["--chrome", "sonnet --chrome", "Sonnet", "gpt-5", "opus[2m]", 7]) {
+    // "" too, as verify-lane.mjs's buildClaudeArgs does: an empty model would
+    // run unpinned, on whatever the CLI picks.
+    for (const model of ["--chrome", "sonnet --chrome", "", "Sonnet", "gpt-5", "opus[2m]", 7]) {
       assert.throws(
         () => buildImplementArgv({ effort: "high", model, mode: "fresh", sessionId: SID }),
         /invalid model/,

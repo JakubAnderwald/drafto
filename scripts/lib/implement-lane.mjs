@@ -142,12 +142,14 @@ const RUN_DIR_NAME_RE = /^[1-9][0-9]*-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
 //       CLAUDE_CALL_KILL_GRACE_SEC="$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \
 //       node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT" <the flags below> )
 // and implement-lane-parity.test.mjs pins the two to each other.
-// <model> (ADR-0101) is optional: absent or "", no --model, as before it
-// existed; set, `--model <model>` goes right before the session flag.
+// <model> (ADR-0101) is optional only for a spec written before it existed:
+// absent (undefined or null), no --model, as before; set, `--model <model>`
+// goes right before the session flag. An empty string is refused, like
+// verify-lane.mjs's buildClaudeArgs, so a spec never runs unpinned by accident.
 
 export function buildImplementArgv({ effort, model, mode, sessionId }) {
   if (!EFFORTS.includes(effort)) throw new Error(`invalid effort: ${effort}`);
-  if (model !== undefined && model !== null && model !== "" && !isValidModel(model)) {
+  if (model !== undefined && model !== null && !isValidModel(model)) {
     throw new Error(`invalid model: ${model}`);
   }
   if (!Object.hasOwn(SESSION_FLAGS, mode)) throw new Error(`invalid mode: ${mode} (fresh|resume)`);
@@ -690,7 +692,7 @@ export function readSpec(fs, file) {
     worktree: spec.worktree,
     inputFile: spec.inputFile,
     effort: spec.effort,
-    model: spec.model || null,
+    model: spec.model ?? null,
     mode: spec.mode,
     sessionId: spec.sessionId,
     argv,
