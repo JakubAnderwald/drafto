@@ -13,7 +13,8 @@
 # parity:* and migration-approved are operator gates; factory-pause and
 # factory-failure are kill-switch / failure-trap signals; driver:interactive
 # marks a card an interactive session owns (ADR-0091); factory-oversize
-# flags a plan whose size estimate suggests a split (ADR-0083).
+# flags a plan whose size estimate suggests a split (ADR-0083), and
+# oversize-approved lets such a card be implemented as-is (ADR-0101).
 
 set -euo pipefail
 
@@ -25,7 +26,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,15p' "$0"
+      sed -n '2,16p' "$0"
       exit 0
       ;;
     *)
@@ -62,6 +63,7 @@ LABELS=(
   "driver:interactive|5319E7|An interactive Claude Code session owns this card; the factory skips it (ADR-0091)."
   "migration-approved|0052CC|Authorises merging this PR's migration SQL as it is when added; an SQL edit removes it."
   "hosted-config-applied|0052CC|Operator applied this PR's supabase/config.toml changes to dev and prod."
+  "oversize-approved|0052CC|Lets the factory implement this oversize card as-is, without a split (ADR-0101)."
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."
 
   # Planning signals — set and cleared by the factory from the plan's size

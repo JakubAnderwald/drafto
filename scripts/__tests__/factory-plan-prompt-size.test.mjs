@@ -55,6 +55,22 @@ describe("planner prompt — Size section and marker", () => {
     );
   });
 
+  it("counts the churn estimates miss, and asks for estLines near the top of the range (ADR-0101)", () => {
+    assert.match(
+      flat,
+      /count every line the diff will add: code, tests and their fixtures, docs and ADRs, new helpers, migrations, and edits to prompts and the runbook/,
+    );
+    assert.match(flat, /past factory PRs added 1\.1–2\.4× the top of their plan's range/);
+    assert.match(flat, /put `<estLines>` near the top of your range, not its middle/);
+  });
+
+  it("says an XL card is held until it is split or carries oversize-approved (ADR-0101)", () => {
+    assert.match(
+      flat,
+      /An `XL` card is held\. When the estimate is at or above the factory's oversize threshold \(1,500 lines by default\), an approved card goes back to Plan Review instead of being implemented, until it is split or the operator adds the `oversize-approved` label/,
+    );
+  });
+
   it("orders the replan body's tail: size marker, then the ack markers", () => {
     assert.match(
       flat,

@@ -675,6 +675,18 @@ if ! [[ "$FACTORY_PLAN_OVERSIZE_LINES" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then
   FACTORY_PLAN_OVERSIZE_LINES=1500
 fi
 OVERSIZE_LABEL="factory-oversize"
+# The oversize hold (ADR-0101): --implement sends a card that hasn't started,
+# whose approved plan estimates at least FACTORY_PLAN_OVERSIZE_LINES, back to
+# Plan Review unless the operator added oversize-approved (oversize_hold).
+# FACTORY_OVERSIZE_HOLD=0, or FACTORY_PLAN_OVERSIZE_LINES=0, turns it off. A bad
+# value warns and falls back to 1.
+FACTORY_OVERSIZE_HOLD="${FACTORY_OVERSIZE_HOLD:-1}"
+case "$FACTORY_OVERSIZE_HOLD" in
+  0|1) ;;
+  *) echo "WARNING: invalid FACTORY_OVERSIZE_HOLD='$FACTORY_OVERSIZE_HOLD'; defaulting to 1" >&2
+     FACTORY_OVERSIZE_HOLD=1 ;;
+esac
+OVERSIZE_APPROVED_LABEL="oversize-approved"
 
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
@@ -1877,6 +1889,93 @@ plan_size_label() {
       log "WARNING: removing $OVERSIZE_LABEL from #$issue_num failed; the next tick tries again"
     fi
   fi
+}
+
+# oversize_hold <issue> <item-id> <labels-csv> <plan-comment-json>
+#   <prior-pr-json|null> <attempts> <comments-json>
+# The oversize hold (ADR-0101). --implement never starts an unsplit oversize
+# card: when the approved plan's size marker estimates at least
+# FACTORY_PLAN_OVERSIZE_LINES and the issue lacks oversize-approved, the card
+# goes back to Plan Review with one 🏭 comment saying how to release it.
+# Only a card that hasn't started is held: no prior PR, no attempts spent, no
+# worktree slot assigned and no implement resume record. A card mid-run (a
+# retry after a timeout, a revision back from In Test) never bounces. Nor is a
+# plan with no size marker, or a dry run (it only logs). The marker carries the
+# plan comment id and the estimate, because a replan edits the plan in place:
+# a new estimate gets a new comment, the same one never gets a second.
+# The comment goes first and the move only once it is on the issue, so a
+# failure in either retries on the next tick without a duplicate.
+# Exit 0 = held (skip the card this tick), 1 = implement it.
+oversize_hold() {
+  local issue_num="$1" item_id="$2" labels_csv="${3:-}" plan_json="${4:-null}"
+  local prior_pr="${5:-null}" attempts="${6:-0}" comments_json="${7:-[]}"
+  local threshold="${FACTORY_PLAN_OVERSIZE_LINES:-1500}"
+  local approved="${OVERSIZE_APPROVED_LABEL:-oversize-approved}"
+  local size est cls plan_id marker slots record
+  [[ "${FACTORY_OVERSIZE_HOLD:-1}" == "1" ]] || return 1
+  [[ "$threshold" =~ ^[0-9]+$ && "$threshold" -gt 0 ]] || return 1
+  [[ -z "$prior_pr" || "$prior_pr" == "null" ]] || return 1
+  [[ "$attempts" == "0" ]] || return 1
+  [[ ",$labels_csv," != *",$approved,"* ]] || return 1
+  size=$(echo "$plan_json" | jq -r '.body // ""' 2>/dev/null \
+    | node "$SCRIPT_DIR/lib/plan-size.mjs" 2>>"$LOG_FILE" || echo "null")
+  est=$(echo "$size" | jq -r '.estLines // empty' 2>/dev/null || echo "")
+  cls=$(echo "$size" | jq -r '.sizeClass // empty' 2>/dev/null || echo "")
+  [[ "$est" =~ ^[0-9]+$ ]] || return 1
+  [[ "$est" -ge "$threshold" ]] || return 1
+  # Started already? A state read that fails can't tell, so the card waits a
+  # tick: it neither bounces nor starts.
+  if ! slots=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:slot-status \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: #$issue_num: couldn't read the slots for the oversize hold; deferring the card to the next tick"
+    return 0
+  fi
+  if echo "$slots" | jq -e --arg i "$issue_num" \
+      '.slots // {} | to_entries | any(((.value.issueNumber // "") | tostring) == $i)' >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE"); then
+    log "WARNING: #$issue_num: couldn't read its state for the oversize hold; deferring the card to the next tick"
+    return 0
+  fi
+  if [[ -n "$(echo "$record" | jq -r '.implementResumeSession // empty' 2>/dev/null || echo "")" ]]; then
+    return 1
+  fi
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: would hold #$issue_num in Plan Review (the plan estimates ~$est added lines, at least $threshold; no $approved label)"
+    return 1
+  fi
+  plan_id=$(echo "$plan_json" | jq -r '.id // ""' 2>/dev/null || echo "")
+  marker="drafto-factory-oversize-hold:${plan_id}:${est}"
+  log "Issue #$issue_num: the approved plan estimates ~$est added lines (${cls:-?}), at least $threshold, and the issue has no $approved label → holding it in Plan Review"
+  if ! comments_have_marker "$comments_json" "$marker"; then
+    if ! gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+        --body "🏭 **Hold — this card is too big to implement in one PR.**
+
+The approved plan estimates ~$est added lines (class ${cls:-?}), at or above \
+the factory's oversize threshold of $threshold. PRs that size time out, \
+conflict with \`main\` and take the most review rounds, so the factory won't \
+start one that hasn't been split. The card is back in **Plan Review**. Either:
+
+- **Split it:** comment \`/split\` to have the factory file the sub-cards from \
+the plan's **Proposed split** (or file them yourself), or
+- **Run it as-is:** add the **\`$approved\`** label, then drag the card back \
+to **In Progress**.
+
+A plain \"approved\" comment doesn't release the hold: it starts a replan, \
+which is a paid planner run, and the card stays here. A replan that brings \
+the estimate under $threshold lines does release it.
+
+<!-- $marker -->" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: couldn't post the oversize-hold comment on #$issue_num; holding the card in In Progress until it is posted (next tick)"
+      return 0
+    fi
+  fi
+  if ! transition_status "$item_id" "$issue_num" "Plan Review"; then
+    log "WARNING: couldn't move #$issue_num back to Plan Review for the oversize hold; the next tick tries again"
+  fi
+  return 0
 }
 
 # Has the issue already received the Phase A implement-stub comment? Used so
@@ -9845,6 +9944,16 @@ Drag it back to **Ready** so the factory can plan it first.
     fi
 
     PRIOR_PR=$(find_prior_pr "$ISSUE_NUM"); [[ -n "$PRIOR_PR" ]] || PRIOR_PR="null"
+
+    # Oversize hold (ADR-0101): a card that hasn't started, whose approved plan
+    # is oversize and which has no oversize-approved label, goes back to Plan
+    # Review before a slot or a worktree is spent on it. The labels are the
+    # board item's plus the issue's own, read just above.
+    if oversize_hold "$ISSUE_NUM" "$ITEM_ID" \
+        "$ITEM_LABELS,$(echo "$ISSUE_RECORD" | jq -r '.labels // [] | join(",")' 2>/dev/null || true)" \
+        "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$COMMENTS_JSON"; then
+      continue
+    fi
 
     # Migration approval (ADR-0078), before Claude runs on a card that came back
     # with an open PR (a revision from In Test, a retry): the label covers the
