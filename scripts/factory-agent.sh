@@ -8,7 +8,8 @@
 #                Works in every phase. Phase A's only meaningful mode. Also
 #                replans Plan Review cards on new operator comments, and keeps
 #                the factory-oversize label in step with each plan's size
-#                estimate (ADR-0083).
+#                estimate (ADR-0083). An operator's `/split` comment files the
+#                plan's Proposed split as sub-cards instead (ADR-0102).
 #
 #   --implement  Pick up Status=In Progress items. Phase A: post a stub
 #                "phase=A; implementation skipped" comment per card and
@@ -675,6 +676,21 @@ if ! [[ "$FACTORY_PLAN_OVERSIZE_LINES" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then
   FACTORY_PLAN_OVERSIZE_LINES=1500
 fi
 OVERSIZE_LABEL="factory-oversize"
+
+# ── /split: the factory files a plan's Proposed split (ADR-0102) ───────────
+# The operator comments `/split`, alone, on a Plan Review card. The replan
+# sweep then files the plan's Proposed split as sub-cards instead of
+# replanning (split_card): a splitter run with no tools writes each part's
+# issue body, and bash checks every body against the spec gate before it files
+# any. 0 turns it off; a `/split` comment is then ordinary feedback for the
+# planner. A bad value warns and falls back to 1.
+FACTORY_SPLIT="${FACTORY_SPLIT:-1}"
+case "$FACTORY_SPLIT" in
+  0|1) : ;;
+  *) echo "WARNING: invalid FACTORY_SPLIT='$FACTORY_SPLIT'; defaulting to 1" >&2
+     FACTORY_SPLIT=1 ;;
+esac
+SPLIT_LABEL="factory-split"
 
 # ── Pre-In-Test verification, the "Testing" column (ADR-0053) ─────────────
 # Off by default. With FACTORY_VERIFY=1 a converged In Review card moves to
@@ -1877,6 +1893,352 @@ plan_size_label() {
       log "WARNING: removing $OVERSIZE_LABEL from #$issue_num failed; the next tick tries again"
     fi
   fi
+}
+
+# ── /split (ADR-0102) ───────────────────────────────────────────────────────
+# The operator comments `/split` on a Plan Review card; the replan sweep hands
+# the card to split_card instead of replanning it. The splitter (a Claude run
+# with no tools, scripts/factory-split-prompt.md) only prints text. Bash does
+# every write: it checks each body (factory-split.mjs parse, then
+# spec_missing_section), files the sub-cards, links them as sub-issues, moves
+# the first to Ready, and parks the parent in Backlog with the factory-split
+# label. One factory comment answers the /split, with an ack marker per
+# directive, so a directive never runs twice and never reads as replan
+# feedback. A run that can't be finished (gh down, a tick killed part-way)
+# resumes on the next tick from what it recorded (splitChildren, the cards
+# file), without a second Claude run.
+
+# split_directive_jq — a jq `def is_split_directive:` for "this comment asks
+# for a split": an OWNER comment whose whole body, trimmed, is `/split`.
+# Anything more (a quote, a code fence, a second line) is not a directive, so
+# it stays ordinary feedback.
+split_directive_jq() {
+  printf '%s' 'def is_split_directive: .authorAssociation == "OWNER" and (((.body // "") | gsub("^\\s+|\\s+$"; "")) == "/split");'
+}
+
+# split_acked_ids <comments-json> — the ids of the comments a factory (OWNER)
+# comment has answered as /split directives, from their
+# `<!-- drafto-factory-split-ack:<id> -->` markers: a JSON array of strings.
+split_acked_ids() {
+  echo "$1" | jq -c '[ .[] | select(.authorAssociation == "OWNER") | (.body // "")
+    | scan("<!-- drafto-factory-split-ack:([0-9]+) -->") | .[0] ] | unique'
+}
+
+# split_trigger_ids <comments-json> <plan-created-at> [<issue>] — the /split
+# directives newer than the plan that no factory comment has answered yet: a
+# JSON array of id strings, "[]" when there are none. They pass the same OWNER
+# and support-forward gate as replan feedback (owner_comments_since), so a
+# forwarded email can't split a card.
+split_trigger_ids() {
+  local comments="$1" since="$2" issue="${3:-}" cands acked
+  cands=$(owner_comments_since "$comments" "$since" "$issue") || return 1
+  acked=$(split_acked_ids "$comments") || return 1
+  echo "$cands" | jq -c --argjson acked "$acked" "$(split_directive_jq)"'
+    [ .[] | select(is_split_directive) | (.id | tostring)
+      | select(. as $i | ($acked | index($i)) | not) ]'
+}
+
+# split_drop_directives <comments-json> <ids-json> [all] — <ids-json> (the
+# replan sweep's unacked comment ids) without the /split directives in it:
+# every directive with "all" (FACTORY_SPLIT=1: split_card handles them), only
+# the ones a split already answered otherwise. Prints <ids-json> unchanged if
+# the filter fails.
+split_drop_directives() {
+  local comments="$1" ids="$2" mode="${3:-acked}" acked out
+  if acked=$(split_acked_ids "$comments") \
+      && out=$(echo "$comments" | jq -c --argjson ids "$ids" --argjson acked "$acked" --arg mode "$mode" \
+        "$(split_directive_jq)"'
+        [ .[] | select(is_split_directive) | (.id | tostring)
+          | select($mode == "all" or (. as $i | $acked | index($i))) ] as $drop
+        | $ids | map(select(. as $i | ($drop | index($i)) | not))') \
+      && [[ -n "$out" ]]; then
+    echo "$out"
+  else
+    echo "$ids"
+  fi
+}
+
+# split_dir_for <issue> — where split_card keeps the checked sub-cards between
+# ticks: under the factory's own logs/ (gitignored), like the reply dirs.
+split_dir_for() {
+  printf '%s/logs/factory/split/issue-%s' "$REPO_ROOT" "$1"
+}
+
+# split_ack_lines <trigger-ids-json> — one ack marker line per directive.
+split_ack_lines() {
+  echo "${1:-[]}" | jq -r '.[] | select(test("^[0-9]+$")) | "<!-- drafto-factory-split-ack:\(.) -->"' 2>/dev/null || true
+}
+
+# split_abort <issue> <trigger-ids-json> <reason> — nothing gets filed: tell
+# the operator why, and ack the directives so the splitter doesn't run again
+# every tick. A new `/split` comment tries again.
+split_abort() {
+  local issue_num="$1" triggers="${2:-[]}" reason="$3"
+  log "Issue #$issue_num: /split not filed: $reason"
+  if printf '%s' "🏭 **Split not filed.** ${reason}.
+
+Nothing was created, and the card stays in **Plan Review**. To try again, comment what the plan should change (the planner revises it), then comment \`/split\` again. Or file the sub-cards by hand from the plan's **Proposed split**.
+
+$(split_ack_lines "$triggers")" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
+    return 0
+  fi
+  log "WARNING: posting the /split notice on #$issue_num failed; the next tick tries the split again"
+}
+
+# split_write_cards <issue> <issue-record-json> <plan-body> <trigger-ids-json> <cards-file>
+# Run the splitter and keep its sub-cards in <cards-file> once every one passes
+# factory-split.mjs parse and the spec gate. Returns 1 when there is nothing to
+# file: split_abort has told the operator why, or (bundle or file trouble) the
+# next tick tries again. A session limit pauses the factory and ends the tick,
+# as the plan runs do.
+split_write_cards() {
+  local issue_num="$1" record="$2" plan_body="$3" triggers="${4:-[]}" cards_file="$5"
+  local bundle rc=0 input out_file start_iso parsed n i spec missing
+  bundle=$(jq -n --argjson issue "$record" --arg planBody "$plan_body" '{issue: $issue, planBody: $planBody}' \
+    | node "$SCRIPT_DIR/lib/factory-split.mjs" bundle 2>>"$LOG_FILE") || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    split_abort "$issue_num" "$triggers" "The plan has no **Proposed split** section, so there is nothing to file"
+    return 1
+  elif [[ $rc -ne 0 || -z "$bundle" ]]; then
+    log "WARNING: building the /split bundle for #$issue_num failed; the next tick tries again"
+    return 1
+  fi
+  input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
+    "$(cat "$SCRIPT_DIR/factory-split-prompt.md")" "$bundle")
+  out_file=$(mktemp -t factory-split-out.XXXXXX)
+  start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  log "Invoking claude for #$issue_num (split, effort=$FACTORY_PLAN_EFFORT, model=${FACTORY_MODEL:-opus[1m]}, cap ${CLAUDE_CALL_TIMEOUT_SEC:-360}s)"
+  rc=0
+  CLAUDE_CALL_TIMEOUT_SEC="${CLAUDE_CALL_TIMEOUT_SEC:-360}" \
+    node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \
+      --tools "" --model "${FACTORY_MODEL:-opus[1m]}" >"$out_file" 2>>"$LOG_FILE" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
+    rm -f "$out_file"
+    if [[ $rc -ne 124 ]] && check_session_limit "$REPO_ROOT" "$start_iso"; then
+      pause_for_session_limit
+      log "=== factory-agent --${MODE_NAME:-plan} completed in $(( $(date +%s) - ${START_TIME:-$(date +%s)} ))s ==="
+      exit 0
+    fi
+    split_abort "$issue_num" "$triggers" "The splitter run failed (exit $rc; the factory log on the Mac mini has the details)"
+    return 1
+  fi
+  cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
+  parsed=$(node "$SCRIPT_DIR/lib/factory-split.mjs" parse --file "$out_file" 2>>"$LOG_FILE") || parsed=""
+  rm -f "$out_file"
+  if [[ "$(echo "$parsed" | jq -r '.ok' 2>/dev/null || echo "")" != "true" ]]; then
+    split_abort "$issue_num" "$triggers" \
+      "The splitter's sub-cards can't be filed: $(echo "$parsed" | jq -r '.reason // "its output is unreadable"' 2>/dev/null || echo "its output is unreadable")"
+    return 1
+  fi
+  n=$(echo "$parsed" | jq '.cards | length')
+  for ((i=0; i<n; i++)); do
+    spec=$(echo "$parsed" | jq -c ".cards[${i}].spec")
+    missing=$(spec_missing_section "$spec" "")
+    if [[ -n "$missing" ]]; then
+      split_abort "$issue_num" "$triggers" "The splitter's sub-card $((i+1)) fails the spec gate (missing: $missing)"
+      return 1
+    fi
+  done
+  if ! (umask 077 && echo "$parsed" | jq -c '[.cards[] | {title, body}]' >"$cards_file"); then
+    log "WARNING: couldn't save #$issue_num's sub-cards to $cards_file; the next tick tries again"
+    rm -f "$cards_file"
+    return 1
+  fi
+  log "Issue #$issue_num: the splitter wrote $n sub-cards, and all of them pass the spec gate"
+}
+
+# split_file_children <issue> <plan-comment-id> <cards-file> — file each
+# sub-card not filed yet, in order, and print all their numbers,
+# space-separated. splitChildren ("<plan comment id>:<total>:<n1>,<n2>…")
+# records each one as it is filed, so a tick that dies part-way resumes after
+# the last one it recorded. Before filing card i it looks for an OWNER issue
+# that already carries card i's hidden marker: a `gh issue create` whose reply
+# was lost still filed the issue, and a retry must not file it twice. When that
+# lookup fails it stops (returns 1) rather than risk a duplicate.
+split_file_children() {
+  local issue_num="$1" plan_id="$2" cards_file="$3" total rec done_csv="" i n dep composed title url recent body_file
+  local nums=()
+  total=$(jq 'length' "$cards_file" 2>/dev/null || echo "")
+  if ! [[ "$total" =~ ^[0-9]+$ && "$total" -ge 1 ]]; then
+    log "WARNING: #$issue_num's saved sub-cards ($cards_file) are unreadable; remove the file and comment /split again"
+    return 1
+  fi
+  rec=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" --state-file "$STATE_FILE" 2>>"$LOG_FILE" \
+    | jq -r '.splitChildren // ""' 2>/dev/null || echo "")
+  if [[ "$rec" == "$plan_id:$total:"* ]]; then
+    done_csv="${rec#"$plan_id:$total:"}"
+    [[ "$done_csv" =~ ^[0-9]+(,[0-9]+)*$ ]] || done_csv=""
+  fi
+  if [[ -n "$done_csv" ]]; then
+    IFS=',' read -ra nums <<<"$done_csv"
+  fi
+  body_file=$(mktemp -t factory-split-body.XXXXXX)
+  for ((i=${#nums[@]}; i<total; i++)); do
+    dep=""
+    if [[ $i -gt 0 ]]; then dep="${nums[$((i-1))]}"; fi
+    if ! composed=$(node "$SCRIPT_DIR/lib/factory-split.mjs" compose --cards-file "$cards_file" --index "$i" \
+        --parent "$issue_num" --plan-comment "$plan_id" --total "$total" ${dep:+--depends-on "$dep"} 2>>"$LOG_FILE"); then
+      log "WARNING: composing sub-card $((i+1))/$total of #$issue_num failed; the next tick tries again"
+      rm -f "$body_file"
+      return 1
+    fi
+    if ! recent=$(gh api "repos/JakubAnderwald/drafto/issues?state=all&sort=created&direction=desc&per_page=50" 2>>"$LOG_FILE") \
+        || ! n=$(printf '%s' "$recent" | node "$SCRIPT_DIR/lib/factory-split.mjs" find-child --parent "$issue_num" \
+          --plan-comment "$plan_id" --index "$i" 2>>"$LOG_FILE"); then
+      log "WARNING: couldn't check whether sub-card $((i+1))/$total of #$issue_num is already filed; the next tick tries again"
+      rm -f "$body_file"
+      return 1
+    fi
+    if [[ -n "$n" ]]; then
+      log "Issue #$issue_num: sub-card $((i+1))/$total is already filed as #$n"
+    else
+      title=$(echo "$composed" | jq -r '.title')
+      echo "$composed" | jq -r '.body' >"$body_file"
+      if ! url=$(gh issue create --repo JakubAnderwald/drafto --title "$title" --body-file "$body_file" 2>>"$LOG_FILE"); then
+        log "WARNING: filing sub-card $((i+1))/$total of #$issue_num failed; the next tick tries again"
+        rm -f "$body_file"
+        return 1
+      fi
+      n=$(printf '%s' "${url##*/}" | tr -d '[:space:]')
+      if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+        log "WARNING: gh issue create gave no issue number for sub-card $((i+1))/$total of #$issue_num; the next tick looks for it"
+        rm -f "$body_file"
+        return 1
+      fi
+      log "Issue #$issue_num: filed sub-card $((i+1))/$total as #$n"
+    fi
+    nums+=("$n")
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" splitChildren \
+      "$plan_id:$total:$(IFS=,; echo "${nums[*]}")" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
+      || log "WARNING: couldn't record #$n in #$issue_num's splitChildren; the marker check finds it next time"
+  done
+  rm -f "$body_file"
+  echo "${nums[*]}"
+}
+
+# split_link_children <parent> <numbers> — link each sub-card as a GitHub
+# sub-issue of the parent, skipping the ones already linked. Best effort: a
+# link that fails is logged, and the sub-card's "Split from" line still names
+# the parent.
+split_link_children() {
+  local parent="$1" nums="$2" linked n id
+  if ! linked=$(gh api --paginate "repos/JakubAnderwald/drafto/issues/$parent/sub_issues" --jq '.[].number' 2>>"$LOG_FILE"); then
+    log "WARNING: couldn't read #$parent's sub-issues; its sub-cards stay unlinked"
+    return 0
+  fi
+  for n in $nums; do
+    if grep -qx -- "$n" <<<"$linked"; then continue; fi
+    if id=$(gh api "repos/JakubAnderwald/drafto/issues/$n" --jq '.id' 2>>"$LOG_FILE") \
+        && [[ "$id" =~ ^[0-9]+$ ]] \
+        && gh api -X POST "repos/JakubAnderwald/drafto/issues/$parent/sub_issues" -F "sub_issue_id=$id" >>"$LOG_FILE" 2>&1; then
+      log "Issue #$parent: linked #$n as a sub-issue"
+    else
+      log "WARNING: linking #$n as a sub-issue of #$parent failed; its \"Split from\" line still names #$parent"
+    fi
+  done
+}
+
+# split_park_parent <item-id> <issue> — a split card goes to Backlog, which
+# the factory ignores, without its status:* label (Backlog has none).
+split_park_parent() {
+  local item_id="$1" issue_num="$2" current lbl remove_args=()
+  if ! node "$SCRIPT_DIR/lib/factory-project.mjs" set-status --item-id "$item_id" --status Backlog >>"$LOG_FILE" 2>&1; then
+    log "WARNING: moving #$issue_num to Backlog failed; the next tick tries again"
+    return 0
+  fi
+  if current=$(gh issue view "$issue_num" --repo JakubAnderwald/drafto --json labels --jq '.labels[].name' 2>>"$LOG_FILE"); then
+    while IFS= read -r lbl; do
+      if [[ "$lbl" == status:* ]]; then remove_args+=(--remove-label "$lbl"); fi
+    done <<<"$current"
+  fi
+  if [[ ${#remove_args[@]} -gt 0 ]] && ! gh issue edit "$issue_num" --repo JakubAnderwald/drafto \
+      ${remove_args[@]+"${remove_args[@]}"} >>"$LOG_FILE" 2>&1; then
+    log "WARNING: removing #$issue_num's status label failed; the board says Backlog"
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field \
+    "$issue_num" lastStatus "Backlog" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  log "Issue #$issue_num: split; moved to Backlog"
+}
+
+# split_finish <item-id> <issue> <plan-comment-id> <trigger-ids-json> <numbers>
+# Put every sub-card on the board, move the first to Ready (unless it has
+# already moved on), label the parent factory-split, post the split comment
+# with the directives' acks, and park the parent in Backlog. Any step that
+# fails returns before the comment, so the directive stays unanswered and the
+# next tick repeats these steps; each one is safe to repeat.
+split_finish() {
+  local item_id="$1" issue_num="$2" plan_id="$3" triggers="${4:-[]}" nums="$5"
+  local first="" n info child_item child_status list="" count=0 label="${SPLIT_LABEL:-factory-split}"
+  for n in $nums; do
+    count=$((count + 1))
+    if ! info=$(node "$SCRIPT_DIR/lib/factory-project.mjs" ensure-item --issue "$n" 2>>"$LOG_FILE"); then
+      log "WARNING: couldn't put #$n on the board; the next tick tries again"
+      return 0
+    fi
+    if [[ -z "$first" ]]; then
+      first="$n"
+      child_item=$(echo "$info" | jq -r '.itemId // ""')
+      child_status=$(echo "$info" | jq -r '.status // ""')
+      case "$child_status" in
+        "" | Backlog)
+          if ! transition_status "$child_item" "$n" "Ready"; then
+            log "WARNING: moving #$n to Ready failed; the next tick tries again"
+            return 0
+          fi
+          ;;
+        *) log "Issue #$issue_num: sub-card #$n is already in $child_status; leaving it there" ;;
+      esac
+      list+="- #$n (**Ready**)"$'\n'
+    else
+      list+="- #$n (**Backlog**)"$'\n'
+    fi
+  done
+  if ! gh issue edit "$issue_num" --repo JakubAnderwald/drafto --add-label "$label" >>"$LOG_FILE" 2>&1; then
+    log "WARNING: adding $label to #$issue_num failed (if the repo lacks it, run scripts/setup-factory-labels.sh)"
+  fi
+  if ! printf '%s' "🏭 **Split into $count sub-cards.**
+
+${list}
+#$first is in **Ready**, so the factory plans it next. Each later sub-card waits in **Backlog** with a \"Depends on\" line: drag it to **Ready** once the one before it has merged. Every sub-card still goes through Plan Review.
+
+This card is now in **Backlog** with the \`$label\` label, and the factory leaves it there. Close it once its sub-cards have shipped.
+
+<!-- drafto-factory-split:$plan_id -->
+$(split_ack_lines "$triggers")" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
+    log "WARNING: posting the split comment on #$issue_num failed; the next tick tries again"
+    return 0
+  fi
+  log "Issue #$issue_num: split into $count sub-cards ($nums)"
+  split_park_parent "$item_id" "$issue_num"
+}
+
+# split_card <item-id> <issue> <issue-record-json> <plan-comment-json> <trigger-ids-json>
+# The /split of one Plan Review card: the sub-cards come from the cards file a
+# run already checked, or from a new splitter run. Never fails the tick.
+split_card() {
+  local item_id="$1" issue_num="$2" record="$3" plan_json="$4" triggers="${5:-[]}"
+  local plan_id plan_body dir cards_file nums
+  plan_id=$(echo "$plan_json" | jq -r '.id | tostring' 2>/dev/null || echo "")
+  plan_body=$(echo "$plan_json" | jq -r '.body // ""' 2>/dev/null || echo "")
+  [[ "$plan_id" =~ ^[0-9]+$ ]] || return 0
+  log "Issue #$issue_num: /split in comment(s) $(echo "$triggers" | jq -r 'join(", ")' 2>/dev/null || echo "?") → filing the plan's Proposed split"
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: would split #$issue_num"
+    return 0
+  fi
+  dir=$(split_dir_for "$issue_num")
+  if ! mkdir -p "$(dirname "$dir")" || ! { [[ -d "$dir" ]] || mkdir -m 700 "$dir"; }; then
+    log "WARNING: can't create $dir; the next tick tries the split again"
+    return 0
+  fi
+  cards_file="$dir/plan-$plan_id.json"
+  if [[ ! -s "$cards_file" ]]; then
+    split_write_cards "$issue_num" "$record" "$plan_body" "$triggers" "$cards_file" || return 0
+  fi
+  nums=$(split_file_children "$issue_num" "$plan_id" "$cards_file") || return 0
+  split_link_children "$issue_num" "$nums"
+  split_finish "$item_id" "$issue_num" "$plan_id" "$triggers" "$nums"
 }
 
 # Has the issue already received the Phase A implement-stub comment? Used so
@@ -8764,9 +9126,35 @@ and drag the card back to **Ready** to retry.
     # since, is caught up without waiting for another replan.
     plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" "$PLAN_BODY"
 
+    # /split (ADR-0102), before any replan: the operator's `/split` comment
+    # files the plan's Proposed split as sub-cards, and the card leaves Plan
+    # Review for Backlog. A card already split (its label and its split
+    # comment) that is back in Plan Review only goes back to Backlog.
+    if [[ "${FACTORY_SPLIT:-1}" -eq 1 ]]; then
+      if [[ ",$ITEM_LABELS," == *",$SPLIT_LABEL,"* ]] \
+          && comments_have_marker "$COMMENTS_JSON" "drafto-factory-split:$PLAN_COMMENT_ID"; then
+        log "Issue #$ISSUE_NUM: already split ($SPLIT_LABEL); moving it back to Backlog"
+        [[ "$DRY_RUN" -eq 1 ]] || split_park_parent "$ITEM_ID" "$ISSUE_NUM"
+        continue
+      fi
+      SPLIT_TRIGGERS=$(split_trigger_ids "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ISSUE_NUM") || SPLIT_TRIGGERS="[]"
+      if [[ "$(echo "$SPLIT_TRIGGERS" | jq 'length' 2>/dev/null || echo 0)" != "0" ]]; then
+        split_card "$ITEM_ID" "$ISSUE_NUM" "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$SPLIT_TRIGGERS"
+        continue
+      fi
+    fi
+
     ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
     if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
     UNACKED_JSON=$(unacked_owner_comments "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ACKED_JSON" "$ISSUE_NUM")
+    # A /split directive is never replan feedback: with FACTORY_SPLIT=1
+    # split_card handles it above, and one a split already answered stays
+    # answered even with the knob off.
+    if [[ "${FACTORY_SPLIT:-1}" -eq 1 ]]; then
+      UNACKED_JSON=$(split_drop_directives "$COMMENTS_JSON" "$UNACKED_JSON" all)
+    else
+      UNACKED_JSON=$(split_drop_directives "$COMMENTS_JSON" "$UNACKED_JSON")
+    fi
     UNACKED_COUNT=$(echo "$UNACKED_JSON" | jq 'length' 2>/dev/null || echo "0")
     # A finished plan-stage probe the plan hasn't folded in yet is a trigger of
     # its own, with no comment to answer (ADR-0071). Its report and notices

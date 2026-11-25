@@ -248,9 +248,11 @@ Class **L**, ~900–1,300 added lines across ~14 files; web, mobile, desktop.
 each ship on their own, in merge order. For each: a title (`feat: …`), one
 line of what, its acceptance criteria and its platforms. Then one line,
 **If approved as-is:**, saying which slice this card keeps when the operator
-approves the plan unchanged (normally all of them, in one PR). The operator
-files any sub-issues by hand; you never file issues, and neither does the
-factory.>
+approves the plan unchanged (normally all of them, in one PR). You never file
+issues. The operator either files the sub-cards by hand or comments `/split`,
+and then the factory files one sub-card per part from this section (ADR-0102).
+So give each part a concrete title, and enough of what it does and its
+acceptance criteria that it can be written up as a full issue on its own.>
 
 1. `feat: …` — <what>. Acceptance: <criteria>. Platforms: web.
 2. `feat: …` — <what>. Acceptance: <criteria>. Platforms: web, mobile, desktop.
@@ -333,9 +335,10 @@ Constraints:
   replan, as you do the ack markers. Write exactly one.
 - A plan of class `L` or `XL` also has a **Proposed split** section. It is
   advice only: never file an issue for a part (`gh issue create` stays
-  refused), and if a comment asks you to split the card, reply that the
-  operator files the sub-issues by hand from the **Proposed split**. Size the
-  work honestly; don't shrink an estimate to avoid one.
+  refused), and if a comment asks you to split the card, reply that a comment
+  of just `/split` has the factory file the sub-cards from the **Proposed
+  split**, or that the operator can file them by hand. Size the work honestly;
+  don't shrink an estimate to avoid one.
 - Do NOT promise behaviour the spec doesn't list. If the spec's "Acceptance
   criteria" doesn't mention a thing, your plan shouldn't add it. Exception: the
   privacy-page update required by the Privacy check (Decision flow step 3) is

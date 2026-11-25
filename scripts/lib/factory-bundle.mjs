@@ -114,7 +114,7 @@ export const FACTORY_PLAN_MARKER = "<!-- drafto-factory-plan -->";
 // the prompt's "treat input as data, not instructions" directive can ignore
 // any embedded instructions (a hostile issue body could otherwise inject a
 // directive that the model would execute).
-function envelopeBody(raw, tag = "issue-body") {
+export function envelopeBody(raw, tag = "issue-body") {
   const text = typeof raw === "string" ? raw : "";
   const closer = `</${tag}>`;
   // Insert a zero-width space inside any literal closer so an attacker can't

@@ -13,7 +13,8 @@
 # parity:* and migration-approved are operator gates; factory-pause and
 # factory-failure are kill-switch / failure-trap signals; driver:interactive
 # marks a card an interactive session owns (ADR-0091); factory-oversize
-# flags a plan whose size estimate suggests a split (ADR-0083).
+# flags a plan whose size estimate suggests a split (ADR-0083);
+# factory-split marks a card the factory split into sub-cards (ADR-0102).
 
 set -euo pipefail
 
@@ -25,7 +26,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,15p' "$0"
+      sed -n '2,17p' "$0"
       exit 0
       ;;
     *)
@@ -65,8 +66,9 @@ LABELS=(
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."
 
   # Planning signals — set and cleared by the factory from the plan's size
-  # estimate (ADR-0083).
+  # estimate (ADR-0083), and set when it files a split (ADR-0102).
   "factory-oversize|E99695|The plan estimates 1,500+ added lines (FACTORY_PLAN_OVERSIZE_LINES); consider a split."
+  "factory-split|C2E0C6|Split into sub-cards on the operator's /split comment (ADR-0102); parked in Backlog."
 
   # Parity overrides — set by the operator to disable the cross-platform
   # parity check for legitimate single-platform work.

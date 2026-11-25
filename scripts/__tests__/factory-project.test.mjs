@@ -797,6 +797,59 @@ describe("findItemForIssue / addIssueToProject (drive-issue, ADR-0091)", () => {
   });
 });
 
+describe("ensureItemForIssue (/split, ADR-0102)", () => {
+  const issueResp = (items) =>
+    ghResp({
+      data: { repository: { issue: { id: "ISSUE_NODE", projectItems: { nodes: items } } } },
+    });
+
+  it("returns the card already on the board without adding it again", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (_c, a) => a.join(" ").includes("projectItems"),
+          response: issueResp([
+            { id: "ITEM", project: { id: "P1" }, fieldValueByName: { name: "Backlog" } },
+          ]),
+        },
+      ]),
+    );
+    assert.deepEqual(await lib.ensureItemForIssue("P1", 42), {
+      itemId: "ITEM",
+      status: "Backlog",
+      added: false,
+    });
+    assert.ok(!execCalls.some((c) => c.args.join(" ").includes("addProjectV2ItemById")));
+  });
+
+  it("adds an issue that isn't on the board, and throws for a missing issue", async () => {
+    lib._setExecFileForTests(
+      makeExecFile([
+        {
+          match: (_c, a) => a.join(" ").includes("projectItems"),
+          response: issueResp([]),
+        },
+        {
+          match: (_c, a) => a.join(" ").includes("addProjectV2ItemById"),
+          response: ghResp({ data: { addProjectV2ItemById: { item: { id: "NEW_ITEM" } } } }),
+        },
+      ]),
+    );
+    assert.deepEqual(await lib.ensureItemForIssue("P1", 42), {
+      itemId: "NEW_ITEM",
+      status: null,
+      added: true,
+    });
+    assert.ok(execCalls.some((c) => c.args.includes("contentId=ISSUE_NODE")));
+    lib._setExecFileForTests(
+      makeExecFile([
+        { match: () => true, response: ghResp({ data: { repository: { issue: null } } }) },
+      ]),
+    );
+    await assert.rejects(lib.ensureItemForIssue("P1", 42), /not found/);
+  });
+});
+
 describe("findItemForIssue pagination (PR #888)", () => {
   it("reads every page of the issue's projects before saying it isn't on the board", async () => {
     const page = (nodes, hasNextPage) =>
