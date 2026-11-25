@@ -178,10 +178,9 @@ test.describe("Note editing flow", () => {
   test("move a note between notebooks", async ({ page }, testInfo) => {
     // The note starts in a notebook made for this test. One picked from the sidebar
     // can be gone after the reload below: the e2e account can hold more notebooks than
-    // a query returns (Supabase caps it at 1000 rows, most recently updated first), and
-    // creating a notebook re-sorts the sidebar by name, so its first entry can be the
-    // oldest one listed, which the new notebook has already pushed out of the query.
-    // Another worker can also delete a notebook it created.
+    // a query returns (Supabase caps it at 1000 rows, most recently updated first), so a
+    // notebook listed when the page loaded can be pushed out of the query by the ones
+    // created since. Another worker can also delete a notebook it created.
     //
     // The source isn't deleted when the test ends: until Target exists it can be the
     // newest notebook, which other workers' tests open by default. Deleting it could pull

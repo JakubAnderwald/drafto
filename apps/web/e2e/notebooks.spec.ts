@@ -166,6 +166,45 @@ test.describe("Notebook management lifecycle", () => {
     await expect(page.locator("nav li").filter({ hasText: notebookName })).toHaveCount(1);
   });
 
+  test("issue #480: creating a notebook with Enter sends one request and lists it first", async ({
+    page,
+  }, testInfo) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+
+    const isCreate = (method: string, url: string) =>
+      method === "POST" && new URL(url).pathname === "/api/notebooks";
+    let createRequests = 0;
+    page.on("request", (request) => {
+      if (isCreate(request.method(), request.url())) createRequests += 1;
+    });
+
+    const name = `Test Notebook ${Date.now()}`;
+    await page.getByRole("button", { name: "New notebook" }).click();
+    const createInput = page.getByPlaceholder("Notebook name");
+    await expect(createInput).toBeVisible();
+    await createInput.fill(name);
+
+    const created = page.waitForResponse((res) =>
+      isCreate(res.request().method(), res.request().url()),
+    );
+    await createInput.press("Enter");
+    const res = await created;
+    expect(res.ok()).toBe(true);
+    recordRunNotebook(testInfo, ((await res.json()) as { id: string }).id);
+
+    // Enter closes the field. Its blur must not send the create a second time.
+    await expect(createInput).toBeHidden();
+    // Leave a stray second request time to go out before counting.
+    await page.waitForTimeout(500);
+    expect(createRequests).toBe(1);
+
+    // The sidebar keeps the server's order (newest `updated_at` first), so the new notebook is
+    // the first row straight away. Checked before any reload: other workers create notebooks
+    // too, and a refetch would list theirs above it.
+    await expect(page.getByTestId("notebook-name").first()).toHaveText(name);
+  });
+
   test("default notebook exists on first visit", async ({ page }) => {
     await page.goto("/");
 
