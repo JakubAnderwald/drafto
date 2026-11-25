@@ -99,16 +99,18 @@ Everything in `CLAUDE.md` applies to both modes. These are the rules that differ
 
 **Handing a card to the factory.** Commit and push everything first: unpushed commits make the factory's worktree diverge, and its implement stage then blocks the card. Then run `drive-issue.mjs release <n> --to <Column> --note "<state, what's left>"`.
 
-| Hand back to                        | Needs            | The factory then                                                  |
-| ----------------------------------- | ---------------- | ----------------------------------------------------------------- |
-| Ready                               | —                | plans it (spec gate first)                                        |
-| Plan Review                         | —                | waits for your board drag; your comments trigger a replan         |
-| In Progress                         | the plan comment | implements the plan on `factory/issue-<n>`                        |
-| In Review                           | plan + open PR   | fixes CI and threads, runs its code review, hands on              |
-| Testing                             | plan + open PR   | runs its verification lanes                                       |
-| In Test                             | plan + open PR   | waits for your board drag; actionable comments trigger a revision |
-| Approved                            | plan + open PR   | runs `--release`: gates, merge, betas                             |
-| Released / Done / Blocked / Backlog | —                | nothing                                                           |
+| Hand back to                        | Needs            | The factory then                                                            |
+| ----------------------------------- | ---------------- | --------------------------------------------------------------------------- |
+| Ready                               | —                | plans it (spec gate first)                                                  |
+| Plan Review                         | —                | waits for your board drag; your comments trigger a replan                   |
+| In Progress                         | the plan comment | implements the plan on `factory/issue-<n>` (see below for an oversize plan) |
+| In Review                           | plan + open PR   | fixes CI and threads, runs its code review, hands on                        |
+| Testing                             | plan + open PR   | runs its verification lanes                                                 |
+| In Test                             | plan + open PR   | waits for your board drag; actionable comments trigger a revision           |
+| Approved                            | plan + open PR   | runs `--release`: gates, merge, betas                                       |
+| Released / Done / Blocked / Backlog | —                | nothing                                                                     |
+
+Oversize plans: a card handed back to In Progress before it has started, whose plan estimates `FACTORY_PLAN_OVERSIZE_LINES` (1,500) added lines or more, is sent back to Plan Review by the factory's oversize hold unless the issue has `oversize-approved` ([ADR-0103](../adr/0103-factory-oversize-hold.md)). Add the label first to have the factory run it as one PR, or split the card. A card that has started is never held: one with a `factory/issue-<n>` branch on origin (work pushed without a PR), a PR (open or closed), a worktree slot assigned to it, or an implement run or resume record in the factory's state (`implementSessionId`, `implementResumeSession`). The full rules are in the runbook's [oversize hold](../operations/factory-runbook.md#plan-size-and-the-oversize-label).
 
 Approvals: handing a card from a column before In Progress to In Progress or any later column (through Done) needs `plan-approved` logged after the latest plan or replan. Handing it from a column before Approved to Approved, Released or Done needs `approved` logged after the latest revision. This applies when the current column is one of the flow columns (Backlog through Done); `--force` never waives it.
 

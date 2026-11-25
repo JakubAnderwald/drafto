@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GH_TIMEOUT_SEC_DEFAULT, ghTimeoutMs } from "../lib/gh-timeout.mjs";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const scriptsDir = resolve(__dirname, "..");
@@ -117,12 +118,11 @@ function runBash(script, { binDir, env = {}, input } = {}) {
   return spawnSync("bash", ["-c", script], {
     encoding: "utf8",
     input,
-    env: {
-      ...process.env,
+    env: hermeticEnv({
       PATH: binDir ? `${binDir}:${process.env.PATH}` : process.env.PATH,
       SCRIPT_DIR: scriptsDir,
       ...env,
-    },
+    }),
   });
 }
 
