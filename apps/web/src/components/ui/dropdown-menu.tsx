@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   type HTMLAttributes,
+  type RefObject,
   type ButtonHTMLAttributes,
 } from "react";
 import { cn } from "@/lib/cn";
@@ -18,10 +19,16 @@ export interface DropdownMenuProps extends HTMLAttributes<HTMLDivElement> {
   onClose: () => void;
   /** Alignment relative to the trigger. Default: "right" */
   align?: "left" | "right";
+  /**
+   * The element that toggles this menu. A mousedown on it doesn't count as an outside click,
+   * so the trigger's own click can close the menu instead of closing and reopening it.
+   * Without it, every mousedown outside the menu closes it, the trigger included.
+   */
+  triggerRef?: RefObject<HTMLElement | null>;
 }
 
 export const DropdownMenu = forwardRef<HTMLDivElement, DropdownMenuProps>(function DropdownMenu(
-  { open, onClose, align = "right", className, children, ...props },
+  { open, onClose, align = "right", triggerRef, className, children, ...props },
   ref,
 ) {
   const internalRef = useRef<HTMLDivElement>(null);
@@ -32,14 +39,16 @@ export const DropdownMenu = forwardRef<HTMLDivElement, DropdownMenuProps>(functi
     if (!open) return;
 
     function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
+      const target = e.target as Node;
+      if (!menuRef.current || menuRef.current.contains(target)) return;
+      // The trigger toggles the menu itself on click.
+      if (triggerRef?.current?.contains(target)) return;
+      onClose();
     }
 
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open, onClose, menuRef]);
+  }, [open, onClose, menuRef, triggerRef]);
 
   // Close on Escape
   useEffect(() => {

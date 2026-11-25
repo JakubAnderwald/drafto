@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useCallback } from "react";
+import { use, useState, useCallback, useRef } from "react";
 import { handleAuthError } from "@/lib/handle-auth-error";
 import { displayNoteTitle } from "@/lib/note-title";
 import { IconButton } from "@/components/ui/icon-button";
@@ -147,6 +147,10 @@ export function NoteList({
   const [prevInitialNotes, setPrevInitialNotes] = useState(initialNotes);
   const [prevNoteUpdate, setPrevNoteUpdate] = useState(lastNoteUpdate);
   const [menuOpenForNote, setMenuOpenForNote] = useState<string | null>(null);
+  // The open row menu's trigger, so clicking it closes the menu instead of closing and
+  // reopening it. Only the row whose menu is open gets the ref: this relies on at most one
+  // row menu being open at a time.
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Update notes when cache key changes (new data loaded via refreshTrigger)
   // Track prevInitialNotes separately so optimistic updates aren't reverted
@@ -282,6 +286,7 @@ export function NoteList({
 
                 {hasActions && (
                   <IconButton
+                    ref={menuOpenForNote === note.id ? menuTriggerRef : undefined}
                     size="sm"
                     variant="ghost"
                     onClick={(e) => {
@@ -312,6 +317,7 @@ export function NoteList({
                 <DropdownMenu
                   open={menuOpenForNote === note.id}
                   onClose={() => setMenuOpenForNote(null)}
+                  triggerRef={menuTriggerRef}
                   align="right"
                   className="top-8"
                 >

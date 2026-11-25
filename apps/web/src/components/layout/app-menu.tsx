@@ -45,6 +45,7 @@ export function AppMenu({
 }: AppMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const router = useRouter();
 
   const handleLogout = async () => {
@@ -58,6 +59,7 @@ export function AppMenu({
       <div className="flex items-center gap-1">
         <ThemeToggle />
         <IconButton
+          ref={triggerRef}
           size="sm"
           onClick={() => setOpen((prev) => !prev)}
           aria-label="App menu"
@@ -70,6 +72,7 @@ export function AppMenu({
       <DropdownMenu
         open={open}
         onClose={() => setOpen(false)}
+        triggerRef={triggerRef}
         align="right"
         className="bottom-full mb-1"
       >
