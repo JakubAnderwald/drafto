@@ -481,6 +481,19 @@ To run the check yourself, from a checkout of the PR branch: `pnpm hosted-config
 
 **Label description.** `scripts/setup-factory-labels.sh` holds the label's description. After it changes (as it did for ADR-0078), re-run `bash scripts/setup-factory-labels.sh` once to update the live label on GitHub; it's idempotent.
 
+## Code review of a large PR
+
+`review_stage` ([ADR-0035](../adr/0035-factory-code-review-gate.md)) fetches the PR's diff and, every time, its file listing (`gh api --paginate repos/JakubAnderwald/drafto/pulls/<n>/files`, one status, path and added/deleted line count per file). `factory-bundle.mjs` then picks the bundle's `reviewDiffMode`:
+
+- **`inline`**: the whole diff, for a PR whose diff fits `truncateDiff`'s caps (4000 lines, 200 KB).
+- **`file-list`**: an empty diff and the file stats (`prFileStats`, up to 1000 rows) for a larger diff, or for one `gh pr diff` refused with HTTP 406 (over 300 files or 20,000 lines). The reviewer saves the file listing once under `$TMPDIR`, reads each non-generated file's patch from it with jq, risky files first, and anchors inline comments only on lines in those patches. Until 2026-11, the reviewer got the first 200 KB of the diff instead. That cost the most per review, and the reviewer fetched the whole diff again almost every time.
+
+The log says `PR #<n>'s diff is too large to send inline; reviewing in file-list mode (<k> files)`. Inline reviews log nothing extra. If the file listing call fails, a large diff still goes inline, truncated and flagged as partial, as before. If both calls fail, the log says `empty diff for PR #<n>; skipping review`, and that commit goes unreviewed.
+
+The diff and the file lists reach `jq` through `--rawfile`. Before 2026-11 a diff of about 1 MB or more failed with `Argument list too long`, and the review was skipped with `build_review_bundle failed`.
+
+When `gh pr diff --name-only` refuses a PR with HTTP 406, the In Review loop takes the changed files from the same endpoint and logs `gh pr diff refused PR #<n>'s diff (too large?); took its changed files from the files API`. Before that, the card was skipped with `gh pr diff #<n> failed (transient?)` on every tick and never reached its review. The later stages, such as the scenario writer and the gates, still call `gh pr diff` themselves.
+
 ## CodeRabbit CLI gap-fill lane
 
 CodeRabbit's PR bot runs on the free OSS tier and often doesn't review a factory commit: it is rate-limited (1–10 PR reviews/hr, scaled by the repo's stars), skipped, or auto-paused after two reviewed commits (`.coderabbit.yaml`). The **CodeRabbit CLI** has a separate free allowance of 3 reviews/hr. When the bot didn't cover a converged In Review card's head commit, `--watch` reviews that commit with the CLI on the Mac mini and posts the findings as review threads, which the ADR-0035 fix loop then answers. See [ADR-0036](../adr/0036-factory-coderabbit-cli-gap-fill.md).

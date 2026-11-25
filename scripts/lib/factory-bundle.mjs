@@ -921,6 +921,40 @@ export function truncateDiff(text, { maxBytes = 200_000, maxLines = 4000 } = {})
   return { text: out, truncated, omittedLines };
 }
 
+// The statuses GitHub's pulls/<n>/files endpoint reports for a file.
+const PR_FILE_STATUSES = new Set([
+  "added",
+  "removed",
+  "modified",
+  "renamed",
+  "copied",
+  "changed",
+  "unchanged",
+]);
+// The most file rows a review bundle carries. The files endpoint lists up to
+// 3000; the bundle travels in claude's argv, and a reviewer with this many
+// files lists the rest itself (factory-review-prompt.md, "File-list mode").
+export const REVIEW_FILE_STATS_MAX = 1000;
+
+// Parse the review stage's file listing: one `status<TAB>path<TAB>additions<TAB>
+// deletions` line per file, as `gh api --paginate repos/…/pulls/<n>/files --jq
+// '.[]|[.status,.filename,.additions,.deletions]|@tsv'` prints it. A line that
+// doesn't have that shape is dropped rather than guessed at.
+export function parsePrFileStats(text) {
+  const raw = typeof text === "string" ? text : "";
+  const out = [];
+  for (const line of raw.split("\n")) {
+    const parts = line.replace(/\r$/, "").split("\t");
+    if (parts.length !== 4) continue;
+    const [status, path, additions, deletions] = parts;
+    if (!PR_FILE_STATUSES.has(status)) continue;
+    if (!path || path.length > 500) continue;
+    if (!/^\d+$/.test(additions) || !/^\d+$/.test(deletions)) continue;
+    out.push({ status, path, additions: Number(additions), deletions: Number(deletions) });
+  }
+  return out;
+}
+
 // Bundle for the code-review stage (`factory-agent.sh --watch`, In Review, once
 // per head SHA on a green PR). Read-only: the model reads the diff and posts
 // each finding as an inline review thread plus one marked summary comment. It
@@ -928,12 +962,22 @@ export function truncateDiff(text, { maxBytes = 200_000, maxLines = 4000 } = {})
 // change) and the diff (what actually changed) — enough to catch scope drift as
 // well as defects. Deliberately NO comment thread: a reviewer should judge the
 // diff, not be primed by what people have already said about it.
+//
+// Two modes (`reviewDiffMode`). "inline" carries the whole diff, as before. A
+// diff truncateDiff would cut, or one `gh pr diff` refused (HTTP 406 over 300
+// files or 20,000 lines, so `prDiff` is empty), goes "file-list" instead: an
+// empty diff envelope plus `prFileStats`, one {status, path, additions,
+// deletions} per file, and the reviewer fetches each file's patch itself. A
+// truncated inline diff cost the most and was fetched again in full anyway.
+// Without a file listing (`prFileStats` empty: the files call failed) a large
+// diff stays inline and truncated, flagged by `prDiffTruncated`.
 export function buildFactoryReviewBundle({
   issue,
   approvedPlan,
   priorPr = null,
   prDiff = "",
   prFiles = "",
+  prFileStats = "",
   headSha = "",
   config,
   repo,
@@ -950,6 +994,16 @@ export function buildFactoryReviewBundle({
   // coerces any non-string to ""), which would hand the reviewer a zero-byte
   // diff and make the whole gate decorative.
   const diff = truncateDiff(prDiff);
+  const stats = parsePrFileStats(prFileStats);
+  const diffText = typeof prDiff === "string" ? prDiff : "";
+  const fileList = (diff.truncated || diffText === "") && stats.length > 0;
+  // In file-list mode nothing is inline: every line of the diff is omitted. With
+  // no diff at all (gh refused it), the files' changed-line counts stand in.
+  const omittedLines = !fileList
+    ? diff.omittedLines
+    : diffText === ""
+      ? stats.reduce((sum, f) => sum + f.additions + f.deletions, 0)
+      : diffText.split("\n").length;
   return {
     kind: "factory_review",
     issue: shapeIssue(issue),
@@ -972,13 +1026,19 @@ export function buildFactoryReviewBundle({
         }
       : null,
     headSha: typeof headSha === "string" ? headSha : "",
+    // Not `prDiffMode`: the In Test bundle already uses that name for its
+    // full/delta choice.
+    reviewDiffMode: fileList ? "file-list" : "inline",
     // Enveloped like every other untrusted input: a hunk may quote a directive
     // and must never be read as an instruction.
-    prDiffEnveloped: envelopeBody(diff.text, "pr-diff"),
+    prDiffEnveloped: envelopeBody(fileList ? "" : diff.text, "pr-diff"),
     // The reviewer needs to know when it is looking at a partial diff, or it
-    // will review the first 4000 lines and call the PR clean.
-    prDiffTruncated: diff.truncated,
-    prDiffOmittedLines: diff.omittedLines,
+    // will review the first 4000 lines and call the PR clean. Always true in
+    // file-list mode, where nothing is inline.
+    prDiffTruncated: fileList || diff.truncated,
+    prDiffOmittedLines: omittedLines,
+    prFileStats: fileList ? stats.slice(0, REVIEW_FILE_STATS_MAX) : [],
+    prFileStatsOmitted: fileList ? Math.max(0, stats.length - REVIEW_FILE_STATS_MAX) : 0,
     prFiles: typeof prFiles === "string" ? prFiles : "",
     config: shapeConfig(config),
     repo: shapeRepo(repo),
@@ -1932,6 +1992,7 @@ async function main() {
       priorPr: input.priorPr,
       prDiff: input.prDiff,
       prFiles: input.prFiles,
+      prFileStats: input.prFileStats,
       headSha: input.headSha,
       config: input.config,
       repo: input.repo,
