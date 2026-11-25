@@ -176,7 +176,76 @@ export function readDeviceKnobs(env = process.env) {
       ? expandTilde(env.FACTORY_DEVICE_ACCOUNT_FILE, home)
       : null,
     keepRaw: env.FACTORY_DEVICE_KEEP_RAW === "1",
+    jdkPaths: (env.FACTORY_DEVICE_JDK_PATHS || "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => expandTilde(p, home)),
+    home,
   };
+}
+
+// ── JDK toolchains for gradle ───────────────────────────────────────────────
+//
+// The React Native gradle plugin asks for a JDK 17 toolchain. With the lane's
+// own GRADLE_USER_HOME, gradle finds none cached and asks the foojay resolver
+// to download one, which crashes on Gradle 9 (NoSuchFieldError IBM_SEMERU).
+// So the lane names every installed JDK and turns auto-download off: a missing
+// toolchain then fails the build with a clear message instead.
+
+/** Major version from a JDK home's `release` file, or null. */
+export function jdkMajor(fs, jdkHome) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(jdkHome, "release"), "utf8");
+  } catch {
+    return null;
+  }
+  const m = /^JAVA_VERSION="(\d+)(?:\.(\d+))?/m.exec(text);
+  if (!m) return null;
+  const first = Number(m[1]);
+  return first === 1 && m[2] ? Number(m[2]) : first;
+}
+
+function childDirs(fs, dir) {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => path.join(dir, d.name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Installed JDK homes gradle may use as toolchains: FACTORY_DEVICE_JDK_PATHS,
+ * the lane's java home, the user's gradle-provisioned JDKs (~/.gradle/jdks)
+ * and the system and user JavaVirtualMachines. Only homes with bin/java and a
+ * readable version are kept, in that order, without duplicates.
+ */
+export function findJdkHomes(knobs, fs) {
+  const home = knobs.home || os.homedir();
+  const candidates = [...(knobs.jdkPaths || [])];
+  if (knobs.javaHome) candidates.push(knobs.javaHome);
+  for (const dir of childDirs(fs, path.join(home, ".gradle", "jdks"))) {
+    candidates.push(path.join(dir, "Contents", "Home"));
+    for (const sub of childDirs(fs, dir)) candidates.push(path.join(sub, "Contents", "Home"), sub);
+  }
+  for (const vms of [
+    "/Library/Java/JavaVirtualMachines",
+    path.join(home, "Library", "Java", "JavaVirtualMachines"),
+  ]) {
+    for (const dir of childDirs(fs, vms)) candidates.push(path.join(dir, "Contents", "Home"));
+  }
+  const seen = new Set();
+  const out = [];
+  for (const c of candidates) {
+    if (seen.has(c)) continue;
+    seen.add(c);
+    if (fs.existsSync(path.join(c, "bin", "java")) && jdkMajor(fs, c) !== null) out.push(c);
+  }
+  return out;
 }
 
 export function deviceRootFor(knobs, platform) {
@@ -935,12 +1004,15 @@ export function iosAppPath(root) {
   return path.join(root, ".derived/Build/Products/Release-iphonesimulator/Drafto.app");
 }
 
-export function androidBuildArgs(knobs) {
+export function androidBuildArgs(knobs, jdkHomes = []) {
   return [
     "assembleRelease",
     "-PreactNativeArchitectures=arm64-v8a",
     "--no-daemon",
     "-Pkotlin.compiler.execution.strategy=in-process",
+    // Toolchains from installed JDKs only (see findJdkHomes).
+    "-Porg.gradle.java.installations.auto-download=false",
+    ...(jdkHomes.length ? [`-Porg.gradle.java.installations.paths=${jdkHomes.join(",")}`] : []),
     // AGP's injected signing wins over the build type's signingConfig.
     `-Pandroid.injected.signing.store.file=${knobs.keystore}`,
     `-Pandroid.injected.signing.store.password=${DEBUG_KEYSTORE.storePassword}`,
@@ -954,7 +1026,8 @@ export async function buildAndroid(ctx, root, env) {
   const apk = androidApkPath(root);
   rmQuiet(deps.fs, apk);
   const log = path.join(ctx.platDir, "build.log");
-  const r = await guardedRun(ctx, "./gradlew", androidBuildArgs(meta.knobs), {
+  const jdks = findJdkHomes(meta.knobs, deps.fs);
+  const r = await guardedRun(ctx, "./gradlew", androidBuildArgs(meta.knobs, jdks), {
     cwd: path.join(root, "apps", "mobile", "android"),
     env,
     timeoutMs: meta.knobs.buildTimeoutMin * MINUTE_MS,
@@ -2500,6 +2573,12 @@ export async function runSelftestChecks({ repoRoot, platforms }, deps) {
     add(javaName, false, "no FACTORY_DEVICE_JAVA_HOME and java_home found none");
   }
   if (platforms.includes("android")) {
+    const jdk17 = findJdkHomes(knobs, deps.fs).find((h) => jdkMajor(deps.fs, h) === 17);
+    add(
+      "JDK 17 toolchain",
+      jdk17,
+      jdk17 ?? "none found; set FACTORY_DEVICE_JDK_PATHS or install temurin@17",
+    );
     add(`AVD ${AVD_NAME}`, avdExists(knobs, deps.fs), knobs.avdHome);
     add("debug keystore", deps.fs.existsSync(knobs.keystore), knobs.keystore);
   }

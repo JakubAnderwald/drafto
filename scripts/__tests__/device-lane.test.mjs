@@ -23,6 +23,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  androidBuildArgs as androidBuildArgsForJdk,
+  findJdkHomes,
+  jdkMajor,
   DEV_REF,
   EMULATOR_SERIAL,
   INVALID_API_URL,
@@ -1461,5 +1464,56 @@ describe("review fixes", () => {
     assert.deepEqual(out.reaped.runDirs, [old]);
     assert.deepEqual(out.reaped.privateDirs, [recent]);
     assert.equal(existsSync(old), false);
+  });
+});
+
+describe("JDK toolchains for gradle", () => {
+  let home;
+  beforeEach(() => {
+    home = nodeFs.mkdtempSync(path.join(tmpdir(), "device-jdk-"));
+  });
+  afterEach(() => nodeFs.rmSync(home, { recursive: true, force: true }));
+
+  function makeJdk(dir, version) {
+    nodeFs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+    nodeFs.writeFileSync(path.join(dir, "bin", "java"), "");
+    nodeFs.writeFileSync(path.join(dir, "release"), `JAVA_VERSION="${version}"\n`);
+    return dir;
+  }
+
+  it("reads the major version from a JDK's release file", () => {
+    assert.equal(jdkMajor(nodeFs, makeJdk(path.join(home, "a"), "17.0.17")), 17);
+    assert.equal(jdkMajor(nodeFs, makeJdk(path.join(home, "b"), "1.8.0_392")), 8);
+    assert.equal(jdkMajor(nodeFs, path.join(home, "missing")), null);
+  });
+
+  it("finds gradle-provisioned JDKs, the java home and explicit paths, without duplicates", () => {
+    const provisioned = makeJdk(
+      path.join(
+        home,
+        ".gradle",
+        "jdks",
+        "eclipse_adoptium-17",
+        "jdk-17.0.17+10",
+        "Contents",
+        "Home",
+      ),
+      "17.0.17",
+    );
+    const jbr = makeJdk(path.join(home, "jbr"), "21.0.9");
+    const extra = makeJdk(path.join(home, "extra"), "24");
+    nodeFs.mkdirSync(path.join(home, ".gradle", "jdks", "broken"), { recursive: true });
+    const homes = findJdkHomes({ home, javaHome: jbr, jdkPaths: [extra, jbr] }, nodeFs);
+    assert.deepEqual(homes.slice(0, 3), [extra, jbr, provisioned]);
+    assert.equal(new Set(homes).size, homes.length);
+  });
+
+  it("turns toolchain auto-download off and names the installed JDKs", () => {
+    const knobs = { keystore: "/k/debug.keystore" };
+    const args = androidBuildArgsForJdk(knobs, ["/jdk17", "/jbr 21"]);
+    assert.ok(args.includes("-Porg.gradle.java.installations.auto-download=false"));
+    assert.ok(args.includes("-Porg.gradle.java.installations.paths=/jdk17,/jbr 21"));
+    const none = androidBuildArgsForJdk(knobs, []);
+    assert.ok(!none.some((a) => a.startsWith("-Porg.gradle.java.installations.paths=")));
   });
 });
