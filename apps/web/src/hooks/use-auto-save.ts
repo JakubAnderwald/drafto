@@ -104,6 +104,15 @@ function savedTimestamp(value: string): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+/** The fields of `data` that still hold the newest value typed for them. */
+function fieldsStillLatest(data: SaveData, latest: SaveData): SaveData {
+  return Object.fromEntries(
+    Object.entries(data).filter(
+      ([field, value]) => field in latest && Object.is(latest[field], value),
+    ),
+  );
+}
+
 export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -175,12 +184,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   const restorePending = useCallback(
     (data: SaveData): boolean | null => {
       if (!noteId || activeNoteIdRef.current !== noteId) return null;
-      const latest = latestEditRef.current;
-      const current = Object.fromEntries(
-        Object.entries(data).filter(
-          ([field, value]) => field in latest && Object.is(latest[field], value),
-        ),
-      );
+      const current = fieldsStillLatest(data, latestEditRef.current);
       if (Object.keys(current).length === 0) return false;
       pendingData.current = { ...current, ...pendingData.current };
       setHasPendingChanges(true);
@@ -384,15 +388,17 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   );
 
   /**
-   * The payload to send outside the drain loop: pending edits over the one in flight, if
-   * any. Marks the request in flight superseded, so its failure restores nothing. Edits
+   * The payload to send outside the drain loop: pending edits over the fields of the one in
+   * flight, if any, that still hold the newest value typed. A field typed again since is in
+   * `pending` or went out with an earlier flush, which its old value would overwrite. Marks
+   * the request in flight superseded, so its failure restores nothing. Edits
    * `cancelPendingSave` discarded while in flight are not sent again.
    */
   const takeOverInFlight = useCallback((pending: SaveData): SaveData => {
     const inFlight = inFlightRef.current;
     if (!inFlight || inFlight.cancelGen !== cancelGenRef.current) return pending;
     supersededRef.current = true;
-    return { ...inFlight.data, ...pending };
+    return { ...fieldsStillLatest(inFlight.data, latestEditRef.current), ...pending };
   }, []);
 
   /**

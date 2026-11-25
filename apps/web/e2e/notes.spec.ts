@@ -175,9 +175,14 @@ test.describe("Note editing flow", () => {
     await expect(page.getByText("Hello from E2E test")).toBeVisible({ timeout: 5000 });
   });
 
-  test("a title typed just before a reload is saved by the page-hide flush", async ({ page }) => {
-    // Fake timers, running in real time until the test holds them below.
-    await page.clock.install();
+  // Reloading fires both `pagehide` and `visibilitychange` (hidden), and either listener
+  // flushes, so this checks the flush as the page unloads. The unit tests check each event.
+  test("a title typed just before a reload is saved by the flush as the page unloads", async ({
+    page,
+  }) => {
+    // Fake timers, running in real time from `clockStart` until the test holds them below.
+    const clockStart = Date.now();
+    await page.clock.install({ time: clockStart });
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
@@ -189,8 +194,10 @@ test.describe("Note editing flow", () => {
     await expect(titleInput).toHaveValue("");
 
     // Hold the page's timers, so the 500 ms autosave debounce can't fire however long the
-    // reload takes to start: only the flush on `pagehide` can save this title.
-    await page.clock.pauseAt(Date.now() + 1000);
+    // reload takes to start: only the flush as the page unloads can save this title. The
+    // target is fixed from the install time, 30 s on (Playwright's default test timeout), so
+    // a slow setup can't carry the page's clock past it first.
+    await page.clock.pauseAt(clockStart + 30_000);
     const noteTitle = `E2E Reload Flush ${Date.now()}`;
     await titleInput.fill(noteTitle);
     await page.reload();

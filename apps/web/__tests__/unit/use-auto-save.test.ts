@@ -651,6 +651,40 @@ describe("useAutoSave", () => {
       expect(sentBody(4)).toEqual({ title: "New", content: ["newest"] });
     });
 
+    it("leaves a field an earlier flush re-sent with a newer value out of a later flush", async () => {
+      // "A" stays in flight throughout.
+      deferredFetch();
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      act(() => {
+        result.current.debouncedSave({ title: "A", content: ["in flight"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+
+      act(() => {
+        result.current.debouncedSave({ title: "B" });
+      });
+      setVisibility("hidden");
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      setVisibility("visible");
+      // The first flush carries the content no newer edit replaced.
+      expect(sentBody(1)).toEqual({ title: "B", content: ["in flight"] });
+
+      act(() => {
+        result.current.debouncedSave({ content: ["typed"] });
+      });
+      setVisibility("hidden");
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      // Title "A" would overwrite the "B" the first flush saved.
+      expect(sentBody(2)).toEqual({ content: ["typed"] });
+    });
+
     it("restores nothing when the save in flight fails but the flush that re-sent it lands", async () => {
       const inFlight = deferredFetch();
       const { result, unmount } = renderHook(() =>
