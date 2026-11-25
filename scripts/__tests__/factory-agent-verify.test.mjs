@@ -69,6 +69,8 @@ const verifyFns = [...script.matchAll(/^(verify_[a-z_]+)\(\) \{/gm)].map((m) => 
 // Every verify_* function plus the real helpers they lean on. Everything that
 // talks to GitHub, the board or claude is stubbed in the harness instead.
 const REAL_HELPERS = [
+  // A ci-red hand-back forgets the no-op record (ADR-0102).
+  "clear_ci_noop",
   "card_opted_out",
   "support_forward_filter",
   "gate_support_forwards",
@@ -915,6 +917,18 @@ describe("verify_hand_back (real helper)", () => {
     }
     withBash(back("head-moved"), { env: { HEAD } }, (r) => {
       assert.match(r.comments[0].body, /head moved to `aaaaaaaaaaaa`/);
+    });
+  });
+
+  // The hand-back promises the fix loop; a stale ciNoop on the same head
+  // would send the card straight to Blocked instead (ADR-0102).
+  it("a ci-red hand-back clears ciNoop; the others keep it", () => {
+    const rec = `${HEAD}:Lint`;
+    withBash(back("ci-red"), { env: { HEAD }, state: { ciNoop: rec } }, (r) => {
+      assert.equal(r.issue.ciNoop ?? null, null);
+    });
+    withBash(back("head-moved"), { env: { HEAD }, state: { ciNoop: rec } }, (r) => {
+      assert.equal(r.issue.ciNoop, rec);
     });
   });
 
