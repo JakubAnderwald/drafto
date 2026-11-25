@@ -237,7 +237,7 @@ function emptyIssue() {
     // the FACTORY_CI_RERUN_MAX budget. See rerun_infra_failures.
     ciRerun: null,
     // Red CI a --watch fix pass ended `noop` on (ADR-0102), as "<head sha>:<the
-    // failing required check names, sorted, comma-joined>". Seeing exactly that
+    // failing required check names, sorted, newline-joined>". Seeing that
     // again, --watch re-runs the checks in bash (ciRerun budget) instead of
     // another Claude pass, then parks the card in Blocked. A new push re-arms
     // it; so does clearing the field. See recover_noop_red_ci.

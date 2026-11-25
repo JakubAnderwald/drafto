@@ -4367,12 +4367,14 @@ recover_cancelled_ci() {
 # head SHA and re-arms the card; so does clearing ciNoop by hand.
 
 # pr_ci_noop_key <pr-view-json> — "<head sha>:<failing required check names,
-# sorted, comma-joined>", or nothing when the head or the failing set is unknown.
+# sorted, newline-joined>", or nothing when the head or the failing set is
+# unknown. Newline, not comma: a matrix job's name ("test (web, mobile)") can
+# hold a comma, and splitting on it would match the halves of a name.
 pr_ci_noop_key() {
   local pr_view="$1" sha names
   sha=$(echo "$pr_view" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
   [[ -n "$sha" ]] || return 0
-  names=$(pr_failing_required_checks "$pr_view" | jq -r '[ .[].name ] | unique | join(",")' 2>/dev/null || echo "")
+  names=$(pr_failing_required_checks "$pr_view" | jq -r '[ .[].name ] | unique | join("\n")' 2>/dev/null || echo "")
   [[ -n "$names" ]] || return 0
   echo "$sha:$names"
 }
@@ -4407,8 +4409,8 @@ ci_noop_repeat() {
   [[ -n "$record" && "${record%%:*}" == "${key%%:*}" ]] || return 1
   [[ "$record" == "$key" ]] && return 0
   jq -en --arg now "${key#*:}" --arg seen "${record#*:}" '
-    ($seen | split(",")) as $s
-    | ($now | split(",")) | length > 0 and all(. as $n | ($s | index($n)) != null)' \
+    ($seen | split("\n")) as $s
+    | ($now | split("\n")) | length > 0 and all(. as $n | ($s | index($n)) != null)' \
     >/dev/null 2>&1
 }
 
@@ -4416,14 +4418,17 @@ ci_noop_repeat() {
 # The re-runs are spent and the checks are still red: comment once per head SHA
 # (drafto-factory-ci-noop-hold:<sha12>) with the gh run rerun commands, move the
 # card to Blocked and free its worktree slot. It holds no lock on anything a
-# person needs, and the fix agent has nothing left to try. A tick that can't
+# person needs, and the fix agent has nothing left to try. The slot is kept
+# when the worktree holds commits the PR lacks (worktree_within_head, as
+# free_waiting_slot does): a noop pass may have committed without pushing, and
+# removing the worktree would strand them. A tick that can't
 # read the issue's comments, or can't post, leaves the card for the next tick
 # rather than park it without the notice. Those transient paths still return 0:
 # the --watch loop runs under `set -e`, and a non-zero status there would end
 # the whole tick (every later card skipped) and file a factory-failure issue.
 comment_ci_noop_hold() {
   local issue_num="$1" item_id="$2" pr_num="$3" head_sha="$4" pr_view="$5"
-  local sha12="${head_sha:0:12}" rc=0 summary commands count tried
+  local sha12="${head_sha:0:12}" rc=0 summary commands elsewhere count tried
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
     log "DRY-RUN: would comment on #$issue_num and move it to Blocked (red CI on ${sha12} after a no-op fix pass and the re-runs)"
     return 0
@@ -4435,14 +4440,25 @@ comment_ci_noop_hold() {
   fi
   if [[ "$rc" -eq 1 ]]; then
     count=$(ci_rerun_count "$issue_num" "$head_sha")
+    # ciRerun is one budget per head, shared with the cancelled-check path
+    # (rerun_infra_failures), so the count may include re-runs of other checks.
     if [[ "$count" -gt 0 ]]; then
-      tried="The factory re-ran them $count time(s), and they stayed red."
+      tried="The factory has used $count automatic re-run(s) on this commit (\`FACTORY_CI_RERUN_MAX\` is ${FACTORY_CI_RERUN_MAX:-2}, shared with re-runs of cancelled checks), and these checks are still red."
     else
       tried="The factory didn't re-run them (\`FACTORY_CI_RERUN_MAX\` is ${FACTORY_CI_RERUN_MAX:-2}, or none of them is a GitHub Actions job)."
     fi
     summary=$(pr_failing_required_summary "$pr_view" | sed 's/^/- /')
     commands=$(pr_infra_rerun_ids "$pr_view" | sed 's/^/gh run rerun /; s/$/ --failed --repo JakubAnderwald\/drafto/')
-    [[ -n "$commands" ]] || commands="# none of these is a GitHub Actions job; re-run it where it runs"
+    # A red check with no Actions run behind it (an outside service's status)
+    # has no gh command: name it, so the operator re-runs it where it runs.
+    elsewhere=$(pr_failing_required_checks "$pr_view" | jq -r '
+      .[] | select((.url // "") | test("/actions/runs/[0-9]+") | not)
+      | "# " + .name + ": not a GitHub Actions job; re-run it where it runs"' 2>/dev/null || echo "")
+    if [[ -n "$elsewhere" && -n "$commands" ]]; then
+      commands+=$'\n'"$elsewhere"
+    elif [[ -n "$elsewhere" ]]; then
+      commands="$elsewhere"
+    fi
     if ! gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
       --body "🏭 **CI is still red on \`$sha12\`, and the fix agent found nothing to change.**
 
@@ -4471,7 +4487,22 @@ in \`drafto-factory\`.
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastError \
     "red CI on $sha12: a no-op fix pass and the re-runs left it red" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  if ! worktree_within_head "$issue_num" "$head_sha"; then
+    logerr "Issue #$issue_num: parked in Blocked, but its worktree has commits the PR lacks; keeping its slot"
+    return 0
+  fi
   release_slot_and_worktree "$issue_num"
+}
+
+# clear_ci_noop <issue> — forget the no-op record (ADR-0102) when a card is
+# handed back to In Review for red CI from a later column (--release, the
+# Testing stage). The hand-back promises the fix loop, and without this the
+# record would send the card straight to Blocked on the same head.
+clear_ci_noop() {
+  local issue_num="$1"
+  [[ "${DRY_RUN:-0}" -eq 1 ]] && return 0
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciNoop "" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
 }
 
 # recover_noop_red_ci <issue> <item-id> <pr> <head-sha> <pr-view-json> — --watch,
@@ -7948,6 +7979,8 @@ verify_hand_back() {
   else
     log "Issue #$issue_num: Testing → In Review ($reason, ${head_sha:0:12})"
   fi
+  # A red hand-back promises the fix loop: forget an earlier no-op record.
+  [[ "$reason" == "ci-red" ]] && clear_ci_noop "$issue_num"
   case "$reason" in
     head-moved) why="PR #$pr_num's head moved to \`${head_sha:0:12}\` while the previous commit was being verified." ;;
     ci-red) why="A required check is red on PR #$pr_num at \`${head_sha:0:12}\`." ;;
@@ -10431,7 +10464,12 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
       # would find nothing new. Re-run the checks in bash, or park the card in
       # Blocked once the re-runs are spent. `|| true`: this loop runs under
       # `set -e`, and one card's hiccup must not end the tick for the rest.
+      # The migration renumber gate (ADR-0077) runs first, as it does before a
+      # fix pass: main may have merged a newer migration since the noop pass,
+      # and a re-run can't fix that.
       if ci_noop_repeat "$ISSUE_NUM" "$PR_VIEW"; then
+        migration_renumber_gate "$ISSUE_NUM" "$PR_NUM" "$WATCH_HEAD_SHA" "In Review" || true
+        [[ "$MIGRATION_RENUMBER_RESULT" == "renumbered" ]] && continue
         recover_noop_red_ci "$ISSUE_NUM" "$ITEM_ID" "$PR_NUM" "$WATCH_HEAD_SHA" "$PR_VIEW" || true
         continue
       fi
@@ -11560,7 +11598,9 @@ comes back to In Test for your approval once CI is green again.
       fi
       # Same hand-back as an unresolved review thread (below): --watch is the
       # only mode that runs the fix loop and it never looks at Approved cards.
+      # The comment promises the fix loop, so forget an earlier no-op record.
       transition_status "$ITEM_ID" "$ISSUE_NUM" "In Review" || true
+      clear_ci_noop "$ISSUE_NUM"
       continue
     fi
     if ! ci_required_green "$PR_VIEW"; then

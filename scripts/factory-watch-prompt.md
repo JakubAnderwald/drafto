@@ -370,7 +370,7 @@ attempt.
    - `action=noop` — nothing actionable this tick (transient failure, or the
      comments needed no code change); bash leaves the card In Review. On red
      CI it also spends an attempt and re-runs the red checks in bash next tick,
-     with no further fix pass on that head (step 1).
+     with no further fix pass for the same red checks on that head (step 1).
    - `action=blocked` — the fix needs to leave the plan's scope / phase, or the
      failure is unrecoverable; bash advances the card to Blocked.
    - `pr=<url>` — always the PR URL (the PR already exists).

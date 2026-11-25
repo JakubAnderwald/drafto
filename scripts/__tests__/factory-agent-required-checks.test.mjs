@@ -159,7 +159,7 @@ describe("factory-agent required-context gating: static wiring", () => {
     const block = script.slice(infraAt, fixLoopAt);
     const classifyAt = block.search(/classify_failing_required/);
     const repeatAt = block.search(
-      /if ci_noop_repeat "\$ISSUE_NUM" "\$PR_VIEW"; then\n\s*recover_noop_red_ci "\$ISSUE_NUM" "\$ITEM_ID" "\$PR_NUM" "\$WATCH_HEAD_SHA" "\$PR_VIEW" \|\| true\n\s*continue\n/,
+      /if ci_noop_repeat "\$ISSUE_NUM" "\$PR_VIEW"; then\n\s*migration_renumber_gate "\$ISSUE_NUM" "\$PR_NUM" "\$WATCH_HEAD_SHA" "In Review" \|\| true\n\s*\[\[ "\$MIGRATION_RENUMBER_RESULT" == "renumbered" \]\] && continue\n\s*recover_noop_red_ci "\$ISSUE_NUM" "\$ITEM_ID" "\$PR_NUM" "\$WATCH_HEAD_SHA" "\$PR_VIEW" \|\| true\n\s*continue\n/,
     );
     assert.ok(classifyAt >= 0, "classify_failing_required is not in the watch CI block");
     assert.ok(repeatAt > 0, "the ciNoop repeat check is not in the watch CI block");
@@ -167,6 +167,21 @@ describe("factory-agent required-context gating: static wiring", () => {
     // Nothing between the check and the fix loop's Claude call can be reached
     // on a repeat: the block ends in `continue`.
     assert.doesNotMatch(block.slice(repeatAt), /run-claude\.mjs/);
+  });
+
+  // A red hand-back promises the fix loop; a stale ciNoop on the same head
+  // would send the card straight to Blocked instead (ADR-0102).
+  it("--release's red-CI hand-back clears ciNoop after moving the card", () => {
+    assert.match(
+      script,
+      /<!-- drafto-factory-ci-red:\$SHA12 -->[\s\S]*?transition_status "\$ITEM_ID" "\$ISSUE_NUM" "In Review" \|\| true\n\s*clear_ci_noop "\$ISSUE_NUM"\n\s*continue/,
+    );
+  });
+
+  it("the Testing stage's ci-red hand-back clears ciNoop", () => {
+    const fn = script.match(/^verify_hand_back\(\) \{[\s\S]*?^\}/m);
+    assert.ok(fn, "verify_hand_back not found");
+    assert.match(fn[0], /\[\[ "\$reason" == "ci-red" \]\] && clear_ci_noop "\$issue_num"/);
   });
 
   it("surfaces advisory (non-required) reds in the In Test hand-off comment", () => {
@@ -848,7 +863,9 @@ EOF`,
         { context: "CodeRabbit", state: "FAILURE" },
       ],
     };
-    const KEY_915 = `${SHA_915}:E2E Tests,Unit & Integration Tests`;
+    const KEY_915 = `${SHA_915}:E2E Tests\nUnit & Integration Tests`;
+    // KEY_915 as a JSON string literal, for stubs that print a state record.
+    const KEY_915_JSON = JSON.stringify(KEY_915);
     const withCheck915 = (name, patch) => ({
       ...PR_915,
       statusCheckRollup: PR_915.statusCheckRollup.map((c) =>
@@ -954,6 +971,43 @@ EOF`,
         assert.match(repeat(view, KEY_915), /RC=1/);
       });
 
+      // A matrix job's name can hold a comma: the record must not split it.
+      it("a check name with a comma is matched whole, never by its halves", () => {
+        const matrix = {
+          headRefOid: SHA_915,
+          statusCheckRollup: [
+            { name: "Build (a, b)", conclusion: "FAILURE", detailsUrl: `${RUN}/5` },
+            { name: "Build (a", conclusion: "SUCCESS", detailsUrl: `${RUN}/6` },
+          ],
+        };
+        const keyOf = (view) =>
+          runBash(["pr_failing_required_checks", "pr_ci_noop_key"], `pr_ci_noop_key ${q(view)}`, {
+            required: JSON.stringify(["Build (a, b)", "Build (a"]),
+          }).stdout.trim();
+        const record = keyOf(matrix);
+        assert.equal(record, `${SHA_915}:Build (a, b)`);
+        const req = { required: JSON.stringify(["Build (a, b)", "Build (a"]) };
+        const run = (view) =>
+          runBash(
+            ["pr_failing_required_checks", "pr_ci_noop_key", "ci_noop_repeat"],
+            `ci_noop_repeat 899 ${q(view)}; echo "RC=$?"`,
+            {
+              ...req,
+              pre: `node() { echo '{"ciNoop":${JSON.stringify(record)}}'; }`,
+            },
+          ).stdout;
+        assert.match(run(matrix), /RC=0/);
+        // Only "Build (a" red now: a check the pass never saw.
+        const half = {
+          headRefOid: SHA_915,
+          statusCheckRollup: [
+            { name: "Build (a, b)", conclusion: "SUCCESS", detailsUrl: `${RUN}/5` },
+            { name: "Build (a", conclusion: "FAILURE", detailsUrl: `${RUN}/6` },
+          ],
+        };
+        assert.match(run(half), /RC=1/);
+      });
+
       it("no record, or an unreadable one, is no match: the fix loop runs as before", () => {
         assert.match(repeat(PR_915, null), /RC=1/);
         assert.match(repeat(PR_915, KEY_915, "node() { return 1; }"), /RC=1/);
@@ -979,6 +1033,7 @@ EOF`,
         'issue_marker_check() { grep -q "COMMENTED" "$STATE.marks" 2>/dev/null && return 0; return 1; }',
         'transition_status() { say "TRANSITION $1 $2 $3"; }',
         'release_slot_and_worktree() { say "RELEASE $1"; }',
+        "worktree_within_head() { return 0; }",
       ].join("\n");
       const view = q(PR_915);
       const tick = `if ci_noop_repeat 899 ${view}; then recover_noop_red_ci 899 ITEM_899 915 "${SHA_915}" ${view}; else say "FIX PASS"; fi`;
@@ -1016,7 +1071,10 @@ EOF`,
         t4,
         /CI is still red on `9b9d1c2e3f4a`, and the fix agent found nothing to change/,
       );
-      assert.match(t4, /re-ran them 2 time\(s\), and they stayed red/);
+      assert.match(
+        t4,
+        /has used 2 automatic re-run\(s\) on this commit \(`FACTORY_CI_RERUN_MAX` is 2, shared with re-runs of cancelled checks\), and these checks are still red/,
+      );
       assert.match(t4, /^gh run rerun 37371041547 --failed --repo JakubAnderwald\/drafto$/m);
       assert.match(
         t4,
@@ -1034,7 +1092,7 @@ EOF`,
     });
 
     describe("comment_ci_noop_hold", () => {
-      const hold = ({ marker = 1, ghComment = 0, env = {} } = {}) =>
+      const hold = ({ marker = 1, ghComment = 0, env = {}, within = 0, view = PR_915 } = {}) =>
         runBash(
           [
             "pr_failing_required_checks",
@@ -1043,7 +1101,7 @@ EOF`,
             "ci_rerun_count",
             "comment_ci_noop_hold",
           ],
-          `comment_ci_noop_hold 899 ITEM_899 915 "${SHA_915}" ${q(PR_915)}; echo "RC=$?"`,
+          `comment_ci_noop_hold 899 ITEM_899 915 "${SHA_915}" ${q(view)}; echo "RC=$?"`,
           {
             pre: [
               `issue_marker_check() { return ${marker}; }`,
@@ -1051,6 +1109,8 @@ EOF`,
               `node() { if [[ "$2" == "factory:get-issue" ]]; then echo '{"ciRerun":"${SHA_915}:0"}'; else echo "NODE $*"; fi; }`,
               'transition_status() { echo "TRANSITION $1 $2 $3"; }',
               'release_slot_and_worktree() { echo "RELEASE $1"; }',
+              `worktree_within_head() { return ${within}; }`,
+              'logerr() { echo "LOGERR $*"; }',
             ].join("\n"),
             env,
           },
@@ -1091,6 +1151,50 @@ EOF`,
         );
       });
 
+      it("names a red check that isn't an Actions job alongside the gh commands", () => {
+        const view = {
+          ...PR_915,
+          statusCheckRollup: [
+            ...PR_915.statusCheckRollup,
+            { context: "SonarCloud", state: "FAILURE", targetUrl: "https://sonarcloud.io/x" },
+          ],
+        };
+        const out = runBash(
+          [
+            "pr_failing_required_checks",
+            "pr_failing_required_summary",
+            "pr_infra_rerun_ids",
+            "ci_rerun_count",
+            "comment_ci_noop_hold",
+          ],
+          `comment_ci_noop_hold 899 ITEM_899 915 "${SHA_915}" ${q(view)}`,
+          {
+            pre: [
+              "issue_marker_check() { return 1; }",
+              'gh() { echo "GH $*"; }',
+              'node() { echo "{}"; }',
+              'transition_status() { echo "TRANSITION $1 $2 $3"; }',
+              'release_slot_and_worktree() { echo "RELEASE $1"; }',
+              "worktree_within_head() { return 0; }",
+            ].join("\n"),
+          },
+        ).stdout;
+        assert.match(out, /^gh run rerun 37371041547 --failed --repo JakubAnderwald\/drafto$/m);
+        assert.match(out, /^# SonarCloud: not a GitHub Actions job; re-run it where it runs$/m);
+      });
+
+      it("keeps the slot when the worktree has commits the PR lacks", () => {
+        const out = hold({ within: 1 });
+        assert.match(out, /TRANSITION ITEM_899 899 Blocked/);
+        assert.match(out, /LOGERR .*worktree has commits the PR lacks; keeping its slot/);
+        assert.doesNotMatch(out, /RELEASE/);
+        assert.match(out, /RC=0/);
+      });
+
+      it("frees the slot when nothing local is ahead of the PR", () => {
+        assert.match(hold(), /RELEASE 899/);
+      });
+
       it("dry run neither comments nor moves the card", () => {
         const out = hold({ env: { DRY_RUN: "1" } });
         assert.doesNotMatch(out, /GH issue comment|TRANSITION|RELEASE/);
@@ -1120,7 +1224,7 @@ EOF`,
           {
             errexit: true,
             pre: [
-              `node() { if [[ "$2" == "factory:get-issue" ]]; then echo '{"ciNoop":"${KEY_915}","ciRerun":"${SHA_915}:2"}'; else echo "NODE $*"; fi; }`,
+              `node() { if [[ "$2" == "factory:get-issue" ]]; then echo '{"ciNoop":${KEY_915_JSON},"ciRerun":"${SHA_915}:2"}'; else echo "NODE $*"; fi; }`,
               'transition_status() { echo "TRANSITION $1 $2 $3"; }',
               'release_slot_and_worktree() { echo "RELEASE $1"; }',
               pre,
@@ -1163,7 +1267,7 @@ EOF`,
           {
             errexit: true,
             pre: [
-              `node() { if [[ "$2" == "factory:get-issue" ]]; then echo '{"ciNoop":"${KEY_915}","ciRerun":"${SHA_915}:1"}'; else echo "NODE $*" >>"$LOG_FILE"; fi; }`,
+              `node() { if [[ "$2" == "factory:get-issue" ]]; then echo '{"ciNoop":${KEY_915_JSON},"ciRerun":"${SHA_915}:1"}'; else echo "NODE $*" >>"$LOG_FILE"; fi; }`,
               'gh() { if [[ "$1 $2" == "run view" ]]; then echo in_progress; else echo "GH $*" >>"$LOG_FILE"; fi; }',
             ].join("\n"),
           },
