@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SearchOverlay } from "@/components/search/search-overlay";
 
@@ -312,6 +312,75 @@ describe("SearchOverlay", () => {
       expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
     });
     expect(screen.queryByText("Search failed — try again")).not.toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it("runs the same search again from Retry", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText("Search notes and notebooks...");
+    await user.type(input, "meeting");
+    vi.advanceTimersByTime(300);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Search failed — try again");
+    const callsBeforeRetry = mockFetch.mock.calls.length;
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Search failed — try again")).not.toBeInTheDocument();
+    expect(mockFetch).toHaveBeenCalledTimes(callsBeforeRetry + 1);
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/notes/search?q=meeting", expect.anything());
+    // Focus goes back to the input, so the user can keep typing.
+    expect(input).toHaveFocus();
+
+    vi.useRealTimers();
+  });
+
+  it("retries a failed search with Enter", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const onSelectNote = vi.fn();
+
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={onSelectNote}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search notes and notebooks..."), "meeting");
+    vi.advanceTimersByTime(300);
+    await screen.findByText("Search failed — try again");
+
+    await user.keyboard("{Enter}");
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(screen.getByText("Meeting Notes")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Search failed — try again")).not.toBeInTheDocument();
+    expect(onSelectNote).not.toHaveBeenCalled();
 
     vi.useRealTimers();
   });

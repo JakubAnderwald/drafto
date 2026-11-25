@@ -1159,6 +1159,80 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
     expect(screen.queryByText("Couldn't load your notebooks.")).not.toBeInTheDocument();
   });
 
+  it("applies only the newest load when an older one settles after it", async () => {
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
+    });
+    const retry = within(await screen.findByRole("alert")).getByRole("button", { name: "Retry" });
+
+    // Two Retries in flight: the newer one finds no notebooks, then the older one fails.
+    let settleOlder: (res: FakeResponse) => void = () => {};
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleOlder = resolve;
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse([]));
+    await user.click(retry);
+    await user.click(retry);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No notebooks yet/)).toBeInTheDocument();
+    });
+    await act(async () => {
+      settleOlder(jsonResponse({ error: "boom" }, 500));
+    });
+
+    // The older failure is still reported, but the error state follows the newest load.
+    await waitFor(() => {
+      expect(reportError).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(/No notebooks yet/)).toBeInTheDocument();
+  });
+
+  it("still opens the first notebook when a refresh replaces the first load", async () => {
+    const onSelect = vi.fn();
+    let settleFirst: (res: FakeResponse) => void = () => {};
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleFirst = resolve;
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+
+    let rerender: ReturnType<typeof render>["rerender"] = () => {};
+    await act(async () => {
+      ({ rerender } = render(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />,
+      ));
+    });
+    await act(async () => {
+      rerender(
+        <NotebooksSidebar
+          selectedNotebookId={null}
+          onSelectNotebook={onSelect}
+          refreshTrigger={1}
+        />,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(onSelect).toHaveBeenCalledWith("nb-1");
+
+    // The first load settles last; its empty list doesn't replace the newer one.
+    await act(async () => {
+      settleFirst(jsonResponse([]));
+    });
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
   it("starts a new notebook at 0 notes", async () => {
     const user = userEvent.setup();
     await act(async () => {

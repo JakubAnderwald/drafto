@@ -1,5 +1,6 @@
 import * as Sentry from "@sentry/nextjs";
 import { FILE_TOO_LARGE_MESSAGE, FILE_EMPTY_MESSAGE } from "@drafto/shared";
+import { scrubSearchQuery } from "@/lib/sentry/scrub-search-query";
 import { sentryEnabled, sentryEnvironment } from "@/lib/sentry-environment";
 
 Sentry.init({
@@ -20,6 +21,9 @@ Sentry.init({
   debug: false,
   // Expected user-input validation, not bugs — keep these out of Sentry.
   ignoreErrors: [FILE_TOO_LARGE_MESSAGE, FILE_EMPTY_MESSAGE],
+  // An error's fetch breadcrumbs include each search request's URL, and so the search text
+  // (ADR-0099).
+  beforeSend: (event) => scrubSearchQuery(event),
 });
 
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;

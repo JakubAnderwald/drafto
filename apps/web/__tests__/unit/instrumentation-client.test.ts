@@ -31,6 +31,16 @@ describe("instrumentation-client", () => {
     expect(options.integrations).toContain(replayMarker);
   });
 
+  it("drops the search text from an event's fetch breadcrumbs before sending (ADR-0099)", () => {
+    const options = sentry.init.mock.calls[0][0] as {
+      beforeSend: (event: Record<string, unknown>) => Record<string, unknown>;
+    };
+    const event = {
+      breadcrumbs: [{ category: "fetch", data: { url: "/api/notes/search?q=secret" } }],
+    };
+    expect(JSON.stringify(options.beforeSend(event))).not.toContain("secret");
+  });
+
   it("exports Sentry's router transition hook", () => {
     expect(onRouterTransitionStart).toBe(sentry.captureRouterTransitionStart);
   });

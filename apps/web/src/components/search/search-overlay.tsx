@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
@@ -47,6 +48,8 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
   // Set when the last search failed (a non-OK response or a network error), so the overlay says so
   // instead of claiming there are no matching notes. A new query clears it.
   const [searchError, setSearchError] = useState(false);
+  // Bumped by Retry, so the search runs again for an unchanged query.
+  const [retryCount, setRetryCount] = useState(0);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -118,7 +121,12 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
       }
       controller.abort();
     };
-  }, [query]);
+  }, [query, retryCount]);
+
+  const retrySearch = useCallback(() => {
+    setRetryCount((count) => count + 1);
+    inputRef.current?.focus();
+  }, []);
 
   const selectResult = useCallback(
     (result: SearchResult) => {
@@ -146,12 +154,18 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
         return;
       }
 
+      if (e.key === "Enter" && searchError && query.trim()) {
+        e.preventDefault();
+        retrySearch();
+        return;
+      }
+
       if (e.key === "Enter" && results.length > 0) {
         e.preventDefault();
         selectResult(results[highlightedIndex]);
       }
     },
-    [results, highlightedIndex, onClose, selectResult],
+    [results, highlightedIndex, onClose, selectResult, searchError, query, retrySearch],
   );
 
   if (!open) return null;
@@ -191,9 +205,9 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
           {loading && <p className="text-fg-muted px-3 py-4 text-center text-sm">Searching...</p>}
 
           {!loading && trimmed && searchError && (
-            <p role="alert" className="text-error-text px-3 py-4 text-center text-sm">
+            <Alert className="m-1" action={{ label: "Retry", onClick: retrySearch }}>
               Search failed — try again
-            </p>
+            </Alert>
           )}
 
           {!loading && trimmed && !searchError && results.length === 0 && (

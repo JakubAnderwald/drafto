@@ -111,14 +111,25 @@ export function NotebooksSidebar({
     selectionRef.current = { selectedNotebookId, isTrashSelected };
   }, [selectedNotebookId, isTrashSelected]);
 
+  // Each load takes the next number, and only the newest one applies its list or its failure: a
+  // Retry or refresh doesn't wait for a load in flight, and the older one can settle last. A
+  // superseded load that was to open the first notebook hands that on to the newest one.
+  const loadSeq = useRef(0);
+  const pendingSelectFirst = useRef(false);
+
   /**
    * Loads the notebook list. `selectFirst` opens the first notebook when nothing (no notebook, not
    * Trash) is selected (the first load, and its Retry); a refresh leaves the selection alone. A
    * failed load keeps any list already on show and reports the error.
    */
   const loadNotebooks = useCallback(
-    ({ selectFirst = false }: { selectFirst?: boolean } = {}) =>
-      fetch("/api/notebooks")
+    ({ selectFirst = false }: { selectFirst?: boolean } = {}) => {
+      loadSeq.current += 1;
+      const seq = loadSeq.current;
+      const isLatest = () => loadSeq.current === seq;
+      if (selectFirst) pendingSelectFirst.current = true;
+
+      return fetch("/api/notebooks")
         .then(async (res) => {
           if (handleAuthError(res)) return [] as Notebook[];
           if (!res.ok) {
@@ -132,6 +143,9 @@ export function NotebooksSidebar({
           return (await res.json()) as Notebook[];
         })
         .then((data) => {
+          if (!isLatest()) return;
+          const shouldSelectFirst = pendingSelectFirst.current;
+          pendingSelectFirst.current = false;
           if (data === null) {
             setLoadError(true);
             return;
@@ -141,7 +155,7 @@ export function NotebooksSidebar({
           onNotebooksChange?.(data.map((n) => ({ id: n.id, name: n.name })));
           const selection = selectionRef.current;
           if (
-            selectFirst &&
+            shouldSelectFirst &&
             data.length > 0 &&
             !selection.selectedNotebookId &&
             !selection.isTrashSelected
@@ -151,9 +165,14 @@ export function NotebooksSidebar({
         })
         .catch((error: unknown) => {
           reportError(error, "notebooks-sidebar:load");
+          if (!isLatest()) return;
+          pendingSelectFirst.current = false;
           setLoadError(true);
         })
-        .finally(() => setLoading(false)),
+        .finally(() => {
+          if (isLatest()) setLoading(false);
+        });
+    },
     [onNotebooksChange, onSelectNotebook],
   );
 
