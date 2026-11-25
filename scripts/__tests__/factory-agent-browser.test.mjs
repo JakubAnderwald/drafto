@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { RENDER_KINDS } from "../lib/browser-report.mjs";
 import { SIGN_IN_PATH } from "../lib/browser-signin.mjs";
 import { BROWSER_RUN_KINDS } from "../lib/factory-bundle.mjs";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 // The browser runner's bash wiring (ADR-0051). The guard, the report scanner and
 // the health tracker are tested in their own files; what factory-agent.sh must
@@ -652,7 +653,7 @@ gh() {
 ${extract("preview_url_for_sha")}
 preview_url_for_sha ${SHA}
 `;
-    return spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    return spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
   }
 
   it("returns the per-commit vercel[bot] preview URL", () => {
@@ -757,11 +758,10 @@ rc=0
 run_browser_task intest ${JSON.stringify(join(dir, "run"))} https://drafto-x-jakubanderwalds-projects.vercel.app '{"account":{"password":"s3cret-pw"}}' || rc=$?
 echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
 `;
-    const env = { ...process.env, HOME: dir };
+    // Without the caller's FACTORY_* knobs: the factory runs this suite with
+    // FACTORY_DEV_INSPECT=1 and the model knobs exported.
+    const env = hermeticEnv({ HOME: dir });
     delete env.CLAUDE_CONFIG_DIR;
-    delete env.FACTORY_MODEL;
-    delete env.FACTORY_BROWSER_MODEL;
-    delete env.FACTORY_INTEST_MODEL;
     if (model !== undefined) env.FACTORY_BROWSER_MODEL = model;
     if (factoryModel !== undefined) env.FACTORY_MODEL = factoryModel;
     const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env });
@@ -1121,7 +1121,7 @@ echo "rc=$rc"
 `;
     const r = spawnSync("/bin/bash", ["-c", snippet], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${swiftc.bin}:${process.env.PATH}` },
+      env: hermeticEnv({ PATH: `${swiftc.bin}:${process.env.PATH}` }),
     });
     const callLog = existsSync(calls) ? readFileSync(calls, "utf8") : "";
     const finalState = JSON.parse(readFileSync(stateFile, "utf8")).issues["501"] ?? {};
@@ -2406,7 +2406,7 @@ ${Object.entries(rcs)
 ${extract("browser_kind_enabled")}
 ${block}
 `;
-    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     const callLog = existsSync(calls) ? readFileSync(calls, "utf8") : "";
     rmSync(dir, { recursive: true, force: true });
     return { r, callLog, runs: callLog.split("\n").filter((l) => l.startsWith("run ")) };

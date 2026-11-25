@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const script = readFileSync(resolve(HERE, "..", "factory-agent.sh"), "utf8");
@@ -137,7 +138,7 @@ describe("the loop tail: knob 0 runs the synchronous call, knob 1 only starts", 
       "done",
       'echo "loop-done"',
     ].join("\n");
-    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /loop-done/);
     return { calls: read(calls), log: read(join(dir, "log")) };
@@ -298,7 +299,7 @@ function runCollect(env, { ctx = {}, stdout = "", stderr = "", vars = {} } = {})
   ].join("\n");
   const r = spawnSync("bash", ["-c", snippet], {
     encoding: "utf8",
-    env: { ...process.env, CALLS: env.calls, ...vars },
+    env: hermeticEnv({ CALLS: env.calls, ...vars }),
   });
   assert.equal(r.status, 0, r.stderr);
   return { out: r.stdout.trim(), calls: read(env.calls), log: read(env.log) };
@@ -658,7 +659,7 @@ describe("implement_lane_ctx → implement_lane_restore round trip", () => {
       '[[ "$before" == "$after" ]] && echo SAME || { echo "$before"; echo ---; echo "$after"; }',
       'echo "issue=$ISSUE_NUM start=$CLAUDE_START_ISO bundle=$BUNDLE"',
     ].join("\n");
-    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     assert.equal(r.status, 0, r.stderr);
     assert.equal(
       r.stdout,
@@ -695,8 +696,8 @@ describe("implement_lane_start", () => {
       ...START_FNS,
       'rc=0; implement_lane_start || rc=$?; echo "rc=$rc"',
     ].join("\n");
-    const env = { ...process.env, FAKE_ANSWER: answer };
-    delete env.FACTORY_MODEL;
+    // IMPL_EFFORT isn't a FACTORY_* knob, so hermeticEnv keeps it; drop it here.
+    const env = hermeticEnv({ FAKE_ANSWER: answer });
     delete env.IMPL_EFFORT;
     const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env });
     assert.equal(r.status, 0, r.stderr);
@@ -861,7 +862,7 @@ describe("guards in the other modes", () => {
       ...["release_slot_and_worktree", "remove_worktree_for"].map(fnText),
       `${fn} 7`,
     ].join("\n");
-    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     assert.equal(r.status, 0, r.stderr);
     return { calls: read(calls), log: read(join(dir, "log")) };
   }
@@ -901,7 +902,7 @@ describe("guards in the other modes", () => {
         stop,
         'r=0; implement_lane_stop 7 why || r=$?; echo "r=$r"',
       ].join("\n");
-      const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+      const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
       assert.equal(r.status, 0, r.stderr);
       return { out: r.stdout.trim(), log: read(join(dir, "log")), args: read(join(dir, "args")) };
     };

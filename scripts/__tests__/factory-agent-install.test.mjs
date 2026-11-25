@@ -5,6 +5,7 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 // Regression tests for issue #451 (observation 2). A fresh-worktree
 // `pnpm install` ran for 3.5+ hours because the pnpm store is on an external
@@ -236,7 +237,7 @@ describe("free_disk_gb (real helper, stubbed df)", () => {
       ].join("\n");
       return spawnSync("bash", ["-c", harness], {
         encoding: "utf8",
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+        env: hermeticEnv({ PATH: `${bin}:${process.env.PATH}` }),
       });
     } finally {
       rmSync(bin, { recursive: true, force: true });
