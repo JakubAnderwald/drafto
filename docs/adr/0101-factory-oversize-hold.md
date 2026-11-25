@@ -17,7 +17,7 @@ A label that the operator can overlook at the Plan Review gate doesn't stop that
 1. **`--implement` holds an unsplit oversize card that hasn't started.** Right after `find_prior_pr`, before a slot, a worktree or a bundle is spent, `oversize_hold` re-reads the approved plan's size marker (`parsePlanSize`, through `scripts/lib/plan-size.mjs`). The card is held when all of these are true:
    - the estimate is at least `FACTORY_PLAN_OVERSIZE_LINES` (default 1,500);
    - neither the board item nor the issue has the `oversize-approved` label;
-   - the card hasn't started: no prior PR (open or closed), no implement attempts spent, no worktree slot assigned to it, and no implement resume record ([ADR-0084](./0084-factory-implement-deadline-and-resume.md)).
+   - the card hasn't started: no prior PR (open or closed), no worktree slot assigned to it, no implement resume record ([ADR-0084](./0084-factory-implement-deadline-and-resume.md)), and no implement run on record in its state (`implementSessionId`, which every implement start writes, or `lastImplementAt`).
 
    A card mid-run, such as a retry after a timeout or a revision back from In Test, never bounces. A plan with no size marker isn't held, and a dry run only logs.
 
@@ -47,5 +47,6 @@ A label that the operator can overlook at the Plan Review gate doesn't stop that
 
 1. **Hold at the Plan Review gate instead of at implement time.** The factory doesn't see the approval drag as an event; it sees an In Progress card on its next `--implement` tick. Holding there is the first point where the factory can act on the approval, before anything is spent.
 2. **Hold every card with `factory-oversize`.** The label is synced only while the card is in Plan Review. The hold re-parses the approved plan instead, so it acts on the same estimate the operator approved, even if the label edit failed.
-3. **Hold cards already in flight too.** A card that has a PR or has spent attempts has already cost most of what the hold saves. Bouncing it would also throw away a resumable session or a branch with work on it.
+3. **Hold cards already in flight too.** A card that has a PR or an implement run on record has already cost most of what the hold saves. Bouncing it would also throw away a resumable session or a branch with work on it.
 4. **Void `oversize-approved` when a replan changes the estimate**, as the migration gate voids `migration-approved` ([ADR-0078](./0078-migration-approval-tied-to-sql.md)). A replan already needs the operator to drag the card back to In Progress. That drag, with the label still on, is a fresh decision.
+5. **Count "started" by the `attempts` counter.** `issues[n].attempts` is shared by `--plan` and `--implement`. A replan that fails bumps it and a `noop` replan after it doesn't reset it, so a card that has never been implemented can reach In Progress with `attempts` above 0, and the hold would let it run. The implement session id and `lastImplementAt` are written only by `--implement`, so they say whether implementing began.

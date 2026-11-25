@@ -26,7 +26,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,16p' "$0"
+      # The header comment: line 2 up to the first blank line.
+      awk 'NR > 1 && /^$/ { exit } NR > 1' "$0"
       exit 0
       ;;
     *)

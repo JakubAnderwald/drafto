@@ -1892,14 +1892,18 @@ plan_size_label() {
 }
 
 # oversize_hold <issue> <item-id> <labels-csv> <plan-comment-json>
-#   <prior-pr-json|null> <attempts> <comments-json>
+#   <prior-pr-json|null> <comments-json>
 # The oversize hold (ADR-0101). --implement never starts an unsplit oversize
 # card: when the approved plan's size marker estimates at least
 # FACTORY_PLAN_OVERSIZE_LINES and the issue lacks oversize-approved, the card
 # goes back to Plan Review with one 🏭 comment saying how to release it.
-# Only a card that hasn't started is held: no prior PR, no attempts spent, no
-# worktree slot assigned and no implement resume record. A card mid-run (a
-# retry after a timeout, a revision back from In Test) never bounces. Nor is a
+# Only a card that hasn't started is held: no prior PR, no worktree slot
+# assigned, no implement resume record, and no implement run on record
+# (implementSessionId, which every implement start writes, or lastImplementAt).
+# Not the attempts counter: --plan shares it, and a failed replan followed by a
+# noop one leaves it above 0 on a card that has never been implemented. A card
+# mid-run (a retry after a timeout, a revision back from In Test) never
+# bounces. Nor is a
 # plan with no size marker, or a dry run (it only logs). The marker carries the
 # plan comment id and the estimate, because a replan edits the plan in place:
 # a new estimate gets a new comment, the same one never gets a second.
@@ -1908,14 +1912,13 @@ plan_size_label() {
 # Exit 0 = held (skip the card this tick), 1 = implement it.
 oversize_hold() {
   local issue_num="$1" item_id="$2" labels_csv="${3:-}" plan_json="${4:-null}"
-  local prior_pr="${5:-null}" attempts="${6:-0}" comments_json="${7:-[]}"
+  local prior_pr="${5:-null}" comments_json="${6:-[]}"
   local threshold="${FACTORY_PLAN_OVERSIZE_LINES:-1500}"
   local approved="${OVERSIZE_APPROVED_LABEL:-oversize-approved}"
   local size est cls plan_id marker slots record
   [[ "${FACTORY_OVERSIZE_HOLD:-1}" == "1" ]] || return 1
   [[ "$threshold" =~ ^[0-9]+$ && "$threshold" -gt 0 ]] || return 1
   [[ -z "$prior_pr" || "$prior_pr" == "null" ]] || return 1
-  [[ "$attempts" == "0" ]] || return 1
   [[ ",$labels_csv," != *",$approved,"* ]] || return 1
   size=$(echo "$plan_json" | jq -r '.body // ""' 2>/dev/null \
     | node "$SCRIPT_DIR/lib/plan-size.mjs" 2>>"$LOG_FILE" || echo "null")
@@ -1939,7 +1942,10 @@ oversize_hold() {
     log "WARNING: #$issue_num: couldn't read its state for the oversize hold; deferring the card to the next tick"
     return 0
   fi
-  if [[ -n "$(echo "$record" | jq -r '.implementResumeSession // empty' 2>/dev/null || echo "")" ]]; then
+  # A resume record, or any implement run on record, means it has started.
+  if [[ -n "$(echo "$record" | jq -r \
+      '[.implementResumeSession, .implementSessionId, .lastImplementAt]
+       | map(select(. != null and . != "")) | first // empty' 2>/dev/null || echo "")" ]]; then
     return 1
   fi
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
@@ -1964,8 +1970,9 @@ the plan's **Proposed split** (or file them yourself), or
 to **In Progress**.
 
 A plain \"approved\" comment doesn't release the hold: it starts a replan, \
-which is a paid planner run, and the card stays here. A replan that brings \
-the estimate under $threshold lines does release it.
+which is a paid planner run, and the card stays here. A replan never moves \
+the card either: once one brings the estimate under $threshold lines, drag \
+the card back to **In Progress** to run it.
 
 <!-- $marker -->" >>"$LOG_FILE" 2>&1; then
       log "WARNING: couldn't post the oversize-hold comment on #$issue_num; holding the card in In Progress until it is posted (next tick)"
@@ -9951,7 +9958,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # board item's plus the issue's own, read just above.
     if oversize_hold "$ISSUE_NUM" "$ITEM_ID" \
         "$ITEM_LABELS,$(echo "$ISSUE_RECORD" | jq -r '.labels // [] | join(",")' 2>/dev/null || true)" \
-        "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$ATTEMPTS" "$COMMENTS_JSON"; then
+        "$PLAN_COMMENT_JSON" "$PRIOR_PR" "$COMMENTS_JSON"; then
       continue
     fi
 

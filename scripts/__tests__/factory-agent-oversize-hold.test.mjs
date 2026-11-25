@@ -31,7 +31,7 @@ const planJson = (marker) =>
 const XL = "<!-- drafto-factory-plan-size:XL:1800 -->";
 const M = "<!-- drafto-factory-plan-size:M:400 -->";
 
-// opts: marker, labels, priorPr, attempts, comments, state (object | string),
+// opts: marker, labels, priorPr, comments, state (object | string),
 // knobs ({FACTORY_OVERSIZE_HOLD, FACTORY_PLAN_OVERSIZE_LINES}), dryRun,
 // commentFails, transitionFails. Returns {status, held, log, calls}.
 function runHold(opts = {}) {
@@ -39,7 +39,6 @@ function runHold(opts = {}) {
     marker = XL,
     labels = "status:in-progress,factory-oversize",
     priorPr = "null",
-    attempts = "0",
     comments = [],
     state = {},
     knobs = {},
@@ -75,7 +74,7 @@ LOG_FILE=${JSON.stringify(join(dir, "agent.log"))}
 DRY_RUN=${dryRun}
 ${knobLines}
 if oversize_hold 900 ITEM_900 ${JSON.stringify(labels)} ${JSON.stringify(planJson(marker))} \\
-    ${JSON.stringify(priorPr)} ${JSON.stringify(attempts)} ${JSON.stringify(JSON.stringify(comments))}; then
+    ${JSON.stringify(priorPr)} ${JSON.stringify(JSON.stringify(comments))}; then
   echo "HELD"
 else
   echo "RUN"
@@ -117,6 +116,10 @@ describe("oversize_hold (extracted, real bash 3.2, gh + transition stubbed)", ()
   it("tells the operator how to release it, and that a plain approval replans", () => {
     const { calls } = runHold();
     assert.match(calls, /comment `\/split`/);
+    assert.match(
+      calls,
+      /A replan never moves the card either: once one brings the estimate under 1500 lines, drag the card back to \*\*In Progress\*\* to run it\./,
+    );
     assert.match(calls, /\*\*Proposed split\*\*/);
     assert.match(
       calls,
@@ -155,9 +158,38 @@ describe("oversize_hold (extracted, real bash 3.2, gh + transition stubbed)", ()
     }
   });
 
-  it("does not hold a card that has spent an attempt (a retry after a timeout)", () => {
-    assert.equal(runHold({ attempts: "1" }).held, false);
-    assert.equal(runHold({ attempts: "3" }).calls, "");
+  it("does not hold a card with an implement run on record (a retry after a timeout)", () => {
+    for (const rec of [
+      { implementSessionId: "0b8f2a1e-1111-4222-8333-444455556666" },
+      { lastImplementAt: "2026-11-25T09:00:00.000Z" },
+    ]) {
+      const out = runHold({ state: { issues: { 900: { attempts: 1, ...rec } } } });
+      assert.equal(out.held, false, JSON.stringify(rec));
+      assert.equal(out.calls, "", JSON.stringify(rec));
+    }
+  });
+
+  it("holds a card whose attempts come from the plan stage only", () => {
+    // --plan and --implement share issues[n].attempts. A replan that fails
+    // bumps it, and a noop replan after it doesn't reset it, so a card that
+    // has never been implemented can reach In Progress with attempts 1. With
+    // no implement session, no lastImplementAt, no PR, slot or resume record,
+    // it hasn't started and is held.
+    const state = {
+      issues: {
+        900: {
+          attempts: 2,
+          lastPlanAt: "2026-11-25T08:00:00.000Z",
+          implementSessionId: null,
+          lastImplementAt: null,
+          implementResumeSession: null,
+        },
+      },
+    };
+    const out = runHold({ state });
+    assert.equal(out.held, true, out.log);
+    assert.ok(out.calls.includes(holdMarker));
+    assert.match(out.calls, /\[transition\] ITEM_900 900 Plan Review/);
   });
 
   it("does not hold a card that already holds a worktree slot", () => {
@@ -285,14 +317,12 @@ describe("factory-agent.sh oversize hold: --implement wiring", () => {
     const bundle = IMPLEMENT.indexOf("BUNDLE=$(build_implement_bundle");
     assert.ok(prior !== -1 && hold !== -1 && slot !== -1 && bundle !== -1);
     assert.ok(prior < hold && hold < slot && slot < bundle);
-    // It reads the retry budget and the plan it was given, after both are known.
-    assert.ok(IMPLEMENT.indexOf("ATTEMPTS=$(node") < hold);
+    // It reads the plan it was given, after it is known. Not the attempts
+    // counter: --plan shares it, so it can't tell whether implementing began.
     assert.ok(IMPLEMENT.indexOf("PLAN_COMMENT_JSON=$(extract_plan_comment") < hold);
     const call = IMPLEMENT.slice(hold, IMPLEMENT.indexOf("fi\n", hold));
-    assert.match(
-      call,
-      /"\$PLAN_COMMENT_JSON" "\$PRIOR_PR" "\$ATTEMPTS" "\$COMMENTS_JSON"; then\n\s+continue/,
-    );
+    assert.match(call, /"\$PLAN_COMMENT_JSON" "\$PRIOR_PR" "\$COMMENTS_JSON"; then\n\s+continue/);
+    assert.doesNotMatch(call, /ATTEMPTS/);
     assert.match(call, /\$ITEM_LABELS,/, "board labels");
     assert.match(call, /ISSUE_RECORD/, "and the issue's own labels");
   });
@@ -305,8 +335,25 @@ describe("factory-agent.sh oversize hold: --implement wiring", () => {
 });
 
 describe("setup-factory-labels.sh: oversize-approved", () => {
+  const labelsPath = join(scriptsDir, "setup-factory-labels.sh");
   it("creates the operator's override label", () => {
-    const labels = readFileSync(join(scriptsDir, "setup-factory-labels.sh"), "utf8");
+    const labels = readFileSync(labelsPath, "utf8");
     assert.match(labels, /^ {2}"oversize-approved\|[0-9A-F]{6}\|[^"]+"$/m);
+  });
+
+  it("--help prints the whole header comment, through its last line", () => {
+    // --help exits before any gh call. PATH has no gh on purpose.
+    const r = spawnSync("/bin/bash", [labelsPath, "--help"], {
+      encoding: "utf8",
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const header = readFileSync(labelsPath, "utf8").split("\n");
+    const end = header.indexOf("", 1);
+    assert.equal(r.stdout, header.slice(1, end).join("\n") + "\n");
+    assert.match(
+      r.stdout,
+      /oversize-approved lets such a card be implemented as-is \(ADR-0101\)\.\n$/,
+    );
   });
 });
