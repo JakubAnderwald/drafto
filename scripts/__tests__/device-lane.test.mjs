@@ -1472,8 +1472,9 @@ describe("review fixes", () => {
       assert.equal(output.platforms.ios.flows[0].name, "ios-all.yaml");
       const yaml = warmUpYaml();
       assert.match(yaml, /^appId: eu\.drafto\.mobile$/m);
-      assert.match(yaml, /^- launchApp$/m);
-      assert.ok(!/E2E_TEST|clearKeychain|runScript/.test(yaml));
+      assert.match(yaml, /^- launchApp:$/m);
+      assert.match(yaml, /^    clearState: true$/m);
+      assert.ok(!/E2E_TEST|runScript|runFlow/.test(yaml));
     });
 
     it("retries a flow once when the device dropped off adb, and says so if it still fails", async () => {

@@ -1657,8 +1657,11 @@ export function warmUpYaml() {
     "---",
     "# Written by the factory's device lane (device-lane.mjs) into its build root.",
     "# The first Maestro session after a cold boot installs Maestro's driver, and",
-    "# the device can drop off adb while it does: this run takes that hit.",
-    "- launchApp",
+    "# the device can drop off adb while it does, and again on the first clear of",
+    "# the app's state: this run takes those hits.",
+    "- clearKeychain",
+    "- launchApp:",
+    "    clearState: true",
     "- stopApp",
     "",
   ].join("\n");
