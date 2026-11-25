@@ -936,6 +936,8 @@ const PR_FILE_STATUSES = new Set([
 // files lists the rest itself (factory-review-prompt.md, "File-list mode").
 // The same cap applies to `prFiles` in file-list mode, which repeats the paths.
 export const REVIEW_FILE_STATS_MAX = 1000;
+// GitHub's pulls/<n>/files endpoint stops at this many files, with no error.
+export const PR_FILES_API_MAX = 3000;
 
 // jq's @tsv escapes a backslash, tab, newline and carriage return in a field as
 // \\, \t, \n and \r. Undo that, so a path reaches the reviewer as git spells it.
@@ -1033,7 +1035,9 @@ export function buildFactoryReviewBundle({
   const diff = truncateDiff(prDiff);
   const { files: stats, dropped: statsDropped } = parsePrFileStatsCounted(prFileStats);
   const diffText = typeof prDiff === "string" ? prDiff : "";
-  const fileList = (diff.truncated || diffText === "") && stats.length > 0;
+  // A listing whose every row was unreadable still says the PR has files the
+  // reviewer must fetch, so it goes file-list too, never "inline, empty diff".
+  const fileList = (diff.truncated || diffText === "") && stats.length + statsDropped > 0;
   // In file-list mode nothing is inline: every line of the diff is omitted. With
   // no diff at all (gh refused it), the files' changed-line counts stand in.
   const omittedLines = !fileList
@@ -1080,6 +1084,9 @@ export function buildFactoryReviewBundle({
     prFileStatsOmitted: fileList
       ? Math.max(0, stats.length - REVIEW_FILE_STATS_MAX) + statsDropped
       : 0,
+    // The files endpoint returned its ceiling, so the PR may have more files
+    // than any listing shows. The reviewer can't reach those and must say so.
+    prFileListCapped: fileList && stats.length + statsDropped >= PR_FILES_API_MAX,
     // In file-list mode prFileStats already carries the paths; cap the repeat so
     // a 3000-file PR doesn't put every path in argv twice.
     prFiles: fileList

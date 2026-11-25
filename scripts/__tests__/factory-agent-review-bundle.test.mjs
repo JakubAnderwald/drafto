@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  PR_FILES_API_MAX,
   REVIEW_FILE_STATS_MAX,
   buildFactoryReviewBundle,
   parsePrFileStats,
@@ -148,6 +149,35 @@ describe("buildFactoryReviewBundle: inline or file-list", () => {
     assert.equal(bundle.prFileStatsOmitted, 1);
   });
 
+  it("goes file-list, not an empty inline diff, when every listed row was unreadable", () => {
+    const bundle = buildFactoryReviewBundle({
+      ...base,
+      prDiff: "",
+      prFileStats: `added\t${"p".repeat(501)}\t1\t0`,
+    });
+    assert.equal(bundle.reviewDiffMode, "file-list");
+    assert.equal(bundle.prDiffTruncated, true);
+    assert.deepEqual(bundle.prFileStats, []);
+    assert.equal(bundle.prFileStatsOmitted, 1);
+  });
+
+  it("flags a listing that hit GitHub's 3000-file ceiling", () => {
+    const rows = (n) => Array.from({ length: n }, (_, i) => `added\tf${i}.ts\t1\t0`).join("\n");
+    const at = buildFactoryReviewBundle({
+      ...base,
+      prDiff: "",
+      prFileStats: rows(PR_FILES_API_MAX),
+    });
+    const under = buildFactoryReviewBundle({
+      ...base,
+      prDiff: "",
+      prFileStats: rows(PR_FILES_API_MAX - 1),
+    });
+    assert.equal(at.prFileListCapped, true);
+    assert.equal(under.prFileListCapped, false);
+    assert.equal(buildFactoryReviewBundle({ ...base, prDiff: "+x" }).prFileListCapped, false);
+  });
+
   it("caps prFiles in file-list mode, where prFileStats already carries the paths", () => {
     const n = REVIEW_FILE_STATS_MAX + 5;
     const paths = Array.from({ length: n }, (_, i) => `f${i}.ts`);
@@ -220,8 +250,8 @@ function extract(name) {
 // GH_DIFF_FAIL=1); `gh api --paginate` prints $STATS_FILE (or fails when
 // GH_API_FAIL=1, or after printing it, as a failed later page does, when
 // GH_API_PARTIAL=1). The real factory-bundle.mjs builds the bundle; the
-// run-claude call is replaced by a stub that saves its -p prompt to
-// $PROMPT_OUT. The environment is built from scratch so a FACTORY_* knob
+// run-claude call is replaced by a stub that saves the prompt it reads on stdin
+// to $PROMPT_OUT and logs its argv. The environment is built from scratch so a FACTORY_* knob
 // exported by the caller can't change the results.
 function runBash(body, env = {}) {
   const harness = [
@@ -253,7 +283,7 @@ function runBash(body, env = {}) {
     '    *) echo "UNEXPECTED gh $*" >>"$LOG_FILE"; return 1 ;;',
     "  esac",
     "}",
-    'node() { if [[ "$1" == *run-claude.mjs ]]; then printf "%s" "$3" >"$PROMPT_OUT"; echo "issue=7 action=reviewed pr=-"; else command node "$@"; fi; }',
+    'node() { if [[ "$1" == *run-claude.mjs ]]; then cat >"$PROMPT_OUT"; echo "ARGV $*" >>"$LOG_FILE"; echo "issue=7 action=reviewed pr=-"; else command node "$@"; fi; }',
     extract("pr_file_stats"),
     extract("build_review_bundle"),
     extract("review_stage"),
@@ -356,6 +386,16 @@ describe("review_stage (bash): file listing and modes", () => {
     assert.match(fn, /'\.\[\]\|\[\.status,\.filename,\.additions,\.deletions\]\|@tsv'/);
     const { res } = stage({ diff: "diff --git a/a.ts b/a.ts\n+x", stats: "modified\ta.ts\t1\t0" });
     assert.match(res.stdout, /GH_API repos\/JakubAnderwald\/drafto\/pulls\/42\/files --jq/);
+  });
+
+  it("hands claude the prompt on stdin, not in argv", () => {
+    const { res, bundle } = stage({
+      diff: "diff --git a/a.ts b/a.ts\n+x",
+      stats: "modified\ta.ts\t1\t0",
+    });
+    assert.ok(bundle, `no prompt captured:\n${res.stdout}`);
+    assert.match(res.stdout, /ARGV \S*run-claude\.mjs -p --dangerously-skip-permissions /);
+    assert.doesNotMatch(res.stdout, /ARGV [^\n]*Context bundle/);
   });
 
   it("reviews a small diff inline", () => {
@@ -542,6 +582,11 @@ describe("review prompt: file-list mode", () => {
     assert.match(reviewPrompt, /Cover \*\*every\*\* changed file that isn't generated/);
     assert.match(reviewPrompt, /risky ones first/);
     assert.match(reviewPrompt, /Anchor an inline comment only on a line that appears in a patch/);
+  });
+
+  it("tells the reviewer what a capped listing means", () => {
+    assert.match(reviewPrompt, /`prFileListCapped`/);
+    assert.match(reviewPrompt, /3000-file ceiling/);
   });
 
   it("lists the files GET in the tool allowlist and keeps the review checklist heading", () => {

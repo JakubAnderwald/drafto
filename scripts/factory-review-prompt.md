@@ -52,7 +52,8 @@ A JSON object follows this prompt:
 - `prFileStats` — in `file-list` mode, one
   `{status, path, additions, deletions}` per changed file (`[]` in `inline`
   mode). `prFileStatsOmitted` is how many more files the PR has beyond this
-  list.
+  list. `prFileListCapped` true means GitHub's files listing stopped at its
+  3000-file ceiling, so the PR may have more files than any listing shows.
 - `prFiles` — newline-separated changed paths.
 - `headSha` — the commit you are reviewing.
 
@@ -70,7 +71,9 @@ jq -r --arg f '<path>' '.[] | select(.filename == $f) | .patch // "NO_PATCH"' "$
 ```
 
 `--paginate` writes one JSON array per page; jq reads them all.
-`prFileStatsOmitted` files beyond the bundle's list are in that file too.
+`prFileStatsOmitted` files beyond the bundle's list are in that file too. When
+`prFileListCapped` is true, files past GitHub's 3000 aren't in it, and you can't
+list them: say in the summary that the review covers only the listed files.
 
 GitHub leaves `patch` out for a binary file and for a very large one
 (`NO_PATCH` above). For such a text file, take its chunk from the full diff. The

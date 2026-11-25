@@ -6979,8 +6979,11 @@ review_stage() {
   out_file=$(mktemp -t factory-agent-review.XXXXXX)
   start_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   # Read-only stage: runs in the factory checkout on main, no worktree, no slot.
-  ( cd "$REPO_ROOT" && CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
-      node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$claude_input" --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config ) \
+  # The prompt goes in on stdin, not argv, as in run_browser_task: an inline
+  # diff of up to 200 KB or a long file list would otherwise ride in one argv
+  # element, and exec fails with E2BIG once the whole prompt passes ARG_MAX.
+  ( cd "$REPO_ROOT" && printf '%s' "$claude_input" | CLAUDE_CALL_TIMEOUT_SEC="$REVIEW_TIMEOUT_SEC" \
+      node "$SCRIPT_DIR/lib/run-claude.mjs" -p --dangerously-skip-permissions --effort "$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config ) \
       >"$out_file" 2>>"$LOG_FILE" || exit_code=$?
 
   if [[ $exit_code -ne 0 ]]; then
