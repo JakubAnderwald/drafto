@@ -189,6 +189,9 @@ describe("parseSplitOutput", () => {
     assert.match(bad(cardBody({ extra: "drafto-support-forward" })), /factory or support marker/);
     assert.match(bad(cardBody({ extra: "<!-- hidden -->" })), /HTML comment/);
     assert.match(bad(cardBody({ extra: "#### Notes" })), /heading the issue form lacks: Notes/);
+    // The reason is posted publicly: a heading's @mention is broken.
+    const heading = bad(cardBody({ extra: "### @someone ping" }));
+    assert.match(heading, /heading the issue form lacks: @\u200bsomeone ping$/);
     assert.match(
       bad(cardBody().replace("### Schema changes?", "Schema:")),
       /exactly one "### Schema changes\?"/,
@@ -263,6 +266,19 @@ describe("composeChildBody / childMarker / findChildIssue", () => {
     assert.equal(findChildIssue(issues, { parent: 42, planCommentId: 9001, index: 2 }), null);
     assert.equal(findChildIssue(issues, { parent: 42, planCommentId: 1, index: 1 }), null);
     assert.equal(findChildIssue(null, { parent: 42, planCommentId: 9001, index: 1 }), null);
+  });
+
+  it("skips a closed issue: a sub-card of an earlier split of the same plan comment", () => {
+    const marker = childMarker(42, 9001, 0);
+    const issues = [
+      { number: 1100, state: "closed", author_association: "OWNER", body: marker },
+      { number: 1300, state: "open", author_association: "OWNER", body: marker },
+    ];
+    assert.equal(findChildIssue(issues, { parent: 42, planCommentId: 9001, index: 0 }), 1300);
+    assert.equal(
+      findChildIssue(issues.slice(0, 1), { parent: 42, planCommentId: 9001, index: 0 }),
+      null,
+    );
   });
 
   it("defangMentions keeps code spans and word-attached @ alone", () => {

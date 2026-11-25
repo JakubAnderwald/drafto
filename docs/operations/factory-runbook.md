@@ -1498,16 +1498,17 @@ Every plan has a **Size** section and ends with `<!-- drafto-factory-plan-size:<
 
 An OWNER comment whose whole body is `/split` makes the `--plan` replan sweep file the plan's **Proposed split** as sub-cards instead of replanning ([ADR-0104](../adr/0104-factory-split-command.md); what you see on the issue is in [dark-factory.md](../features/dark-factory.md#splitting-a-card-with-split)). The sweep checks for it right after `plan_size_label`, before the replan logic.
 
-- **Finding the directive.** `split_trigger_ids` takes the directives newer than the plan that pass `owner_comments_since` (OWNER plus the support-forward gate) and that no OWNER comment acks with `<!-- drafto-factory-split-ack:<id> -->`. `split_drop_directives` keeps every directive out of the replan's trigger list.
+- **Finding the directive.** `split_trigger_ids` takes the directives newer than the plan that pass `owner_comments_since` (OWNER plus the support-forward gate), that no OWNER comment acks with `<!-- drafto-factory-split-ack:<id> -->`, and that the plan body doesn't ack with a `replan-ack` marker (a `/split` the planner already took as feedback, with `FACTORY_SPLIT=0` at the time, never splits later). `split_drop_directives` keeps every directive out of the replan's trigger list.
 - **The splitter run.** `split_write_cards` runs `scripts/factory-split-prompt.md` through `run-claude.mjs` with `--tools ""`, at `FACTORY_PLAN_EFFORT` on `${FACTORY_MODEL:-opus[1m]}`, capped like a plan run. The log line is `Invoking claude for #<n> (split, …)`.
   - **Checks.** `factory-split.mjs parse` checks the output, and `spec_missing_section` checks every card.
-  - **Results.** Cards that pass are saved to `logs/factory/split/issue-<n>/plan-<planCommentId>.json` (mode 600), with the plan body's sha256 beside them in `plan-<planCommentId>.sha256`. Anything else posts one "Split not filed" comment with the ack.
+  - **Results.** Cards that pass are saved to `logs/factory/split/issue-<n>/plan-<planCommentId>.json` (mode 600), with the plan body's sha256 beside them in `plan-<planCommentId>.sha256`. Anything else posts one "Split not filed" comment with the ack. For a failed splitter run (an API error, the time cap) the comment says the plan isn't the problem and a new `/split` comment is enough.
   - **A replan in between.** A replan edits the plan comment in place and keeps its id. When the hash no longer matches and `splitChildren` records no sub-card for this plan yet, the saved cards are deleted and the splitter runs again (log: `the plan changed since its sub-cards were saved`). Once a sub-card is filed, the split finishes from the saved cards.
-- **Filing.** `split_file_children` files the cards in order and records each number in `splitChildren` (`<planCommentId>:<total>:<n1>,<n2>…`). Before each create it lists the 50 newest issues and reuses an OWNER issue that carries that card's `drafto-factory-split-child:<parent>:<planCommentId>:<i>` marker.
+- **Filing.** `split_file_children` files the cards in order and records each number in `splitChildren` (`<planCommentId>:<total>:<n1>,<n2>…`). Before each create it lists the 50 newest issues and reuses an open OWNER issue that carries that card's `drafto-factory-split-child:<parent>:<planCommentId>:<i>` marker. A closed one is a sub-card of an earlier split of the same plan comment, so it is never reused.
 - **Finishing.** `split_link_children` links the sub-issues (best effort). `split_finish` then:
   - runs `factory-project.mjs ensure-item` for each sub-card and moves the first one to Ready;
   - labels the parent `factory-split`;
-  - posts the split comment (`drafto-factory-split:<planCommentId>` plus the acks);
+  - posts the split comment (`drafto-factory-split:<planCommentId>` plus the acks), listing each sub-card's board column;
+  - marks the split done (`splitChildren` becomes `done:<planCommentId>:<n1>,<n2>…`) and deletes the saved cards, so a later `/split` of the same plan comment starts afresh;
   - calls `split_park_parent`, which moves the parent to Backlog and strips its `status:*` label.
 - **Resuming.** Any failure before the comment leaves the directive unacked, so the next tick resumes from the saved cards and `splitChildren`, without a Claude run. A Plan Review card that carries `factory-split` and its split comment is parked again without a replan.
 
@@ -1517,10 +1518,11 @@ An OWNER comment whose whole body is `/split` makes the `--plan` replan sweep fi
 
 **Recovering by hand.**
 
-- **To re-run a split from scratch** (after deleting the sub-cards it filed):
-  1. Clear the record: `node scripts/lib/state-cli.mjs factory:set-issue-field <n> splitChildren ""`.
+- **To split a split card again.** Close its sub-cards, remove the `factory-split` label, drag the card to Plan Review, and comment what the split should change (the planner revises the plan), then `/split`. A finished split leaves nothing behind that the new one reuses.
+- **To restart a split that stopped part-way** (after closing the sub-cards it filed):
+  1. Retire the record: `node scripts/lib/state-cli.mjs factory:set-issue-field <n> splitChildren reset` (any value that doesn't start with the plan comment's id; the setter refuses an empty one).
   2. Delete `logs/factory/split/issue-<n>/`.
-  3. Remove the `factory-split` label, drag the card to Plan Review, and comment `/split` again.
+  3. Comment `/split` again.
 - **A first sub-card left in Backlog.** The board's "Item added to project" workflow can race the move to Ready and leave the first sub-card in Backlog. Drag it to Ready.
 
 **One-time setup.** Run `scripts/setup-factory-labels.sh` to create `factory-split`. Until then the parent is parked without the label, and the log says to run the script.

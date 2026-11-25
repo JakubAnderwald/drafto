@@ -24,7 +24,7 @@ This decision answers each one with a narrow trigger and bash-owned writes.
 1. **The trigger is one exact command.** In the `--plan` Plan Review sweep, before any replan, the factory looks for an OWNER comment newer than the plan whose whole body, trimmed, is `/split`.
    - **Exact match.** Quoted text, a code fence, a second line or any other wording is ordinary feedback for the planner.
    - **Same gate as feedback.** Each candidate goes through the OWNER and support-forward gate that replan feedback uses (`owner_comments_since`, [ADR-0066](./0066-support-forward-provenance-gate.md)).
-   - **Ack markers.** A directive counts until a factory comment acks it with `<!-- drafto-factory-split-ack:<commentId> -->`.
+   - **Ack markers.** A directive counts until a factory comment acks it with `<!-- drafto-factory-split-ack:<commentId> -->`, or the plan body acks it with a `replan-ack` marker (the planner already took it as feedback, with the knob off at the time).
    - **Never replan feedback.** The replan detector drops every directive. With the knob off it drops only the answered ones.
 2. **A tool-less splitter writes the bodies.** `split_write_cards` runs Claude with `scripts/factory-split-prompt.md`.
    - **Flags.** It runs at `FACTORY_PLAN_EFFORT` on `${FACTORY_MODEL:-opus[1m]}`, with `--tools ""`, `--no-chrome` and `--strict-mcp-config`. It has no shell, no files and no network.
@@ -47,8 +47,8 @@ This decision answers each one with a narrow trigger and bash-owned writes.
      - the parent's number;
      - for every card after the first, `Depends on #<previous>`;
      - a hidden `<!-- drafto-factory-split-child:<parent>:<planCommentId>:<i> -->` marker.
-   - **State.** Each number is recorded at once in the new state field `splitChildren` (`<planCommentId>:<total>:<n1>,<n2>…`).
-   - **Lost replies.** Before filing card _i_, bash lists the repo's 50 newest issues and takes an OWNER issue that already carries card _i_'s marker. A `gh issue create` whose reply was lost is then found instead of filed twice. If that lookup fails, nothing is filed this tick.
+   - **State.** Each number is recorded at once in the new state field `splitChildren` (`<planCommentId>:<total>:<n1>,<n2>…`). Once the split comment is posted the record becomes `done:<planCommentId>:<n1>,<n2>…` and the saved cards are deleted, so a later `/split` of the same plan comment (a replan keeps its id) starts afresh.
+   - **Lost replies.** Before filing card _i_, bash lists the repo's 50 newest issues and takes an open OWNER issue that already carries card _i_'s marker. A closed one belongs to an earlier split of the same plan comment, so it doesn't count. A `gh issue create` whose reply was lost is then found instead of filed twice. If that lookup fails, nothing is filed this tick.
 5. **Then the board and the parent.** `split_finish` makes the remaining moves.
    - **Board membership.** It puts each sub-card on the board with `factory-project.mjs ensure-item`, which adds a missing one.
    - **Sub-issue links.** It links each sub-card as a GitHub sub-issue of the parent. This is best effort: a failed link is logged, and the "Split from" line still names the parent.

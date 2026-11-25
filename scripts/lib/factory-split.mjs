@@ -142,7 +142,7 @@ function checkBody(body, label) {
   }
   for (const h of headings) {
     if (!SPEC_HEADINGS.includes(h))
-      return `${label}'s body has a heading the issue form lacks: ${h}`;
+      return `${label}'s body has a heading the issue form lacks: ${oneLine(h)}`;
   }
   for (const h of SPEC_HEADINGS) {
     const n = headings.filter((x) => x === h).length;
@@ -245,9 +245,12 @@ export function composeChildBody(card, { parent, planCommentId, index, total, de
   return lines.join("\n");
 }
 
-// Pure: the OWNER issue (not a pull request) that carries card <index>'s
+// Pure: the open OWNER issue (not a pull request) that carries card <index>'s
 // marker, by number, lowest first; null when there is none. The repo is
-// public, so an issue anyone else opened with the marker doesn't count.
+// public, so an issue anyone else opened with the marker doesn't count. A
+// closed one is a sub-card of an earlier split of the same plan comment that
+// the operator closed (a replan keeps the comment id), never a create whose
+// reply was lost, so it doesn't count either.
 export function findChildIssue(issues, { parent, planCommentId, index }) {
   const marker = childMarker(parent, planCommentId, index);
   const hits = (Array.isArray(issues) ? issues : [])
@@ -255,6 +258,7 @@ export function findChildIssue(issues, { parent, planCommentId, index }) {
       (it) =>
         it &&
         !it.pull_request &&
+        it.state !== "closed" &&
         it.author_association === "OWNER" &&
         Number.isInteger(it.number) &&
         typeof it.body === "string" &&

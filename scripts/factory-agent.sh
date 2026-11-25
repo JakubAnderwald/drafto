@@ -1924,18 +1924,23 @@ split_acked_ids() {
     | scan("<!-- drafto-factory-split-ack:([0-9]+) -->") | .[0] ] | unique'
 }
 
-# split_trigger_ids <comments-json> <plan-created-at> [<issue>] — the /split
-# directives newer than the plan that no factory comment has answered yet: a
-# JSON array of id strings, "[]" when there are none. They pass the same OWNER
-# and support-forward gate as replan feedback (owner_comments_since), so a
-# forwarded email can't split a card.
+# split_trigger_ids <comments-json> <plan-created-at> [<issue>] [<plan-acked-json>]
+# — the /split directives newer than the plan that nothing has answered yet: a
+# JSON array of id strings, "[]" when there are none. A directive is answered
+# by a factory comment's split ack, or by the plan itself (<plan-acked-json>,
+# the plan's replan acks): a `/split` the planner already took as feedback
+# (FACTORY_SPLIT=0 at the time, or a planner from before /split) never files
+# sub-cards later. They pass the same OWNER and support-forward gate as replan
+# feedback (owner_comments_since), so a forwarded email can't split a card.
 split_trigger_ids() {
-  local comments="$1" since="$2" issue="${3:-}" cands acked
+  local comments="$1" since="$2" issue="${3:-}" plan_acked="${4:-[]}" cands acked
   cands=$(owner_comments_since "$comments" "$since" "$issue") || return 1
   acked=$(split_acked_ids "$comments") || return 1
-  echo "$cands" | jq -c --argjson acked "$acked" "$(split_directive_jq)"'
-    [ .[] | select(is_split_directive) | (.id | tostring)
-      | select(. as $i | ($acked | index($i)) | not) ]'
+  echo "$plan_acked" | jq -e 'type == "array"' >/dev/null 2>&1 || plan_acked='[]'
+  echo "$cands" | jq -c --argjson acked "$acked" --argjson planAcked "$plan_acked" "$(split_directive_jq)"'
+    ($acked + [ $planAcked[] | tostring ]) as $answered
+    | [ .[] | select(is_split_directive) | (.id | tostring)
+      | select(. as $i | ($answered | index($i)) | not) ]'
 }
 
 # split_drop_directives <comments-json> <ids-json> [all] — <ids-json> (the
@@ -1984,15 +1989,18 @@ split_ack_lines() {
   echo "${1:-[]}" | jq -r '.[] | select(test("^[0-9]+$")) | "<!-- drafto-factory-split-ack:\(.) -->"' 2>/dev/null || true
 }
 
-# split_abort <issue> <trigger-ids-json> <reason> — nothing gets filed: tell
-# the operator why, and ack the directives so the splitter doesn't run again
-# every tick. A new `/split` comment tries again.
+# split_abort <issue> <trigger-ids-json> <reason> [<retry-advice>] — nothing
+# gets filed: tell the operator why, and ack the directives so the splitter
+# doesn't run again every tick. A new `/split` comment tries again.
+# <retry-advice> replaces the default "fix the plan first" advice, for a
+# failure that says nothing about the plan (a failed run).
 split_abort() {
-  local issue_num="$1" triggers="${2:-[]}" reason="${3%.}"
+  local issue_num="$1" triggers="${2:-[]}" reason="${3%.}" advice="${4:-}"
+  [[ -n "$advice" ]] || advice="To try again, comment what the plan should change (the planner revises it), then comment \`/split\` again."
   log "Issue #$issue_num: /split not filed: $reason"
   if printf '%s' "🏭 **Split not filed.** ${reason}.
 
-Nothing was created, and the card stays in **Plan Review**. To try again, comment what the plan should change (the planner revises it), then comment \`/split\` again. Or file the sub-cards by hand from the plan's **Proposed split**.
+Nothing was created, and the card stays in **Plan Review**. ${advice} Or file the sub-cards by hand from the plan's **Proposed split**.
 
 $(split_ack_lines "$triggers")" | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
     return 0
@@ -2035,7 +2043,8 @@ split_write_cards() {
       log "=== factory-agent --${MODE_NAME:-plan} completed in $(( $(date +%s) - ${START_TIME:-$(date +%s)} ))s ==="
       exit 0
     fi
-    split_abort "$issue_num" "$triggers" "The splitter run failed (exit $rc; the factory log on the Mac mini has the details)"
+    split_abort "$issue_num" "$triggers" "The splitter run failed (exit $rc; the factory log on the Mac mini has the details)" \
+      "This says nothing about the plan, so to try again just comment \`/split\` again."
     return 1
   fi
   cat "$out_file" >>"$LOG_FILE" 2>/dev/null || true
@@ -2181,10 +2190,13 @@ split_park_parent() {
 # already moved on), label the parent factory-split, post the split comment
 # with the directives' acks, and park the parent in Backlog. Any step that
 # fails returns before the comment, so the directive stays unanswered and the
-# next tick repeats these steps; each one is safe to repeat.
+# next tick repeats these steps; each one is safe to repeat. Once the comment
+# is posted the split is done: splitChildren becomes "done:<plan comment id>:
+# <n1>,<n2>…" and the saved cards go, so a later /split of the same plan
+# comment (a replan keeps its id) starts afresh instead of reusing them.
 split_finish() {
   local item_id="$1" issue_num="$2" plan_id="$3" triggers="${4:-[]}" nums="$5"
-  local first="" first_status="Ready" first_line n info child_item child_status list="" count=0
+  local first="" first_status="Ready" first_line n info child_item child_status list="" count=0 dir
   local label="${SPLIT_LABEL:-factory-split}"
   for n in $nums; do
     count=$((count + 1))
@@ -2192,10 +2204,10 @@ split_finish() {
       log "WARNING: couldn't put #$n on the board; the next tick tries again"
       return 0
     fi
+    child_status=$(echo "$info" | jq -r '.status // ""' 2>/dev/null || echo "")
     if [[ -z "$first" ]]; then
       first="$n"
       child_item=$(echo "$info" | jq -r '.itemId // ""')
-      child_status=$(echo "$info" | jq -r '.status // ""')
       case "$child_status" in
         "" | Backlog)
           if ! transition_status "$child_item" "$n" "Ready"; then
@@ -2210,7 +2222,9 @@ split_finish() {
       esac
       list+="- #$n (**$first_status**)"$'\n'
     else
-      list+="- #$n (**Backlog**)"$'\n'
+      # Where the board says it is: one dragged on by hand before a resumed
+      # split finishes isn't listed as waiting in Backlog.
+      list+="- #$n (**${child_status:-Backlog}**)"$'\n'
     fi
   done
   if [[ "$first_status" == "Ready" ]]; then
@@ -2234,6 +2248,11 @@ $(split_ack_lines "$triggers")" | gh issue comment "$issue_num" --repo JakubAnde
     return 0
   fi
   log "Issue #$issue_num: split into $count sub-cards ($nums)"
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" splitChildren \
+    "done:$plan_id:$(echo "$nums" | tr ' ' ',')" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 \
+    || log "WARNING: couldn't mark #$issue_num's split done in splitChildren; a later /split of this plan would reuse its sub-cards"
+  dir=$(split_dir_for "$issue_num")
+  rm -f "$dir/plan-$plan_id.json" "$dir/plan-$plan_id.sha256"
   split_park_parent "$item_id" "$issue_num"
 }
 
@@ -9174,6 +9193,8 @@ and drag the card back to **Ready** to retry.
     # files the plan's Proposed split as sub-cards, and the card leaves Plan
     # Review for Backlog. A card already split (its label and its split
     # comment) that is back in Plan Review only goes back to Backlog.
+    ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
+    if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
     if [[ "${FACTORY_SPLIT:-1}" -eq 1 ]]; then
       if [[ ",$ITEM_LABELS," == *",$SPLIT_LABEL,"* ]] \
           && comments_have_marker "$COMMENTS_JSON" "drafto-factory-split:$PLAN_COMMENT_ID"; then
@@ -9181,15 +9202,13 @@ and drag the card back to **Ready** to retry.
         [[ "$DRY_RUN" -eq 1 ]] || split_park_parent "$ITEM_ID" "$ISSUE_NUM"
         continue
       fi
-      SPLIT_TRIGGERS=$(split_trigger_ids "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ISSUE_NUM") || SPLIT_TRIGGERS="[]"
+      SPLIT_TRIGGERS=$(split_trigger_ids "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ISSUE_NUM" "$ACKED_JSON") || SPLIT_TRIGGERS="[]"
       if [[ "$(echo "$SPLIT_TRIGGERS" | jq 'length' 2>/dev/null || echo 0)" != "0" ]]; then
         split_card "$ITEM_ID" "$ISSUE_NUM" "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$SPLIT_TRIGGERS"
         continue
       fi
     fi
 
-    ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")
-    if [[ -z "$ACKED_JSON" ]]; then ACKED_JSON='[]'; fi
     UNACKED_JSON=$(unacked_owner_comments "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ACKED_JSON" "$ISSUE_NUM")
     # A /split directive is never replan feedback: with FACTORY_SPLIT=1
     # split_card handles it above, and one a split already answered stays

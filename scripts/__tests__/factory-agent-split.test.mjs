@@ -188,12 +188,14 @@ const stateOf = (dir) =>
   );
 
 describe("/split directive: split_trigger_ids and split_drop_directives", () => {
-  function triggers(comments) {
+  function triggers(comments, planAcked) {
     const dir = newDir();
     try {
       const r = run(
         dir,
-        `split_trigger_ids ${q(JSON.stringify([PLAN_COMMENT, ...comments]))} ${q(PLAN_AT)} 42`,
+        `split_trigger_ids ${q(JSON.stringify([PLAN_COMMENT, ...comments]))} ${q(PLAN_AT)} 42${
+          planAcked === undefined ? "" : ` ${q(planAcked)}`
+        }`,
       );
       assert.equal(r.status, 0, r.stderr);
       return JSON.parse(r.stdout);
@@ -233,6 +235,14 @@ describe("/split directive: split_trigger_ids and split_drop_directives", () => 
       triggers([comment(9100, "/split"), comment(9101, "/split"), comment(9200, ack)]),
       ["9101"],
     );
+  });
+
+  it("a directive the plan already acked as replan feedback never splits later", () => {
+    const cs = [comment(9100, "/split"), comment(9101, "/split")];
+    assert.deepEqual(triggers(cs, '["9100"]'), ["9101"]);
+    assert.deepEqual(triggers(cs, "[]"), ["9100", "9101"]);
+    // An unreadable list is no list, never a reason to drop the directives.
+    assert.deepEqual(triggers(cs, "not json"), ["9100", "9101"]);
   });
 
   function drop(comments, ids, mode = "") {
@@ -337,9 +347,24 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
         r.posted,
         /<!-- drafto-factory-split:9001 -->\n<!-- drafto-factory-split-ack:9100 -->/,
       );
-      // The record, and the checked cards kept private.
-      assert.equal(stateOf(dir).splitChildren, "9001:3:1001,1002,1003");
+      // The record says the split is done, and the saved cards are gone.
+      assert.equal(stateOf(dir).splitChildren, "done:9001:1001,1002,1003");
       assert.equal(stateOf(dir).lastStatus, "Backlog");
+      const cards = join(dir, "logs/factory/split/issue-42/plan-9001.json");
+      assert.ok(!existsSync(cards));
+      assert.ok(!existsSync(cards.replace(/json$/, "sha256")));
+      assert.doesNotMatch(c, /UNEXPECTED/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the checked cards private until the split is done", () => {
+    const dir = newDir();
+    try {
+      const r = splitCard(dir, { claudeOut: splitOut(THREE), env: { FAIL_COMMENT: "1" } });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(stateOf(dir).splitChildren, "9001:3:1001,1002,1003");
       const cards = join(dir, "logs/factory/split/issue-42/plan-9001.json");
       assert.equal(statSync(cards).mode & 0o777, 0o600);
       assert.equal(statSync(cards.replace(/json$/, "sha256")).mode & 0o777, 0o600);
@@ -348,7 +373,6 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
         JSON.parse(readFileSync(cards, "utf8")).map((x) => x.title),
         THREE.map((x) => x.title),
       );
-      assert.doesNotMatch(c, /UNEXPECTED/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -424,6 +448,12 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
     try {
       const r = splitCard(dir, { claudeOut: "boom", env: { CLAUDE_RC: "1" } });
       assert.match(r.posted, /The splitter run failed \(exit 1;/);
+      // A failed run says nothing about the plan: retrying needs only /split.
+      assert.match(
+        r.posted,
+        /This says nothing about the plan, so to try again just comment `\/split` again\./,
+      );
+      assert.doesNotMatch(r.posted, /comment what the plan should change/);
       const dir2 = newDir();
       try {
         const p = splitCard(dir2, { claudeOut: "", env: { CLAUDE_RC: "1", SESSION_LIMIT: "1" } });
@@ -457,7 +487,7 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
         /issue create #1003 title=feat: mobile part[\s\S]*#1004 title=feat: desktop part/,
       );
       assert.match(second.read("body-1003"), /Depends on #1001\./);
-      assert.equal(stateOf(dir).splitChildren, "9001:3:1001,1003,1004");
+      assert.equal(stateOf(dir).splitChildren, "done:9001:1001,1003,1004");
       assert.deepEqual(ensured(second.calls), ["1001", "1003", "1004"]);
       assert.match(
         second.posted,
@@ -477,7 +507,7 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
       const second = splitCard(dir);
       assert.match(second.calls, /sub-card 2\/3 is already filed as #1002/);
       assert.equal((second.calls.match(/issue create/g) || []).length, 1);
-      assert.equal(stateOf(dir).splitChildren, "9001:3:1001,1002,1003");
+      assert.equal(stateOf(dir).splitChildren, "done:9001:1001,1002,1003");
       assert.deepEqual(ensured(second.calls), ["1001", "1002", "1003"]);
       assert.match(second.posted, /Split into 3 sub-cards\./);
     } finally {
@@ -561,7 +591,7 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
       );
       assert.equal((r.calls.match(/\[claude\]/g) || []).length, 1);
       assert.equal((r.calls.match(/issue create/g) || []).length, 2);
-      assert.equal(stateOf(dir).splitChildren, "9001:2:1001,1002");
+      assert.equal(stateOf(dir).splitChildren, "done:9001:1001,1002");
       assert.match(r.posted, /Split into 2 sub-cards\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -582,8 +612,60 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.calls, /some are filed; finishing the saved split/);
       assert.doesNotMatch(r.calls, /\[claude\]/);
-      assert.equal(stateOf(dir).splitChildren, "9001:3:1001,1003,1004");
+      assert.equal(stateOf(dir).splitChildren, "done:9001:1001,1003,1004");
       assert.match(r.posted, /Split into 3 sub-cards\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a later /split of the same plan comment files new sub-cards, not the closed ones", () => {
+    const dir = newDir();
+    try {
+      const first = splitCard(dir, { claudeOut: splitOut(THREE) });
+      assert.equal(first.status, 0, first.stderr);
+      assert.equal(stateOf(dir).splitChildren, "done:9001:1001,1002,1003");
+      // The operator closes the sub-cards, unlabels the parent and asks for a
+      // different split; the replan edits the plan comment in place.
+      const recent = JSON.parse(readFileSync(join(dir, "recent.json"), "utf8"));
+      writeFileSync(
+        join(dir, "recent.json"),
+        JSON.stringify(recent.map((it) => ({ ...it, state: "closed" }))),
+      );
+      writeFileSync(join(dir, "calls"), "");
+      writeFileSync(join(dir, "posted"), "");
+      const replanned = {
+        ...PLAN_COMMENT,
+        body: `${PLAN}\n<!-- drafto-factory-replan-ack:9050 -->`,
+      };
+      const r = splitCard(dir, {
+        claudeOut: splitOut(THREE.slice(0, 2)),
+        plan: replanned,
+        triggers: '["9200"]',
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.doesNotMatch(r.calls, /finishing the saved split|already filed/);
+      assert.equal((r.calls.match(/\[claude\]/g) || []).length, 1);
+      assert.equal((r.calls.match(/issue create/g) || []).length, 2);
+      assert.equal(stateOf(dir).splitChildren, "done:9001:1004,1005");
+      assert.match(r.posted, /Split into 2 sub-cards\.\*\*\n\n- #1004 \(\*\*Ready\*\*\)\n- #1005/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lists each later sub-card where the board says it is", () => {
+    const dir = newDir();
+    try {
+      writeFileSync(join(dir, "status-1002"), '"Ready"');
+      writeFileSync(join(dir, "status-1003"), "null");
+      const r = splitCard(dir, { claudeOut: splitOut(THREE) });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(
+        r.posted,
+        /- #1001 \(\*\*Ready\*\*\)\n- #1002 \(\*\*Ready\*\*\)\n- #1003 \(\*\*Backlog\*\*\)\n/,
+      );
+      assert.doesNotMatch(r.calls, /ITEM_1002 --status/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -650,14 +732,19 @@ describe("factory-agent.sh /split: knob and --plan wiring", () => {
   it("handles /split before any replan, behind the knob, and moves on to the next card", () => {
     const size = REPLAN.indexOf('plan_size_label "$ISSUE_NUM" "$ITEM_LABELS" "$PLAN_BODY"');
     const gate = REPLAN.indexOf('if [[ "${FACTORY_SPLIT:-1}" -eq 1 ]]; then');
+    const acked = REPLAN.indexOf('ACKED_JSON=$(extract_acked_comment_ids "$PLAN_BODY")');
     const trig = REPLAN.indexOf(
-      'SPLIT_TRIGGERS=$(split_trigger_ids "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ISSUE_NUM")',
+      'SPLIT_TRIGGERS=$(split_trigger_ids "$COMMENTS_JSON" "$PLAN_CREATED_AT" "$ISSUE_NUM" "$ACKED_JSON")',
     );
     const card = REPLAN.indexOf(
       'split_card "$ITEM_ID" "$ISSUE_NUM" "$ISSUE_RECORD" "$PLAN_COMMENT_JSON" "$SPLIT_TRIGGERS"\n        continue',
     );
-    const acked = REPLAN.indexOf("ACKED_JSON=$(extract_acked_comment_ids");
-    assert.ok(size !== -1 && size < gate && gate < trig && trig < card && card < acked);
+    const unacked = REPLAN.indexOf("UNACKED_JSON=$(unacked_owner_comments");
+    // The plan's own acks are read first: a directive the planner already
+    // answered never splits.
+    assert.ok(
+      size !== -1 && size < acked && acked < gate && gate < trig && trig < card && card < unacked,
+    );
     assert.ok(card < REPLAN.indexOf("lib/run-claude.mjs"), "before the replan run");
   });
 
