@@ -1264,11 +1264,16 @@ describe("CLI", () => {
     );
   });
 
-  it("render prints a table from device-output.json", async () => {
+  it("render prints the follow-up comment from device-output.json", async () => {
     const { runDir } = await startAndSupervise();
     const out = await main(["render", "--run-dir", runDir], h.deps);
-    assert.match(out.text, /\| ios \| done \| PASS \|/);
-    assert.match(out.text, /PASS `ios-all.yaml`/);
+    assert.match(out.text, /^🏭 \*\*Device lane results\*\* for `[0-9a-f]{12}` \(PR #\d+\)/);
+    assert.match(out.text, /\| iOS \(simulator\) \| ran \| PASS \| 1\/1 flows passed/);
+    assert.match(out.text, /- PASS `ios-all.yaml`/);
+    assert.match(
+      out.text,
+      /<!-- drafto-factory-device-report -->\n<!-- drafto-factory-device-sha:[0-9a-f]{40}:[^ ]+ -->\n$/,
+    );
     assert.equal(renderOutput(null), "No device-output.json in this run dir.\n");
   });
 

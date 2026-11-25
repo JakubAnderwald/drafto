@@ -8,10 +8,14 @@ import { fileURLToPath } from "node:url";
 
 import {
   COMMENT_MAX_CHARS,
+  DEVICE_REPORT_MARKER,
+  DEVICE_RUNNING_NOTE,
   EARLIER_RUN_STEP,
   MANUAL_MAX,
   VERIFY_REPORT_MARKER,
+  composeDeviceReport,
   composeVerifyReport,
+  deviceShaMarker,
   parseLaneState,
   parseManualList,
   parseResultTable,
@@ -1994,5 +1998,658 @@ describe("verify-report CLI", () => {
     const r = run(args({ out: join(dir, "missing-dir", "body.md") }));
     assert.equal(r.status, 1);
     assert.match(JSON.parse(r.stderr).error, /ENOENT/);
+  });
+});
+
+// ── the device lane (ADR-0106) ──────────────────────────────────────────────
+// Its supervisor's device-output.json replaces the manual "iOS / Android" row
+// with an emulator and a simulator row; with the lane off (no output) the
+// report must read exactly as before. Its text is scanned like the other
+// lanes' (and for its own account's password), and its screenshots sit only
+// inside its own <details>.
+
+const DEVICE_PASSWORD = "Dev1ce-Lane-Passw0rd";
+const DEVICE_RUN = "465-0123456789ab-20261110T051950Z";
+const DEVICE_EVIDENCE_RUN = `device-${DEVICE_RUN}`;
+const DEVICE_SECRETS = { ...SECRETS, devicePassword: DEVICE_PASSWORD };
+
+function devicePlatform(state = "done", over = {}) {
+  const done = state === "done";
+  return {
+    state,
+    verdict: done ? "PASS" : null,
+    build: done ? { cached: true, durationS: 312 } : null,
+    flows: done
+      ? [
+          { name: "01-login.yaml", status: "PASS", durationS: 40, failure: null },
+          { name: "03-notes.yaml", status: "PASS", durationS: 51, failure: null },
+        ]
+      : [],
+    ...over,
+  };
+}
+
+function deviceOutput(platforms, over = {}) {
+  return {
+    version: 1,
+    runId: DEVICE_RUN,
+    issue: 465,
+    pr: 701,
+    sha: SHA,
+    mode: "smoke",
+    trigger: "testing",
+    startedAt: "2026-11-10T05:19:50Z",
+    finishedAt: "2026-11-10T06:19:50Z",
+    platforms,
+    ...over,
+  };
+}
+
+const FAILED_ANDROID = devicePlatform("done", {
+  verdict: "FAIL",
+  build: { cached: false, durationS: 900 },
+  flows: [
+    { name: "01-login.yaml", status: "PASS", durationS: 40, failure: null },
+    {
+      name: "03-notes.yaml",
+      status: "FAIL",
+      durationS: 12,
+      failure: 'Assertion is false: "Notes" is visible\nat line 4',
+    },
+  ],
+});
+
+function composeDevice(platforms, over = {}) {
+  return compose({
+    device: { output: deviceOutput(platforms), dir: "/runs/dev" },
+    secrets: DEVICE_SECRETS,
+    ...over,
+  });
+}
+
+function deviceImageUrl(n) {
+  return `https://raw.githubusercontent.com/JakubAnderwald/drafto/${EVIDENCE_COMMIT}/465/${SHA.slice(0, 12)}/${DEVICE_EVIDENCE_RUN}/${String(n).padStart(2, "0")}.png`;
+}
+
+function deviceUpload(labels = ["android: 01-login.yaml", "ios: ios-all.yaml"], extra = {}) {
+  return {
+    ok: true,
+    issue: "465",
+    sha: SHA,
+    runId: DEVICE_EVIDENCE_RUN,
+    commit: EVIDENCE_COMMIT,
+    images: labels.map((label, i) => ({ n: i + 1, url: deviceImageUrl(i + 1), label })),
+    overflow: [],
+    ...extra,
+  };
+}
+
+const deviceImg = (n) => `<img src="${deviceImageUrl(n)}" width="480" alt="Screenshot ${n}">`;
+
+// The device lane's <details>, from its summary to its closer.
+function deviceLane(body) {
+  const start = body.indexOf("<summary>Devices (Maestro):");
+  return start === -1 ? "" : body.slice(start, body.indexOf("</details>", start));
+}
+
+describe("device lane: the lane off leaves the report as it was", () => {
+  it("no device input, a null one, or output that can't be used: the same body", () => {
+    const before = compose();
+    assert.deepEqual(compose({ device: null }), before);
+    for (const device of [
+      { output: null, dir: "/runs/dev" },
+      { output: deviceOutput({}), dir: "/runs/dev" },
+      { output: deviceOutput({ web: devicePlatform() }), dir: "/runs/dev" },
+      // Another commit's run says nothing about this one.
+      {
+        output: deviceOutput({ ios: devicePlatform() }, { sha: "f".repeat(40) }),
+        dir: "/runs/dev",
+      },
+    ]) {
+      const r = compose({ device, secrets: DEVICE_SECRETS });
+      assert.equal(r.body, before.body, JSON.stringify(device.output));
+      assert.equal(r.verdict, before.verdict);
+      assert.deepEqual(r.withheld, { ...before.withheld, device: false });
+      assert.deepEqual(r.images, { ...before.images, device: 0 });
+    }
+    assert.match(tableRow(before.body, "iOS / Android"), /\| manual \| — \| beta dispatched/);
+    assert.equal(tableRow(before.body, "Android (emulator)"), undefined);
+  });
+});
+
+describe("device lane: rows", () => {
+  it("done PASS: the lane's state, verdict, flows passed and the cached build", () => {
+    const r = composeDevice({ android: devicePlatform(), ios: devicePlatform() });
+    assert.equal(
+      tableRow(r.body, "Android (emulator)"),
+      "| Android (emulator) | ran | PASS | 2/2 flows passed; build cached |",
+    );
+    assert.equal(
+      tableRow(r.body, "iOS (simulator)"),
+      "| iOS (simulator) | ran | PASS | 2/2 flows passed; build cached |",
+    );
+    assert.equal(tableRow(r.body, "iOS / Android"), undefined);
+    assert.match(tableRow(r.body, "macOS"), /\| manual \|/, "the macOS row is unchanged");
+    const lines = r.body.split("\n");
+    assert.ok(
+      lines.indexOf(tableRow(r.body, "Web (browser)")) <
+        lines.indexOf(tableRow(r.body, "Android (emulator)")) &&
+        lines.indexOf(tableRow(r.body, "iOS (simulator)")) <
+          lines.indexOf(tableRow(r.body, "macOS")),
+      "between the Web and macOS rows",
+    );
+    assert.match(
+      r.body,
+      /- \*\*Devices:\*\* Android \(emulator\) PASS, 2\/2 flows passed; iOS \(simulator\) PASS, 2\/2 flows passed\./,
+    );
+  });
+
+  it("done FAIL: the first failure's first line, and the verdict counts in the headline", () => {
+    const r = composeDevice({ android: FAILED_ANDROID });
+    assert.equal(
+      tableRow(r.body, "Android (emulator)"),
+      '| Android (emulator) | ran | FAIL | 1/2 flows passed; first failure: 03-notes.yaml (FAIL) — Assertion is false: "Notes" is visible; build not cached |',
+    );
+    assert.equal(r.verdict, "fail");
+    assert.match(r.body, /\*\*Verdict: FAIL\*\*/);
+    const lane = deviceLane(r.body);
+    assert.ok(
+      lane.includes('- FAIL `03-notes.yaml` (12 s): Assertion is false: "Notes" is visible'),
+    );
+    assert.ok(!lane.includes("at line 4"), "only the first line of a failure");
+  });
+
+  it("a platform the lane didn't cover keeps today's manual text under its own label", () => {
+    const r = composeDevice({ ios: devicePlatform() });
+    assert.equal(
+      tableRow(r.body, "Android (emulator)"),
+      "| Android (emulator) | manual | — | beta dispatched for this commit; run the iOS / Android steps on it |",
+    );
+    assert.match(tableRow(r.body, "iOS (simulator)"), /\| ran \| PASS \|/);
+    const unaffected = composeDevice(
+      { ios: devicePlatform() },
+      { platforms: { web: true, mobile: false, desktop: true } },
+    );
+    assert.equal(
+      tableRow(unaffected.body, "Android (emulator)"),
+      "| Android (emulator) | not affected | — | no mobile changes |",
+    );
+  });
+
+  it("running: results follow in a separate comment, and it isn't a coverage gap", () => {
+    const r = composeDevice({ android: devicePlatform(), ios: devicePlatform("running") });
+    assert.equal(
+      tableRow(r.body, "iOS (simulator)"),
+      `| iOS (simulator) | running | — | ${DEVICE_RUNNING_NOTE} |`,
+    );
+    assert.equal(DEVICE_RUNNING_NOTE, "running — results follow in a separate comment");
+    assert.doesNotMatch(gapsSection(r.body), /Devices/);
+    assert.equal(r.verdict, "pass");
+  });
+
+  it("unavailable: the reason as a sentence, and a coverage gap", () => {
+    const r = composeDevice({
+      android: devicePlatform("unavailable:no-avd"),
+      ios: devicePlatform("failed:build-timeout"),
+    });
+    assert.equal(
+      tableRow(r.body, "Android (emulator)"),
+      "| Android (emulator) | unavailable | — | unavailable: the lane's Android emulator (AVD) is missing |",
+    );
+    assert.equal(
+      tableRow(r.body, "iOS (simulator)"),
+      "| iOS (simulator) | failed | — | failed: the build timed out |",
+    );
+    const gaps = gapsSection(r.body);
+    assert.ok(
+      gaps.includes(
+        "- **Devices (Maestro):** Android (emulator) unavailable: the lane's Android emulator (AVD) is missing.",
+      ),
+    );
+    assert.ok(
+      gaps.includes("- **Devices (Maestro):** iOS (simulator) failed: the build timed out."),
+    );
+    assert.match(r.body, /Partial: some checks didn't run/);
+  });
+
+  it("annotates the mobile manual steps with the verdict of the platform the lane ran", () => {
+    const scen = scenario().replace(
+      "### iOS / Android\n\n1. Tap — expected: it works.\n",
+      "### iOS\n\n1. Tap.\n\n### Android\n\n1. Swipe.\n",
+    );
+    const r = composeDevice({ android: FAILED_ANDROID, ios: devicePlatform() }, { scenario: scen });
+    const steps = manualLines(r.body);
+    assert.ok(
+      steps.includes(
+        "Run the **iOS** steps in the test scenario on the iOS / Android beta for this commit (a follow-up comment gives the build number) (the device lane ran: PASS).",
+      ),
+      steps.join("\n"),
+    );
+    assert.ok(
+      steps.some(
+        (l) =>
+          l.startsWith("Run the **Android** steps") && l.endsWith("(the device lane ran: FAIL)."),
+      ),
+    );
+    // A combined section names each platform; one the lane didn't run isn't annotated.
+    const both = composeDevice({ android: FAILED_ANDROID, ios: devicePlatform("running") });
+    assert.ok(
+      manualLines(both.body).some((l) =>
+        l.endsWith("(the device lane ran: Android FAIL, iOS still running)."),
+      ),
+    );
+    const none = composeDevice({ android: devicePlatform("unavailable:no-avd") });
+    assert.ok(
+      manualLines(none.body).some(
+        (l) => l.startsWith("Run the **iOS / Android** steps") && !l.includes("device lane"),
+      ),
+    );
+  });
+});
+
+describe("device lane: secrets", () => {
+  it("withholds the device lane's text when it carries the device account's password", () => {
+    const leaky = devicePlatform("done", {
+      verdict: "FAIL",
+      flows: [
+        {
+          name: "01-login.yaml",
+          status: "FAIL",
+          durationS: 3,
+          failure: `typed ${DEVICE_PASSWORD}`,
+        },
+      ],
+    });
+    const r = composeDevice(
+      { android: leaky, ios: devicePlatform() },
+      { images: { device: deviceUpload() } },
+    );
+    assert.ok(!r.body.includes(DEVICE_PASSWORD));
+    assert.deepEqual(r.withheld, { shell: false, browser: false, device: true });
+    assert.deepEqual(r.secretHits, ["device:device-password"]);
+    assert.match(
+      tableRow(r.body, "Android (emulator)"),
+      /\| ran \| FAIL \| report withheld \(matched device-password\) \|/,
+    );
+    assert.match(tableRow(r.body, "iOS (simulator)"), /report withheld/);
+    assert.ok(
+      deviceLane(r.body).includes(
+        "Withheld: matched device-password. The local copy is at `/runs/dev/device-output.json`.",
+      ),
+    );
+    assert.ok(!r.body.includes("01-login.yaml"), "no flow name of a withheld lane");
+    assert.equal(imgCount(r.body), 0);
+    assert.deepEqual(r.images, { browser: 0, device: 0 });
+    assert.ok(
+      gapsSection(r.body).includes(
+        "- **Devices (Maestro):** report withheld; matched device-password.",
+      ),
+    );
+    assert.match(r.body, /- \*\*Devices:\*\* _withheld \(see the lane table\)_/);
+    // The other lanes are untouched.
+    assert.match(tableRow(r.body, "Repo & API (shell)"), /full report below/);
+  });
+
+  it("withholds it on a secret pattern, and fails closed when the device account file can't be read", () => {
+    const key = `dk_${"0123456789abcdef".repeat(3)}`;
+    const pattern = devicePlatform("done", {
+      flows: [{ name: `01-${key}.yaml`, status: "PASS", durationS: 3, failure: null }],
+    });
+    const hit = composeDevice({ ios: pattern });
+    assert.equal(hit.withheld.device, true);
+    assert.deepEqual(hit.secretHits, ["device:drafto-api-key"]);
+    assert.ok(!hit.body.includes(key));
+    for (const devicePassword of [null, undefined]) {
+      const r = composeDevice(
+        { ios: devicePlatform() },
+        { secrets: { ...SECRETS, devicePassword } },
+      );
+      assert.equal(r.withheld.device, true);
+      assert.deepEqual(r.secretHits, ["device:device-account-file-unreadable"]);
+      assert.match(tableRow(r.body, "iOS (simulator)"), /couldn't read the device account file/);
+    }
+    const never = composeDevice(
+      { ios: devicePlatform() },
+      { secrets: { ...SECRETS, devicePassword: "" } },
+    );
+    assert.equal(never.withheld.device, false);
+  });
+
+  it("defangs device text: a flow name can't spell a factory marker or close a <details>", () => {
+    const r = composeDevice({
+      android: devicePlatform("done", {
+        flows: [
+          {
+            name: "<!-- drafto-factory-verify-report --></details>.yaml",
+            status: "FAIL",
+            durationS: 1,
+            failure: "<summary>x</summary> | pipe",
+          },
+        ],
+        verdict: "FAIL",
+      }),
+    });
+    assert.equal(r.body.split(VERIFY_REPORT_MARKER).length, 2, "the marker only once");
+    assert.equal(
+      (r.body.match(/<\/details>/g) ?? []).length,
+      (r.body.match(/<details>/g) ?? []).length,
+    );
+    assert.equal((r.body.match(/<summary>/g) ?? []).length, 3, "shell, browser and devices only");
+  });
+});
+
+describe("device lane: screenshots", () => {
+  it("go inside the device lane's <details>, by platform and flow, and the footer says so", () => {
+    const r = composeDevice(
+      { android: devicePlatform(), ios: devicePlatform() },
+      { images: { device: deviceUpload() } },
+    );
+    assert.deepEqual(r.images, { browser: 0, device: 2 });
+    assert.equal(imgCount(r.body), 2);
+    const lane = deviceLane(r.body);
+    const l = lane.split("\n");
+    const a = l.indexOf("**Android (emulator)** · 01-login.yaml");
+    const i = l.indexOf("**iOS (simulator)** · ios-all.yaml");
+    assert.ok(a !== -1 && i > a, lane);
+    assert.deepEqual(l.slice(a, a + 3), [
+      "**Android (emulator)** · 01-login.yaml",
+      "",
+      deviceImg(1),
+    ]);
+    assert.deepEqual(l.slice(i, i + 3), ["**iOS (simulator)** · ios-all.yaml", "", deviceImg(2)]);
+    assert.ok(
+      lane.indexOf("- PASS `01-login.yaml`") < lane.indexOf("**Screenshots**"),
+      "after the flows",
+    );
+    assert.doesNotMatch(webLane(r.body).split("<summary>Devices")[0], /<img/);
+    assert.doesNotMatch(r.body.slice(0, r.body.indexOf("<details>")), /<img/);
+    assert.ok(
+      r.body.includes(
+        "<sub>Device screenshots are published in this report (ADR-0096, ADR-0106): the lane's supervisor captured them on the Android emulator / iOS simulator, signed in to the dev device account on dev data. The rest of the device lane's evidence stays on the Mac mini: `/runs/dev`.</sub>",
+      ),
+    );
+    assert.deepEqual(r.body.split("\n").slice(-2), [VERIFY_REPORT_MARKER, verifyShaMarker(SHA)]);
+  });
+
+  it("aren't shown for a lane that didn't finish a platform, and the footer says why", () => {
+    const r = composeDevice(
+      { android: devicePlatform("unavailable:no-avd") },
+      { images: { device: deviceUpload() } },
+    );
+    assert.equal(imgCount(r.body), 0);
+    assert.match(
+      r.body,
+      /Devices `\/runs\/dev`\. Device screenshots weren't published: the lane didn't report a result\./,
+    );
+    const failed = composeDevice(
+      { android: devicePlatform() },
+      { images: { device: { ok: false, reason: "selftest-failed" } } },
+    );
+    assert.match(
+      failed.body,
+      /Device screenshots weren't published: the publishing self-test failed/,
+    );
+  });
+});
+
+describe("composeDeviceReport (the follow-up comment)", () => {
+  function follow(platforms, over = {}) {
+    return composeDeviceReport({
+      sha: SHA,
+      pr: 701,
+      output: deviceOutput(platforms),
+      dir: "/runs/dev",
+      secrets: { devicePassword: DEVICE_PASSWORD },
+      ...over,
+    });
+  }
+
+  it("has its header, the device rows and its two markers last", () => {
+    const r = follow({ android: FAILED_ANDROID, ios: devicePlatform() });
+    const lines = r.body.split("\n");
+    assert.equal(lines[0], `🏭 **Device lane results** for \`${SHA.slice(0, 12)}\` (PR #701)`);
+    assert.equal(r.verdict, "fail");
+    assert.ok(lines.includes("**Verdict: FAIL**"));
+    assert.ok(lines.includes("Evidence, not a gate: the card stays where it is."));
+    assert.match(tableRow(r.body, "Android (emulator)"), /\| ran \| FAIL \| 1\/2 flows passed/);
+    assert.match(tableRow(r.body, "iOS (simulator)"), /\| ran \| PASS \|/);
+    assert.deepEqual(lines.slice(-2), [DEVICE_REPORT_MARKER, deviceShaMarker(SHA, DEVICE_RUN)]);
+    assert.equal(DEVICE_REPORT_MARKER, "<!-- drafto-factory-device-report -->");
+    assert.equal(
+      deviceShaMarker(SHA, DEVICE_RUN),
+      `<!-- drafto-factory-device-sha:${SHA}:${DEVICE_RUN} -->`,
+    );
+    assert.ok(!r.body.includes(VERIFY_REPORT_MARKER), "not a verification report");
+    assert.deepEqual(r.withheld, { device: false });
+    assert.deepEqual(r.secretHits, []);
+    assert.ok(
+      r.body.includes(
+        "<sub>Local evidence stays on the Mac mini (the repo is public): `/runs/dev`.</sub>",
+      ),
+    );
+  });
+
+  it("lists only the platforms the run covered, and says when it was asked for by label", () => {
+    const r = follow(
+      { ios: devicePlatform("running") },
+      {
+        output: deviceOutput({ ios: devicePlatform("running") }, { trigger: "on-demand" }),
+      },
+    );
+    assert.equal(tableRow(r.body, "Android (emulator)"), undefined);
+    assert.equal(
+      tableRow(r.body, "iOS (simulator)"),
+      "| iOS (simulator) | running | — | still running when this comment was posted |",
+    );
+    assert.equal(r.verdict, "incomplete");
+    assert.ok(
+      r.body.includes("Run on request (the `factory-device-run` label). Evidence, not a gate"),
+    );
+  });
+
+  it("embeds the shots by platform and flow, with the published footer", () => {
+    const r = follow(
+      { android: devicePlatform(), ios: devicePlatform() },
+      { images: deviceUpload() },
+    );
+    assert.deepEqual(r.images, { device: 2 });
+    assert.ok(
+      r.body.indexOf("**Flows**") < r.body.indexOf("**Android (emulator)** · 01-login.yaml"),
+    );
+    assert.ok(r.body.includes(deviceImg(1)) && r.body.includes(deviceImg(2)));
+    assert.match(
+      r.body,
+      /<sub>Device screenshots are published in this report \(ADR-0096, ADR-0106\)/,
+    );
+    assert.deepEqual(r.body.split("\n").slice(-2), [
+      DEVICE_REPORT_MARKER,
+      deviceShaMarker(SHA, DEVICE_RUN),
+    ]);
+  });
+
+  it("withholds the device text on a secret hit, keeping the markers", () => {
+    const r = follow(
+      {
+        android: devicePlatform("done", {
+          flows: [
+            { name: "01-login.yaml", status: "FAIL", durationS: 1, failure: DEVICE_PASSWORD },
+          ],
+          verdict: "FAIL",
+        }),
+      },
+      { images: deviceUpload() },
+    );
+    assert.ok(!r.body.includes(DEVICE_PASSWORD));
+    assert.deepEqual(r.withheld, { device: true });
+    assert.deepEqual(r.secretHits, ["device:device-password"]);
+    assert.deepEqual(r.images, { device: 0 });
+    assert.equal(imgCount(r.body), 0);
+    assert.ok(r.body.includes("Withheld: matched device-password."));
+    assert.deepEqual(r.body.split("\n").slice(-2), [
+      DEVICE_REPORT_MARKER,
+      deviceShaMarker(SHA, DEVICE_RUN),
+    ]);
+  });
+
+  it("refuses another commit's output and a bad sha; an odd run id reads as unknown", () => {
+    assert.throws(
+      () =>
+        follow({}, { output: deviceOutput({ ios: devicePlatform() }, { sha: "f".repeat(40) }) }),
+      /another commit/,
+    );
+    assert.throws(() => follow({}, { sha: "abc" }), /invalid sha/);
+    const odd = follow({}, { output: deviceOutput({ ios: devicePlatform() }, { runId: "x -->" }) });
+    assert.equal(odd.body.split("\n").at(-1), deviceShaMarker(SHA, "unknown"));
+  });
+});
+
+describe("verify-report CLI: the device lane", () => {
+  let dir;
+  const run = (argv) => spawnSync(process.execPath, [cli, ...argv], { encoding: "utf8" });
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "verify-report-device-"));
+    mkdirSync(join(dir, "run"));
+    writeFileSync(
+      join(dir, "run", "device-output.json"),
+      JSON.stringify(deviceOutput({ android: FAILED_ANDROID, ios: devicePlatform() })),
+    );
+    writeFileSync(join(dir, "upload.json"), JSON.stringify(deviceUpload()));
+    writeFileSync(
+      join(dir, "device-account.env"),
+      `E2E_TEST_EMAIL=device@example.com\nE2E_TEST_PASSWORD=${DEVICE_PASSWORD}\n`,
+      { mode: 0o600 },
+    );
+    writeFileSync(join(dir, "scenario.md"), scenario({ web: false, mac: false }));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const verifyArgs = (extra) => [
+    "render",
+    "--issue",
+    "465",
+    "--pr",
+    "701",
+    "--sha",
+    SHA,
+    "--scenario-file",
+    join(dir, "scenario.md"),
+    "--platforms",
+    '{"web":false,"mobile":true,"desktop":false}',
+    "--beta-lanes",
+    "mobile",
+    "--shell-state",
+    "none",
+    "--shell-dir",
+    "",
+    "--browser-state",
+    "none",
+    "--browser-dir",
+    "",
+    "--gaps",
+    "[]",
+    "--cr-note",
+    "",
+    "--account-file",
+    "",
+    "--bypass-file",
+    "",
+    "--signin-key-file",
+    "",
+    "--out",
+    join(dir, "body.md"),
+    ...extra,
+  ];
+
+  it("render --device-out / --device-images put the device rows and shots in the report", () => {
+    const r = run(
+      verifyArgs([
+        "--device-out",
+        join(dir, "run", "device-output.json"),
+        "--device-images",
+        join(dir, "upload.json"),
+        "--device-account-file",
+        join(dir, "device-account.env"),
+      ]),
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      verdict: "fail",
+      withheld: { shell: false, browser: false, device: false },
+      secretHits: [],
+      images: { browser: 0, device: 2 },
+    });
+    const body = readFileSync(join(dir, "body.md"), "utf8");
+    assert.match(tableRow(body, "Android (emulator)"), /\| ran \| FAIL \|/);
+    assert.ok(deviceLane(body).includes(deviceImg(1)));
+    assert.ok(body.includes(`\`${join(dir, "run")}\``), "the run dir is the lane's local evidence");
+  });
+
+  it("render without --device-out is the report as before; an unreadable one falls back to manual", () => {
+    const off = run(verifyArgs([]));
+    assert.equal(off.status, 0, off.stderr);
+    assert.deepEqual(JSON.parse(off.stdout).withheld, { shell: false, browser: false });
+    const before = readFileSync(join(dir, "body.md"), "utf8");
+    assert.match(tableRow(before, "iOS / Android"), /\| manual \|/);
+    const missing = run(
+      verifyArgs(["--device-out", join(dir, "nope.json"), "--device-account-file", ""]),
+    );
+    assert.equal(missing.status, 0, missing.stderr);
+    assert.equal(readFileSync(join(dir, "body.md"), "utf8"), before);
+  });
+
+  it("render fails the device lane closed when --device-account-file is left out", () => {
+    const r = run(verifyArgs(["--device-out", join(dir, "run", "device-output.json")]));
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.withheld.device, true);
+    assert.deepEqual(out.secretHits, ["device:device-account-file-unreadable"]);
+  });
+
+  it("render --kind device writes the follow-up comment and prints its JSON line", () => {
+    const argv = [
+      "render",
+      "--kind",
+      "device",
+      "--issue",
+      "465",
+      "--pr",
+      "701",
+      "--sha",
+      SHA,
+      "--device-out",
+      join(dir, "run", "device-output.json"),
+      "--device-images",
+      join(dir, "upload.json"),
+      "--device-account-file",
+      join(dir, "device-account.env"),
+      "--out",
+      join(dir, "follow.md"),
+    ];
+    const r = run(argv);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      verdict: "fail",
+      withheld: { device: false },
+      secretHits: [],
+      images: { device: 2 },
+    });
+    const body = readFileSync(join(dir, "follow.md"), "utf8");
+    assert.deepEqual(body.split("\n").slice(-2), [
+      DEVICE_REPORT_MARKER,
+      deviceShaMarker(SHA, DEVICE_RUN),
+    ]);
+
+    const other = run(argv.map((a) => (a === SHA ? "f".repeat(40) : a)));
+    assert.equal(other.status, 1);
+    assert.match(JSON.parse(other.stderr).error, /another commit/);
+    const unreadable = run(
+      argv.map((a) => (a.endsWith("device-output.json") ? join(dir, "nope.json") : a)),
+    );
+    assert.equal(unreadable.status, 1);
+    assert.equal(run(["render", "--kind", "bogus"]).status, 2);
+    assert.equal(
+      run(argv.filter((a, i) => a !== "--device-out" && argv[i - 1] !== "--device-out")).status,
+      2,
+    );
   });
 });

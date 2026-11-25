@@ -49,8 +49,13 @@
 //      INCOMPLETE when none reported a verdict; "partial" when some checks
 //      didn't run; "Evidence, not a gate: the card is now In Test."
 //   2. A lane table: Repo & API (shell), Web (browser), iOS / Android, macOS.
-//      No lane runs a device yet, so the last two are manual (macOS notes the
-//      shell lane's --preflight results). With platforms.webViaShared (the
+//      The iOS / Android row is manual, and macOS is (it notes the shell
+//      lane's --preflight results). When the device lane (ADR-0106) left a
+//      device-output.json (--device-out), the iOS / Android row becomes an
+//      "Android (emulator)" and an "iOS (simulator)" row with the lane's state,
+//      verdict and a short note; a platform it didn't cover keeps the manual
+//      text, and a platform still running reads "running — results follow in
+//      a separate comment". With platforms.webViaShared (the
 //      verification variant: web reached only through packages/shared/) the
 //      Web row says so, since the PR has no apps/web/ files.
 //   3. Assessment: each reported lane's Summary, then the shell lane's
@@ -61,7 +66,8 @@
 //      per scenario section (iOS / Android and macOS ones on the beta when one
 //      was dispatched; `### API` only when the shell lane didn't report or
 //      stopped early, since it is that lane's), one line per affected platform the scenario has no
-//      section for, and "run the Web steps by hand" when the browser lane
+//      section for (a mobile line notes the device lane's verdict when it
+//      ran that platform), and "run the Web steps by hand" when the browser lane
 //      didn't report (for `skipped:already-run`, a pointer to the In Test
 //      run's Browser run comment instead). The platform and Web lines, and the pointer to a
 //      withheld lane's local report, are never cut by the cap.
@@ -74,13 +80,18 @@
 //      record (evidence-upload.mjs, ADR-0096), go inside its <details> under
 //      the steps that took them (evidence-embed.mjs); they are never cut, the
 //      lane text is. Only a lane that reported and wasn't withheld shows any,
-//      and the shell lane never does. Images are kept per lane, so a future
-//      device lane can add its own.
+//      and the shell lane never does. The device lane's go inside its own
+//      <details> (--device-images), by platform and flow.
 //   7. The local evidence paths (they stay on the Mac mini; the repo is
 //      public), for every lane that had nothing embedded, with why the Web
 //      screenshots weren't published when an upload was tried; a lane whose
 //      screenshots are embedded says so on a line of its own.
 //   8. The two markers below, exactly once, as the last two lines.
+//
+// The device lane's follow-up comment (--kind device, composeDeviceReport): a
+// run that ends after the card left Testing posts its rows, flows and
+// screenshots on their own, under DEVICE_REPORT_MARKER and
+// deviceShaMarker(<sha>, <runId>), so the feedback detectors skip it.
 //
 // Secrets, per lane: the lane's whole output is scanned with browser-report's
 // patterns, VERIFY_SECRET_PATTERNS, and three literals — the test account's
@@ -90,7 +101,9 @@
 // that lane's text, naming the pattern and never echoing the match. A secret
 // file that can't be read withholds the lanes it guards (fail closed): the
 // password guards both lanes, the bypass secret and the service-role key the
-// shell lane. Passing a file flag as "" says the lanes were never given that
+// shell lane. The device lane's text is scanned for its own account's password
+// (--device-account-file, E2E_TEST_PASSWORD), which guards only that lane.
+// Passing a file flag as "" says the lanes were never given that
 // secret (e.g. no bypass secret is set up), so there is nothing of it to scan
 // for; a flag left out entirely fails closed like an unreadable file. Every
 // piece of lane, scenario and gap text is defanged, so nothing but this module
@@ -107,16 +120,25 @@
 //        --browser-state <state> --browser-dir <dir|"">
 //        --gaps '[{"lane":…,"reason":…} | {"lane":…,"token":…}]' --cr-note <text|"">
 //        --account-file <f|""> --bypass-file <f|""> --signin-key-file <f|"">
-//        [--browser-images <upload.json|"">] --out <body-file>
+//        [--browser-images <upload.json|"">]
+//        [--device-out <device-output.json|""> --device-account-file <f|"">
+//         [--device-images <upload.json|"">]] --out <body-file>
 //     Writes the comment body to --out and prints one JSON line
-//     {verdict, withheld: {shell, browser}, secretHits, images: {browser}}
-//     (images: how many screenshots the body embeds, per lane): verdict is
+//     {verdict, withheld: {shell, browser[, device]}, secretHits,
+//     images: {browser[, device]}} (the device keys only with --device-out;
+//     images: how many screenshots the body embeds, per lane): verdict is
 //     pass|warn|fail|incomplete; secretHits lists "<lane>:<pattern>" for each
 //     match and "<lane>:<file>-unreadable" for each fail-closed file
 //     ("body:<pattern>" when the final check tripped). --issue is validated
 //     but not rendered: the comment is posted on that issue. A missing lane
 //     output or scenario file is a coverage gap, not an error. Exit 0; 1 on
 //     an I/O error writing --out; 2 on a usage error.
+//   node verify-report.mjs render --kind device --issue <n> --pr <n> --sha <40-hex>
+//        --device-out <device-output.json> --device-account-file <f|"">
+//        [--device-images <upload.json|"">] --out <body-file>
+//     The device lane's follow-up comment. Prints {verdict, withheld: {device},
+//     secretHits, images: {device}}. Exit 1 when --device-out can't be read
+//     or is for another commit.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -133,7 +155,12 @@ import {
   parseRunnerOutput,
   scanForSecrets,
 } from "./browser-report.mjs";
-import { evidenceSection, readUpload, reasonSentence } from "./evidence-embed.mjs";
+import {
+  DEVICE_PLATFORMS,
+  evidenceSection,
+  readUpload,
+  reasonSentence,
+} from "./evidence-embed.mjs";
 import {
   extractScenarioSections,
   reusedBetaNote,
@@ -151,6 +178,9 @@ export { parseResultTable, splitRow };
 export const VERIFY_REPORT_MARKER = "<!-- drafto-factory-verify-report -->";
 export const VERIFY_SHA_MARKER_PREFIX = "drafto-factory-verify-sha:";
 export const SHELL_OUTPUT_FILE = "shell-output.txt";
+export const DEVICE_OUTPUT_FILE = "device-output.json";
+export const DEVICE_REPORT_MARKER = "<!-- drafto-factory-device-report -->";
+export const DEVICE_SHA_MARKER_PREFIX = "drafto-factory-device-sha:";
 export const BROWSER_OUTPUT_FILE = RUNNER_OUTPUT_FILE;
 export const MANUAL_MAX = 25;
 export { COMMENT_MAX_CHARS };
@@ -180,6 +210,10 @@ export function verifyShaMarker(sha) {
   return `<!-- ${VERIFY_SHA_MARKER_PREFIX}${sha} -->`;
 }
 
+export function deviceShaMarker(sha, runId) {
+  return `<!-- ${DEVICE_SHA_MARKER_PREFIX}${sha}:${runId} -->`;
+}
+
 const LANES = {
   shell: {
     label: "Repo & API (shell)",
@@ -192,6 +226,14 @@ const LANES = {
     short: "Web",
     file: BROWSER_OUTPUT_FILE,
     guardedBy: ["password"],
+  },
+  // ADR-0106: Maestro on an Android emulator and an iOS simulator, run by a
+  // supervisor (no claude session), signed in to its own dev account.
+  device: {
+    label: "Devices (Maestro)",
+    short: "Devices",
+    file: DEVICE_OUTPUT_FILE,
+    guardedBy: ["devicePassword"],
   },
 };
 
@@ -207,6 +249,11 @@ const SECRET_SOURCES = {
     hit: "service-role-key",
     unreadable: "signin-key-file-unreadable",
     file: "sign-in key file",
+  },
+  devicePassword: {
+    hit: "device-password",
+    unreadable: "device-account-file-unreadable",
+    file: "device account file",
   },
 };
 
@@ -478,7 +525,7 @@ export function scanLaneText(text, secrets = {}) {
   for (const [name, re] of VERIFY_SECRET_PATTERNS) {
     if (re.test(s)) hits.push(name);
   }
-  for (const key of ["bypass", "signinKey"]) {
+  for (const key of ["bypass", "signinKey", "devicePassword"]) {
     const v = secrets[key];
     if (!isSecret(v) || v.length < MIN_PASSWORD_SCAN_LENGTH) continue;
     if (literalForms(v).some((form) => s.includes(form))) hits.push(SECRET_SOURCES[key].hit);
@@ -642,6 +689,250 @@ function withheldNotice(lane) {
   return `Withheld: ${withheldWhy(lane)}.${where}`;
 }
 
+// ── the device lane (ADR-0106) ──────────────────────────────────────────────
+// Its output is device-output.json, written by the lane's supervisor, not a
+// model; it is still shaped here field by field, and every string it shows
+// (flow names, failure lines, state reasons) is scanned and defanged like the
+// other lanes' text.
+
+const DEVICE_VERDICT_RANK = { PASS: "pass", FAIL: "fail", ERROR: "warn" };
+const DEVICE_STATUS = {
+  done: "ran",
+  running: "running",
+  unavailable: "unavailable",
+  failed: "failed",
+  stopped: "stopped",
+};
+const DEVICE_FLOWS_MAX = 40;
+const DEVICE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+export const DEVICE_RUNNING_NOTE = "running — results follow in a separate comment";
+
+// device-lane.mjs's state reasons (unavailable:<r>, failed:<r>, stopped:<r>).
+const DEVICE_REASONS = {
+  "no-account": "the device lane's dev account file is missing or unusable",
+  "no-simulator": "no iOS simulator is set up for the lane",
+  "no-keystore": "the Android debug keystore is missing",
+  "no-avd": "the lane's Android emulator (AVD) is missing",
+  "artifact-not-dev": "the build wasn't a dev-only build, so nothing was installed",
+  "env-not-dev": "the build's env files weren't dev-only, so nothing was built",
+  prepare: "preparing the build root failed",
+  "install-deps": "installing dependencies failed",
+  prebuild: "the native prebuild failed",
+  "prebuild-timeout": "the native prebuild timed out",
+  pods: "installing CocoaPods failed",
+  build: "the build failed",
+  "build-timeout": "the build timed out",
+  boot: "the device didn't boot",
+  "boot-timeout": "the device didn't boot in time",
+  install: "installing the app on the device failed",
+  timeout: "the run hit its time limit",
+  error: "the supervisor hit an unexpected error",
+  "beta-build": "a beta build needed the Mac mini",
+  memory: "the Mac mini ran short of memory",
+  "head-moved": "the PR's head moved",
+  "pr-closed": "the PR was closed or merged",
+  "left-column": "the card left Testing and In Test",
+  stop: "it was stopped by hand",
+  signal: "it was stopped",
+};
+
+function deviceReason(token) {
+  const t = String(token ?? "").trim();
+  if (!t) return "";
+  return own(DEVICE_REASONS, t) ?? reasonText(t);
+}
+
+function firstLine(text) {
+  return String(text ?? "").split(/\r?\n/)[0];
+}
+
+function shapeDeviceFlow(raw) {
+  const f = raw !== null && typeof raw === "object" ? raw : {};
+  return {
+    name: typeof f.name === "string" && f.name.trim() ? f.name : "(unnamed flow)",
+    status: own(DEVICE_VERDICT_RANK, f.status) ? f.status : "ERROR",
+    durationS: Number.isFinite(f.durationS) ? Math.max(0, Math.round(f.durationS)) : null,
+    failure: typeof f.failure === "string" && f.failure.trim() ? f.failure : null,
+  };
+}
+
+function shapeDevicePlatform(v) {
+  const { kind, detail } = parseLaneState(typeof v.state === "string" ? v.state : "");
+  const b = v.build !== null && typeof v.build === "object" ? v.build : null;
+  return {
+    kind,
+    detail,
+    verdict: kind === "done" && own(DEVICE_VERDICT_RANK, v.verdict) ? v.verdict : null,
+    build: b
+      ? {
+          cached: b.cached === true,
+          durationS: Number.isFinite(b.durationS) ? Math.round(b.durationS) : null,
+        }
+      : null,
+    flows: Array.isArray(v.flows) ? v.flows.map(shapeDeviceFlow) : [],
+  };
+}
+
+// A platform that didn't finish: its state, with the reason as a sentence.
+function deviceStateText(v, { reason = true } = {}) {
+  const status = own(DEVICE_STATUS, v.kind) ?? `unrecognised state ${inline(v.kind, 40)}`;
+  return reason && v.detail ? `${status}: ${deviceReason(v.detail)}` : status;
+}
+
+/**
+ * The device lane from device-output.json. <input>: {output, dir} (dir: the
+ * run dir); output null, or for another commit than <sha>, is no device
+ * output: every row then reads as it did before the lane existed.
+ */
+function buildDeviceLane(input, secrets, sha) {
+  const meta = LANES.device;
+  const dir = typeof input?.dir === "string" ? input.dir : "";
+  const raw = input?.output;
+  const output =
+    raw !== null &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    (raw.sha === undefined || raw.sha === null || raw.sha === sha)
+      ? raw
+      : null;
+  const platforms = {};
+  const src = output?.platforms;
+  if (src !== null && typeof src === "object" && !Array.isArray(src)) {
+    for (const [p] of DEVICE_PLATFORMS) {
+      const v = Object.hasOwn(src, p) ? src[p] : null;
+      if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+        platforms[p] = shapeDevicePlatform(v);
+      }
+    }
+  }
+  const covered = Object.keys(platforms).length > 0;
+  // Every string a row, a gap or the details can show, for the scan.
+  const text = covered
+    ? Object.entries(platforms)
+        .flatMap(([p, v]) => [
+          `${p} ${v.kind}:${v.detail}`,
+          ...v.flows.map((f) => `${f.name} ${f.status} ${f.failure ?? ""}`),
+        ])
+        .join("\n")
+    : null;
+  const unreadable =
+    text == null ? [] : meta.guardedBy.filter((k) => secrets[k] !== "" && !isSecret(secrets[k]));
+  const hits = text == null ? [] : scanLaneText(text, secrets);
+  const withheld = unreadable.length > 0 || hits.length > 0;
+  const done = Object.values(platforms).filter((v) => v.kind === "done");
+  const gaps = [];
+  for (const [p, label] of DEVICE_PLATFORMS) {
+    const v = platforms[p];
+    if (!v || v.kind === "done" || v.kind === "running") continue;
+    gaps.push(`${label} ${deviceStateText(v, { reason: !withheld })}`);
+  }
+  return {
+    key: "device",
+    meta,
+    dir,
+    localFile: dir ? path.join(dir, DEVICE_OUTPUT_FILE) : "",
+    runId: DEVICE_RUN_ID.test(String(output?.runId ?? "")) ? output.runId : null,
+    trigger: output?.trigger === "on-demand" ? "on-demand" : "testing",
+    platforms,
+    covered,
+    text,
+    withheld,
+    unreadable,
+    hits,
+    reported: done.length > 0,
+    effective: worst(done.map((v) => own(DEVICE_VERDICT_RANK, v.verdict))),
+    gaps,
+  };
+}
+
+function flowCounts(v) {
+  return `${v.flows.filter((f) => f.status === "PASS").length}/${v.flows.length} flows passed`;
+}
+
+// A covered platform's Note cell: flows passed, the first failure, whether the
+// build was cached. Raw text: the table cell escapes and defangs it.
+function deviceNote(lane, v, runningNote) {
+  if (lane.withheld) return `report withheld (${withheldWhy(lane)})`;
+  if (v.kind === "running") return runningNote;
+  const parts = [];
+  if (v.kind !== "done") parts.push(deviceStateText(v));
+  if (v.flows.length) {
+    parts.push(v.kind === "done" ? flowCounts(v) : `${flowCounts(v)} before it ended`);
+    const bad = v.flows.find((f) => f.status !== "PASS");
+    if (bad) {
+      const why = bad.failure ? ` — ${capText(firstLine(bad.failure), 200)}` : "";
+      parts.push(`first failure: ${bad.name} (${bad.status})${why}`);
+    }
+  } else if (v.kind === "done") {
+    parts.push("no flow ran");
+  }
+  if (v.build) parts.push(v.build.cached ? "build cached" : "build not cached");
+  return parts.join("; ");
+}
+
+// The table rows for the mobile platforms: [label, status, verdict, note].
+// With no device output, today's single "iOS / Android" row (<fallback>: its
+// status, verdict and note); a platform the lane didn't cover gets the same
+// text under its own label, or no row when <fallback> is null.
+function deviceRows(lane, fallback, runningNote = DEVICE_RUNNING_NOTE) {
+  if (!lane?.covered) return fallback ? [["iOS / Android", ...fallback]] : [];
+  return DEVICE_PLATFORMS.flatMap(([p, label]) => {
+    const v = lane.platforms[p];
+    if (!v) return fallback ? [[label, ...fallback]] : [];
+    const status = own(DEVICE_STATUS, v.kind) ?? "unknown";
+    return [[label, status, v.verdict ?? "—", deviceNote(lane, v, runningNote)]];
+  });
+}
+
+// The lane's <details> text: per platform, its state and each flow's result.
+function deviceDetailsText(lane) {
+  if (!lane.covered) return null;
+  if (lane.withheld) return withheldNotice(lane);
+  const lines = [];
+  for (const [p, label] of DEVICE_PLATFORMS) {
+    const v = lane.platforms[p];
+    if (!v) continue;
+    const head = [`**${label}**`, inline(deviceStateText(v), 200)];
+    if (v.verdict) head.push(v.verdict);
+    if (v.build) {
+      const secs = v.build.durationS == null ? "" : `, ${v.build.durationS} s`;
+      head.push(`build ${v.build.cached ? "cached" : "not cached"}${secs}`);
+    }
+    lines.push(head.join(" · "), "");
+    const shown = v.flows.slice(0, DEVICE_FLOWS_MAX);
+    for (const f of shown) {
+      const secs = f.durationS == null ? "" : ` (${f.durationS} s)`;
+      const why = f.failure ? `: ${inline(firstLine(f.failure), 300)}` : "";
+      lines.push(`- ${f.status} \`${inline(f.name, 120).replace(/`/g, "")}\`${secs}${why}`);
+    }
+    if (v.flows.length > shown.length) lines.push(`- …and ${v.flows.length - shown.length} more.`);
+    if (!v.flows.length) lines.push("_No flow ran._");
+    lines.push("");
+  }
+  return closeFences(lines.join("\n").trimEnd());
+}
+
+// " (the device lane ran: …)" for a mobile manual step whose platforms
+// (<heading>'s: iOS, Android, or both) the lane ran, else "".
+function deviceRanNote(lane, heading) {
+  if (!lane?.covered) return "";
+  const h = String(heading ?? "");
+  const ios = /\b(ios|iphone|ipad)\b/i.test(h);
+  const android = /\bandroid\b/i.test(h);
+  const wanted = ios === android ? ["android", "ios"] : ios ? ["ios"] : ["android"];
+  const ran = wanted
+    .map((p) => [p, lane.platforms[p]])
+    .filter(([, v]) => v && (v.kind === "done" || v.kind === "running"));
+  if (!ran.length) return "";
+  if (ran.every(([, v]) => v.kind === "running")) {
+    return " (the device lane is still running; its results follow in a separate comment)";
+  }
+  const what = (v) => (v.kind === "running" ? "still running" : (v.verdict ?? "no verdict"));
+  if (ran.length === 1 && wanted.length === 1) return ` (the device lane ran: ${what(ran[0][1])})`;
+  const name = { android: "Android", ios: "iOS" };
+  return ` (the device lane ran: ${ran.map(([p, v]) => `${name[p]} ${what(v)}`).join(", ")})`;
+}
+
 // ── body sections ───────────────────────────────────────────────────────────
 
 function platformHow(platform, betaLanes, betaReused = []) {
@@ -676,7 +967,7 @@ export const EARLIER_RUN_STEP =
 export const WEB_VIA_SHARED_NOTE =
   "web changes come through `packages/shared/`, which the web app imports (no `apps/web/` files changed)";
 
-function laneTable(shell, browser, platforms, betaLanes, betaReused = []) {
+function laneTable(shell, browser, platforms, betaLanes, betaReused = [], device = null) {
   const rows = [];
   for (const lane of [shell, browser]) {
     const verdict = lane.effective ? lane.effective.toUpperCase() : "—";
@@ -701,9 +992,10 @@ function laneTable(shell, browser, platforms, betaLanes, betaReused = []) {
     ? "beta dispatched for this commit; run the iOS / Android steps on it"
     : (reusedNote("mobile") ?? "no beta was dispatched; the scenario says how to get a build");
   rows.push(
-    platforms.mobile
-      ? ["iOS / Android", "manual", "—", mobileNote]
-      : ["iOS / Android", "not affected", "—", "no mobile changes"],
+    ...deviceRows(
+      device,
+      platforms.mobile ? ["manual", "—", mobileNote] : ["not affected", "—", "no mobile changes"],
+    ),
   );
 
   const macNotes = [];
@@ -750,7 +1042,7 @@ function listItem(label, lines, max) {
   return [head, ...out.map((l) => (l.trim() ? `  ${l}` : ""))];
 }
 
-function assessment(shell, browser) {
+function assessment(shell, browser, device = null) {
   const out = [];
   for (const lane of [shell, browser]) {
     if (!lane.reported) continue;
@@ -761,6 +1053,16 @@ function assessment(shell, browser) {
     }
     const summary = labelled(lane.parsed?.report, "Summary");
     out.push(...(summary ? listItem(label, summary, SUMMARY_MAX) : [`${label}_no summary line_`]));
+  }
+  if (device?.reported) {
+    const label = `- **${device.meta.short}:** `;
+    const done = DEVICE_PLATFORMS.filter(([p]) => device.platforms[p]?.kind === "done").map(
+      ([p, name]) =>
+        `${name} ${device.platforms[p].verdict ?? "no verdict"}, ${flowCounts(device.platforms[p])}`,
+    );
+    out.push(
+      device.withheld ? `${label}_withheld (see the lane table)_` : `${label}${done.join("; ")}.`,
+    );
   }
   if (shell.reported && !shell.withheld) {
     const para = labelled(shell.parsed?.report, "Assessment", { multi: true });
@@ -802,7 +1104,15 @@ function renderItem(n, { first, rest }) {
   return [`${n}. ${head}`, ...lines].join("\n");
 }
 
-function manualSteps({ shell, browser, sections, platforms, betaLanes, betaReused }) {
+function manualSteps({
+  shell,
+  browser,
+  sections,
+  platforms,
+  betaLanes,
+  betaReused,
+  device = null,
+}) {
   const how = (platform) => platformHow(platform, betaLanes, betaReused);
   // { first, rest, reserved, trusted }: reserved items are never cut by the
   // cap; trusted ones are composed here from safe parts and render as is.
@@ -881,9 +1191,12 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes, betaReuse
     }
     if (MOBILE_HEADING.test(s.heading)) {
       hasMobile = true;
-      add(`Run the **${h}** steps in the test scenario ${how("mobile")}.`, {
-        reserved: true,
-      });
+      add(
+        `Run the **${h}** steps in the test scenario ${how("mobile")}${deviceRanNote(device, h)}.`,
+        {
+          reserved: true,
+        },
+      );
     } else if (DESKTOP_HEADING.test(s.heading)) {
       hasDesktop = true;
       add(`Run the **${h}** steps in the test scenario ${how("desktop")}.`, {
@@ -895,7 +1208,7 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes, betaReuse
   }
   if (platforms.mobile && !hasMobile) {
     add(
-      `Test the iOS / Android changes by hand ${how("mobile")}: ` +
+      `Test the iOS / Android changes by hand ${how("mobile")}${deviceRanNote(device, "")}: ` +
         "the test scenario has no iOS / Android section.",
       { reserved: true },
     );
@@ -954,7 +1267,7 @@ function manualSteps({ shell, browser, sections, platforms, betaLanes, betaReuse
 // { lines, notRun, withheld }: notRun counts the gaps where some check didn't
 // run (they make the headline "partial"); withheld counts lanes that ran but
 // whose text was withheld.
-function coverageGaps({ shell, browser, gaps, crNote, scenarioMissing }) {
+function coverageGaps({ shell, browser, device = null, gaps, crNote, scenarioMissing }) {
   const items = [];
   let notRun = 0;
   let withheld = 0;
@@ -981,6 +1294,16 @@ function coverageGaps({ shell, browser, gaps, crNote, scenarioMissing }) {
       withheld++;
     }
   }
+  if (device) {
+    for (const g of device.gaps) {
+      items.push(`- **${device.meta.label}:** ${g}.`);
+      notRun++;
+    }
+    if (device.withheld) {
+      items.push(`- **${device.meta.label}:** report withheld; ${withheldWhy(device)}.`);
+      withheld++;
+    }
+  }
   if (scenarioMissing) {
     items.push(
       "- **Test scenario:** none was available for this commit, so the manual steps don't include its per-platform sections.",
@@ -997,6 +1320,7 @@ function coverageGaps({ shell, browser, gaps, crNote, scenarioMissing }) {
 // The text that goes in a lane's <details>: its report (and, for the shell
 // lane, its MANUAL block as written), or the withheld notice.
 function detailsText(lane) {
+  if (lane.key === "device") return deviceDetailsText(lane);
   if (lane.text == null) return null;
   if (lane.withheld) return withheldNotice(lane);
   const parts = [];
@@ -1024,17 +1348,19 @@ function detailsBlock(lane, content, extra = "") {
 
 // A lane's screenshots (ADR-0096): {block, embedded, reason, given}. given is
 // whether an upload record was passed for the lane at all; with none, nothing
-// about screenshots changes in the report. Only the browser lane has any yet.
+// about screenshots changes in the report. The shell lane never has any; the
+// device lane's go by platform and flow (ADR-0106).
 function laneShots(lane, upload, secrets) {
   const none = { block: [], embedded: 0, reason: null, given: false };
-  if (lane.key !== "browser" || upload === undefined || upload === null) return none;
+  if (lane.key === "shell" || upload === undefined || upload === null) return none;
   if (lane.withheld) return { ...none, reason: "withheld", given: true };
   if (!lane.reported) return { ...none, reason: "not-reported", given: true };
   const ev = evidenceSection({
-    report: lane.parsed?.report ?? null,
+    report: lane.key === "browser" ? (lane.parsed?.report ?? null) : null,
     upload,
     withheld: false,
     evidenceDir: lane.dir,
+    mode: lane.key === "device" ? "device" : "report",
     isSafe: (lines) => scanLaneText(lines.join("\n"), secrets).length === 0,
   });
   return { block: ev.block, embedded: ev.embedded, reason: ev.reason, given: true };
@@ -1107,9 +1433,12 @@ function normaliseBetaLanes(lanes) {
  * @param {{password?:string|null,bypass?:string|null,signinKey?:string|null}} o.secrets
  *   each secret's literal value; "" when the lanes were never given it; null
  *   (or absent) when its file couldn't be read, which fails closed
- * @param {{browser?:object|null}} [o.images] each lane's upload record
- *   (evidence-upload.mjs), by lane key; absent when none was tried
- * @returns {{body:string,verdict:string,withheld:{shell:boolean,browser:boolean},secretHits:string[],images:{browser:number}}}
+ * @param {{output:object|null,dir?:string}|null} [o.device] the device lane
+ *   (ADR-0106): its parsed device-output.json and run dir; absent or null when
+ *   the lane is off, and then the report reads exactly as before
+ * @param {{browser?:object|null,device?:object|null}} [o.images] each lane's
+ *   upload record (evidence-upload.mjs), by lane key; absent when none was tried
+ * @returns {{body:string,verdict:string,withheld:{shell:boolean,browser:boolean,device?:boolean},secretHits:string[],images:{browser:number,device?:number}}}
  */
 export function composeVerifyReport({
   sha,
@@ -1120,6 +1449,7 @@ export function composeVerifyReport({
   scenario = null,
   shell: shellInput,
   browser: browserInput,
+  device: deviceInput = null,
   gaps = [],
   crNote = "",
   secrets = {},
@@ -1138,10 +1468,13 @@ export function composeVerifyReport({
     notNeeded: !platforms.web && !hasWebSection,
   });
 
-  const verdict = worst([shell.effective, browser.effective]) ?? "incomplete";
+  const device = deviceInput ? buildDeviceLane(deviceInput, secrets, sha) : null;
+
+  const verdict = worst([shell.effective, browser.effective, device?.effective]) ?? "incomplete";
   const gapInfo = coverageGaps({
     shell,
     browser,
+    device,
     gaps: Array.isArray(gaps) ? gaps : [],
     crNote,
     scenarioMissing: scenarioBody == null,
@@ -1162,19 +1495,26 @@ export function composeVerifyReport({
   const shots = {
     shell: laneShots(shell, null, secrets),
     browser: laneShots(browser, images?.browser, secrets),
+    ...(device ? { device: laneShots(device, images?.device, secrets) } : {}),
   };
+  // The lanes with a section of their own: the device lane only when it
+  // left output to show.
+  const lanes = [shell, browser, ...(device?.covered ? [device] : [])];
   // <showShots>: whether the body shows the lanes' screenshots (the fallback
   // and withheld bodies below don't).
   const buildFooter = (showShots) => {
     const embedded = (lane) => showShots && shots[lane.key].embedded > 0;
-    const evidenceDirs = [shell, browser]
+    const evidenceDirs = lanes
       .filter((l) => l.dir && !embedded(l))
       .map((l) => `${l.meta.short} \`${pathText(l.dir)}\``);
-    const web = shots.browser;
-    const why =
-      web.given && !embedded(browser) && web.reason
-        ? ` Web screenshots weren't published: ${reasonSentence(web.reason)}.`
+    const notPublished = (lane, what) => {
+      const sh = shots[lane.key];
+      return sh.given && !embedded(lane) && sh.reason
+        ? ` ${what} screenshots weren't published: ${reasonSentence(sh.reason)}.`
         : "";
+    };
+    const why =
+      notPublished(browser, "Web") + (device?.covered ? notPublished(device, "Device") : "");
     const lines = [];
     if (evidenceDirs.length) {
       lines.push(
@@ -1194,6 +1534,7 @@ export function composeVerifyReport({
         "",
       );
     }
+    if (device?.covered && embedded(device)) lines.push(devicePublishedLine(device), "");
     return [...lines, VERIFY_REPORT_MARKER, verifyShaMarker(sha)];
   };
   const footer = buildFooter(true);
@@ -1205,15 +1546,15 @@ export function composeVerifyReport({
     "",
     EVIDENCE_LINE,
     "",
-    ...laneTable(shell, browser, platforms, betaLanes, betaReused),
+    ...laneTable(shell, browser, platforms, betaLanes, betaReused, device),
     "",
     "**Assessment**",
     "",
-    ...assessment(shell, browser),
+    ...assessment(shell, browser, device),
     "",
     "**Steps for you to do manually**",
     "",
-    ...manualSteps({ shell, browser, sections, platforms, betaLanes, betaReused }),
+    ...manualSteps({ shell, browser, sections, platforms, betaLanes, betaReused, device }),
     "",
     "**Coverage gaps**",
     "",
@@ -1221,7 +1562,7 @@ export function composeVerifyReport({
     "",
   ];
 
-  const entries = [shell, browser]
+  const entries = lanes
     .map((lane) => ({
       lane,
       content: detailsText(lane),
@@ -1252,12 +1593,12 @@ export function composeVerifyReport({
     }
   }
 
-  const secretHits = [];
-  for (const lane of [shell, browser]) {
-    for (const k of lane.unreadable) secretHits.push(`${lane.key}:${SECRET_SOURCES[k].unreadable}`);
-    for (const h of lane.hits) secretHits.push(`${lane.key}:${h}`);
-  }
-  const withheld = { shell: shell.withheld, browser: browser.withheld };
+  const secretHits = laneSecretHits([shell, browser, ...(device ? [device] : [])]);
+  const withheld = {
+    shell: shell.withheld,
+    browser: browser.withheld,
+    ...(device ? { device: device.withheld } : {}),
+  };
 
   // Last check: lane text is already scanned, but scenario headings, gap
   // reasons and the CR note aren't. A hit anywhere replaces the body.
@@ -1278,6 +1619,7 @@ export function composeVerifyReport({
     ].join("\n");
     withheld.shell = withheld.shell || shell.text != null;
     withheld.browser = withheld.browser || browser.text != null;
+    if (device) withheld.device = withheld.device || device.text != null;
   }
 
   return {
@@ -1285,7 +1627,142 @@ export function composeVerifyReport({
     verdict,
     withheld,
     secretHits,
-    images: { browser: shotsShown ? shots.browser.embedded : 0 },
+    images: {
+      browser: shotsShown ? shots.browser.embedded : 0,
+      ...(device ? { device: shotsShown ? shots.device.embedded : 0 } : {}),
+    },
+  };
+}
+
+function laneSecretHits(lanes) {
+  const hits = [];
+  for (const lane of lanes) {
+    for (const k of lane.unreadable) hits.push(`${lane.key}:${SECRET_SOURCES[k].unreadable}`);
+    for (const h of lane.hits) hits.push(`${lane.key}:${h}`);
+  }
+  return hits;
+}
+
+function devicePublishedLine(device) {
+  const rest = device.dir
+    ? ` The rest of the device lane's evidence stays on the Mac mini: \`${pathText(device.dir)}\`.`
+    : "";
+  return (
+    "<sub>Device screenshots are published in this report (ADR-0096, ADR-0106): the lane's " +
+    "supervisor captured them on the Android emulator / iOS simulator, signed in to the dev " +
+    `device account on dev data.${rest}</sub>`
+  );
+}
+
+const DEVICE_HEADER = "🏭 **Device lane results**";
+
+/**
+ * Pure core of the device lane's follow-up comment (ADR-0106 decision 6): the
+ * run ended after the card left Testing, or was asked for with the
+ * factory-device-run label, so its results go in a comment of their own. It
+ * carries DEVICE_REPORT_MARKER, so the feedback detectors skip it and the card
+ * doesn't move.
+ *
+ * @param {object} o
+ * @param {string} o.sha full 40-hex head SHA; the output must be for it
+ * @param {number|string} [o.pr]
+ * @param {object|null} o.output the parsed device-output.json
+ * @param {string} [o.dir] the run dir (local paths in the footer)
+ * @param {object|null} [o.images] the device lane's upload record; absent or
+ *   null when none was tried
+ * @param {{devicePassword?:string|null,password?:string,bypass?:string,signinKey?:string}} [o.secrets]
+ *   as composeVerifyReport's; devicePassword null (its file unreadable) withholds the text
+ * @returns {{body:string,verdict:string,withheld:{device:boolean},secretHits:string[],images:{device:number}}}
+ */
+export function composeDeviceReport({ sha, pr, output, dir = "", images, secrets = {} } = {}) {
+  if (!FULL_SHA.test(String(sha ?? ""))) throw new Error(`invalid sha: ${sha}`);
+  if (output?.sha !== undefined && output?.sha !== null && output.sha !== sha) {
+    throw new Error("the device output is for another commit");
+  }
+  const device = buildDeviceLane({ output, dir }, secrets, sha);
+  const verdict = device.effective ?? "incomplete";
+  const prText = pr ? ` (PR #${inline(pr, 12)})` : "";
+  const head = [
+    `${DEVICE_HEADER} for \`${String(sha).slice(0, 12)}\`${prText}`,
+    "",
+    verdict === "incomplete"
+      ? "**Verdict: INCOMPLETE**: no platform finished its flows."
+      : `**Verdict: ${verdict.toUpperCase()}**`,
+    "",
+    (device.trigger === "on-demand" ? "Run on request (the `factory-device-run` label). " : "") +
+      "Evidence, not a gate: the card stays where it is.",
+    "",
+  ];
+  const table = device.covered
+    ? [
+        "| Platform | Status | Verdict | Note |",
+        "|---|---|---|---|",
+        ...deviceRows(device, null, "still running when this comment was posted").map(
+          ([a, b, c, d]) => `| ${a} | ${b} | ${c} | ${cell(d, 600)} |`,
+        ),
+      ]
+    : ["_The run recorded no platform results._"];
+  const flows = deviceDetailsText(device);
+  const shots = laneShots(device, images, secrets);
+  const markers = [DEVICE_REPORT_MARKER, deviceShaMarker(sha, device.runId ?? "unknown")];
+  const footer = (showShots) => {
+    const embedded = showShots && shots.embedded > 0;
+    if (embedded) return [devicePublishedLine(device), "", ...markers];
+    const why =
+      shots.given && shots.reason
+        ? ` Device screenshots weren't published: ${reasonSentence(shots.reason)}.`
+        : "";
+    const where = device.dir
+      ? `Local evidence stays on the Mac mini (the repo is public): \`${pathText(device.dir)}\`.${why}`
+      : why.trim();
+    return [...(where ? [`<sub>${where}</sub>`, ""] : []), ...markers];
+  };
+  const assemble = (flowLines, shotLines, showShots) =>
+    [
+      ...head,
+      ...table,
+      "",
+      ...(flowLines ? ["**Flows**", "", flowLines, ""] : []),
+      ...(shotLines.length ? [...shotLines, ""] : []),
+      ...footer(showShots),
+    ].join("\n");
+
+  let shotsShown = true;
+  let body = assemble(flows, shots.block, true);
+  if (body.length > COMMENT_MAX_CHARS) {
+    const where = device.localFile ? `\`${pathText(device.localFile)}\`` : "the run directory";
+    body = assemble(
+      `_The flow list is too long for this comment; see ${where}._`,
+      shots.block,
+      true,
+    );
+  }
+  if (body.length > COMMENT_MAX_CHARS) {
+    shotsShown = false;
+    body = assemble(null, [], false);
+  }
+
+  const secretHits = laneSecretHits([device]);
+  const withheld = { device: device.withheld };
+  const bodyHits = scanLaneText(body, secrets);
+  if (bodyHits.length > 0) {
+    shotsShown = false;
+    for (const h of bodyHits) secretHits.push(`body:${h}`);
+    body = [
+      head[0],
+      "",
+      `The rest of this comment was withheld: it matched a secret pattern (${bodyHits.join(", ")}).`,
+      "",
+      ...footer(false),
+    ].join("\n");
+    withheld.device = withheld.device || device.text != null;
+  }
+  return {
+    body,
+    verdict,
+    withheld,
+    secretHits,
+    images: { device: shotsShown ? shots.embedded : 0 },
   };
 }
 
@@ -1330,6 +1807,9 @@ function secretFlag(flags, name, key) {
 
 export function render(argv) {
   const { flags } = parseFlags(argv);
+  const kind = flags.kind ?? "verify";
+  if (kind === "device") return renderDevice(flags);
+  if (kind !== "verify") throw new UsageError(`invalid --kind: ${kind}`);
   const issue = required(flags, "issue");
   if (!POSITIVE_INT.test(issue)) throw new UsageError(`invalid --issue: ${issue}`);
   const pr = required(flags, "pr");
@@ -1363,14 +1843,16 @@ export function render(argv) {
     scenario: readOptional(flags["scenario-file"]),
     shell: lane("shell"),
     browser: lane("browser"),
+    device: deviceInput(flags),
     gaps,
     crNote: flags["cr-note"] ?? "",
     secrets: {
       password: secretFlag(flags, "account-file", "FACTORY_BROWSER_PASSWORD"),
       bypass: secretFlag(flags, "bypass-file", "VERCEL_AUTOMATION_BYPASS_SECRET"),
       signinKey: secretFlag(flags, "signin-key-file", "DEV_SUPABASE_SERVICE_ROLE_KEY"),
+      devicePassword: secretFlag(flags, "device-account-file", "E2E_TEST_PASSWORD"),
     },
-    images: browserImages(flags),
+    images: { ...browserImages(flags), ...deviceImages(flags) },
   });
   writeFileSync(out, result.body);
   return {
@@ -1390,12 +1872,69 @@ function browserImages(flags) {
   return { browser: readUpload(file) ?? { ok: false, reason: "unreadable" } };
 }
 
+// The device lane's upload record, read like the Web lane's.
+function deviceImages(flags) {
+  const file = flags["device-images"];
+  if (!file) return {};
+  return { device: readUpload(file) ?? { ok: false, reason: "unreadable" } };
+}
+
+// The device lane's input: --device-out (its device-output.json) and the run
+// dir it sits in. Left out or "": the lane is off. A file that can't be read
+// or parsed is no device output, so every row reads as before.
+function deviceInput(flags) {
+  const file = flags["device-out"];
+  if (!file) return null;
+  return { output: parseJsonText(readOptional(file)), dir: path.dirname(path.resolve(file)) };
+}
+
+function parseJsonText(text) {
+  if (text == null) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// --kind device: the device lane's follow-up comment.
+function renderDevice(flags) {
+  const issue = required(flags, "issue");
+  if (!POSITIVE_INT.test(issue)) throw new UsageError(`invalid --issue: ${issue}`);
+  const pr = required(flags, "pr");
+  if (!POSITIVE_INT.test(pr)) throw new UsageError(`invalid --pr: ${pr}`);
+  const sha = required(flags, "sha");
+  if (!FULL_SHA.test(sha)) throw new UsageError(`invalid --sha (40 hex): ${sha}`);
+  const out = required(flags, "out");
+  const input = deviceInput({ "device-out": required(flags, "device-out") });
+  if (input.output === null) throw new Error("--device-out can't be read as JSON");
+  const result = composeDeviceReport({
+    sha,
+    pr,
+    output: input.output,
+    dir: input.dir,
+    images: deviceImages(flags).device ?? null,
+    secrets: { devicePassword: secretFlag(flags, "device-account-file", "E2E_TEST_PASSWORD") },
+  });
+  writeFileSync(out, result.body);
+  return {
+    verdict: result.verdict,
+    withheld: result.withheld,
+    secretHits: result.secretHits,
+    images: result.images,
+  };
+}
+
 const USAGE =
   "Usage: verify-report.mjs render --issue <n> --pr <n> --sha <40-hex> --scenario-file <f> " +
   "--platforms <json> --beta-lanes <csv> [--beta-reused <json>] --shell-state <state> --shell-dir <dir> " +
   "--browser-state <state> --browser-dir <dir> --gaps <json> --cr-note <text> " +
   "--account-file <f> --bypass-file <f> --signin-key-file <f> " +
-  "[--browser-images <upload.json>] --out <body-file>\n";
+  "[--browser-images <upload.json>] [--device-out <device-output.json> " +
+  "--device-account-file <f> [--device-images <upload.json>]] --out <body-file>\n" +
+  "       verify-report.mjs render --kind device --issue <n> --pr <n> --sha <40-hex> " +
+  "--device-out <device-output.json> --device-account-file <f> " +
+  "[--device-images <upload.json>] --out <body-file>\n";
 
 function main(argv) {
   const [cmd, ...rest] = argv;

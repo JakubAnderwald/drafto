@@ -52,7 +52,9 @@
 //                               moved or closed or whose card left Testing /
 //                               In Test, reaps dead runs' devices and old dirs.
 //   selftest [--platform android|ios] [--build]
-//   render --run-dir D        → device-output.json as Markdown.
+//   render --run-dir D [--images upload.json]
+//                             → device-output.json as the follow-up comment
+//                               (verify-report.mjs's composeDeviceReport).
 //   _supervise --run-dir D    (internal)
 
 import { createHash } from "node:crypto";
@@ -73,7 +75,7 @@ import {
   PLATFORMS,
   smokeFlow,
 } from "./device-plan.mjs";
-import { scanLaneText } from "./verify-report.mjs";
+import { composeDeviceReport, scanLaneText } from "./verify-report.mjs";
 import {
   REPO,
   addMinutes,
@@ -2965,41 +2967,33 @@ export async function runStatus({ repoRoot, now }, deps) {
 
 // ── render ──────────────────────────────────────────────────────────────────
 
-function mdCell(s) {
-  return String(s ?? "")
-    .replace(/\|/g, "\\|")
-    .replace(/\r?\n/g, " ");
+/**
+ * device-output.json as the device lane's follow-up comment body. <images>:
+ * the run's upload record (evidence-upload.mjs), or null; <secrets>:
+ * composeDeviceReport's ({devicePassword}: null fails closed).
+ */
+export function renderOutput(output, { runDir = "", images = null, secrets = {} } = {}) {
+  if (!output) return "No device-output.json in this run dir.\n";
+  try {
+    const { body } = composeDeviceReport({
+      sha: output.sha,
+      pr: output.pr,
+      output,
+      dir: runDir,
+      images,
+      secrets,
+    });
+    return `${body}\n`;
+  } catch (err) {
+    return `device-output.json can't be rendered: ${err.message}\n`;
+  }
 }
 
-/** device-output.json as Markdown (a stand-in until PR 3's report renderer). */
-export function renderOutput(output) {
-  if (!output) return "No device-output.json in this run dir.\n";
-  const lines = [
-    `### Device lane: run \`${mdCell(output.runId)}\``,
-    "",
-    `Commit \`${String(output.sha ?? "").slice(0, 12)}\` · mode ${mdCell(output.mode)} · trigger ${mdCell(output.trigger)} · started ${mdCell(output.startedAt)} · finished ${mdCell(output.finishedAt ?? "not yet")}`,
-    "",
-    "| Platform | State | Verdict | Build | Flows |",
-    "| --- | --- | --- | --- | --- |",
-  ];
-  for (const [p, v] of Object.entries(output.platforms ?? {})) {
-    const build = v.build
-      ? `${v.build.cached ? "cached" : "prebuilt"}, ${v.build.durationS}s`
-      : "-";
-    lines.push(
-      `| ${mdCell(p)} | ${mdCell(v.state)} | ${mdCell(v.verdict ?? "-")} | ${mdCell(build)} | ${(v.flows ?? []).length} |`,
-    );
-  }
-  for (const [p, v] of Object.entries(output.platforms ?? {})) {
-    if (!v.flows?.length) continue;
-    lines.push("", `**${mdCell(p)}**`, "");
-    for (const f of v.flows) {
-      lines.push(
-        `- ${mdCell(f.status)} \`${mdCell(f.name)}\`${f.durationS != null ? ` (${f.durationS}s)` : ""}${f.failure ? `: ${mdCell(f.failure)}` : ""}`,
-      );
-    }
-  }
-  return `${lines.join("\n")}\n`;
+/** The device account's password for the render's scan: "" when none is set up, null when unreadable. */
+function renderSecrets(env, fs) {
+  const file = readDeviceKnobs(env).accountFile;
+  if (!file) return { devicePassword: "" };
+  return { devicePassword: readDeviceAccount(file, fs)?.password ?? null };
 }
 
 // ── selftest ────────────────────────────────────────────────────────────────
@@ -3182,7 +3176,7 @@ export async function runSelftestBuild({ repoRoot, platform, runRoot }, deps) {
 const USAGE =
   "usage: device-lane.mjs <start --issue N --pr P --sha S [--platforms ios,android] [--mode smoke] " +
   "[--trigger testing|on-demand] [--force-attempt]|status|stop --issue N [--reason R]|housekeeping|" +
-  "selftest [--platform android|ios] [--build]|render --run-dir D|_supervise --run-dir D> " +
+  "selftest [--platform android|ios] [--build]|render --run-dir D [--images F]|_supervise --run-dir D> " +
   "[--repo-root R] [--run-root D] [--dry-run 1] [--now ISO]";
 
 class UsageError extends Error {}
@@ -3254,8 +3248,15 @@ export async function main(argv, deps = createDeviceDeps()) {
       }
     case "render": {
       if (!flags["run-dir"]) throw new UsageError("missing --run-dir");
-      const output = parseJson(readText(deps.fs, path.join(flags["run-dir"], OUTPUT_FILE)), null);
-      return { text: renderOutput(output) };
+      const runDir = path.resolve(flags["run-dir"]);
+      const output = parseJson(readText(deps.fs, path.join(runDir, OUTPUT_FILE)), null);
+      // An upload record that can't be read is a failed upload, as in verify-report.
+      const images = flags.images
+        ? (parseJson(readText(deps.fs, flags.images), null) ?? { ok: false, reason: "unreadable" })
+        : null;
+      return {
+        text: renderOutput(output, { runDir, images, secrets: renderSecrets(deps.env, deps.fs) }),
+      };
     }
     case "selftest": {
       const platforms = flags.platform ? parsePlatforms(flags.platform) : [...PLATFORMS];

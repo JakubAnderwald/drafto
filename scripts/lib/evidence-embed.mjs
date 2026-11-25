@@ -17,7 +17,9 @@
 // and an upload's image n is the runner's screenshot n (evidence-images.mjs's
 // browserManifest). So a result-table row that mentions "screenshot k" gets
 // image k; the first row to mention an image keeps it. A macOS harness shot
-// is named after the step that took it (`NN-step-<id>-<STATUS>.png`).
+// is named after the step that took it (`NN-step-<id>-<STATUS>.png`). A device
+// lane shot carries the label "<platform>: <flow>" (evidence-images.mjs's
+// deviceManifest), so it goes under its platform and flow.
 //
 // The upload record is a file on disk, so it is checked here too: only an
 // https://raw.githubusercontent.com URL of this repo, pinned to the record's
@@ -33,6 +35,12 @@ import { readFileSync } from "node:fs";
 import { parseResultTable } from "./result-table.mjs";
 
 export const IMAGE_WIDTH = 480;
+// The device lane's platforms, in report order, with their row labels.
+export const DEVICE_PLATFORMS = Object.freeze([
+  ["android", "Android (emulator)"],
+  ["ios", "iOS (simulator)"],
+]);
+const DEVICE_LABEL = /^(android|ios): (.+)$/;
 const REPO = "JakubAnderwald/drafto";
 const RAW_PREFIX = `https://raw.githubusercontent.com/${REPO}/`;
 const IMAGE_URL_RE = new RegExp(
@@ -276,6 +284,25 @@ export function groupByMacosSteps(results, images) {
   return { groups, other: images.filter((img) => !taken.has(img.n)) };
 }
 
+/**
+ * Group a device run's images by platform (Android first), one block per
+ * shot titled with its platform and flow. An image without a device label
+ * (one read back from the evidence ref, which keeps no labels) is "other".
+ */
+export function groupByDevice(images) {
+  const taken = new Set();
+  const groups = [];
+  for (const [platform, title] of DEVICE_PLATFORMS) {
+    for (const img of images) {
+      const m = DEVICE_LABEL.exec(img.label);
+      if (!m || m[1] !== platform || taken.has(img.n)) continue;
+      taken.add(img.n);
+      groups.push({ title: `**${title}** · ${labelText(m[2])}`, raw: [m[2]], images: [img] });
+    }
+  }
+  return { groups, other: images.filter((img) => !taken.has(img.n)) };
+}
+
 // ── rendering ───────────────────────────────────────────────────────────────
 
 function imgTag(img, alt) {
@@ -346,6 +373,13 @@ export function localFooter(evidenceDir, reason = null) {
 // no account, such as 861's) the window showed whichever account the app was
 // signed in to, so the footer never claims a throwaway one.
 export function publishedFooter(evidenceDir, mode = "report", { throwaway = false } = {}) {
+  if (mode === "device") {
+    return (
+      "<sub>Device screenshots are published with this report (ADR-0096, ADR-0106): the lane's " +
+      "supervisor captured them on the Android emulator / iOS simulator, signed in to the dev " +
+      `device account on dev data. Local copies: \`${pathText(evidenceDir)}\`.</sub>`
+    );
+  }
   if (mode === "macos") {
     const run = throwaway
       ? "on production with a throwaway account"
@@ -370,7 +404,7 @@ export function publishedFooter(evidenceDir, mode = "report", { throwaway = fals
  *   none was given (no reason is shown then)
  * @param {boolean} o.withheld the report was withheld: never any image
  * @param {string} o.evidenceDir
- * @param {"report"|"macos"} [o.mode]
+ * @param {"report"|"macos"|"device"} [o.mode]
  * @param {object[]} [o.results] macOS results.jsonl rows (mode "macos")
  * @param {boolean} [o.throwaway] mode "macos": the run used a throwaway account
  *   (publishedFooter's wording); false when unknown
@@ -407,7 +441,11 @@ export function evidenceSection({
   const images = validImages(upload);
   const overflow = overflowOf(upload);
   const grouped =
-    mode === "macos" ? groupByMacosSteps(results, images) : groupByReport(report, images);
+    mode === "macos"
+      ? groupByMacosSteps(results, images)
+      : mode === "device"
+        ? groupByDevice(images)
+        : groupByReport(report, images);
   let block = renderEvidence({ ...grouped, overflow });
   // The check sees the rendered lines and the labels' raw text: the escaping
   // that makes a label safe Markdown would also hide a secret from a scan.

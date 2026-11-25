@@ -18,6 +18,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -44,6 +45,7 @@ import {
   SWITCH_ENV,
   UPLOAD_FILE,
   commitMessage,
+  deviceEvidenceRunId,
   evidenceRef,
   gitBlobId,
   imagePath,
@@ -465,6 +467,30 @@ describe("renderWithheld", () => {
       renderWithheld({ withheld: { shell: true, browser: false }, secretHits: ["shell:jwt"] }),
       false,
     );
+  });
+
+  it("for a device run, only the device lane's explicit clean decision lets images through", () => {
+    const clean = { withheld: { device: false }, secretHits: [] };
+    assert.equal(renderWithheld(clean, "device"), false);
+    assert.equal(
+      renderWithheld(
+        { withheld: { shell: true, browser: true, device: false }, secretHits: ["shell:jwt"] },
+        "device",
+      ),
+      false,
+    );
+    for (const json of [
+      { withheld: false, secretHits: [] },
+      { withheld: { shell: false, browser: false }, secretHits: [] },
+      { withheld: { device: true }, secretHits: ["device:device-password"] },
+      { withheld: { device: "false" }, secretHits: [] },
+      { withheld: { device: false }, secretHits: ["body:jwt"] },
+      { withheld: { device: false } },
+    ]) {
+      assert.equal(renderWithheld(json, "device"), true, JSON.stringify(json));
+    }
+    // The browser's decision still reads the browser key only.
+    assert.equal(renderWithheld(clean), true);
   });
 
   it("withholds a render whose secretHits isn't a list of strings", () => {
@@ -1286,6 +1312,166 @@ describe("upload publishes one parentless commit on the run's own ref", () => {
 });
 
 // ── upload: idempotency ─────────────────────────────────────────────────────
+
+describe("upload publishes a device run's supervisor-captured shots (ADR-0106)", () => {
+  const DEVICE_RUN = "874-0123456789ab-20261110T051950Z";
+  const DEVICE_PASSWORD = "Dev1ce-Lane-Passw0rd";
+  const DEVICE_RENDER = { verdict: "pass", withheld: { device: false }, secretHits: [] };
+  const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+
+  /** A device run's evidence dir and shots.json, as the supervisor writes them. */
+  function deviceRun(root, shots) {
+    const evidenceDir = join(root, "device-run", "evidence");
+    mkdirSync(evidenceDir, { recursive: true });
+    const list = shots.map(({ platform, name, data, over = {}, write = data }) => {
+      mkdirSync(join(evidenceDir, `device-${platform}`), { recursive: true });
+      writeFileSync(join(evidenceDir, `device-${platform}`, name), write);
+      return {
+        file: `device-${platform}/${name}`,
+        sha256: sha256(data),
+        platform,
+        flow: name.replace(/^\d{2}-/, "").replace(/\.png$/, ".yaml"),
+        capturedAt: NOW.toISOString(),
+        pass: "final",
+        ...over,
+      };
+    });
+    writeFileSync(join(evidenceDir, "shots.json"), JSON.stringify(list));
+    // Unlisted: the session's own screenshots are never published.
+    mkdirSync(join(evidenceDir, "device-ios"), { recursive: true });
+    writeFileSync(join(evidenceDir, "device-ios", "99-session.png"), PNG("session"));
+    return evidenceDir;
+  }
+
+  function deviceFixture(shots, { textOf } = {}) {
+    const fx = uploadFixture({ shots: [], render: DEVICE_RENDER, textOf });
+    const evidenceDir = deviceRun(fx.root, shots);
+    const account = join(fx.root, "device-account.env");
+    writeFileSync(
+      account,
+      `E2E_TEST_EMAIL=device@example.com\nE2E_TEST_PASSWORD=${DEVICE_PASSWORD}\n`,
+      { mode: 0o600 },
+    );
+    return { ...fx, deviceEvidence: evidenceDir, account };
+  }
+
+  const deviceArgs = (fx, over = {}) => ({
+    source: "device",
+    "evidence-dir": fx.deviceEvidence,
+    "guard-log": undefined,
+    "run-id": deviceEvidenceRunId(DEVICE_RUN),
+    "account-file": fx.account,
+    ...over,
+  });
+
+  it("publishes them unattended, by slot, labelled with platform and flow", async () => {
+    const fx = deviceFixture([
+      { platform: "ios", name: "01-ios-all.png", data: PNG("ios") },
+      { platform: "android", name: "01-login.png", data: PNG("android") },
+    ]);
+    const summary = await upload(fx, deviceArgs(fx), { env: { DRAFTO_UNATTENDED: "1" } });
+    assert.equal(summary.ok, true, JSON.stringify(summary));
+    assert.equal(summary.images, 2);
+    const runId = deviceEvidenceRunId(DEVICE_RUN);
+    const dir = `${ISSUE}/${SHA12}/${runId}`;
+    assert.deepEqual(commitOf(fx.origin, summary.commit).paths, [`${dir}/01.png`, `${dir}/02.png`]);
+    assert.ok(blobOf(fx.origin, summary.commit, `${dir}/01.png`).equals(PNG("android")));
+    assert.deepEqual(
+      readJsonFile(fx.out).images.map(({ n, label, name }) => ({ n, label, name })),
+      [
+        { n: 1, label: "android: login.yaml", name: "device-android/01-login.png" },
+        { n: 2, label: "ios: ios-all.yaml", name: "device-ios/01-ios-all.png" },
+      ],
+    );
+    // The rendered URLs pass the embed's own check.
+    assert.equal(validImages(readJsonFile(fx.out)).length, 2);
+    assert.equal(fx.ocr.seen.length, 2, "only the listed shots were scanned");
+  });
+
+  it("holds back a hash mismatch, a bad name, a symlink and a non-final shot, listing each", async () => {
+    const fx = deviceFixture([
+      { platform: "android", name: "01-login.png", data: PNG("ok") },
+      { platform: "android", name: "02-notes.png", data: PNG("captured"), write: PNG("swapped") },
+      { platform: "android", name: "03-Bad.png", data: PNG("bad") },
+      { platform: "ios", name: "01-ios-all.png", data: PNG("session"), over: { pass: "session" } },
+    ]);
+    const outside = join(fx.root, "outside.png");
+    writeFileSync(outside, PNG("outside"));
+    const link = join(fx.deviceEvidence, "device-ios", "02-link.png");
+    symlinkSync(outside, link);
+    const shots = readJsonFile(join(fx.deviceEvidence, "shots.json"));
+    shots.push({
+      file: "device-ios/02-link.png",
+      sha256: sha256(PNG("outside")),
+      platform: "ios",
+      flow: "link.yaml",
+      pass: "final",
+    });
+    writeFileSync(join(fx.deviceEvidence, "shots.json"), JSON.stringify(shots));
+
+    const summary = await upload(fx, deviceArgs(fx));
+    assert.equal(summary.ok, true, JSON.stringify(summary));
+    assert.equal(summary.images, 1);
+    const record = readJsonFile(fx.out);
+    assert.deepEqual(
+      record.images.map((i) => i.name),
+      ["device-android/01-login.png"],
+    );
+    const ev = fx.deviceEvidence;
+    assert.deepEqual(record.overflow, [
+      {
+        n: 2,
+        path: join(ev, "device-android", "02-notes.png"),
+        why: "its sha256 doesn't match shots.json",
+      },
+      {
+        n: 3,
+        path: join(ev, "device-ios", "01-ios-all.png"),
+        why: "not from the final evidence pass",
+      },
+      { n: 4, path: link, why: "a symlink" },
+      // A name that isn't a device shot's goes last, and points at no file.
+      { n: 5, path: ev, why: "unexpected file name" },
+    ]);
+  });
+
+  it("scans each shot's OCR text for the device account's password", async () => {
+    const fx = deviceFixture([{ platform: "android", name: "01-login.png", data: PNG("pw") }], {
+      textOf: () => `Password ${DEVICE_PASSWORD}`,
+    });
+    const summary = await upload(fx, deviceArgs(fx));
+    assert.equal(summary.ok, true);
+    assert.equal(summary.images, 0);
+    assert.match(readJsonFile(fx.out).overflow[0].why, /matched a secret pattern \(password\)/);
+    assertNothingPushed(fx);
+  });
+
+  it("refuses when the device render withheld the lane, or the account file can't be read", async () => {
+    const withheld = deviceFixture([{ platform: "android", name: "01-login.png", data: PNG("a") }]);
+    writeFileSync(
+      withheld.renderJson,
+      JSON.stringify({ withheld: { device: true }, secretHits: ["device:device-password"] }),
+    );
+    assert.equal((await upload(withheld, deviceArgs(withheld))).reason, "withheld");
+    assertNothingPushed(withheld);
+
+    const browserClean = deviceFixture([
+      { platform: "android", name: "01-login.png", data: PNG("b") },
+    ]);
+    writeFileSync(browserClean.renderJson, JSON.stringify(CLEAN_RENDER));
+    assert.equal((await upload(browserClean, deviceArgs(browserClean))).reason, "withheld");
+
+    const noAccount = deviceFixture([
+      { platform: "android", name: "01-login.png", data: PNG("c") },
+    ]);
+    const r = await upload(
+      noAccount,
+      deviceArgs(noAccount, { "account-file": join(noAccount.root, "nope") }),
+    );
+    assert.equal(r.reason, "account-file");
+    assertNothingPushed(noAccount);
+  });
+});
 
 describe("upload is idempotent per issue + head + run", () => {
   it("reuses upload.json, then the ref on origin, and never pushes twice", async () => {
