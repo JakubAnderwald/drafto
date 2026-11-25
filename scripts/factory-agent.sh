@@ -307,10 +307,12 @@ case "$FACTORY_PLAN_EFFORT" in
   *) echo "WARNING: invalid FACTORY_PLAN_EFFORT='$FACTORY_PLAN_EFFORT'; defaulting to xhigh" >&2
      FACTORY_PLAN_EFFORT="xhigh" ;;
 esac
-# A revision run (an open PR plus new owner feedback from In Test) is a small
-# change to code that already exists, so it runs at plain xhigh, not ultracode
-# (ADR-0099): at ultracode it fanned out workflows for a one-line change.
-# implement_effort picks between the two for each --implement run.
+# A revision run (a card that already has a factory PR, open or closed, plus
+# new owner feedback) is a small change to code that already exists, so it runs
+# at plain xhigh, not ultracode (ADR-0099): at ultracode it fanned out workflows
+# for a one-line change. implement_effort picks between the two for each
+# --implement run, and the run-time facts' `effort` tells the agent which one.
+# Setting this to ultracode alone restores Workflows on revisions.
 FACTORY_REVISION_EFFORT="${FACTORY_REVISION_EFFORT:-xhigh}"  # --implement revision runs
 case "$FACTORY_REVISION_EFFORT" in
   ultracode|max|xhigh|high|medium|low) : ;;
@@ -2337,14 +2339,17 @@ implement_park_blocked() {
 
 # ── Implement deadline + session resume (ADR-0084) ──────────────────────────
 # implement_runtime_facts <start-epoch> <resumed 0|1> <worktree-cli add JSON>
-#   <worktree path> — the "Run-time facts" JSON the implementer gets after its
-# bundle: its deadlines (the cap from <start-epoch>; the soft deadline
+#   <worktree path> [<effort>] — the "Run-time facts" JSON the implementer gets
+# after its bundle: its deadlines (the cap from <start-epoch>; the soft deadline
 # FACTORY_IMPLEMENT_SOFT_MARGIN_MIN before it, the margin clamped to the cap
-# minus 5 minutes) and what an earlier attempt left in the worktree. The
-# prompt's Time budget section documents every key, and a test pins them to it.
+# minus 5 minutes), the --effort this run was started at (default
+# FACTORY_EFFORT; the prompt's Revision runs section keys off it, so
+# FACTORY_REVISION_EFFORT=ultracode alone restores Workflows on revisions,
+# ADR-0099) and what an earlier attempt left in the worktree. The prompt's Time
+# budget section documents every key, and a test pins them to it.
 # Prints nothing on failure; the caller then leaves the block out.
 implement_runtime_facts() {
-  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" cap_min margin max_margin branch base unpushed uncommitted porcelain
+  local start="$1" resumed="$2" wt_json="$3" wt_path="$4" effort="${5:-${FACTORY_EFFORT:-ultracode}}" cap_min margin max_margin branch base unpushed uncommitted porcelain
   cap_min=$(( IMPLEMENT_TIMEOUT_SEC / 60 ))
   margin="$FACTORY_IMPLEMENT_SOFT_MARGIN_MIN"
   max_margin=$(( cap_min - 5 ))
@@ -2366,12 +2371,13 @@ implement_runtime_facts() {
   fi
   jq -n --argjson start "$start" --argjson cap "$IMPLEMENT_TIMEOUT_SEC" --argjson margin "$margin" \
     --argjson resumed "$resumed" --argjson unpushed "$unpushed" --argjson uncommitted "$uncommitted" \
-    --argjson wt "${wt_json:-null}" '{
+    --arg effort "$effort" --argjson wt "${wt_json:-null}" '{
       capMinutes: ($cap / 60 | floor),
       startedAt: ($start | todate),
       softDeadlineAt: ($start + $cap - $margin * 60 | todate),
       hardDeadlineAt: ($start + $cap | todate),
       resumed: ($resumed == 1),
+      effort: $effort,
       worktree: {
         reused: ($wt.reused == true),
         leftoversRef: ($wt.leftoversRef // null),
@@ -9384,8 +9390,9 @@ implement_lane_precheck() {
 }
 
 # implement_effort <is_revision> — the effort for this --implement run:
-# FACTORY_REVISION_EFFORT for a revision run (1: an open PR plus new owner
-# feedback), FACTORY_EFFORT otherwise (ADR-0099). A resumed run gets the same
+# FACTORY_REVISION_EFFORT for a revision run (1: the card already has a
+# factory PR, open or closed, and new owner feedback since lastFeedbackAt),
+# FACTORY_EFFORT otherwise (ADR-0099). A resumed run gets the same
 # answer as the run it resumes: the resume task key includes the revision
 # comments (implement-resume.mjs), so a resume never crosses between the two.
 implement_effort() {
@@ -10031,7 +10038,7 @@ Drag it back to **Ready** so the factory can plan it first.
     # (or, resuming, the short resume note), then the run-time facts: the
     # deadlines from now and what an earlier attempt left in the worktree.
     IMPL_START_EPOCH=$(date +%s)
-    IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH")
+    IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH" "$IMPL_EFFORT")
     IMPL_FACTS_BLOCK=""
     if [[ -n "$IMPL_FACTS" ]]; then
       IMPL_FACTS_BLOCK=$(printf '\n## Run-time facts\n\n```json\n%s\n```\n' "$IMPL_FACTS")

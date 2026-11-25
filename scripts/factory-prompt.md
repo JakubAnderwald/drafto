@@ -151,6 +151,8 @@ context bundle tells you where you stand:
 - `softDeadlineAt` — when to stop starting new work and wrap up.
 - `hardDeadlineAt` — when bash kills the session.
 - `resumed` — `true` when this run continues an earlier run's session.
+- `effort` — the `--effort` bash started this run at, such as `ultracode` or
+  `xhigh`. **Revision runs** below says what it changes.
 - `worktree` — what an earlier attempt left here: `reused` (the worktree
   existed before this run), `leftoversRef` (uncommitted changes bash set aside
   because the PR branch moved on; `git diff <ref>^1 <ref>` shows them; `null`
@@ -251,12 +253,15 @@ the reporter tested the In Test preview and is responding to it. In that case:
   already checked out in your worktree with the prior implementation's commits.
   **Make the requested changes on top of what's there** — do not start over,
   do not reset, do not branch.
-- **Do the work yourself, directly.** A revision is a small change to code that
-  already exists, and the factory runs it at plain xhigh effort, not the
-  ultracode a fresh implementation gets. Start no Workflow
-  and no background agent: read the feedback, make the change, run the
-  verification matrix, push. The Workflow steps under **Time budget** don't
-  apply here.
+- **Do the work yourself, directly, unless `effort` is `ultracode`.** A
+  revision is a small change to code that already exists, so the factory
+  normally starts it at a plain effort, not the ultracode a fresh
+  implementation gets; the `effort` key in **Run-time facts** says which.
+  When `effort` is anything but `ultracode`, or the facts are missing, start no
+  Workflow and no background agent: read the feedback, make the change, run
+  the verification matrix, push, and skip the Workflow steps under **Time
+  budget**. When it is `ultracode`, the operator chose it for revisions, and a
+  Workflow is allowed as on a fresh implementation.
 - Sort each `revisionComments` entry into one of three kinds. The approved plan
   still bounds scope and phase for all of them.
   1. **A change request** — treat it as **authoritative**, layered on the

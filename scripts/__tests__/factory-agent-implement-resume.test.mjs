@@ -262,7 +262,7 @@ describe("implement_runtime_facts (real helper)", () => {
     withDir((dir) => {
       const wt = makeWorktree(dir);
       const wtJson = JSON.stringify({ path: wt, branch: "factory/issue-7", reused: true });
-      const r = harness(dir, `implement_runtime_facts 1763294400 0 '${wtJson}' "${wt}"`);
+      const r = harness(dir, `implement_runtime_facts 1763294400 0 '${wtJson}' "${wt}" xhigh`);
       assert.equal(r.status, 0, r.stderr + r.log);
       assert.deepEqual(JSON.parse(r.stdout), {
         capMinutes: 45,
@@ -270,6 +270,7 @@ describe("implement_runtime_facts (real helper)", () => {
         softDeadlineAt: "2025-11-16T12:30:00Z",
         hardDeadlineAt: "2025-11-16T12:45:00Z",
         resumed: false,
+        effort: "xhigh",
         worktree: { reused: true, leftoversRef: null, unpushedCommits: 1, uncommittedChanges: 1 },
       });
     });
@@ -300,6 +301,20 @@ describe("implement_runtime_facts (real helper)", () => {
       });
       const t = JSON.parse(tiny.stdout);
       assert.equal(t.softDeadlineAt, t.hardDeadlineAt);
+    });
+  });
+
+  it("passes the run's effort through, and defaults to FACTORY_EFFORT, then ultracode", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const call = (arg, env) =>
+        JSON.parse(
+          harness(dir, `implement_runtime_facts 1763294400 0 '{}' "${wt}"${arg}`, env).stdout,
+        ).effort;
+      assert.equal(call(" ultracode", { FACTORY_EFFORT: "xhigh" }), "ultracode");
+      assert.equal(call("", { FACTORY_EFFORT: "high" }), "high");
+      assert.equal(call("", { FACTORY_EFFORT: "" }), "ultracode");
+      assert.equal(call(' ""', { FACTORY_EFFORT: "" }), "ultracode");
     });
   });
 

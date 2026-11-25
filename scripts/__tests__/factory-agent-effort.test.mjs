@@ -192,6 +192,20 @@ describe("factory-agent revision effort (ADR-0099)", () => {
     assert.match(start, /--arg effort "\$\{IMPL_EFFORT:-\$\{FACTORY_EFFORT:-ultracode\}\}"/);
     assert.match(start, /effort=\$\{IMPL_EFFORT:-\$\{FACTORY_EFFORT:-ultracode\}\}, model=/);
   });
+
+  it("tells the agent its effort through the run-time facts, which both paths send", () => {
+    // The prompt's "Revision runs" rule keys off the `effort` fact, so
+    // FACTORY_REVISION_EFFORT=ultracode alone restores Workflows on revisions.
+    const loop = script.slice(script.indexOf('    REVISION_COMMENTS="[]"'));
+    const facts = loop.indexOf(
+      'IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH" "$IMPL_EFFORT")',
+    );
+    assert.ok(facts !== -1, "the run-time facts don't carry IMPL_EFFORT");
+    assert.ok(loop.indexOf('IMPL_EFFORT=$(implement_effort "$IS_REVISION")') < facts);
+    // CLAUDE_INPUT (with the facts) is built before the sync/detached split.
+    assert.ok(facts < loop.indexOf("implement_lane_start"), "before the detached start");
+    assert.ok(facts < loop.indexOf('node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT"'));
+  });
 });
 
 describe("factory-agent Claude model knobs (ADR-0080, ADR-0099)", () => {

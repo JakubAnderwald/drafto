@@ -15,7 +15,7 @@ An audit of 506 factory sessions ([report](https://claude.ai/artifact/JcSyvJoExc
 
 So a settings edit or a CLI update could move every factory stage to another model, with nothing in the factory's code or logs saying so.
 
-**Revision runs ran at ultracode.** A revision run is `--implement` on a card whose PR is open and has new owner feedback from In Test. It is a small change to code that already exists, but it ran at `FACTORY_EFFORT` (ultracode, with multi-agent workflow orchestration) like a fresh implementation. In 30 days, seven ultracode revisions cost $108, and three of them changed nothing. Twelve revisions that ran without workflows cost $19 in all.
+**Revision runs ran at ultracode.** A revision run is `--implement` on a card that already has a factory PR (open or closed) and has new owner feedback since its last consumed feedback, usually from In Test. It is a small change to code that already exists, but it ran at `FACTORY_EFFORT` (ultracode, with multi-agent workflow orchestration) like a fresh implementation. In 30 days, seven ultracode revisions cost $108, and three of them changed nothing. Twelve revisions that ran without workflows cost $19 in all.
 
 ## Decision
 
@@ -33,7 +33,7 @@ So a settings edit or a CLI update could move every factory stage to another mod
 
 4. **Revision runs at `FACTORY_REVISION_EFFORT`, default `xhigh`.** The knob sits beside the other effort knobs, with the same `case` allowlist and fallback. `implement_effort <is_revision>` returns it for a revision run and `FACTORY_EFFORT` otherwise. The `--implement` loop sets `IMPL_EFFORT` from it once, right after it decides whether the run is a revision. The synchronous call, the detached start's spec and both log lines use it. It is not stored in the run's context: the detached run's `meta.effort` already records it. A resumed run gets the same effort as the run it resumes, because the resume task key includes the revision comments (`implement-resume.mjs`), so a resume never crosses between a fresh run and a revision.
 
-5. **The implementer prompt says it too.** `scripts/factory-prompt.md`'s "Revision runs" section tells the agent to do a revision itself, with no Workflow and no background agents.
+5. **The implementer prompt follows the effort.** `implement_runtime_facts` adds the run's effort to the **Run-time facts** block as `effort`, from `IMPL_EFFORT`, in both the synchronous and the detached path. `scripts/factory-prompt.md`'s "Revision runs" section tells the agent to do a revision itself, with no Workflow and no background agents, unless `effort` is `ultracode`. The prompt never names the default, so the knob alone moves both the `--effort` flag and the instruction.
 
 No version skew: bash writes a detached run's spec and `implement-lane.mjs` reads it in the same tick, from the same checkout. Runs already in flight keep the `argv` stored in their `meta.json`. A verification run started before this change has no `meta.model`, so its supervisor passes no `--model`, as before.
 
@@ -47,7 +47,7 @@ No version skew: bash writes a detached run's spec and `implement-lane.mjs` read
 - **Negative**:
   - `FACTORY_MODEL` is a single point. A name the CLI rejects (the pattern accepts any well-formed `claude-…` name) fails every call that uses it. Smoke-test a model on the Mac mini before setting it, as ADR-0080 already asks for its knobs.
   - `opus[1m]` must be a model the subscription can use, with and without setting sources. The rollout smoke test checks both, before the merge.
-  - A revision that really needs a large change now runs without workflows. Set `FACTORY_REVISION_EFFORT=ultracode` to undo that; nothing else changes.
+  - A revision that really needs a large change now runs without workflows. Set `FACTORY_REVISION_EFFORT=ultracode` to undo that: the run then starts at ultracode and its `effort` fact lets it use Workflows again. No prompt or code change is needed.
   - The model in `~/.claude/settings.json` no longer reaches the factory. That is the point, but it surprises an operator who changes it expecting the factory to follow.
 - **Neutral**:
   - Effort is unchanged everywhere except revision runs.
