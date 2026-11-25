@@ -3,6 +3,22 @@
 # scenario uses to check that a press took effect, and the sign-in / sign-out /
 # sync-wait building blocks. Expects QA_EMAIL / QA_PASSWORD for log_in.
 
+# shellcheck source=../../lib/testflight-notes.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../lib/testflight-notes.sh"
+
+# preflight_testflight_pages — a preflight step (uses the caller's pf). A new build's first
+# launch stops at TestFlight's pages ("What to Test", then "Share feedback"): Drafto has no
+# window until they're dismissed, and every check after this would read nothing. Pressing
+# Continue only lets the launch the operator started finish; it changes no data.
+preflight_testflight_pages() {
+  local pages
+  if pages=$(dismiss_testflight_notes 30); then
+    [ -z "$pages" ] || pf info "pressed Continue on $(grep -c . <<< "$pages") TestFlight first-launch page(s)"
+  else
+    pf fail "TestFlight's first-launch pages were dismissed, but Drafto still has no window"
+  fi
+}
+
 on_login_screen() { ax_has desc "Log in"; }
 on_signup_screen() { ! ax_has desc "Log in" && ax_has desc "Sign up"; }
 # The inactive-account screen's check button: "Check again" since open signup (ADR 0094),

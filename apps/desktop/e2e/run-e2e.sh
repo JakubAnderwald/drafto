@@ -29,8 +29,17 @@ fail() {
 # ── Accessibility helpers ──────────────────────
 # shellcheck source=lib/ax-helpers.sh
 source "$(dirname "$0")/lib/ax-helpers.sh"
+# shellcheck source=lib/testflight-notes.sh
+source "$(dirname "$0")/lib/testflight-notes.sh"
 
 # ── Setup ──────────────────────────────────────
+
+# A new build's first launch stops at TestFlight's pages ("What to Test", then "Share
+# feedback"), and Drafto has no window until they're dismissed.
+if ! dismiss_testflight_notes 30; then
+  echo "Error: Drafto has no window after TestFlight's first-launch pages were dismissed."
+  exit 1
+fi
 
 # Ensure Drafto is frontmost
 osascript -e 'tell application "Drafto" to activate'
