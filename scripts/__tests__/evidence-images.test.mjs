@@ -807,16 +807,17 @@ describe("evidence-images: deviceManifest", () => {
   it("holds back a name outside device-<platform>/NN-<slug>.png, with no file to point at", () => {
     const ok = png("ok");
     writeShots([
-      capture("ios", "01-Upper.png", ok),
+      capture("ios", "01-has space.png", ok),
       { ...capture("ios", "02-x.png", ok), file: "../outside/02-x.png" },
       { ...capture("ios", "03-x.png", ok), file: "device-ios/sub/03-x.png" },
       { ...capture("ios", "04-x.png", ok), file: "device-web/04-x.png" },
       { ...capture("ios", "5-x.png", ok) },
+      { ...capture("ios", "1000-x.png", ok) },
       { ...capture("ios", "06-x.png", ok), file: "device-ios/06-x.jpg" },
       "not an object",
     ]);
     const out = deviceManifest(ev);
-    assert.equal(out.length, 7);
+    assert.equal(out.length, 8);
     for (const e of out) {
       assert.equal(e.name, null);
       assert.equal(e.missing, "unexpected file name");
@@ -866,11 +867,49 @@ describe("evidence-images: deviceManifest", () => {
     );
   });
 
-  it("holds back a missing file, a duplicate, a platform mismatch and a missing hash", () => {
+  it("takes flowSlug's names as they are: upper case and a three-digit index", () => {
+    const a = png("upper");
+    const b = png("hundred");
+    writeShots([capture("ios", "01-IOS-All.png", a), capture("ios", "100-last_Flow.png", b)]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => [e.slot, e.name, e.missing]),
+      [
+        [1, "device-ios/01-IOS-All.png", null],
+        [2, "device-ios/100-last_Flow.png", null],
+      ],
+    );
+  });
+
+  it("a file listed twice is published from its last entry that passes", () => {
+    const first = png("first");
+    const again = png("again");
+    const one = capture("android", "01-login.png", first);
+    // Re-captured: the file now holds the second capture, and the first
+    // entry's hash no longer matches. A later entry that fails its own checks
+    // doesn't take the file from an earlier one that passes.
+    const two = capture("android", "01-login.png", again);
+    const broken = { ...two, pass: "session" };
+    writeShots([one, two, broken]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => [e.slot, e.missing]),
+      [
+        [1, DEVICE_HASH_WHY],
+        [2, null],
+        [3, "not from the final evidence pass"],
+      ],
+    );
+    // Two entries that both pass: the last one wins, the earlier is held back.
+    writeShots([two, two]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => e.missing),
+      ["a later shots.json entry lists the same file", null],
+    );
+  });
+
+  it("holds back a missing file, a platform mismatch and a missing hash", () => {
     const bytes = png("x");
     const one = capture("android", "01-login.png", bytes);
     writeShots([
-      one,
       one,
       capture("android", "02-notes.png", bytes, { platform: "ios" }),
       capture("android", "03-edit.png", bytes, { sha256: "abc" }),
@@ -880,10 +919,9 @@ describe("evidence-images: deviceManifest", () => {
       deviceManifest(ev).map((e) => [e.slot, e.missing]),
       [
         [1, null],
-        [2, "listed twice in shots.json"],
-        [3, "its platform doesn't match its file name"],
-        [4, "shots.json records no sha256 for it"],
-        [5, "missing"],
+        [2, "its platform doesn't match its file name"],
+        [3, "shots.json records no sha256 for it"],
+        [4, "missing"],
       ],
     );
   });

@@ -710,6 +710,7 @@ export const DEVICE_RUNNING_NOTE = "running — results follow in a separate com
 // device-lane.mjs's state reasons (unavailable:<r>, failed:<r>, stopped:<r>).
 const DEVICE_REASONS = {
   "no-account": "the device lane's dev account file is missing or unusable",
+  java: "the installed JDK isn't one gradle can run on (17–24)",
   "no-simulator": "no iOS simulator is set up for the lane",
   "no-keystore": "the Android debug keystore is missing",
   "no-avd": "the lane's Android emulator (AVD) is missing",
@@ -781,20 +782,16 @@ function deviceStateText(v, { reason = true } = {}) {
 
 /**
  * The device lane from device-output.json. <input>: {output, dir} (dir: the
- * run dir); output null, or for another commit than <sha>, is no device
- * output: every row then reads as it did before the lane existed.
+ * run dir); output null, or not for <sha> (another commit's, or one that
+ * names none), is no device output: every row then reads as it did before
+ * the lane existed.
  */
 function buildDeviceLane(input, secrets, sha) {
   const meta = LANES.device;
   const dir = typeof input?.dir === "string" ? input.dir : "";
   const raw = input?.output;
   const output =
-    raw !== null &&
-    typeof raw === "object" &&
-    !Array.isArray(raw) &&
-    (raw.sha === undefined || raw.sha === null || raw.sha === sha)
-      ? raw
-      : null;
+    raw !== null && typeof raw === "object" && !Array.isArray(raw) && raw.sha === sha ? raw : null;
   const platforms = {};
   const src = output?.platforms;
   if (src !== null && typeof src === "object" && !Array.isArray(src)) {
@@ -820,6 +817,14 @@ function buildDeviceLane(input, secrets, sha) {
   const hits = text == null ? [] : scanLaneText(text, secrets);
   const withheld = unreadable.length > 0 || hits.length > 0;
   const done = Object.values(platforms).filter((v) => v.kind === "done");
+  // A platform that ended without finishing (failed, stopped, unavailable)
+  // counts as at least WARN, and as its worst flow before it ended; one still
+  // running counts for nothing yet.
+  const verdicts = Object.values(platforms).flatMap((v) => {
+    if (v.kind === "done") return [own(DEVICE_VERDICT_RANK, v.verdict)];
+    if (v.kind === "running") return [];
+    return ["warn", ...v.flows.map((f) => own(DEVICE_VERDICT_RANK, f.status))];
+  });
   const gaps = [];
   for (const [p, label] of DEVICE_PLATFORMS) {
     const v = platforms[p];
@@ -840,7 +845,11 @@ function buildDeviceLane(input, secrets, sha) {
     unreadable,
     hits,
     reported: done.length > 0,
-    effective: worst(done.map((v) => own(DEVICE_VERDICT_RANK, v.verdict))),
+    running: Object.values(platforms).some((v) => v.kind === "running"),
+    // Some covered platform didn't finish its flows (still running or ended
+    // early): the follow-up's headline says partial.
+    partial: Object.values(platforms).some((v) => v.kind !== "done"),
+    effective: worst(verdicts),
     gaps,
   };
 }
@@ -1352,9 +1361,15 @@ function detailsBlock(lane, content, extra = "") {
 // device lane's go by platform and flow (ADR-0106).
 function laneShots(lane, upload, secrets) {
   const none = { block: [], embedded: 0, reason: null, given: false };
+  // A device run publishes its shots once, after it has finished (its
+  // follow-up comment carries them): none while a platform is still running.
+  if (lane.key === "device" && lane.running && !lane.withheld) {
+    return { ...none, reason: "device-running", given: true };
+  }
   if (lane.key === "shell" || upload === undefined || upload === null) return none;
   if (lane.withheld) return { ...none, reason: "withheld", given: true };
   if (!lane.reported) return { ...none, reason: "not-reported", given: true };
+
   const ev = evidenceSection({
     report: lane.key === "browser" ? (lane.parsed?.report ?? null) : null,
     upload,
@@ -1597,7 +1612,9 @@ export function composeVerifyReport({
   const withheld = {
     shell: shell.withheld,
     browser: browser.withheld,
-    ...(device ? { device: device.withheld } : {}),
+    // Nothing usable to show (output unreadable, corrupt or another commit's)
+    // reads as withheld, so evidence-upload's gate publishes no device shots.
+    ...(device ? { device: device.withheld || !device.covered } : {}),
   };
 
   // Last check: lane text is already scanned, but scenario headings, gap
@@ -1664,7 +1681,7 @@ const DEVICE_HEADER = "🏭 **Device lane results**";
  * doesn't move.
  *
  * @param {object} o
- * @param {string} o.sha full 40-hex head SHA; the output must be for it
+ * @param {string} o.sha full 40-hex head SHA; the output must name it
  * @param {number|string} [o.pr]
  * @param {object|null} o.output the parsed device-output.json
  * @param {string} [o.dir] the run dir (local paths in the footer)
@@ -1676,8 +1693,8 @@ const DEVICE_HEADER = "🏭 **Device lane results**";
  */
 export function composeDeviceReport({ sha, pr, output, dir = "", images, secrets = {} } = {}) {
   if (!FULL_SHA.test(String(sha ?? ""))) throw new Error(`invalid sha: ${sha}`);
-  if (output?.sha !== undefined && output?.sha !== null && output.sha !== sha) {
-    throw new Error("the device output is for another commit");
+  if (output?.sha !== sha) {
+    throw new Error("the device output is for another commit (or names none)");
   }
   const device = buildDeviceLane({ output, dir }, secrets, sha);
   const verdict = device.effective ?? "incomplete";
@@ -1687,7 +1704,8 @@ export function composeDeviceReport({ sha, pr, output, dir = "", images, secrets
     "",
     verdict === "incomplete"
       ? "**Verdict: INCOMPLETE**: no platform finished its flows."
-      : `**Verdict: ${verdict.toUpperCase()}**`,
+      : `**Verdict: ${verdict.toUpperCase()}**` +
+        (device.partial ? ". Partial: a platform didn't finish its flows; see the table." : ""),
     "",
     (device.trigger === "on-demand" ? "Run on request (the `factory-device-run` label). " : "") +
       "Evidence, not a gate: the card stays where it is.",
@@ -1743,7 +1761,7 @@ export function composeDeviceReport({ sha, pr, output, dir = "", images, secrets
   }
 
   const secretHits = laneSecretHits([device]);
-  const withheld = { device: device.withheld };
+  const withheld = { device: device.withheld || !device.covered };
   const bodyHits = scanLaneText(body, secrets);
   if (bodyHits.length > 0) {
     shotsShown = false;

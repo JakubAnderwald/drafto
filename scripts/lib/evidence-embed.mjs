@@ -56,6 +56,8 @@ export const REASONS = Object.freeze({
   off: "publishing is switched off (FACTORY_EVIDENCE_UPLOAD=0)",
   unattended: "a macOS run is published by a person, never from an unattended session",
   "account-live": "the macOS run's throwaway account may still be live (its state.env exists)",
+  "device-running":
+    "the device run hasn't finished; they follow with its results in a separate comment",
   "selftest-missing":
     "the publishing self-test hasn't passed on this Mac mini yet (see the factory runbook)",
   "selftest-failed": "the publishing self-test failed (see the factory runbook)",

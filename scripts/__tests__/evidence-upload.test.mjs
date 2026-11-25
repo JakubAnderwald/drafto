@@ -1319,10 +1319,22 @@ describe("upload publishes a device run's supervisor-captured shots (ADR-0106)",
   const DEVICE_RENDER = { verdict: "pass", withheld: { device: false }, secretHits: [] };
   const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 
-  /** A device run's evidence dir and shots.json, as the supervisor writes them. */
-  function deviceRun(root, shots) {
+  const finished = (ios = "done") => ({
+    sha: SHA,
+    finishedAt: NOW.toISOString(),
+    platforms: { android: { state: "done" }, ios: { state: ios } },
+  });
+
+  /**
+   * A device run's evidence dir and shots.json, as the supervisor writes
+   * them, and its device-output.json beside them (<output>; null for none).
+   */
+  function deviceRun(root, shots, output = finished()) {
     const evidenceDir = join(root, "device-run", "evidence");
     mkdirSync(evidenceDir, { recursive: true });
+    if (output) {
+      writeFileSync(join(root, "device-run", "device-output.json"), JSON.stringify(output));
+    }
     const list = shots.map(({ platform, name, data, over = {}, write = data }) => {
       mkdirSync(join(evidenceDir, `device-${platform}`), { recursive: true });
       writeFileSync(join(evidenceDir, `device-${platform}`, name), write);
@@ -1343,9 +1355,9 @@ describe("upload publishes a device run's supervisor-captured shots (ADR-0106)",
     return evidenceDir;
   }
 
-  function deviceFixture(shots, { textOf } = {}) {
+  function deviceFixture(shots, { textOf, output } = {}) {
     const fx = uploadFixture({ shots: [], render: DEVICE_RENDER, textOf });
-    const evidenceDir = deviceRun(fx.root, shots);
+    const evidenceDir = deviceRun(fx.root, shots, output);
     const account = join(fx.root, "device-account.env");
     writeFileSync(
       account,
@@ -1392,7 +1404,7 @@ describe("upload publishes a device run's supervisor-captured shots (ADR-0106)",
     const fx = deviceFixture([
       { platform: "android", name: "01-login.png", data: PNG("ok") },
       { platform: "android", name: "02-notes.png", data: PNG("captured"), write: PNG("swapped") },
-      { platform: "android", name: "03-Bad.png", data: PNG("bad") },
+      { platform: "android", name: "3-bad.png", data: PNG("bad") },
       { platform: "ios", name: "01-ios-all.png", data: PNG("session"), over: { pass: "session" } },
     ]);
     const outside = join(fx.root, "outside.png");
@@ -1433,6 +1445,34 @@ describe("upload publishes a device run's supervisor-captured shots (ADR-0106)",
       // A name that isn't a device shot's goes last, and points at no file.
       { n: 5, path: ev, why: "unexpected file name" },
     ]);
+  });
+
+  it("refuses, pushing nothing, until the run has finished: it publishes once per run", async () => {
+    const shots = [
+      { platform: "android", name: "01-login.png", data: PNG("a") },
+      { platform: "ios", name: "01-ios-all.png", data: PNG("i") },
+    ];
+    for (const output of [
+      finished("running"),
+      { ...finished(), finishedAt: null },
+      null,
+      "{not json",
+    ]) {
+      const fx = deviceFixture(shots, { output: typeof output === "string" ? null : output });
+      if (typeof output === "string") {
+        writeFileSync(join(fx.root, "device-run", "device-output.json"), output);
+      }
+      const summary = await upload(fx, deviceArgs(fx));
+      assert.equal(summary.ok, false, JSON.stringify(output));
+      assert.equal(summary.reason, "device-running");
+      assertNothingPushed(fx);
+      assert.equal(readJsonFile(fx.out).reason, "device-running");
+      // Once it has finished, the same run publishes both platforms' shots.
+      writeFileSync(join(fx.root, "device-run", "device-output.json"), JSON.stringify(finished()));
+      const after = await upload(fx, deviceArgs(fx));
+      assert.equal(after.ok, true);
+      assert.equal(after.images, 2);
+    }
   });
 
   it("scans each shot's OCR text for the device account's password", async () => {

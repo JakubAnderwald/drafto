@@ -2105,11 +2105,15 @@ describe("device lane: the lane off leaves the report as it was", () => {
         output: deviceOutput({ ios: devicePlatform() }, { sha: "f".repeat(40) }),
         dir: "/runs/dev",
       },
+      // One that names no commit can't be told apart from another commit's.
+      { output: deviceOutput({ ios: devicePlatform() }, { sha: undefined }), dir: "/runs/dev" },
+      { output: deviceOutput({ ios: devicePlatform() }, { sha: null }), dir: "/runs/dev" },
     ]) {
       const r = compose({ device, secrets: DEVICE_SECRETS });
       assert.equal(r.body, before.body, JSON.stringify(device.output));
       assert.equal(r.verdict, before.verdict);
-      assert.deepEqual(r.withheld, { ...before.withheld, device: false });
+      // Nothing usable: withheld, so evidence-upload's gate publishes no device shots.
+      assert.deepEqual(r.withheld, { ...before.withheld, device: true });
       assert.deepEqual(r.images, { ...before.images, device: 0 });
     }
     assert.match(tableRow(before.body, "iOS / Android"), /\| manual \| — \| beta dispatched/);
@@ -2339,6 +2343,22 @@ describe("device lane: secrets", () => {
 });
 
 describe("device lane: screenshots", () => {
+  it("aren't embedded while a platform is still running: they follow with the results", () => {
+    const r = composeDevice(
+      { android: devicePlatform(), ios: devicePlatform("running") },
+      { images: { device: deviceUpload() } },
+    );
+    assert.equal(imgCount(r.body), 0);
+    assert.deepEqual(r.images, { browser: 0, device: 0 });
+    assert.match(
+      r.body,
+      /Device screenshots weren't published: the device run hasn't finished; they follow with its results in a separate comment\./,
+    );
+    // Said even when no upload was tried (the factory doesn't upload mid-run).
+    const none = composeDevice({ android: devicePlatform(), ios: devicePlatform("running") });
+    assert.match(none.body, /the device run hasn't finished; they follow with its results/);
+  });
+
   it("go inside the device lane's <details>, by platform and flow, and the footer says so", () => {
     const r = composeDevice(
       { android: devicePlatform(), ios: devicePlatform() },
@@ -2498,8 +2518,81 @@ describe("composeDeviceReport (the follow-up comment)", () => {
       /another commit/,
     );
     assert.throws(() => follow({}, { sha: "abc" }), /invalid sha/);
+    // An output that names no commit is refused too, not taken as this one's.
+    for (const sha of [undefined, null, ""]) {
+      assert.throws(
+        () => follow({}, { output: deviceOutput({ ios: devicePlatform() }, { sha }) }),
+        /another commit \(or names none\)/,
+      );
+    }
     const odd = follow({}, { output: deviceOutput({ ios: devicePlatform() }, { runId: "x -->" }) });
     assert.equal(odd.body.split("\n").at(-1), deviceShaMarker(SHA, "unknown"));
+  });
+});
+
+describe("composeDeviceReport: platforms that didn't finish", () => {
+  const follow = (platforms) =>
+    composeDeviceReport({
+      sha: SHA,
+      pr: 701,
+      output: deviceOutput(platforms),
+      dir: "/runs/dev",
+      secrets: { devicePassword: DEVICE_PASSWORD },
+    });
+
+  it("a failed, stopped or unavailable platform makes the verdict at least WARN, and partial", () => {
+    for (const state of ["failed:build", "stopped:memory", "unavailable:no-simulator"]) {
+      const r = follow({ android: devicePlatform(), ios: devicePlatform(state) });
+      assert.equal(r.verdict, "warn", state);
+      assert.ok(
+        r.body
+          .split("\n")
+          .includes(
+            "**Verdict: WARN**. Partial: a platform didn't finish its flows; see the table.",
+          ),
+        state,
+      );
+    }
+    const clean = follow({ android: devicePlatform(), ios: devicePlatform() });
+    assert.ok(
+      clean.body.split("\n").includes("**Verdict: PASS**"),
+      "no partial when both finished",
+    );
+  });
+
+  it("counts the flows a platform ran before it ended: a FAIL among them fails the run", () => {
+    const stopped = devicePlatform("stopped:head-moved", {
+      flows: [{ name: "01-login.yaml", status: "FAIL", durationS: 3, failure: "boom" }],
+    });
+    const r = follow({ android: devicePlatform(), ios: stopped });
+    assert.equal(r.verdict, "fail");
+    assert.match(r.body, /\*\*Verdict: FAIL\*\*\. Partial:/);
+    // The verification report counts it the same way.
+    assert.equal(composeDevice({ android: devicePlatform(), ios: stopped }).verdict, "fail");
+    assert.equal(
+      composeDevice({ android: devicePlatform(), ios: devicePlatform("failed:build") }).verdict,
+      "warn",
+    );
+  });
+
+  it("a platform still running counts for nothing yet, but marks the headline partial", () => {
+    const r = follow({ android: devicePlatform(), ios: devicePlatform("running") });
+    assert.equal(r.verdict, "pass");
+    assert.match(r.body, /\*\*Verdict: PASS\*\*\. Partial:/);
+  });
+
+  it("reads unavailable:java as a sentence", () => {
+    const r = follow({ android: devicePlatform("unavailable:java") });
+    assert.equal(
+      tableRow(r.body, "Android (emulator)"),
+      "| Android (emulator) | unavailable | — | unavailable: the installed JDK isn't one gradle can run on (17–24) |",
+    );
+  });
+
+  it("withholds (for the upload gate) a run with no platform to show", () => {
+    const r = follow({});
+    assert.deepEqual(r.withheld, { device: true });
+    assert.equal(r.verdict, "incomplete");
   });
 });
 
@@ -2595,6 +2688,13 @@ describe("verify-report CLI: the device lane", () => {
     );
     assert.equal(missing.status, 0, missing.stderr);
     assert.equal(readFileSync(join(dir, "body.md"), "utf8"), before);
+    // Withheld, so evidence-upload's gate publishes no device shots for it.
+    assert.equal(JSON.parse(missing.stdout).withheld.device, true);
+    writeFileSync(join(dir, "corrupt.json"), "{not json");
+    const corrupt = run(
+      verifyArgs(["--device-out", join(dir, "corrupt.json"), "--device-account-file", ""]),
+    );
+    assert.equal(JSON.parse(corrupt.stdout).withheld.device, true);
   });
 
   it("render fails the device lane closed when --device-account-file is left out", () => {

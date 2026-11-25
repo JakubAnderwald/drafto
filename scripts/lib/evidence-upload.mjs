@@ -64,7 +64,9 @@
 //     E2E_TEST_PASSWORD is the password). A device run is published
 //     unattended, like a browser run: its supervisor, not a model, captured
 //     and hashed every shot (ADR-0106 decision 8). Its --run-id is
-//     deviceEvidenceRunId(<the device run id>). Writes
+//     deviceEvidenceRunId(<the device run id>), so a run publishes once: it
+//     is refused ("device-running") until the run's device-output.json, beside
+//     --evidence-dir, says the run finished. Writes
 //     --out (mode 600): {ok, issue, sha, runId, ref, commit, images: [{n,
 //     url, local, name[, label]}], overflow: [{n, path, why}]} or {ok: false,
 //     reason}. Exit 0 either way; 2 on a usage error.
@@ -579,6 +581,26 @@ function selectAndPublish({
   return gate ? { ok: false, reason: gate } : publishRun({ issue, sha, runId, selection, git });
 }
 
+// A device run publishes once per run (its evidence ref is keyed by the run
+// id), so only after the run has finished: device-output.json, beside its
+// evidence/, has a finishedAt and no platform still running. An upload made
+// mid-run would freeze the set without the platforms still to come.
+function deviceRunFinished(evidenceDir) {
+  let output;
+  try {
+    output = JSON.parse(
+      nodeFs.readFileSync(path.join(path.dirname(evidenceDir), "device-output.json"), "utf8"),
+    );
+  } catch {
+    return false;
+  }
+  if (output === null || typeof output !== "object") return false;
+  if (typeof output.finishedAt !== "string" || !output.finishedAt) return false;
+  const platforms = output.platforms;
+  if (platforms === null || typeof platforms !== "object") return false;
+  return Object.values(platforms).every((p) => p?.state !== "running");
+}
+
 // A macOS run's state.env sits beside its shots/: while it exists, the run's
 // throwaway production account may still be live (evidence-post.mjs refuses
 // the same way). <shotsDir> is pinnedShotsDir's.
@@ -642,7 +664,11 @@ export function uploadRun({
       if (shotsDir === null) return "error";
       return macosAccountLive(shotsDir) ? "account-live" : null;
     };
-    const gates = () => macosGate() ?? uploadGate({ env, withheld, logDir });
+    const deviceGate = () =>
+      source === "device" && !deviceRunFinished(path.resolve(evidenceDir))
+        ? "device-running"
+        : null;
+    const gates = () => macosGate() ?? deviceGate() ?? uploadGate({ env, withheld, logDir });
     const gate = gates();
     const prior = readJson(out);
     if (gate) {

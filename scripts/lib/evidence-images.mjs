@@ -66,8 +66,9 @@ const GUARD_COPY_NAME = /^screenshot-\d+-\d+(?:-\d+)?\.(?:jpg|png)$/;
 // common.sh's shot(): shots/<NN>-<label>.png.
 const MACOS_SHOT_NAME = /^(\d{2,3})-([A-Za-z0-9._-]{1,80})\.png$/;
 // device-lane.mjs's captureShot: device-<platform>/<NN>-<flow slug>.png,
-// relative to the run's evidence dir. The only manifest name with a dir part.
-export const DEVICE_SHOT_NAME = /^device-(ios|android)\/(\d{2})-([a-z0-9._-]+)\.png$/;
+// relative to the run's evidence dir (flowSlug keeps case; NN can reach three
+// digits). The only manifest name with a dir part.
+export const DEVICE_SHOT_NAME = /^device-(ios|android)\/(\d{2,3})-([A-Za-z0-9._-]+)\.png$/;
 export const DEVICE_SHOTS_FILE = "shots.json";
 const DEVICE_PLATFORM_ORDER = Object.freeze(["android", "ios"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -179,9 +180,11 @@ export function macosManifest(shotsDir, { fs = nodeFs } = {}) {
  * "<platform>: <flow>", sha256 the recorded hash selectImages checks the read
  * bytes against. An entry is held back (missing says why) unless its name is
  * device-<platform>/NN-<slug>.png for its own platform, it comes from the
- * final pass, it is listed once, and its file is a regular file (no symlink
- * on the way) inside <dir> whose bytes hash to the recorded sha256. A missing
- * or unreadable shots.json is no screenshots.
+ * final pass, and its file is a regular file (no symlink on the way) inside
+ * <dir> whose bytes hash to the recorded sha256. A file listed more than once
+ * (a flow re-captured) is published from its last entry that passes; an
+ * earlier one that passes too is held back. A missing or unreadable
+ * shots.json is no screenshots.
  */
 export function deviceManifest(dir, { fs = nodeFs } = {}) {
   let list;
@@ -200,7 +203,6 @@ export function deviceManifest(dir, { fs = nodeFs } = {}) {
       realDir = null;
     }
   }
-  const seen = new Set();
   const rows = list.map((raw, order) => {
     const rec = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     const file = typeof rec.file === "string" ? rec.file : "";
@@ -212,11 +214,9 @@ export function deviceManifest(dir, { fs = nodeFs } = {}) {
     if (!m) missing = "unexpected file name";
     else if (rec.platform !== platform) missing = "its platform doesn't match its file name";
     else if (rec.pass !== "final") missing = "not from the final evidence pass";
-    else if (seen.has(file)) missing = "listed twice in shots.json";
     else if (!SHA256_RE.test(sha256)) missing = "shots.json records no sha256 for it";
     else if (realDir === null) missing = dirWhy ?? "the evidence directory is missing";
     else missing = deviceFileProblem(dir, realDir, file, sha256, fs);
-    if (m) seen.add(file);
     return {
       order,
       rank: platform ? DEVICE_PLATFORM_ORDER.indexOf(platform) : DEVICE_PLATFORM_ORDER.length,
@@ -226,6 +226,14 @@ export function deviceManifest(dir, { fs = nodeFs } = {}) {
       ...(m ? { label: `${platform}: ${flow}`, sha256 } : {}),
     };
   });
+  // The last entry of a file that passes wins: a file is marked seen only once
+  // one of its entries passes, walking from the end.
+  const seen = new Set();
+  for (const row of [...rows].reverse()) {
+    if (row.missing !== null || row.name === null) continue;
+    if (seen.has(row.name)) row.missing = "a later shots.json entry lists the same file";
+    else seen.add(row.name);
+  }
   return rows
     .sort((a, b) => a.rank - b.rank || a.nn - b.nn || a.order - b.order)
     .map(({ order: _o, rank: _r, nn: _n, ...e }, i) => ({ slot: i + 1, ...e }));
