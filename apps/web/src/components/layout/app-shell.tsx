@@ -272,6 +272,18 @@ export function AppShell({
   useLayoutEffect(() => {
     committedNoteId.current = selectedNoteId;
   }, [selectedNoteId]);
+  const committedNotebookId = useRef(selectedNotebookId);
+  useLayoutEffect(() => {
+    committedNotebookId.current = selectedNotebookId;
+  }, [selectedNotebookId]);
+
+  // Shows a failure only while the notebook its action started in is still selected. A
+  // response that lands after a switch is still reported, but its message would sit
+  // over a different notebook's notes. A later action in the same notebook doesn't hide
+  // an earlier one's failure: that note still failed, and the user needs to know.
+  const showActionError = useCallback((startedIn: string | null, message: string) => {
+    if (committedNotebookId.current === startedIn) setActionError(message);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -352,7 +364,7 @@ export function AppShell({
         reportError(new Error(`Failed to create note: ${res.status}`), "app-shell:create-note", {
           extra: { status: res.status, notebookId: selectedNotebookId },
         });
-        setActionError(CREATE_FAILURE_MESSAGE);
+        showActionError(selectedNotebookId, CREATE_FAILURE_MESSAGE);
         return;
       }
 
@@ -361,9 +373,9 @@ export function AppShell({
       setRefreshTrigger((prev) => prev + 1);
     } catch (err) {
       reportError(err, "app-shell:create-note", { extra: { notebookId: selectedNotebookId } });
-      setActionError(CREATE_FAILURE_MESSAGE);
+      showActionError(selectedNotebookId, CREATE_FAILURE_MESSAGE);
     }
-  }, [selectedNotebookId]);
+  }, [selectedNotebookId, showActionError]);
 
   const handleSelectNotebook = useCallback((id: string | null) => {
     setSelectedNotebookId(id);
@@ -428,6 +440,7 @@ export function AppShell({
     ) => {
       beginRemoval(noteId);
       setActionError(null);
+      const startedIn = committedNotebookId.current;
       let outcome: NoteRemovalOutcome = "failed";
       try {
         const res = await request();
@@ -440,18 +453,18 @@ export function AppShell({
           reportError(new Error(`${failure.description}: ${res.status}`), failure.where, {
             extra: { status: res.status, noteId },
           });
-          setActionError(failure.message);
+          showActionError(startedIn, failure.message);
           return;
         }
         outcome = "removed";
       } catch (err) {
         reportError(err, failure.where, { extra: { noteId } });
-        setActionError(failure.message);
+        showActionError(startedIn, failure.message);
       } finally {
         settleRemoval(noteId, remainingIds, outcome);
       }
     },
-    [beginRemoval, settleRemoval],
+    [beginRemoval, settleRemoval, showActionError],
   );
 
   const handleDeleteNote = useCallback(

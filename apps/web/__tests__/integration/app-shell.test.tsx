@@ -461,6 +461,61 @@ describe("AppShell", () => {
     });
   });
 
+  it("reports but doesn't show a create that fails after the user switched notebooks", async () => {
+    const user = userEvent.setup();
+    // Set when the POST is sent; answering it with a 500 is up to the test.
+    const post: { fail?: () => void } = {};
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "POST") {
+        return new Promise((resolve) => {
+          post.fail = () => resolve({ ok: false, status: 500 });
+        });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([...mockNotes]) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // The POST is held while the user moves to another notebook.
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+    expect(post.fail).toBeDefined();
+    await act(async () => {
+      await user.click(within(screen.getByTestId("notebooks-pane")).getByText("Work"));
+    });
+
+    await act(async () => {
+      post.fail?.();
+    });
+
+    await waitFor(() => {
+      expect(reportsFrom("app-shell:create-note")).toHaveLength(1);
+    });
+    expect(actionAlert()).not.toBeInTheDocument();
+
+    // Going back to the notebook the create started in doesn't bring it up either.
+    await act(async () => {
+      await user.click(within(screen.getByTestId("notebooks-pane")).getByText("Personal"));
+    });
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+    expect(actionAlert()).not.toBeInTheDocument();
+  });
+
   it("neither reports nor shows an error when creating a note finds the session expired", async () => {
     const user = userEvent.setup();
     // jsdom reports the redirect to /login as an unimplemented navigation.
@@ -1458,6 +1513,55 @@ describe("AppShell", () => {
       ]);
       // The note never left the editor, so the refresh doesn't refetch it.
       expect(noteFetches).toEqual(["note-1"]);
+    });
+
+    it("reports but doesn't show a delete that fails after the user switched notebooks", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+      await chooseAction(user, "My First Note", "Delete");
+
+      await act(async () => {
+        await user.click(within(screen.getByTestId("notebooks-pane")).getByText("Work"));
+      });
+      await waitFor(() => {
+        expect(
+          notesPane().getByText("No notes yet. Create one to get started."),
+        ).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        held[0].fail();
+      });
+
+      await waitFor(() => {
+        expect(reportsFrom("app-shell:delete-note")).toHaveLength(1);
+      });
+      expect(notesPane().queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("still shows a delete that fails after a later delete started", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+      await chooseAction(user, "My First Note", "Delete");
+      await chooseAction(user, "My Second Note", "Delete");
+
+      // The first note's DELETE fails after the second one started: that note is
+      // still in the notebook, so the user is told.
+      await act(async () => {
+        held[0].fail();
+      });
+      await waitFor(() => {
+        expect(notesPane().getByRole("alert")).toHaveTextContent("Couldn't delete the note.");
+      });
+
+      // The second DELETE landing doesn't clear it.
+      await act(async () => {
+        held[1].release();
+      });
+      await waitFor(() => {
+        expect(log.at(-1)).toBe("GET nb-1 list");
+      });
+      expect(notesPane().getByRole("alert")).toHaveTextContent("Couldn't delete the note.");
     });
 
     it("leaves the selection and the list alone when the session expired", async () => {
