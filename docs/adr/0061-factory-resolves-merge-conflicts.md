@@ -4,6 +4,8 @@
 - **Date**: 2026-10-29
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Amended by [ADR-0105](./0105-factory-adr-index-union-merge.md)** (2026-11-25): `merge-main` now merges `docs/adr/README.md` with git's `union` driver, through an attributes file it passes to `git merge` when the index conflicts on its rows alone, so two PRs that each appended an index row merge cleanly and bash pushes the merge with no Claude run. It puts the merged rows back in number order. An ADR the merged index lists on two rows (`adrIndexDuplicates`) counts as an ADR clash and goes to the conflict pass, and `merge-check` refuses a resolution that still has one. The implement bundle now carries the ADR number to use, clear of every open PR's, so clashes are rarer.
+
 > **Update 2026-11-13**: After pushing a verified resolution, bash no longer judges it by the PR view, which lags a push by a few seconds and made every "never reached the PR" warning up to then a false alarm. A push that reports the verified commit counts as landed ([ADR-0076](./0076-factory-watch-effort-and-retry-budget.md)). Conflict passes now run at `xhigh`, and the attempt budget below is 10.
 
 > **Update 2026-11-09**: Neither In Test nor Approved holds a worktree slot any more, so the slot stall described below can't recur ([ADR-0070](./0070-factory-in-test-frees-slot-and-updates-behind-prs.md)). `--watch` now also updates a PR that is only behind `main`, with update-branch, before In Test.

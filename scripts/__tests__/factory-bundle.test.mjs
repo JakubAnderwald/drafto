@@ -809,6 +809,66 @@ describe("buildFactoryImplementBundle", () => {
     assert.deepEqual(bundle.screenshots, []);
   });
 
+  // ADR-0103: the number for a new ADR, clear of main and of every other open
+  // PR's, so two cards implemented in parallel don't take the same one.
+  describe("adr", () => {
+    const adr = {
+      mainNewest: "0098",
+      next: "0101",
+      own: [],
+      claimed: [
+        { pr: 901, file: "0099-x.md" },
+        { pr: 902, file: "0100-y.md" },
+      ],
+      skipped: [903],
+    };
+    const build = (a) =>
+      buildFactoryImplementBundle({
+        issue: { number: 1, title: "x", body: SAMPLE_BODY, labels: [] },
+        adr: a,
+        config: { phase: "C" },
+        repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      });
+
+    it("carries {mainNewest, next, own, claimed}, each claim with its number", () => {
+      assert.deepEqual(build(adr).adr, {
+        mainNewest: "0098",
+        next: "0101",
+        own: [],
+        claimed: [
+          { pr: 901, file: "0099-x.md", number: "0099" },
+          { pr: 902, file: "0100-y.md", number: "0100" },
+        ],
+      });
+      assert.deepEqual(build({ ...adr, own: ["0100-mine.md", "../x.md", 7] }).adr.own, [
+        "0100-mine.md",
+      ]);
+    });
+
+    it("is null when bash had nothing, or `next` isn't a number past main's newest", () => {
+      assert.equal(build(null).adr, null);
+      assert.equal(build(undefined).adr, null);
+      for (const next of [undefined, "101", "0101x", 101, "0000", "0098", "0097"]) {
+        assert.equal(build({ ...adr, next }).adr, null, String(next));
+      }
+      assert.equal(build({ ...adr, mainNewest: null, next: "0001" }).adr.next, "0001");
+    });
+
+    it("drops claims that aren't a PR and an ADR file name, and caps them", () => {
+      const claimed = [
+        { pr: 0, file: "0099-x.md" },
+        { pr: "901", file: "0099-x.md" },
+        { pr: 901, file: "README.md" },
+        { pr: 901, file: "docs/adr/0099-x.md" },
+        null,
+        ...Array.from({ length: 150 }, (_, i) => ({ pr: 1000 + i, file: "0100-y.md" })),
+      ];
+      const shaped = build({ ...adr, claimed }).adr.claimed;
+      assert.equal(shaped.length, 100);
+      assert.ok(shaped.every((c) => c.pr >= 1000));
+    });
+  });
+
   // ADR-0079: the versions for new migrations, clear of main and of every
   // other open PR's, so two cards implemented the same day don't share one.
   describe("migrations", () => {
@@ -1271,6 +1331,13 @@ describe("buildFactoryWatchBundle", () => {
           { number: "not-a-number", files: ["x.md"] },
         ],
         nextFreeAdr: "0061",
+        adrIndexDuplicates: [
+          { number: "0059", rows: 2 },
+          { number: "59", rows: 2 },
+          { number: "0060", rows: "2" },
+          null,
+        ],
+        adrIndexReordered: false,
       },
     });
     assert.deepEqual(bundle.mergeConflict, {
@@ -1278,6 +1345,7 @@ describe("buildFactoryWatchBundle", () => {
       conflictedFiles: ["docs/adr/README.md"],
       adrCollisions: [{ number: "0059", files: ["0059-desktop-pkce.md", "0059-keep-login.md"] }],
       nextFreeAdr: "0061",
+      adrIndexDuplicates: [{ number: "0059", rows: 2 }],
       migrationErrors: [],
     });
   });
@@ -1561,6 +1629,23 @@ describe("factory-bundle CLI", () => {
       versions: ["20261113000001", "20261113000002"],
       claimed: [],
       claimedComplete: true,
+    });
+  });
+
+  it("forwards factory_implement adr through main() (ADR-0103)", () => {
+    const r = run({
+      kind: "factory_implement",
+      issue: { number: 42, title: "x", body: SAMPLE_BODY, labels: [] },
+      adr: { mainNewest: "0098", next: "0099", own: [], claimed: [] },
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout).adr, {
+      mainNewest: "0098",
+      next: "0099",
+      own: [],
+      claimed: [],
     });
   });
 

@@ -86,6 +86,18 @@ has shape:
     "claimed": [ { "pr": 829, "file": "20261113000003_<name>.sql", "version": "20261113000003" } ],
     "claimedComplete": true   // for the factory, not you: ignore it
   } | null,
+  // Set only when the approved plan mentions an ADR (`docs/adr`, or the word ADR in any case):
+  // the number the factory picked for a new ADR. It is after main's newest,
+  // after any ADR this card's own PR already adds (on a revision), and after
+  // every other open PR's. `claimed` lists the ADRs other open PRs add, for
+  // reference: `next` already skips them. null otherwise, or when the lookup
+  // failed. See step 5's ADR rule.
+  "adr": {
+    "mainNewest": "0098" | null,
+    "next": "0101",
+    "own": [ "0099-<slug>.md" ],
+    "claimed": [ { "pr": 829, "file": "0100-<slug>.md", "number": "0100" } ]
+  } | null,
   "config": { "phase": "A"|"B"|"C"|"D", ... },
   "repo": { "nameWithOwner": "JakubAnderwald/drafto", "headRef": "main" },
   "nowIso": "..."
@@ -151,6 +163,8 @@ context bundle tells you where you stand:
 - `softDeadlineAt` — when to stop starting new work and wrap up.
 - `hardDeadlineAt` — when bash kills the session.
 - `resumed` — `true` when this run continues an earlier run's session.
+- `effort` — the `--effort` bash started this run at, such as `ultracode` or
+  `xhigh`. **Revision runs** below says what it changes.
 - `worktree` — what an earlier attempt left here: `reused` (the worktree
   existed before this run), `leftoversRef` (uncommitted changes bash set aside
   because the PR branch moved on; `git diff <ref>^1 <ref>` shows them; `null`
@@ -251,6 +265,15 @@ the reporter tested the In Test preview and is responding to it. In that case:
   already checked out in your worktree with the prior implementation's commits.
   **Make the requested changes on top of what's there** — do not start over,
   do not reset, do not branch.
+- **Do the work yourself, directly, unless `effort` is `ultracode`.** A
+  revision is a small change to code that already exists, so the factory
+  normally starts it at a plain effort, not the ultracode a fresh
+  implementation gets; the `effort` key in **Run-time facts** says which.
+  When `effort` is anything but `ultracode`, or the facts are missing, start no
+  Workflow and no background agent: read the feedback, make the change, run
+  the verification matrix, push, and skip the Workflow steps under **Time
+  budget**. When it is `ultracode`, the operator chose it for revisions, and a
+  Workflow is allowed as on a fresh implementation.
 - Sort each `revisionComments` entry into one of three kinds. The approved plan
   still bounds scope and phase for all of them.
   1. **A change request** — treat it as **authoritative**, layered on the
@@ -479,6 +502,19 @@ For a first implementation, `revisionComments` is empty; ignore this section.
    skips its open-PR version warning: after you push, the factory itself
    moves a migration this run added off any version another open PR adds
    (ADR-0079).
+
+   A new ADR takes `bundle.adr.next` when `bundle.adr` is set: the file is
+   `docs/adr/<next>-<slug>.md`, and a second new ADR takes the number after
+   it. Never take the next free number on main yourself, and never reuse one
+   of `bundle.adr.claimed`: other open PRs already use those, and two open
+   PRs with one number collide once the first merges. When `bundle.adr` is
+   null, use the number after the highest in `docs/adr/` on `origin/main`.
+   Add its row to the index in `docs/adr/README.md` in number order, and run
+   `pnpm format:check`. Prettier pads each column to its widest cell, so keep
+   the new row's link (the file name's slug) and title no wider than the
+   widest already in their columns. A row that widens a column rewrites every
+   other row, and the factory can then no longer merge the index with main on
+   its own (ADR-0105).
 
    On failure, fix the underlying issue and re-run. Don't swallow errors,
    don't add `// @ts-ignore`, don't suppress lint rules without a `-- <reason>`

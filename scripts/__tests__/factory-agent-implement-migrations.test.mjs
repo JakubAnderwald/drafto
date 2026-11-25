@@ -15,6 +15,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = resolve(HERE, "..");
@@ -44,7 +45,7 @@ function bash(snippet, env = {}) {
   try {
     const r = spawnSync("bash", ["-c", snippet], {
       encoding: "utf8",
-      env: { ...process.env, DIR: dir, ...env },
+      env: hermeticEnv({ DIR: dir, ...env }),
     });
     let calls = "";
     try {
@@ -60,6 +61,13 @@ function bash(snippet, env = {}) {
 
 describe("build_implement_bundle — migrations (ADR-0079)", () => {
   const VERSIONS = ["20261113000002", "20261113000003", "20261113000004"];
+  const NEXT_ADR = {
+    mainNewest: "0098",
+    next: "0100",
+    own: [],
+    claimed: [{ pr: 901, file: "0099-x.md" }],
+    skipped: [],
+  };
   const NEXT = {
     mainNewest: "20261112000002",
     ownNewest: null,
@@ -68,9 +76,22 @@ describe("build_implement_bundle — migrations (ADR-0079)", () => {
     skipped: [840],
   };
   // The real builder and allocator, the real factory-bundle.mjs; only the
-  // next-version helper is stubbed ($NEXT is its stdout, "fail" a failure).
-  // FAIL_SECOND_BUILD makes the second factory-bundle.mjs run fail.
-  function build(schema, next = JSON.stringify(NEXT), { priorPr = "null", failSecond = 0 } = {}) {
+  // next-version helper is stubbed ($NEXT is its stdout, "fail" a failure), and
+  // adr-allocate.mjs's next-adr ($NEXT_ADR, ADR-0103). FAIL_SECOND_BUILD makes
+  // the second factory-bundle.mjs run and every later one fail; FAIL_ONLY_BUILD
+  // only the run with that number. <plan> is the approved plan's body, or null
+  // for no plan.
+  function build(
+    schema,
+    next = JSON.stringify(NEXT),
+    {
+      priorPr = "null",
+      failSecond = 0,
+      failOnly = 0,
+      plan = null,
+      nextAdr = JSON.stringify(NEXT_ADR),
+    } = {},
+  ) {
     const snippet = `
 set -euo pipefail
 CALLS="$DIR/calls"; : >"$CALLS"
@@ -86,9 +107,16 @@ node() {
     printf '%s\\n' "$NEXT"
     return 0
   fi
+  if [[ "$1" == *adr-allocate.mjs ]]; then
+    echo "ADR_HELPER \${*:2}" >>"$CALLS"
+    [[ "$NEXT_ADR" == fail ]] && return 1
+    printf '%s\\n' "$NEXT_ADR"
+    return 0
+  fi
   if [[ "$1" == *factory-bundle.mjs ]]; then
     echo x >>"$DIR/builds"
-    if [[ "$FAIL_SECOND_BUILD" == 1 && $(wc -l <"$DIR/builds") -ge 2 ]]; then
+    if [[ "$FAIL_SECOND_BUILD" == 1 && $(wc -l <"$DIR/builds") -ge 2 ]] \\
+        || [[ $(wc -l <"$DIR/builds") -eq "$FAIL_ONLY_BUILD" ]]; then
       cat >/dev/null
       return 1
     fi
@@ -97,14 +125,21 @@ node() {
 }
 ${extract("build_implement_bundle")}
 ${extract("implement_migration_versions")}
-build_implement_bundle "$ISSUE" null "$PRIOR_PR" 0 "[]" "[]" "[]" ""
+${extract("implement_adr_numbers")}
+build_implement_bundle "$ISSUE" "$PLAN" "$PRIOR_PR" 0 "[]" "[]" "[]" ""
 `;
     const issue = JSON.stringify({ number: 794, title: "t", body: body(schema), labels: [] });
     const r = bash(snippet, {
       ISSUE: issue,
       NEXT: next,
+      NEXT_ADR: nextAdr,
+      PLAN:
+        plan === null
+          ? "null"
+          : JSON.stringify({ id: 5, body: plan, createdAt: "2026-11-25T00:00:00Z" }),
       PRIOR_PR: priorPr,
       FAIL_SECOND_BUILD: String(failSecond),
+      FAIL_ONLY_BUILD: String(failOnly),
     });
     assert.equal(r.status, 0, r.stderr);
     return { bundle: JSON.parse(r.stdout), calls: r.calls };
@@ -176,6 +211,118 @@ build_implement_bundle "$ISSUE" null "$PRIOR_PR" 0 "[]" "[]" "[]" ""
       // stdout is the bundle: no log line may land in it (JSON.parse passed).
       assert.ok(!calls.some((c) => c.startsWith("LOG ")));
     }
+  });
+
+  // ADR-0103: a plan that mentions an ADR gets the number the new ADR takes.
+  describe("adr (ADR-0103)", () => {
+    const PLAN = "Write `docs/adr/NNNN-x.md` and amend ADR-0061.";
+
+    it("asks next-adr for the number when the approved plan mentions an ADR", () => {
+      for (const plan of [PLAN, "Amend ADR-0061 only.", "Touch docs/adr/README.md."]) {
+        const { bundle, calls } = build("no", undefined, { plan });
+        assert.deepEqual(bundle.adr, {
+          mainNewest: "0098",
+          next: "0100",
+          own: [],
+          claimed: [{ pr: 901, file: "0099-x.md", number: "0099" }],
+        });
+        assert.ok(
+          calls.some((c) => /^ADR_HELPER next-adr --root \S+$/.test(c)),
+          calls.join("\n"),
+        );
+        assert.ok(!calls.some((c) => c.startsWith("HELPER")), "no migration sweep");
+        assert.equal(bundle.migrations, null);
+      }
+    });
+
+    it("names the card's own PR on a revision", () => {
+      const priorPr = JSON.stringify({ number: 835, state: "OPEN" });
+      const { calls } = build("no", undefined, { plan: PLAN, priorPr });
+      assert.ok(
+        calls.some((c) => /^ADR_HELPER next-adr --root \S+ --own-pr 835$/.test(c)),
+        calls.join("\n"),
+      );
+    });
+
+    it("asks next-adr when the plan says ADR in any case", () => {
+      for (const plan of [
+        "Record the decision in a new adr.",
+        "Write two ADRs.",
+        "See docs/adr/.",
+      ]) {
+        const { calls } = build("no", undefined, { plan });
+        assert.ok(
+          calls.some((c) => c.startsWith("ADR_HELPER next-adr")),
+          plan,
+        );
+      }
+    });
+
+    it("never runs next-adr for a plan that doesn't mention one, or no plan", () => {
+      for (const plan of [null, "Change the editor toolbar.", "Fix the address bar padding."]) {
+        const { bundle, calls } = build("no", undefined, { plan });
+        assert.equal(bundle.adr, null);
+        assert.ok(!calls.some((c) => c.startsWith("ADR_HELPER")), String(plan));
+      }
+    });
+
+    it("carries both fields when the card needs both", () => {
+      const { bundle, calls } = build("yes", undefined, { plan: PLAN });
+      assert.equal(bundle.adr.next, "0100");
+      assert.deepEqual(bundle.migrations.versions, VERSIONS);
+      assert.ok(calls.some((c) => c.startsWith("HELPER")));
+      assert.ok(calls.some((c) => c.startsWith("ADR_HELPER")));
+    });
+
+    it("falls back to null with a warning when next-adr fails, and still builds", () => {
+      for (const nextAdr of ["fail", "not json", '{"next":"99"}', '{"next":null}']) {
+        const { bundle, calls } = build("yes", undefined, { plan: PLAN, nextAdr });
+        assert.equal(bundle.adr, null, nextAdr);
+        assert.deepEqual(bundle.migrations.versions, VERSIONS, "the migrations still land");
+        assert.ok(
+          calls.some((c) =>
+            /^LOGERR WARNING: couldn't pick an ADR number for the implement bundle/.test(c),
+          ),
+          nextAdr,
+        );
+      }
+    });
+
+    it("keeps the first bundle, warning for each field, when the rebuild fails", () => {
+      const { bundle, calls } = build("yes", undefined, { plan: PLAN, failSecond: 1 });
+      assert.equal(bundle.adr, null);
+      assert.equal(bundle.migrations, null);
+      assert.ok(
+        calls.some((c) =>
+          /^LOGERR WARNING: couldn't add the ADR number to the implement bundle/.test(c),
+        ),
+        calls.join("\n"),
+      );
+      assert.ok(
+        calls.some((c) =>
+          /^LOGERR WARNING: couldn't add the migration versions to the implement bundle/.test(c),
+        ),
+      );
+    });
+
+    // Each field has its own rebuild: one that fails never costs the other.
+    it("keeps the other field when only one field's rebuild fails", () => {
+      // Build 1 is the bare bundle, 2 adds the migrations, 3 the ADR number.
+      const noMigrations = build("yes", undefined, { plan: PLAN, failOnly: 2 });
+      assert.equal(noMigrations.bundle.migrations, null);
+      assert.equal(noMigrations.bundle.adr.next, "0100");
+      assert.ok(
+        noMigrations.calls.some((c) => /couldn't add the migration versions/.test(c)),
+        noMigrations.calls.join("\n"),
+      );
+      assert.ok(!noMigrations.calls.some((c) => /couldn't add the ADR number/.test(c)));
+
+      const noAdr = build("yes", undefined, { plan: PLAN, failOnly: 3 });
+      assert.equal(noAdr.bundle.adr, null);
+      assert.deepEqual(noAdr.bundle.migrations.versions, VERSIONS);
+      assert.ok(noAdr.calls.some((c) => /couldn't add the ADR number/.test(c)));
+      assert.ok(!noAdr.calls.some((c) => /couldn't add the migration versions/.test(c)));
+    });
   });
 
   // The versions are a help, not a precondition: a failed rebuild keeps the first bundle.

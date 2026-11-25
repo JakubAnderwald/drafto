@@ -13,29 +13,36 @@ import { fileURLToPath } from "node:url";
 // regression would send the factory back to whatever ambient effort the host
 // happens to default to, which is exactly the drift this change removed.
 //
-// The model knobs (ADR-0080) are the opposite: unset, no call passes --model,
-// so the factory runs on the CLI's default model exactly as before.
+// The model is pinned the same way (ADR-0101): every call passes --model,
+// FACTORY_MODEL (opus[1m]) unless a stage knob (ADR-0080) names another one,
+// so no call falls back to ~/.claude/settings.json or the CLI's default.
 
 const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "factory-agent.sh");
 const script = readFileSync(scriptPath, "utf8");
 
 describe("factory-agent Claude effort", () => {
-  it("passes --effort at all six Claude call sites", () => {
-    // Four read-only sites (plan + replan + In Test scenario + code review) use
-    // the plan effort; the implement site uses the coding effort and the watch
-    // fix site its own (ADR-0076).
+  it("passes --effort at all seven Claude call sites", () => {
+    // Five read-only sites (plan + replan + /split + In Test scenario + code
+    // review) use the plan effort; the implement site uses this run's
+    // implement effort (IMPL_EFFORT: the coding effort, or the revision
+    // effort, ADR-0101) and the watch fix site its own (ADR-0076).
     const planFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_PLAN_EFFORT"/g) || [];
     const codeFlags =
-      script.match(/--dangerously-skip-permissions --effort "\$FACTORY_EFFORT"/g) || [];
+      script.match(/--dangerously-skip-permissions --effort "\$IMPL_EFFORT"/g) || [];
     const watchFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_WATCH_EFFORT"/g) || [];
     assert.equal(
       planFlags.length,
-      4,
-      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + In Test + review sites',
+      5,
+      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + split + In Test + review sites',
     );
-    assert.equal(codeFlags.length, 1, 'expected --effort "$FACTORY_EFFORT" at the implement site');
+    assert.equal(codeFlags.length, 1, 'expected --effort "$IMPL_EFFORT" at the implement site');
+    assert.doesNotMatch(
+      script,
+      /--effort "\$FACTORY_EFFORT"/,
+      "the implement call takes IMPL_EFFORT, never FACTORY_EFFORT directly",
+    );
     assert.equal(
       watchFlags.length,
       1,
@@ -43,35 +50,46 @@ describe("factory-agent Claude effort", () => {
     );
     assert.equal(
       planFlags.length + codeFlags.length + watchFlags.length,
-      6,
+      7,
       "every factory Claude call must carry an effort flag",
     );
   });
 
-  it("runs --implement at the coding effort and --watch fix passes at the watch effort", () => {
+  it("runs --implement at this run's implement effort and --watch fix passes at the watch effort", () => {
     // ADR-0076: at ultracode a watch fix pass finished its fix, then started a
     // review workflow and waited on it until the 1800s cap killed it with
     // nothing committed (#797). The log line and the flag must agree.
     const implement = script.match(/Invoking claude for #\$ISSUE_NUM \(--implement[\s\S]{0,600}/);
     assert.ok(implement, "implement claude invocation not found");
-    assert.match(implement[0], /effort=\$FACTORY_EFFORT\)/);
-    assert.match(implement[0], /--effort "\$FACTORY_EFFORT"/);
+    assert.match(implement[0], /effort=\$IMPL_EFFORT, model=\$FACTORY_MODEL\)/);
+    assert.match(implement[0], /--effort "\$IMPL_EFFORT"/);
     const watch = script.match(/Invoking claude for #\$ISSUE_NUM \(--watch fix[\s\S]{0,600}/);
     assert.ok(watch, "watch fix claude invocation not found");
-    assert.match(watch[0], /effort=\$FACTORY_WATCH_EFFORT\)/);
+    assert.match(watch[0], /effort=\$FACTORY_WATCH_EFFORT, model=\$FACTORY_MODEL\)/);
     assert.match(watch[0], /--effort "\$FACTORY_WATCH_EFFORT"/);
     assert.doesNotMatch(watch[0], /--effort "\$FACTORY_EFFORT"/);
   });
 
-  it("runs the browser runner (the seventh call) at the read-only (plan) effort", () => {
+  it("runs the browser runner (the eighth call) at the read-only (plan) effort", () => {
     // ADR-0051: the locked-down Chrome runner has no --dangerously-skip-
     // permissions, so the counts above don't see it. It reads pages and prints
     // a report — plan-tier effort, like the scenario writer.
     const calls = script.match(/run-claude\.mjs" -p\b/g) || [];
-    assert.equal(calls.length, 7, "six stage calls plus the browser runner");
+    assert.equal(calls.length, 8, "seven stage calls plus the browser runner");
     assert.match(
       script,
       /run-claude\.mjs" -p --chrome(?:[^\n]*\\\n){1,3}[^\n]*--effort "\$FACTORY_PLAN_EFFORT" \)/,
+    );
+  });
+
+  it("runs the /split splitter at the read-only (plan) effort, with no tools, on a pinned model", () => {
+    // ADR-0104: the splitter only prints text; bash files what it checked.
+    const block = script.match(/Invoking claude for #\$issue_num \(split[\s\S]{0,800}/);
+    assert.ok(block, "split claude invocation not found");
+    assert.match(block[0], /effort=\$FACTORY_PLAN_EFFORT, model=\$\{FACTORY_MODEL:-opus\[1m\]\}/);
+    assert.match(
+      block[0],
+      /--effort "\$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \\\n\s+--tools "" --model "\$\{FACTORY_MODEL:-opus\[1m\]\}" >/,
     );
   });
 
@@ -83,16 +101,22 @@ describe("factory-agent Claude effort", () => {
     assert.match(block[0], /--effort "\$FACTORY_PLAN_EFFORT"/);
   });
 
-  it("defaults FACTORY_EFFORT to ultracode, FACTORY_WATCH_EFFORT and FACTORY_PLAN_EFFORT to xhigh", () => {
+  it("defaults FACTORY_EFFORT to ultracode, the watch, plan and revision efforts to xhigh", () => {
     assert.match(script, /FACTORY_EFFORT="\$\{FACTORY_EFFORT:-ultracode\}"/);
     assert.match(script, /FACTORY_WATCH_EFFORT="\$\{FACTORY_WATCH_EFFORT:-xhigh\}"/);
     assert.match(script, /FACTORY_PLAN_EFFORT="\$\{FACTORY_PLAN_EFFORT:-xhigh\}"/);
+    assert.match(script, /FACTORY_REVISION_EFFORT="\$\{FACTORY_REVISION_EFFORT:-xhigh\}"/);
   });
 
   it("validates every effort knob against a known allowlist with a fallback", () => {
     // A case allowlist guards word-splitting / empty values (bash 3.2 safe) and
     // falls back to a safe default on an unknown level.
-    for (const knob of ["FACTORY_EFFORT", "FACTORY_WATCH_EFFORT", "FACTORY_PLAN_EFFORT"]) {
+    for (const knob of [
+      "FACTORY_EFFORT",
+      "FACTORY_WATCH_EFFORT",
+      "FACTORY_PLAN_EFFORT",
+      "FACTORY_REVISION_EFFORT",
+    ]) {
       assert.match(
         script,
         new RegExp(`case "\\$${knob}" in\\n\\s*ultracode\\|max\\|xhigh\\|high\\|medium\\|low\\)`),
@@ -107,6 +131,10 @@ describe("factory-agent Claude effort", () => {
     assert.match(
       script,
       /invalid FACTORY_PLAN_EFFORT='\$FACTORY_PLAN_EFFORT'; defaulting to xhigh/,
+    );
+    assert.match(
+      script,
+      /invalid FACTORY_REVISION_EFFORT='\$FACTORY_REVISION_EFFORT'; defaulting to xhigh/,
     );
   });
 
@@ -133,7 +161,65 @@ describe("factory-agent Claude effort", () => {
   });
 });
 
-describe("factory-agent Claude model knobs (ADR-0080)", () => {
+describe("factory-agent revision effort (ADR-0101)", () => {
+  // The real implement_effort, extracted, with only the given env.
+  const fn = script.match(/^implement_effort\(\) \{[\s\S]*?^\}\n/m);
+
+  function effortFor(isRevision, env = {}) {
+    assert.ok(fn, "implement_effort not found");
+    const r = spawnSync(
+      "/bin/bash",
+      ["-c", `set -euo pipefail\n${fn[0]}\nimplement_effort ${JSON.stringify(isRevision)}`],
+      { encoding: "utf8", env: { PATH: process.env.PATH, ...env } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, "");
+    return r.stdout;
+  }
+
+  it("gives a revision run the revision effort and anything else the coding effort", () => {
+    const env = { FACTORY_EFFORT: "ultracode", FACTORY_REVISION_EFFORT: "xhigh" };
+    assert.equal(effortFor("1", env), "xhigh\n");
+    assert.equal(effortFor("0", env), "ultracode\n");
+    assert.equal(effortFor("", env), "ultracode\n");
+    // The knob is the operator's: ultracode revisions are one setting away.
+    assert.equal(effortFor("1", { ...env, FACTORY_REVISION_EFFORT: "ultracode" }), "ultracode\n");
+  });
+
+  it("copes under set -u without the knob block (harness extracts)", () => {
+    assert.equal(effortFor("1"), "xhigh\n");
+    assert.equal(effortFor("0"), "ultracode\n");
+  });
+
+  it("is decided once, after the revision block, and used by both implement paths", () => {
+    const loop = script.slice(script.indexOf('    REVISION_COMMENTS="[]"'));
+    const decided = loop.indexOf('IMPL_EFFORT=$(implement_effort "$IS_REVISION")');
+    assert.ok(decided !== -1, "IMPL_EFFORT is not set from implement_effort");
+    assert.ok(loop.indexOf("IS_REVISION=1") < decided, "after the revision block");
+    assert.ok(decided < loop.indexOf("    # Acquire a slot"), "before the slot and the runs");
+    assert.equal(script.split("IMPL_EFFORT=$(").length - 1, 1, "set in one place");
+    // The detached start's spec and log line take the same value.
+    const start = script.match(/\nimplement_lane_start\(\) \{[\s\S]*?\n\}\n/)[0];
+    assert.match(start, /--arg effort "\$\{IMPL_EFFORT:-\$\{FACTORY_EFFORT:-ultracode\}\}"/);
+    assert.match(start, /effort=\$\{IMPL_EFFORT:-\$\{FACTORY_EFFORT:-ultracode\}\}, model=/);
+  });
+
+  it("tells the agent its effort through the run-time facts, which both paths send", () => {
+    // The prompt's "Revision runs" rule keys off the `effort` fact, so
+    // FACTORY_REVISION_EFFORT=ultracode alone restores Workflows on revisions.
+    const loop = script.slice(script.indexOf('    REVISION_COMMENTS="[]"'));
+    const facts = loop.indexOf(
+      'IMPL_FACTS=$(implement_runtime_facts "$IMPL_START_EPOCH" "$IMPL_RESUMED" "$WT_JSON" "$WT_PATH" "$IMPL_EFFORT")',
+    );
+    assert.ok(facts !== -1, "the run-time facts don't carry IMPL_EFFORT");
+    assert.ok(loop.indexOf('IMPL_EFFORT=$(implement_effort "$IS_REVISION")') < facts);
+    // CLAUDE_INPUT (with the facts) is built before the sync/detached split.
+    assert.ok(facts < loop.indexOf("implement_lane_start"), "before the detached start");
+    assert.ok(facts < loop.indexOf('node "$SCRIPT_DIR/lib/run-claude.mjs" -p "$CLAUDE_INPUT"'));
+  });
+});
+
+describe("factory-agent Claude model knobs (ADR-0080, ADR-0101)", () => {
   const block = script.match(/^MODEL_KNOB_RE=[\s\S]*?^ {2}FACTORY_INTEST_MODEL=""\nfi\n/m);
 
   // Run the knob block in bash with only the given env, under the factory's
@@ -145,7 +231,7 @@ describe("factory-agent Claude model knobs (ADR-0080)", () => {
       [
         "-c",
         `set -euo pipefail\n${block[0]}\n` +
-          'printf "B=[%s] I=[%s]\\n" "$FACTORY_BROWSER_MODEL" "$FACTORY_INTEST_MODEL"',
+          'printf "M=[%s] B=[%s] I=[%s]\\n" "$FACTORY_MODEL" "$FACTORY_BROWSER_MODEL" "$FACTORY_INTEST_MODEL"',
       ],
       { encoding: "utf8", env: { PATH: process.env.PATH, ...env } },
     );
@@ -153,86 +239,155 @@ describe("factory-agent Claude model knobs (ADR-0080)", () => {
     return r;
   }
 
-  it("defaults both knobs to empty, which passes no --model", () => {
+  const GOOD = [
+    "sonnet",
+    "opus",
+    "haiku",
+    "fable",
+    "opus[1m]",
+    "claude-sonnet-5-5",
+    "claude-sonnet-5-5[1m]",
+    "claude-opus-4-1-20250805",
+  ];
+  // A leading dash or a space would smuggle a flag into the call; the rest
+  // are typos the CLI would reject on every call.
+  const BAD = [
+    "--chrome",
+    "sonnet --chrome",
+    " sonnet",
+    "sonnet\n",
+    "Sonnet",
+    "gpt-5",
+    "claude-",
+    "claude-x;rm",
+    "sonnet[2m]",
+    "$(id)",
+  ];
+
+  it("defaults FACTORY_MODEL to opus[1m] and both stage knobs to empty (= FACTORY_MODEL)", () => {
+    assert.match(script, /^FACTORY_MODEL="\$\{FACTORY_MODEL:-opus\[1m\]\}"/m);
     assert.match(script, /^FACTORY_BROWSER_MODEL="\$\{FACTORY_BROWSER_MODEL:-\}"/m);
     assert.match(script, /^FACTORY_INTEST_MODEL="\$\{FACTORY_INTEST_MODEL:-\}"/m);
     const r = runKnobs({});
-    assert.match(r.stdout, /^B=\[\] I=\[\]$/m);
+    assert.match(r.stdout, /^M=\[opus\[1m\]\] B=\[\] I=\[\]$/m);
     assert.equal(r.stderr, "", "an unset knob is not a warning");
-    assert.equal(runKnobs({ FACTORY_BROWSER_MODEL: "", FACTORY_INTEST_MODEL: "" }).stderr, "");
+    const empty = runKnobs({
+      FACTORY_MODEL: "",
+      FACTORY_BROWSER_MODEL: "",
+      FACTORY_INTEST_MODEL: "",
+    });
+    assert.equal(empty.stdout, "M=[opus[1m]] B=[] I=[]\n");
+    assert.equal(empty.stderr, "");
   });
 
   it("keeps an alias or a full claude-… name, with or without [1m]", () => {
-    for (const good of [
-      "sonnet",
-      "opus",
-      "haiku",
-      "fable",
-      "opus[1m]",
-      "claude-sonnet-5-5",
-      "claude-sonnet-5-5[1m]",
-      "claude-opus-4-1-20250805",
-    ]) {
-      const r = runKnobs({ FACTORY_BROWSER_MODEL: good, FACTORY_INTEST_MODEL: good });
-      assert.equal(r.stdout, `B=[${good}] I=[${good}]\n`, good);
+    for (const good of GOOD) {
+      const r = runKnobs({
+        FACTORY_MODEL: good,
+        FACTORY_BROWSER_MODEL: good,
+        FACTORY_INTEST_MODEL: good,
+      });
+      assert.equal(r.stdout, `M=[${good}] B=[${good}] I=[${good}]\n`, good);
       assert.equal(r.stderr, "", good);
     }
   });
 
-  it("drops anything else to empty with a warning, each knob on its own", () => {
-    // A leading dash or a space would smuggle a flag into the call; the rest
-    // are typos the CLI would reject on every call.
-    for (const bad of [
-      "--chrome",
-      "sonnet --chrome",
-      " sonnet",
-      "sonnet\n",
-      "Sonnet",
-      "gpt-5",
-      "claude-",
-      "claude-x;rm",
-      "sonnet[2m]",
-      "$(id)",
-    ]) {
-      const b = runKnobs({ FACTORY_BROWSER_MODEL: bad, FACTORY_INTEST_MODEL: "sonnet" });
-      assert.equal(b.stdout, "B=[] I=[sonnet]\n", JSON.stringify(bad));
-      assert.match(b.stderr, /invalid FACTORY_BROWSER_MODEL='[\s\S]*'; using the CLI's default/);
-      assert.doesNotMatch(b.stderr, /FACTORY_INTEST_MODEL/);
-      const i = runKnobs({ FACTORY_BROWSER_MODEL: "opus", FACTORY_INTEST_MODEL: bad });
-      assert.equal(i.stdout, "B=[opus] I=[]\n", JSON.stringify(bad));
-      assert.match(i.stderr, /invalid FACTORY_INTEST_MODEL='[\s\S]*'; using the CLI's default/);
+  it("drops an invalid FACTORY_MODEL to opus[1m] with a warning", () => {
+    for (const bad of BAD) {
+      const r = runKnobs({ FACTORY_MODEL: bad, FACTORY_BROWSER_MODEL: "sonnet" });
+      assert.equal(r.stdout, "M=[opus[1m]] B=[sonnet] I=[]\n", JSON.stringify(bad));
+      assert.match(r.stderr, /invalid FACTORY_MODEL='[\s\S]*'; defaulting to opus\[1m\]/);
+      assert.doesNotMatch(r.stderr, /FACTORY_BROWSER_MODEL|FACTORY_INTEST_MODEL/);
     }
   });
 
-  it("passes --model only at the browser runner and the scenario writer, never bare", () => {
-    // Each through its own optional array, so an empty knob adds no argv at
-    // all. Seven calls still, so the other effort and --no-chrome counts hold.
-    const calls = script.match(/run-claude\.mjs" -p\b/g) || [];
-    assert.equal(calls.length, 7);
-    const expansions = script.match(/\$\{model_args\[@\]\+"\$\{model_args\[@\]\}"\}/g) || [];
-    assert.equal(expansions.length, 2, "one optional --model per knob");
-    assert.doesNotMatch(script, /--model "\$FACTORY_[A-Z_]*MODEL" \)/, "never a bare --model");
-    assert.equal(
-      (script.match(/model_args=\(--model "\$FACTORY_BROWSER_MODEL"\)/g) || []).length,
-      1,
-    );
-    assert.equal(
-      (script.match(/model_args=\(--model "\$FACTORY_INTEST_MODEL"\)/g) || []).length,
-      1,
-    );
-    // Browser runner: after --chrome, before the --effort the test above pins.
+  it("drops an invalid stage knob to empty (FACTORY_MODEL) with a warning, each on its own", () => {
+    for (const bad of BAD) {
+      const b = runKnobs({ FACTORY_BROWSER_MODEL: bad, FACTORY_INTEST_MODEL: "sonnet" });
+      assert.equal(b.stdout, "M=[opus[1m]] B=[] I=[sonnet]\n", JSON.stringify(bad));
+      assert.match(b.stderr, /invalid FACTORY_BROWSER_MODEL='[\s\S]*'; using FACTORY_MODEL/);
+      assert.doesNotMatch(b.stderr, /FACTORY_INTEST_MODEL/);
+      const i = runKnobs({ FACTORY_BROWSER_MODEL: "opus", FACTORY_INTEST_MODEL: bad });
+      assert.equal(i.stdout, "M=[opus[1m]] B=[opus] I=[]\n", JSON.stringify(bad));
+      assert.match(i.stderr, /invalid FACTORY_INTEST_MODEL='[\s\S]*'; using FACTORY_MODEL/);
+    }
+  });
+
+  it("passes --model at every one of the eight calls, always quoted", () => {
+    // Eight calls (seven stage calls plus the browser runner), so the effort
+    // and --no-chrome counts above hold.
+    const calls = script.match(/run-claude\.mjs" -p\b(?:[^\n]*\\\n)*[^\n]*/g) || [];
+    assert.equal(calls.length, 8);
+    for (const c of calls) {
+      assert.equal((c.match(/ --model /g) || []).length, 1, `one --model in: ${c}`);
+      // Quoted: unquoted, opus[1m] is a glob.
+      assert.match(c, / --model "\$[^"\s]+"/, `--model quoted in: ${c}`);
+    }
+    // No more optional model arrays: the flag is never absent.
+    assert.doesNotMatch(script, /model_args/);
+  });
+
+  it("puts --model where no pinned shape breaks", () => {
+    // After `--effort … --no-chrome --strict-mcp-config` at the six stage
+    // calls, so that run stays adjacent (factory-agent-browser.test.mjs). The
+    // /split splitter puts `--tools ""` first; its own test pins that shape.
+    for (const [site, model] of [
+      ["plan + replan", '"\\$FACTORY_MODEL"'],
+      ["code review", '"\\$\\{FACTORY_MODEL:-opus\\[1m\\]\\}"'],
+      ["scenario writer", '"\\$intest_model"'],
+      ["watch fix", '"\\$FACTORY_MODEL"'],
+    ]) {
+      assert.match(
+        script,
+        new RegExp(
+          `--effort "\\$FACTORY_[A-Z]+_EFFORT" --no-chrome --strict-mcp-config --model ${model}`,
+        ),
+        site,
+      );
+    }
+    // Implement: right before the session flag, as buildImplementArgv emits it.
     assert.match(
       script,
-      /run-claude\.mjs" -p --chrome(?:[^\n]*\\\n){1,3}[^\n]*\$\{model_args\[@\]\+"\$\{model_args\[@\]\}"\} --effort "\$FACTORY_PLAN_EFFORT" \)/,
+      /--effort "\$IMPL_EFFORT" --no-chrome --strict-mcp-config \\\n\s*--model "\$FACTORY_MODEL" "\$IMPL_SESSION_FLAG" "\$IMPL_SESSION_ID" \)/,
     );
-    // Scenario writer: after --strict-mcp-config, which keeps
-    // `--effort … --no-chrome --strict-mcp-config` adjacent.
-    const writer = script.match(/Invoking claude for #\$issue_num \(In Test scenario[\s\S]{0,800}/);
-    assert.ok(writer, "In Test claude invocation not found");
+    // Browser runner: right before the --effort that ends the call.
     assert.match(
-      writer[0],
-      /--effort "\$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \$\{model_args\[@\]\+"\$\{model_args\[@\]\}"\} \)/,
+      script,
+      /run-claude\.mjs" -p --chrome(?:[^\n]*\\\n){1,3}[^\n]*--session-id "\$uuid" --model "\$runner_model" --effort "\$FACTORY_PLAN_EFFORT" \)/,
     );
-    assert.match(writer[0], /model=\$\{FACTORY_INTEST_MODEL:-default\}\)/);
+  });
+
+  it("resolves the two stage knobs to FACTORY_MODEL when empty, with defaults safe under set -u", () => {
+    assert.match(
+      script,
+      /local runner_model="\$\{FACTORY_BROWSER_MODEL:-\$\{FACTORY_MODEL:-opus\[1m\]\}\}"/,
+    );
+    assert.match(
+      script,
+      /local intest_model="\$\{FACTORY_INTEST_MODEL:-\$\{FACTORY_MODEL:-opus\[1m\]\}\}"/,
+    );
+  });
+
+  it("logs the model at every call", () => {
+    for (const re of [
+      /Invoking claude for #\$ISSUE_NUM \(--plan, [^\n]*model=\$FACTORY_MODEL, /,
+      /Invoking claude for #\$ISSUE_NUM \(--plan replan, [^\n]*model=\$FACTORY_MODEL, /,
+      /Invoking claude for #\$issue_num \(code review [^\n]*model=\$\{FACTORY_MODEL:-opus\[1m\]\}\)/,
+      /Invoking claude for #\$issue_num \(split, [^\n]*model=\$\{FACTORY_MODEL:-opus\[1m\]\}, /,
+      /Invoking claude for #\$issue_num \(In Test scenario, [^\n]*model=\$intest_model\)/,
+      /Invoking the browser runner \([^\n]*model=\$runner_model\)/,
+      /Invoking claude for #\$ISSUE_NUM \(--implement, [^\n]*model=\$FACTORY_MODEL\)/,
+      /Invoking claude for #\$ISSUE_NUM \(--watch fix, [^\n]*model=\$FACTORY_MODEL\)/,
+    ]) {
+      assert.match(script, re);
+    }
+  });
+
+  it("hands the verification shell lane FACTORY_MODEL, and the detached implement start too", () => {
+    const work = script.match(/\nverify_shell_work\(\) \{[\s\S]*?\n\}\n/)[0];
+    assert.match(work, /verify-lane\.mjs" start [\s\S]*?--model "\$\{FACTORY_MODEL:-opus\[1m\]\}"/);
+    const start = script.match(/\nimplement_lane_start\(\) \{[\s\S]*?\n\}\n/)[0];
+    assert.match(start, /--arg model "\$\{FACTORY_MODEL:-opus\[1m\]\}"/);
+    assert.match(start, /model: \$model/);
   });
 });

@@ -6,6 +6,8 @@
 
 > **Amended by [ADR-0076](./0076-factory-watch-effort-and-retry-budget.md)** (2026-11-13): `--watch` fix passes now run at `xhigh` through their own knob, `FACTORY_WATCH_EFFORT`. `FACTORY_EFFORT` (ultracode) covers `--implement` only.
 
+> **Amended by [ADR-0101](./0101-factory-pins-model-and-revision-effort.md)** (2026-11-25): an `--implement` **revision** run (a card with an existing factory PR and new owner feedback) runs at `FACTORY_REVISION_EFFORT` (default `xhigh`), not `FACTORY_EFFORT`. A fresh implementation still runs at ultracode. Every factory call now also passes `--model` (`FACTORY_MODEL`, default `opus[1m]`).
+
 ## Context
 
 The dark factory ([ADR-0026](./0026-dark-factory-pipeline.md)) drives issues through plan → implement → watch → release by invoking Claude Code from four call sites in `scripts/factory-agent.sh`. Every call was byte-identical and carried **no effort/model flag**:

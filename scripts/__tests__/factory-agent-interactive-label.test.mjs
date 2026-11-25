@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 // driver:interactive (ADR-0091): an interactive Claude Code session owns the
 // card, so every factory mode must skip it exactly as it skips factory-pause.
@@ -24,7 +25,7 @@ function optedOut(labels) {
 eval "$(awk '/^card_opted_out\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"
 if reason=$(card_opted_out "$LABELS"); then echo "yes:$reason"; else echo "no:$reason"; fi`,
     ],
-    { encoding: "utf8", env: { ...process.env, LABELS: labels } },
+    { encoding: "utf8", env: hermeticEnv({ LABELS: labels }) },
   );
   assert.equal(r.status, 0, r.stderr);
   return r.stdout.trim();

@@ -69,6 +69,8 @@ const verifyFns = [...script.matchAll(/^(verify_[a-z_]+)\(\) \{/gm)].map((m) => 
 // Every verify_* function plus the real helpers they lean on. Everything that
 // talks to GitHub, the board or claude is stubbed in the harness instead.
 const REAL_HELPERS = [
+  // A ci-red hand-back forgets the no-op record (ADR-0102).
+  "clear_ci_noop",
   "card_opted_out",
   "support_forward_filter",
   "gate_support_forwards",
@@ -918,6 +920,18 @@ describe("verify_hand_back (real helper)", () => {
     });
   });
 
+  // The hand-back promises the fix loop; a stale ciNoop on the same head
+  // would send the card straight to Blocked instead (ADR-0102).
+  it("a ci-red hand-back clears ciNoop; the others keep it", () => {
+    const rec = `${HEAD}:Lint`;
+    withBash(back("ci-red"), { env: { HEAD }, state: { ciNoop: rec } }, (r) => {
+      assert.equal(r.issue.ciNoop ?? null, null);
+    });
+    withBash(back("head-moved"), { env: { HEAD }, state: { ciNoop: rec } }, (r) => {
+      assert.equal(r.issue.ciNoop, rec);
+    });
+  });
+
   it("leaves everything alone when the move fails", () => {
     withBash(
       `${back("ci-red")} || echo RC=$?`,
@@ -1598,6 +1612,23 @@ describe("verify_shell_work (real helper, lane module stubbed)", () => {
       assert.match(r.log, /verification shell lane started for aaaaaaaaaaaa/);
       assert.equal(r.issue.verifyShell ?? null, null, "the module records running itself");
     });
+  });
+
+  it("hands the lane FACTORY_MODEL, opus[1m] when unset (ADR-0101)", () => {
+    const started = JSON.stringify({ started: true, runId: "7-aaaaaaaaaaaa-x" });
+    for (const [model, want] of [
+      [undefined, "opus[1m]"],
+      ["claude-sonnet-5-5", "claude-sonnet-5-5"],
+    ]) {
+      const over = { LANE_START_STUB: started };
+      if (model !== undefined) over.FACTORY_MODEL = model;
+      withBash(work(), { env: env(over) }, (r) => {
+        const line = r.calls.split("\n").find((l) => l.startsWith("lane start "));
+        assert.ok(line, r.calls);
+        assert.ok(line.includes(` --model ${want} `), line);
+        assert.ok(line.includes(" --effort xhigh "), line);
+      });
+    }
   });
 
   it("does nothing for a terminal state, a lane switched off or not built, or under --dry-run", () => {
