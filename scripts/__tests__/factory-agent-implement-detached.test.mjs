@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const script = readFileSync(resolve(HERE, "..", "factory-agent.sh"), "utf8");
@@ -295,7 +296,7 @@ function runCollect(env, { ctx = {}, stdout = "", stderr = "", vars = {} } = {})
   ].join("\n");
   const r = spawnSync("bash", ["-c", snippet], {
     encoding: "utf8",
-    env: { ...process.env, CALLS: env.calls, ...vars },
+    env: hermeticEnv({ CALLS: env.calls, ...vars }),
   });
   assert.equal(r.status, 0, r.stderr);
   return { out: r.stdout.trim(), calls: read(env.calls), log: read(env.log) };
@@ -690,7 +691,7 @@ describe("implement_lane_start", () => {
     ].join("\n");
     const r = spawnSync("bash", ["-c", snippet], {
       encoding: "utf8",
-      env: { ...process.env, FAKE_ANSWER: answer },
+      env: hermeticEnv({ FAKE_ANSWER: answer }),
     });
     assert.equal(r.status, 0, r.stderr);
     return {

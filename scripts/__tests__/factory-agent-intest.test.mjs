@@ -18,6 +18,7 @@ import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { buildBody } from "../comment-intest-build.mjs";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 // Tests for the In Review → In Test hand-off: the stage that writes the human
 // test scenario and posts it as the In Test comment.
@@ -928,7 +929,7 @@ describe("intest_dispatch_betas — idempotency and reporting", () => {
       const run = (script, from = primary) =>
         spawnSync("bash", ["-c", `cd ${JSON.stringify(from)} || exit 10\n${script}`], {
           encoding: "utf8",
-          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+          env: hermeticEnv({ PATH: `${bin}:${process.env.PATH}` }),
         });
 
       const both = run(`${cmd.mobile} || exit 11\n${cmd.desktop} || exit 12`);
@@ -1101,10 +1102,9 @@ if [[ -n "$HELD_PID" ]]; then
 fi
 cat "$STATE_FILE"
 `;
-    // An operator's exported FACTORY_LSOF_BIN must not leak into every case; only
-    // a test that sets it on purpose gets one.
-    const childEnv = { ...process.env, PATH: path, ...env };
-    if (!("FACTORY_LSOF_BIN" in env)) delete childEnv.FACTORY_LSOF_BIN;
+    // An operator's exported FACTORY_LSOF_BIN (or any other FACTORY_* knob) must
+    // not leak into every case; only a test that sets it on purpose gets one.
+    const childEnv = hermeticEnv({ PATH: path, ...env });
     const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: childEnv });
     // gh output is redirected into $LOG_FILE, so comment assertions must read it
     // there — pointing LOG_FILE at /dev/null (as this harness used to) silently
@@ -2347,7 +2347,7 @@ ${script}
 if [[ -s "$BODY_FILE" ]]; then cat "$BODY_FILE"; fi
 rm -f "$BODY_FILE"`,
       ],
-      { encoding: "utf8", env: { ...process.env, ...env } },
+      { encoding: "utf8", env: hermeticEnv(env) },
     );
     assert.equal(r.status, 0, r.stderr);
     return r.stdout;
@@ -2436,7 +2436,7 @@ extract_plan_comment() { echo null; }
 gh() { :; }
 intest_handoff 794 802 '{"number":802,"url":"u","headRef":"h","state":"OPEN"}' "" "" ${"c".repeat(40)} "apps/mobile/a.ts" '{"mobile":true}' "$BETA" ""`,
         ],
-        { encoding: "utf8", env: { ...process.env, COMMENTS: comments, BETA: beta } },
+        { encoding: "utf8", env: hermeticEnv({ COMMENTS: comments, BETA: beta }) },
       );
       assert.equal(r.status, 0, r.stderr);
       assert.deepEqual(JSON.parse(r.stdout).betaDispatch.reused, [
@@ -2844,7 +2844,7 @@ ${FNS.map(extract).join("\n")}
 intest_handoff ${ISSUE} 802 '{"number":802,"url":"u","headRef":"factory/issue-${ISSUE}","state":"OPEN"}' "https://preview.example" "" "$HEAD" "apps/web/a.ts" '${platforms}' "" ""
 `;
     try {
-      const r = spawnSync("bash", ["-c", harness], { encoding: "utf8", env: { ...process.env } });
+      const r = spawnSync("bash", ["-c", harness], { encoding: "utf8", env: hermeticEnv() });
       const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
       const input = read(join(dir, "claude.input"));
       const json = /```json\n([\s\S]*)\n```/.exec(input);
