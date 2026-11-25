@@ -70,7 +70,7 @@ describe("GET /auth/callback", () => {
     expect(location.searchParams.get("error")).toBe("auth-callback-error");
   });
 
-  it("reports a returned AuthError as a warning (expired or reused links are routine)", async () => {
+  it("reports a returned AuthError as a throttled warning (expired or reused links are routine)", async () => {
     const authError = { message: "Invalid code", status: 400 };
     mockExchangeCode.mockResolvedValue({ error: authError });
 
@@ -78,10 +78,13 @@ describe("GET /auth/callback", () => {
     await GET(request);
 
     expect(mockReportError).toHaveBeenCalledTimes(1);
-    expect(mockReportError).toHaveBeenCalledWith(authError, "auth:callback", { level: "warning" });
+    expect(mockReportError).toHaveBeenCalledWith(authError, "auth:callback", {
+      level: "warning",
+      throttleMs: 60_000,
+    });
   });
 
-  it("reports a thrown error at error level and still redirects to login", async () => {
+  it("reports a thrown error at error level, throttled under its own where, and still redirects to login", async () => {
     const thrown = new Error("network down");
     mockExchangeCode.mockRejectedValue(thrown);
 
@@ -93,7 +96,9 @@ describe("GET /auth/callback", () => {
     expect(location.pathname).toBe("/login");
     expect(location.searchParams.get("error")).toBe("auth-callback-error");
     expect(mockReportError).toHaveBeenCalledTimes(1);
-    expect(mockReportError).toHaveBeenCalledWith(thrown, "auth:callback");
+    expect(mockReportError).toHaveBeenCalledWith(thrown, "auth:callback:exchange-threw", {
+      throttleMs: 60_000,
+    });
   });
 
   it("reports nothing when the code exchange succeeds", async () => {

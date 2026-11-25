@@ -19,9 +19,12 @@ export async function GET(request: NextRequest) {
       }
 
       // A returned AuthError is usually an expired or reused link: routine, so a warning.
-      reportError(error, "auth:callback", { level: "warning" });
+      // This route is public, so anyone (or a link scanner) can send a bad code: throttle, or a
+      // loop of requests could use up the Sentry quota.
+      reportError(error, "auth:callback", { level: "warning", throttleMs: 60_000 });
     } catch (err) {
-      reportError(err, "auth:callback");
+      // Its own `where`, so a flood of routine warnings above can't hide this report.
+      reportError(err, "auth:callback:exchange-threw", { throttleMs: 60_000 });
     }
   }
 
