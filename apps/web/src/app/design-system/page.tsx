@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { outlineEntry, type OutlineEntry } from "@/components/legal/document-outline";
 import { LegalLinks } from "@/components/legal/legal-links";
 import { NumberedSection } from "@/components/legal/numbered-section";
@@ -196,6 +196,7 @@ function ColorScale({ label, prefix, shades }: ColorScaleProps) {
 
 export default function DesignSystemPage() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownTriggerRef = useRef<HTMLButtonElement>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [typedConfirmOpen, setTypedConfirmOpen] = useState(false);
   const [typedConfirmation, setTypedConfirmation] = useState("");
@@ -608,10 +609,19 @@ export default function DesignSystemPage() {
 
       <Section title="DropdownMenu">
         <div className="relative inline-block">
-          <Button variant="secondary" onClick={() => setDropdownOpen(!dropdownOpen)}>
+          <Button
+            ref={dropdownTriggerRef}
+            variant="secondary"
+            onClick={() => setDropdownOpen(!dropdownOpen)}
+          >
             Open menu
           </Button>
-          <DropdownMenu open={dropdownOpen} onClose={() => setDropdownOpen(false)} align="left">
+          <DropdownMenu
+            open={dropdownOpen}
+            onClose={() => setDropdownOpen(false)}
+            triggerRef={dropdownTriggerRef}
+            align="left"
+          >
             <DropdownMenuLabel>Actions</DropdownMenuLabel>
             <DropdownMenuItem onClick={() => setDropdownOpen(false)}>Edit</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setDropdownOpen(false)}>Duplicate</DropdownMenuItem>

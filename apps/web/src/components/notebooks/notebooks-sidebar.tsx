@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { compareNewestFirst } from "@/lib/notebooks/order";
 import { useNotebookDeleteImpact } from "@/hooks/use-notebook-delete-impact";
 import { IconButton } from "@/components/ui/icon-button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -213,7 +214,8 @@ export function NotebooksSidebar({
       const created: Notebook = await res.json();
       const notebook: Notebook = { ...created, note_count: created.note_count ?? 0 };
       setNotebooks((prev) => {
-        const updated = [...prev, notebook].sort((a, b) => a.name.localeCompare(b.name));
+        // The server's order (`updated_at` desc), so the next refetch doesn't reorder the list.
+        const updated = [...prev, notebook].sort(compareNewestFirst);
         onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
         return updated;
       });
@@ -260,10 +262,11 @@ export function NotebooksSidebar({
 
       const updated: Notebook = await res.json();
       setNotebooks((prev) => {
-        // The response has no count; the notebook keeps the one it had.
+        // The response has no count; the notebook keeps the one it had. Its `updated_at` is the
+        // one the rename bumped, so it moves to the top, as it does on the next refetch.
         const newList = prev
           .map((n) => (n.id === id ? { ...n, ...updated } : n))
-          .sort((a, b) => a.name.localeCompare(b.name));
+          .sort(compareNewestFirst);
         onNotebooksChange?.(newList.map((n) => ({ id: n.id, name: n.name })));
         return newList;
       });

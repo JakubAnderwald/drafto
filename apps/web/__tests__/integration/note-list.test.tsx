@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act, Component, StrictMode, Suspense, type ComponentProps, type ReactNode } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -847,6 +847,115 @@ describe("NoteList", () => {
     await user.click(document.body);
     await waitFor(() => {
       expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    });
+  });
+
+  // The menu used to close on the trigger's mousedown, and the trigger's click then
+  // opened it again, so the ⋮ could never close its own menu. The open row's trigger
+  // is now passed to its DropdownMenu as `triggerRef`, and a mousedown on it no
+  // longer counts as an outside click.
+  describe("the row actions button toggles its menu", () => {
+    async function renderList() {
+      await act(async () => {
+        render(
+          <Suspense fallback={<Skeleton height="2.5rem" />}>
+            <NoteList
+              notebookId="nb-1"
+              selectedNoteId={null}
+              onSelectNote={vi.fn()}
+              onCreateNote={vi.fn()}
+              onDeleteNote={vi.fn()}
+              refreshTrigger={nextTrigger()}
+            />
+          </Suspense>,
+        );
+      });
+      await waitFor(() => {
+        expect(screen.getByText("First Note")).toBeInTheDocument();
+      });
+    }
+
+    function actionsButton(title: string): HTMLElement {
+      return screen.getByLabelText(`Actions for ${title}`);
+    }
+
+    function row(title: string): HTMLElement {
+      const li = actionsButton(title).closest("li");
+      if (!li) throw new Error(`No row for ${title}`);
+      return li;
+    }
+
+    function expectNoMenu() {
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Delete" })).not.toBeInTheDocument();
+    }
+
+    it("closes the open menu on a second click of its actions button, and keeps it closed", async () => {
+      const user = userEvent.setup();
+      await renderList();
+
+      await user.click(actionsButton("First Note"));
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+
+      await user.click(actionsButton("First Note"));
+      expectNoMenu();
+
+      // Nothing reopens it once pending work has flushed.
+      await act(async () => {});
+      expectNoMenu();
+    });
+
+    it("reopens the menu on a third click of the actions button", async () => {
+      const user = userEvent.setup();
+      await renderList();
+
+      await user.click(actionsButton("First Note"));
+      await user.click(actionsButton("First Note"));
+      expectNoMenu();
+
+      await user.click(actionsButton("First Note"));
+      expect(within(row("First Note")).getByRole("menu")).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+    });
+
+    it("still closes the menu on a click outside it", async () => {
+      const user = userEvent.setup();
+      await renderList();
+
+      await user.click(actionsButton("First Note"));
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+
+      await user.click(document.body);
+      expectNoMenu();
+    });
+
+    it("still closes the menu on Escape", async () => {
+      const user = userEvent.setup();
+      await renderList();
+
+      await user.click(actionsButton("First Note"));
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+
+      await user.keyboard("{Escape}");
+      expectNoMenu();
+    });
+
+    it("closes one row's menu when another row's actions button is clicked, and opens that row's", async () => {
+      const user = userEvent.setup();
+      await renderList();
+
+      await user.click(actionsButton("First Note"));
+      expect(within(row("First Note")).getByRole("menu")).toBeInTheDocument();
+
+      await user.click(actionsButton("Second Note"));
+      expect(screen.getAllByRole("menu")).toHaveLength(1);
+      expect(within(row("Second Note")).getByRole("menu")).toBeInTheDocument();
+      expect(within(row("First Note")).queryByRole("menu")).not.toBeInTheDocument();
+
+      // The trigger exemption follows the open menu: the second row's button now closes it.
+      await user.click(actionsButton("Second Note"));
+      expectNoMenu();
     });
   });
 
