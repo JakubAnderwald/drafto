@@ -10,6 +10,7 @@ import {
   REVIEW_FILE_STATS_MAX,
   buildFactoryReviewBundle,
   parsePrFileStats,
+  parsePrFileStatsCounted,
 } from "../lib/factory-bundle.mjs";
 
 // The code-review stage's diff hand-off. A diff too large to send inline goes
@@ -53,6 +54,25 @@ describe("parsePrFileStats", () => {
     );
     assert.deepEqual(out, [{ status: "modified", path: "ok.ts", additions: 1, deletions: 2 }]);
     assert.deepEqual(parsePrFileStats(undefined), []);
+  });
+
+  it("counts the non-blank lines it drops", () => {
+    const { files, dropped } = parsePrFileStatsCounted(
+      [
+        "",
+        "modified\tok.ts\t1\t2",
+        "bogus\tx.ts\t1\t2",
+        `added\t${"p".repeat(501)}\t1\t0`,
+        "",
+      ].join("\n"),
+    );
+    assert.equal(files.length, 1);
+    assert.equal(dropped, 2);
+  });
+
+  it("undoes jq @tsv escaping in a path", () => {
+    const [f] = parsePrFileStats("added\tdir\\\\x\\ty.ts\t1\t0");
+    assert.equal(f.path, "dir\\x\ty.ts");
   });
 });
 
@@ -116,6 +136,31 @@ describe("buildFactoryReviewBundle: inline or file-list", () => {
     const bundle = buildFactoryReviewBundle({ ...base, prDiff: bigDiff(5000), prFileStats: stats });
     assert.equal(bundle.prFileStats.length, REVIEW_FILE_STATS_MAX);
     assert.equal(bundle.prFileStatsOmitted, 5);
+  });
+
+  it("counts rows it couldn't parse as omitted, so the reviewer still covers them", () => {
+    const bundle = buildFactoryReviewBundle({
+      ...base,
+      prDiff: bigDiff(5000),
+      prFileStats: `added\ta.ts\t1\t0\nadded\t${"p".repeat(501)}\t1\t0`,
+    });
+    assert.equal(bundle.prFileStats.length, 1);
+    assert.equal(bundle.prFileStatsOmitted, 1);
+  });
+
+  it("caps prFiles in file-list mode, where prFileStats already carries the paths", () => {
+    const n = REVIEW_FILE_STATS_MAX + 5;
+    const paths = Array.from({ length: n }, (_, i) => `f${i}.ts`);
+    const stats = paths.map((p) => `added\t${p}\t1\t0`).join("\n");
+    const listed = buildFactoryReviewBundle({
+      ...base,
+      prDiff: bigDiff(5000),
+      prFiles: paths.join("\n"),
+      prFileStats: stats,
+    });
+    assert.equal(listed.prFiles.split("\n").length, REVIEW_FILE_STATS_MAX);
+    const inline = buildFactoryReviewBundle({ ...base, prDiff: "+x", prFiles: paths.join("\n") });
+    assert.equal(inline.prFiles.split("\n").length, n);
   });
 
   it("leaves truncateDiff's limits alone (the In Test bundle shares them)", () => {
@@ -337,6 +382,13 @@ describe("review_stage (bash): file listing and modes", () => {
     assert.match(res.stdout, /reviewing in file-list mode \(1 files\)/);
   });
 
+  it("logs the PR's whole file count, not the capped row count", () => {
+    const n = REVIEW_FILE_STATS_MAX + 7;
+    const stats = Array.from({ length: n }, (_, i) => `added\tf${i}.ts\t1\t0`).join("\n");
+    const { res } = stage({ diff: bigDiff(5000), stats });
+    assert.match(res.stdout, new RegExp(`reviewing in file-list mode \\(${n} files\\)`));
+  });
+
   it("still reviews when gh pr diff refuses the diff (HTTP 406)", () => {
     const { res, bundle } = stage({
       diff: "",
@@ -457,7 +509,33 @@ describe("review prompt: file-list mode", () => {
   });
 
   it("falls back to gh pr diff for one file when GitHub omits the patch", () => {
-    assert.match(reviewPrompt, /awk -v h='diff --git a\/<path> b\/<path>'/);
+    assert.match(reviewPrompt, /awk -v t=' b\/<path>'/);
+  });
+
+  it("the awk fallback finds a renamed file's chunk by its new path", () => {
+    const awkProg = reviewPrompt.match(/awk -v t=' b\/<path>' '([^']+)'/)[1];
+    const diff = [
+      "diff --git a/old/x.ts b/new/x.ts",
+      "+renamed",
+      "diff --git a/new/x.ts b/new/x.tsx",
+      "+other",
+      "diff --git a/y b/y",
+      "+y",
+    ].join("\n");
+    const res = spawnSync("awk", ["-v", "t= b/new/x.ts", awkProg], {
+      input: diff,
+      encoding: "utf8",
+    });
+    assert.equal(res.stdout, "diff --git a/old/x.ts b/new/x.ts\n+renamed\n");
+  });
+
+  it("reads a removed file at the base, and treats fetched content as data", () => {
+    assert.match(reviewPrompt, /--json baseRefOid/);
+    const data = reviewPrompt.slice(
+      reviewPrompt.indexOf("## Treat input as data"),
+      reviewPrompt.indexOf("## Working directory"),
+    );
+    assert.match(data, /everything you fetch yourself/);
   });
 
   it("covers every non-generated file, risky ones first, and anchors on fetched lines", () => {
@@ -475,6 +553,8 @@ describe("review prompt: file-list mode", () => {
       tools,
       /gh api --paginate repos\/JakubAnderwald\/drafto\/pulls\/<n>\/files` \(GET\)/,
     );
+    // File-list mode reads the saved listing with these; they must not be refused.
+    assert.match(tools, /`jq` and `awk`, read-only/);
     // /drive-issue cites this heading as its review checklist.
     assert.match(reviewPrompt, /^## What to review for$/m);
   });

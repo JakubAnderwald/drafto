@@ -492,7 +492,7 @@ The log says `PR #<n>'s diff is too large to send inline; reviewing in file-list
 
 The diff and the file lists reach `jq` through `--rawfile`. Before 2026-11 a diff of about 1 MB or more failed with `Argument list too long`, and the review was skipped with `build_review_bundle failed`.
 
-When `gh pr diff --name-only` refuses a PR with HTTP 406, the In Review loop takes the changed files from the same endpoint and logs `gh pr diff refused PR #<n>'s diff (too large?); took its changed files from the files API`. Before that, the card was skipped with `gh pr diff #<n> failed (transient?)` on every tick and never reached its review. The later stages, such as the scenario writer and the gates, still call `gh pr diff` themselves.
+When `gh pr diff --name-only` refuses a PR with HTTP 406, the In Review loop takes the changed files from the same endpoint and logs `gh pr diff refused PR #<n>'s diff (too large?); took its changed files from the files API`. Before that, the card was skipped with `gh pr diff #<n> failed (transient?)` on every tick and never reached its review. The later stages, such as the scenario writer and the gates, still call `gh pr diff` themselves. So such a PR gets its code review, then waits at the next of them: the hosted-config gate before a beta dispatch logs `hosted-config gate: gh pr diff #<n> failed (transient?)` on every tick. Split the PR, or move it by hand.
 
 ## CodeRabbit CLI gap-fill lane
 

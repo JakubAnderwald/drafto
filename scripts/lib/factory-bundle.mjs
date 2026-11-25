@@ -934,25 +934,62 @@ const PR_FILE_STATUSES = new Set([
 // The most file rows a review bundle carries. The files endpoint lists up to
 // 3000; the bundle travels in claude's argv, and a reviewer with this many
 // files lists the rest itself (factory-review-prompt.md, "File-list mode").
+// The same cap applies to `prFiles` in file-list mode, which repeats the paths.
 export const REVIEW_FILE_STATS_MAX = 1000;
+
+// jq's @tsv escapes a backslash, tab, newline and carriage return in a field as
+// \\, \t, \n and \r. Undo that, so a path reaches the reviewer as git spells it.
+function unescapeTsvField(field) {
+  return field.replace(/\\([\\tnr])/g, (_, c) =>
+    c === "t" ? "\t" : c === "n" ? "\n" : c === "r" ? "\r" : "\\",
+  );
+}
 
 // Parse the review stage's file listing: one `status<TAB>path<TAB>additions<TAB>
 // deletions` line per file, as `gh api --paginate repos/…/pulls/<n>/files --jq
 // '.[]|[.status,.filename,.additions,.deletions]|@tsv'` prints it. A line that
-// doesn't have that shape is dropped rather than guessed at.
+// doesn't have that shape is dropped rather than guessed at; use
+// parsePrFileStatsCounted when the caller must know how many were dropped.
 export function parsePrFileStats(text) {
+  return parsePrFileStatsCounted(text).files;
+}
+
+// parsePrFileStats plus `dropped`: the non-blank lines it couldn't parse. Each
+// is still a changed file the reviewer has to cover, so it counts as omitted.
+export function parsePrFileStatsCounted(text) {
   const raw = typeof text === "string" ? text : "";
-  const out = [];
-  for (const line of raw.split("\n")) {
-    const parts = line.replace(/\r$/, "").split("\t");
-    if (parts.length !== 4) continue;
-    const [status, path, additions, deletions] = parts;
-    if (!PR_FILE_STATUSES.has(status)) continue;
-    if (!path || path.length > 500) continue;
-    if (!/^\d+$/.test(additions) || !/^\d+$/.test(deletions)) continue;
-    out.push({ status, path, additions: Number(additions), deletions: Number(deletions) });
+  const files = [];
+  let dropped = 0;
+  for (const rawLine of raw.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (line.trim() === "") continue;
+    const parts = line.split("\t");
+    const [status, rawPath, additions, deletions] = parts;
+    const path = parts.length === 4 ? unescapeTsvField(rawPath) : "";
+    if (
+      parts.length !== 4 ||
+      !PR_FILE_STATUSES.has(status) ||
+      !path ||
+      path.length > 500 ||
+      !/^\d+$/.test(additions) ||
+      !/^\d+$/.test(deletions)
+    ) {
+      dropped += 1;
+      continue;
+    }
+    files.push({ status, path, additions: Number(additions), deletions: Number(deletions) });
   }
-  return out;
+  return { files, dropped };
+}
+
+// The first <max> non-blank lines of <text>, newline-joined ("" for a non-string).
+function capLines(text, max) {
+  if (typeof text !== "string") return "";
+  return text
+    .split("\n")
+    .filter((l) => l.trim() !== "")
+    .slice(0, max)
+    .join("\n");
 }
 
 // Bundle for the code-review stage (`factory-agent.sh --watch`, In Review, once
@@ -994,7 +1031,7 @@ export function buildFactoryReviewBundle({
   // coerces any non-string to ""), which would hand the reviewer a zero-byte
   // diff and make the whole gate decorative.
   const diff = truncateDiff(prDiff);
-  const stats = parsePrFileStats(prFileStats);
+  const { files: stats, dropped: statsDropped } = parsePrFileStatsCounted(prFileStats);
   const diffText = typeof prDiff === "string" ? prDiff : "";
   const fileList = (diff.truncated || diffText === "") && stats.length > 0;
   // In file-list mode nothing is inline: every line of the diff is omitted. With
@@ -1038,8 +1075,18 @@ export function buildFactoryReviewBundle({
     prDiffTruncated: fileList || diff.truncated,
     prDiffOmittedLines: omittedLines,
     prFileStats: fileList ? stats.slice(0, REVIEW_FILE_STATS_MAX) : [],
-    prFileStatsOmitted: fileList ? Math.max(0, stats.length - REVIEW_FILE_STATS_MAX) : 0,
-    prFiles: typeof prFiles === "string" ? prFiles : "",
+    // Rows past the cap plus rows parsePrFileStats couldn't read: both are in
+    // the listing the reviewer saves, and both must be covered.
+    prFileStatsOmitted: fileList
+      ? Math.max(0, stats.length - REVIEW_FILE_STATS_MAX) + statsDropped
+      : 0,
+    // In file-list mode prFileStats already carries the paths; cap the repeat so
+    // a 3000-file PR doesn't put every path in argv twice.
+    prFiles: fileList
+      ? capLines(prFiles, REVIEW_FILE_STATS_MAX)
+      : typeof prFiles === "string"
+        ? prFiles
+        : "",
     config: shapeConfig(config),
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),

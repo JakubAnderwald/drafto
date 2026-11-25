@@ -2638,7 +2638,7 @@ build_watch_bundle() {
 #
 # The diff and the file lists reach jq through files (--rawfile), never argv: a
 # diff of about 1 MB or more passed with --arg made jq's exec fail with E2BIG
-# (on Linux, one argument over 128 KB does). factory-bundle.mjs then decides
+# (macOS's ARG_MAX). factory-bundle.mjs then decides
 # whether the reviewer gets the diff inline or the file list (reviewDiffMode),
 # so truncateDiff's limits live in one place.
 build_review_bundle() {
@@ -6970,7 +6970,7 @@ review_stage() {
   fi
   review_mode=$(printf '%s' "$bundle" | jq -r '.reviewDiffMode // "inline"' 2>/dev/null || echo "inline")
   if [[ "$review_mode" == "file-list" ]]; then
-    log "Issue #$issue_num: PR #$pr_num's diff is too large to send inline; reviewing in file-list mode ($(printf '%s' "$bundle" | jq -r '.prFileStats | length' 2>/dev/null || echo '?') files)"
+    log "Issue #$issue_num: PR #$pr_num's diff is too large to send inline; reviewing in file-list mode ($(printf '%s' "$bundle" | jq -r '(.prFileStats | length) + (.prFileStatsOmitted // 0)' 2>/dev/null || echo '?') files)"
   fi
 
   claude_input=$(printf '%s\n\n## Context bundle for this run\n\n```json\n%s\n```\n' \
