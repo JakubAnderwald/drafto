@@ -166,11 +166,16 @@ test.describe("Notebook management lifecycle", () => {
     await expect(page.locator("nav li").filter({ hasText: notebookName })).toHaveCount(1);
   });
 
-  test("issue #480: creating a notebook with Enter sends one request and lists it first", async ({
+  test("issue #480: creating a notebook with Enter sends one request and lists it above the others", async ({
     page,
   }, testInfo) => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+
+    // The notebooks listed before the create, for the order check at the end.
+    const names = page.getByTestId("notebook-name");
+    await expect(names.first()).toBeVisible();
+    const existing = await names.allTextContents();
 
     const isCreate = (method: string, url: string) =>
       method === "POST" && new URL(url).pathname === "/api/notebooks";
@@ -199,10 +204,22 @@ test.describe("Notebook management lifecycle", () => {
     await page.waitForTimeout(500);
     expect(createRequests).toBe(1);
 
-    // The sidebar keeps the server's order (newest `updated_at` first), so the new notebook is
-    // the first row straight away. Checked before any reload: other workers create notebooks
-    // too, and a refetch would list theirs above it.
-    await expect(page.getByTestId("notebook-name").first()).toHaveText(name);
+    // Creating also selects the new notebook, and selecting refetches `GET /api/notebooks`
+    // straight away (`AppShell.handleSelectNotebook` bumps `refreshTrigger`). So this reads the
+    // server's list, newest `updated_at` first, not the optimistic insert: the integration test
+    // covers that. Other workers may create notebooks meanwhile and list them above this one,
+    // so check only that none of the notebooks listed before the create sits above it.
+    await expect
+      .poll(
+        async () => {
+          const order = await names.allTextContents();
+          const at = order.indexOf(name);
+          if (at === -1) return [`"${name}" is not listed`];
+          return order.slice(0, at).filter((row) => existing.includes(row));
+        },
+        { message: "no notebook listed before the create may sit above the new one" },
+      )
+      .toEqual([]);
   });
 
   test("default notebook exists on first visit", async ({ page }) => {
