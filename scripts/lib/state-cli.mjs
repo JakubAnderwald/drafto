@@ -135,7 +135,7 @@
 //                                    migrationApprovedVouched,
 //                                    renumberFrom, renumberTo, renumberMap,
 //                                    migrationRenumbers, renumberErrors,
-//                                    ciRerun,
+//                                    ciRerun, ciNoop,
 //                                    browserRunSha, browserRunAttempts,
 //                                    verifySha, verifyStartedAt, verifyShell,
 //                                    verifyShellRunDir, verifyShellAttempts,
