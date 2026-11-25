@@ -9,11 +9,13 @@ import assert from "node:assert/strict";
 import * as nodeFs from "node:fs";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,7 +58,16 @@ import {
   runSupervise,
   saveLedger,
   takePidLock,
+  PGIDS_FILE,
+  SIGN_IN_PRELUDE,
+  ensureDeviceWorktrees,
+  installEnv,
+  killGroup,
+  killRecordedGroups,
+  readGroups,
+  runSelftestBuild,
 } from "../lib/device-lane.mjs";
+import { flowNeedsSignIn } from "../lib/device-plan.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..");
@@ -141,6 +152,14 @@ function makeHarness() {
   writeFileSync(path.join(knobs.avdHome, "drafto-factory.ini"), "");
   for (const p of ["android", "ios"]) {
     mkdirSync(path.join(deviceRootFor(knobs, p), "apps", "mobile"), { recursive: true });
+    // The flows as the PR head has them (the lane reads them for sign-in needs).
+    cpSync(
+      path.join(REPO, "apps", "mobile", "e2e"),
+      path.join(deviceRootFor(knobs, p), "apps", "mobile", "e2e"),
+      {
+        recursive: true,
+      },
+    );
   }
   const state = {
     tmp,
@@ -167,6 +186,9 @@ function makeHarness() {
     junit: PASS_XML,
     expoHash: null,
     onRun: null,
+    brokenWorktrees: new Set(),
+    repairFixes: false,
+    javaHomeFound: null,
     clock: Date.now(),
   };
   const ok = (stdout = "") => ({ code: 0, stdout, timedOut: false });
@@ -195,10 +217,34 @@ function makeHarness() {
     git: async (args, opts) => {
       state.gitCalls.push({ args, cwd: opts?.cwd });
       if (args[0] === "show") return ok("appId: eu.drafto.mobile\n---\n");
+      if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") {
+        return state.brokenWorktrees.has(opts?.cwd)
+          ? { code: 128, stdout: "", timedOut: false }
+          : ok("true\n");
+      }
+      if (args[0] === "rev-parse") return ok(`${SHA}\n`);
+      if (args[0] === "worktree" && args[1] === "repair") {
+        if (state.repairFixes) state.brokenWorktrees.delete(args[2]);
+        return ok();
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        mkdirSync(path.join(args.at(-2), "apps", "mobile"), { recursive: true });
+        state.brokenWorktrees.delete(args.at(-2));
+        return ok();
+      }
       return ok();
     },
     cardColumn: async () => state.column,
     expoFingerprint: async () => state.expoHash,
+    exec: async (cmd, args) => {
+      state.calls.push({ cmd, args: [...args] });
+      if (cmd === "/usr/libexec/java_home") {
+        return state.javaHomeFound
+          ? { code: 0, stdout: `${state.javaHomeFound}\n`, stderr: "" }
+          : { code: 1, stdout: "", stderr: "Unable to find any JVMs" };
+      }
+      return { code: 0, stdout: "", stderr: 'openjdk version "21.0.4"' };
+    },
     spawnDetached: async (command, args, opts) => {
       state.spawns.push({ command, args: [...args], env: opts.env });
       if (path.basename(command) === "emulator") {
@@ -1116,5 +1162,304 @@ describe("CLI", () => {
     writeFileSync(h.account, "E2E_TEST_EMAIL=a@b.c\n", { mode: 0o600 });
     assert.equal(deviceAccountProblem(h.account), "no-password");
     assert.equal(deviceAccountProblem(path.join(h.tmp, "nope")), "missing");
+  });
+});
+
+describe("review fixes", () => {
+  it("pnpm install runs without NODE_ENV=production; prebuild and the build keep it", async () => {
+    h.prView.files = [{ path: "apps/mobile/e2e/android-all.yaml" }];
+    await startAndSupervise();
+    const installs = callsOf("pnpm").filter((c) => c.args[0] === "install");
+    assert.ok(installs.length >= 1);
+    for (const c of installs) assert.equal(c.env.NODE_ENV, undefined);
+    const prebuild = callsOf("pnpm").find((c) => c.args.includes("prebuild"));
+    assert.equal(prebuild.env.NODE_ENV, "production");
+    assert.equal(h.calls.find((c) => c.cmd === "./gradlew").env.NODE_ENV, "production");
+    assert.equal(installEnv({ NODE_ENV: "production", A: "1" }).NODE_ENV, undefined);
+  });
+
+  it("a flow the PR deletes is never run, but still makes the PR applicable", async () => {
+    h.prView.files = [
+      { path: "apps/mobile/e2e/10-swipe-hint.yaml", changeType: "DELETED" },
+      { path: "apps/mobile/e2e/11-sign-out-confirm.yaml", changeType: "MODIFIED" },
+    ];
+    const r = await start();
+    assert.equal(r.started, true);
+    assert.deepEqual(r.platforms.ios.flows, [
+      "apps/mobile/e2e/ios-all.yaml",
+      "apps/mobile/e2e/11-sign-out-confirm.yaml",
+    ]);
+    assert.ok(r.reasons.some((x) => /10-swipe-hint\.yaml is deleted/.test(x)));
+  });
+
+  describe("build worktrees", () => {
+    const opts = () => ({ repoRoot: h.repoRoot, sha: SHA, platforms: ["android"], knobs: h.knobs });
+    const root = () => deviceRootFor(h.knobs, "android");
+    const gitOps = () => h.gitCalls.map((c) => c.args.slice(0, 2).join(" "));
+
+    it("leaves a usable root alone and never prunes", async () => {
+      await ensureDeviceWorktrees(opts(), h.deps);
+      assert.ok(!gitOps().includes("worktree add"));
+      assert.ok(!h.gitCalls.some((c) => c.args.includes("prune")));
+    });
+
+    it("repairs a root whose registration was pruned", async () => {
+      h.brokenWorktrees.add(root());
+      h.repairFixes = true;
+      writeFileSync(path.join(root(), "keep.txt"), "x");
+      await ensureDeviceWorktrees(opts(), h.deps);
+      assert.ok(h.gitCalls.some((c) => c.args.join(" ") === `worktree repair ${root()}`));
+      assert.ok(!gitOps().includes("worktree add"));
+      assert.ok(existsSync(path.join(root(), "keep.txt")));
+    });
+
+    it("starts the root over when repair doesn't help, adding with --force", async () => {
+      h.brokenWorktrees.add(root());
+      writeFileSync(path.join(root(), "keep.txt"), "x");
+      await ensureDeviceWorktrees(opts(), h.deps);
+      const add = h.gitCalls.find((c) => c.args[0] === "worktree" && c.args[1] === "add");
+      assert.deepEqual(add.args, ["worktree", "add", "--force", "--detach", root(), SHA]);
+      assert.ok(!existsSync(path.join(root(), "keep.txt")));
+      assert.ok(!h.gitCalls.some((c) => c.args.includes("prune")));
+    });
+  });
+
+  describe("process groups", () => {
+    it("records a step's group while it runs and clears it after", async () => {
+      h.prView.files = [{ path: "apps/mobile/e2e/android-all.yaml" }];
+      let during = null;
+      let runDir;
+      h.onRun = (cmd, args, opts) => {
+        if (cmd === "./gradlew") {
+          opts.onChild?.({ pid: 7100 });
+          during = readGroups(nodeFs, runDir);
+        }
+        return null;
+      };
+      const r = await start();
+      runDir = r.runDir;
+      h.deps.pid = SUP_PID;
+      await runSupervise({ runDir }, { deps: h.deps });
+      assert.deepEqual(during.child, { pid: 7100, match: "gradlew" });
+      assert.deepEqual(during.emulator, undefined);
+      assert.equal(existsSync(path.join(runDir, PGIDS_FILE)), false);
+    });
+
+    it("killRecordedGroups signals only leaders that are still the recorded process", async () => {
+      const runDir = path.join(h.tmp, "rd");
+      mkdirSync(runDir);
+      writeFileSync(
+        path.join(runDir, PGIDS_FILE),
+        JSON.stringify({
+          child: { pid: 7000, match: "gradlew" },
+          emulator: { pid: 7001, match: "drafto-factory" },
+          other: { pid: 7002, match: "xcodebuild" },
+          dead: { pid: 7003, match: "maestro" },
+        }),
+      );
+      for (const pid of [7000, 7001, 7002]) h.alive.add(pid);
+      h.deps.psCommand = async (pid) =>
+        ({
+          7000: "/bin/sh ./gradlew assembleRelease",
+          7001: "qemu-system -avd drafto-factory -port 5580",
+          7002: "vim",
+        })[pid] ?? "";
+      const killed = await killRecordedGroups(runDir, "SIGKILL", h.deps);
+      assert.deepEqual(killed, [7000, 7001]);
+      assert.deepEqual(h.kills, [
+        { pid: -7000, signal: "SIGKILL" },
+        { pid: -7001, signal: "SIGKILL" },
+      ]);
+    });
+
+    it("housekeeping kills a dead supervisor's recorded groups", async () => {
+      const r = await start();
+      writeFileSync(
+        path.join(r.runDir, PGIDS_FILE),
+        JSON.stringify({ child: { pid: 7200, match: "xcodebuild" } }),
+      );
+      h.alive.add(7200);
+      h.deps.psCommand = async (pid) => (pid === 7200 ? "/usr/bin/xcodebuild -workspace" : "");
+      const out = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+      assert.equal(out.outcome, "retry:lost");
+      assert.deepEqual(out.groups, [7200]);
+      assert.ok(h.kills.some((k) => k.pid === -7200 && k.signal === "SIGKILL"));
+    });
+
+    it("housekeeping kills an overdue supervisor's recorded groups too", async () => {
+      const r = await start();
+      h.alive.add(SUP_PID);
+      h.alive.add(7300);
+      writeFileSync(
+        path.join(r.runDir, PGIDS_FILE),
+        JSON.stringify({ emulator: { pid: 7300, match: "drafto-factory" } }),
+      );
+      const base = h.deps.psCommand;
+      h.deps.psCommand = async (pid) => (pid === 7300 ? "emulator -avd drafto-factory" : base(pid));
+      const now = new Date(Date.parse(r.deadlineAt) + 25 * 60_000).toISOString();
+      const out = await runHousekeeping({ repoRoot: h.repoRoot, now }, h.deps);
+      assert.equal(out.state, "overdue");
+      assert.equal(out.signal, "SIGKILL");
+      assert.ok(h.kills.some((k) => k.pid === -SUP_PID && k.signal === "SIGKILL"));
+      assert.ok(h.kills.some((k) => k.pid === -7300 && k.signal === "SIGKILL"));
+    });
+
+    it("stop kills the recorded groups when the supervisor is already gone", async () => {
+      const r = await start();
+      writeFileSync(
+        path.join(r.runDir, PGIDS_FILE),
+        JSON.stringify({ child: { pid: 7400, match: "maestro" } }),
+      );
+      h.alive.add(7400);
+      h.deps.psCommand = async (pid) => (pid === 7400 ? "java -jar maestro test" : "");
+      const out = await runStop({ repoRoot: h.repoRoot, issue: "874" }, h.deps);
+      assert.equal(out.signalled, false);
+      assert.deepEqual(out.groups, [7400]);
+    });
+
+    it("killGroup escalates to SIGKILL after the grace period, only if still alive", async () => {
+      h.alive.add(7500);
+      killGroup(h.deps, { pid: 7500 }, 5);
+      killGroup(h.deps, { pid: 7501 }, 5);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.deepEqual(h.kills, [
+        { pid: -7500, signal: "SIGTERM" },
+        { pid: -7501, signal: "SIGTERM" },
+        { pid: -7500, signal: "SIGKILL" },
+      ]);
+    });
+
+    it("selftest --build: Ctrl-C stops the step and still shuts the emulator down", async () => {
+      const before = process.listenerCount("SIGINT");
+      h.onRun = (cmd) => {
+        if (path.basename(cmd) === "maestro") process.emit("SIGINT");
+        return null;
+      };
+      const out = await runSelftestBuild({ repoRoot: h.repoRoot, platform: "android" }, h.deps);
+      assert.equal(out.ok, false);
+      assert.equal(out.platform.state, "stopped:signal");
+      assert.ok(emuKilled());
+      assert.equal(process.listenerCount("SIGINT"), before);
+      assert.equal(existsSync(deviceLockPath(h.knobs)), false);
+    });
+  });
+
+  describe("java for Maestro", () => {
+    it("an iOS-only run needs java too", async () => {
+      delete h.env.FACTORY_DEVICE_JAVA_HOME;
+      const r = await start();
+      assert.equal(r.reason, "java-missing");
+    });
+
+    it("falls back to java_home, and Maestro on iOS gets JAVA_HOME", async () => {
+      delete h.env.FACTORY_DEVICE_JAVA_HOME;
+      h.javaHomeFound = "/Library/Java/JavaVirtualMachines/jdk-21/Contents/Home";
+      await startAndSupervise();
+      const maestro = callsOf("maestro");
+      assert.ok(maestro.length >= 1);
+      for (const c of maestro) {
+        assert.equal(c.env.JAVA_HOME, h.javaHomeFound);
+        assert.ok(c.env.PATH.startsWith(`${h.javaHomeFound}/bin:`));
+      }
+    });
+  });
+
+  describe("sign-in before flows that need it", () => {
+    const flowText = (rel) => readFileSync(path.join(REPO, "apps", "mobile", "e2e", rel), "utf8");
+
+    it("knows which repo flows start signed in, signed out, or sign themselves in", () => {
+      const needs = [
+        "02-create-notebook.yaml",
+        "03-create-edit-note.yaml",
+        "04-trash-restore.yaml",
+        "11-sign-out-confirm.yaml",
+        "search.yaml",
+        "ios-only/search.yaml",
+        "ios-only/07-attach-image.yaml",
+      ];
+      const not = [
+        "01-login.yaml",
+        "06-forgot-password.yaml",
+        "09-password-visibility.yaml",
+        "10-swipe-hint.yaml",
+        "12-signup-email.yaml",
+        "ios-all.yaml",
+        "android-all.yaml",
+        "ios-only/08-fab-above-home-indicator.yaml",
+        "android-only/07-auth-callback-link.yaml",
+        "android-only/11-dark-nav-bar.yaml",
+      ];
+      for (const f of needs) assert.equal(flowNeedsSignIn(flowText(f)), true, f);
+      for (const f of not) assert.equal(flowNeedsSignIn(flowText(f)), false, f);
+      assert.equal(
+        flowNeedsSignIn("appId: x\n# device-lane: no-sign-in\n---\n- launchApp\n"),
+        false,
+      );
+      assert.equal(
+        flowNeedsSignIn("appId: x\n# device-lane: needs-sign-in\n---\n- clearKeychain\n"),
+        true,
+      );
+      assert.equal(flowNeedsSignIn(""), true);
+    });
+
+    it("signs in before 02 but not before a signed-out flow, with one RUN_ID for the run", async () => {
+      h.prView.files = [
+        { path: "apps/mobile/e2e/02-create-notebook.yaml" },
+        { path: "apps/mobile/e2e/06-forgot-password.yaml" },
+      ];
+      const { output } = await startAndSupervise({ platforms: "ios" });
+      const flows = callsOf("maestro").map((c) =>
+        path.relative(deviceRootFor(h.knobs, "ios"), c.args[3]),
+      );
+      assert.deepEqual(flows, [
+        "apps/mobile/e2e/ios-all.yaml",
+        SIGN_IN_PRELUDE,
+        "apps/mobile/e2e/02-create-notebook.yaml",
+        "apps/mobile/e2e/06-forgot-password.yaml",
+      ]);
+      const runIds = new Set(
+        callsOf("maestro").map((c) => c.args.find((a) => a.startsWith("RUN_ID="))),
+      );
+      assert.equal(runIds.size, 1);
+      const prelude = readFileSync(
+        path.join(deviceRootFor(h.knobs, "ios"), SIGN_IN_PRELUDE),
+        "utf8",
+      );
+      assert.ok(prelude.includes("file: helpers/sign-in-clean.yaml"));
+      assert.ok(prelude.includes("MAESTRO_E2E_TEST_PASSWORD"));
+      assert.ok(!prelude.includes(PASSWORD));
+      assert.deepEqual(
+        output.platforms.ios.flows.map((f) => f.name),
+        ["ios-all.yaml", "02-create-notebook.yaml", "06-forgot-password.yaml"],
+      );
+    });
+
+    it("a failed sign-in marks the flow ERROR without running it", async () => {
+      h.prView.files = [{ path: "apps/mobile/e2e/02-create-notebook.yaml" }];
+      h.onRun = (cmd, args) =>
+        path.basename(cmd) === "maestro" && args[3].endsWith(SIGN_IN_PRELUDE)
+          ? { code: 1, stdout: "", timedOut: false }
+          : null;
+      const { output } = await startAndSupervise({ platforms: "ios" });
+      const row = output.platforms.ios.flows[1];
+      assert.equal(row.status, "ERROR");
+      assert.match(row.failure, /sign-in before this flow failed/);
+      assert.ok(!callsOf("maestro").some((c) => c.args[3].endsWith("02-create-notebook.yaml")));
+      assert.equal(output.platforms.ios.verdict, "ERROR");
+    });
+  });
+
+  it("housekeeping reaps old selftest run dirs", async () => {
+    const runRoot = path.join(h.repoRoot, "logs", "factory", "device", "runs");
+    const old = path.join(runRoot, "selftest-android-20260101T000000Z");
+    const recent = path.join(runRoot, "selftest-ios-20261120T000000Z");
+    mkdirSync(old, { recursive: true });
+    mkdirSync(path.join(recent, "private"), { recursive: true });
+    const longAgo = new Date(h.clock - 40 * 24 * 60 * 60_000);
+    utimesSync(old, longAgo, longAgo);
+    const out = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+    assert.deepEqual(out.reaped.runDirs, [old]);
+    assert.deepEqual(out.reaped.privateDirs, [recent]);
+    assert.equal(existsSync(old), false);
   });
 });

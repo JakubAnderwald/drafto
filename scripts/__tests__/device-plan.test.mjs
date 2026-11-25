@@ -105,6 +105,17 @@ describe("deriveDevicePlan", () => {
     }
   });
 
+  it("a deleted flow still makes the PR applicable but is never run", () => {
+    const plan = deriveDevicePlan({
+      diffFiles: [`${E2E}/10-swipe-hint.yaml`, `${E2E}/ios-only/search.yaml`],
+      deletedFiles: [`${E2E}/10-swipe-hint.yaml`, `${E2E}/ios-only/search.yaml`],
+    });
+    assert.equal(plan.applicable, true);
+    assert.deepEqual(plan.platforms.ios.flows, [`${E2E}/ios-all.yaml`]);
+    assert.deepEqual(plan.platforms.android.flows, [`${E2E}/android-all.yaml`]);
+    assert.ok(plan.reasons.some((r) => /ios-only\/search\.yaml is deleted/.test(r)));
+  });
+
   it("an e2e runner script alone is applicable to nothing", () => {
     assert.equal(
       deriveDevicePlan({ diffFiles: [`${E2E}/run-cross-platform-e2e.sh`] }).applicable,

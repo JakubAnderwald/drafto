@@ -112,9 +112,17 @@ function headingPlatforms(heading) {
  * @param {{heading: string, text?: string}[]} [input.scenarioSections]
  * @param {Record<string, string[]>} [input.flowTags]  a flow's Maestro tags, by
  *   repo-relative path (read by the lane; flows without an entry have none)
+ * @param {string[]} [input.deletedFiles]  files the PR deletes: they still make
+ *   the PR applicable, but a deleted flow is never run
  * @returns {{applicable: boolean, platforms: {android?: {flows: string[]}, ios?: {flows: string[]}}, reasons: string[]}}
  */
-export function deriveDevicePlan({ diffFiles = [], scenarioSections = [], flowTags = {} } = {}) {
+export function deriveDevicePlan({
+  diffFiles = [],
+  scenarioSections = [],
+  flowTags = {},
+  deletedFiles = [],
+} = {}) {
+  const deleted = new Set((Array.isArray(deletedFiles) ? deletedFiles : []).map(String));
   const files = [...new Set((Array.isArray(diffFiles) ? diffFiles : []).map(String))].sort();
   const reasons = [];
   const appFiles = files.filter(isAppFile);
@@ -129,6 +137,10 @@ export function deriveDevicePlan({ diffFiles = [], scenarioSections = [], flowTa
     for (const p of c.platforms) selected.add(p);
     if (c.platforms.length) reasons.push(`${file} → ${c.platforms.join(" + ")}`);
     if (!c.flow) continue;
+    if (deleted.has(file)) {
+      reasons.push(`${flowName(file)} is deleted by the PR: not run`);
+      continue;
+    }
     for (const p of c.platforms) extra[p].push(file);
   }
   for (const section of Array.isArray(scenarioSections) ? scenarioSections : []) {
@@ -180,4 +192,31 @@ export function parseFlowTags(yamlText) {
     .split("\n")
     .map((l) => /^[ \t]+-\s*["']?([^"'#\s]+)["']?/.exec(l)?.[1])
     .filter(Boolean);
+}
+
+// A flow starts from a clean, signed-out app when it clears the keychain in
+// its first commands (01, 06, 09, 10, 12, …), and signs itself in when it
+// types the E2E password (the combined flows, the host-check flows). Every
+// other flow (02, 03, 04, 11, search, …) assumes a signed-in app, which the
+// lane provides by running its sign-in helper first. A flow can say so
+// itself with a `# device-lane: needs-sign-in` or `# device-lane: no-sign-in`
+// comment.
+const SIGN_IN_MARK = /^\s*#\s*device-lane:\s*(needs-sign-in|no-sign-in)\s*$/m;
+const OWN_PASSWORD = /^\s*-?\s*inputText:.*\b(?:MAESTRO_)?E2E_TEST_PASSWORD\b/m;
+
+/** Whether the lane must sign in before running a flow with this text. */
+export function flowNeedsSignIn(yamlText) {
+  const text = String(yamlText ?? "");
+  const mark = SIGN_IN_MARK.exec(text)?.[1];
+  if (mark) return mark === "needs-sign-in";
+  const body = text
+    .split(/^---\s*$/m)
+    .slice(1)
+    .join("\n");
+  const first = body
+    .split("\n")
+    .filter((l) => /^- /.test(l))
+    .slice(0, 3);
+  if (first.some((l) => /^-\s*clearKeychain\b/.test(l))) return false;
+  return !OWN_PASSWORD.test(body.replace(/^\s*#.*$/gm, ""));
 }

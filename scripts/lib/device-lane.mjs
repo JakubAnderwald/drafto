@@ -68,6 +68,7 @@ import {
   deriveDevicePlan,
   E2E_DIR,
   flowName,
+  flowNeedsSignIn,
   parseFlowTags,
   PLATFORMS,
   smokeFlow,
@@ -111,6 +112,7 @@ export const EMULATOR_SERIAL = `emulator-${EMULATOR_PORT}`;
 export const OUTPUT_FILE = "device-output.json";
 export const SHOTS_FILE = "shots.json";
 export const STOP_REQUEST_FILE = "stop-request.json";
+export const PGIDS_FILE = "pgids.json";
 export const SELFTEST_FLOW = `${E2E_DIR}/09-password-visibility.yaml`;
 // The factory debug keystore's fixed, well-known values (Android's own debug
 // keystore defaults). Not secrets: the APK only ever goes to the lane's emulator.
@@ -125,10 +127,12 @@ export const MAX_JUNIT_LINES = 200;
 
 const THIS_FILE = fileURLToPath(import.meta.url);
 const SHA40 = /^[0-9a-f]{40}$/;
-const RUN_ID_RE = /^\d+-[0-9a-f]{12}-\d{8}T\d{6}Z$/;
+// A run dir: <issue>-<sha12>-<stamp>, or selftest-<platform>-<stamp>.
+const RUN_ID_RE = /^(?:\d+-[0-9a-f]{12}|selftest-(?:android|ios))-\d{8}T\d{6}Z$/;
 const MINUTE_MS = 60_000;
 const RUN_DIR_RETENTION_MS = 30 * 24 * 60 * MINUTE_MS;
 const POLL_MS = 30_000;
+const KILL_GRACE_MS = 10_000;
 const QUICK_MS = 30_000;
 const GIT_MS = 5 * MINUTE_MS;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
@@ -460,9 +464,22 @@ export function resolveDeviceBins({ env = process.env, isExecutable, knobs }) {
   };
 }
 
-export const COMMON_BINS = Object.freeze(["node", "pnpm", "nice", "git", "maestro"]);
+// Maestro runs on a JVM, so java is needed on iOS too (and gradle on Android).
+/**
+ * <knobs> with javaHome filled in: FACTORY_DEVICE_JAVA_HOME when set, else
+ * what macOS's /usr/libexec/java_home finds for 17 or newer. Unchanged
+ * (javaHome null) when neither gives one; the java bin check then refuses.
+ */
+export async function withJavaHome(knobs, deps) {
+  if (knobs.javaHome || !deps.exec) return knobs;
+  const r = await deps.exec("/usr/libexec/java_home", ["-v", "17+"], { timeoutMs: QUICK_MS });
+  const home = r.code === 0 ? String(r.stdout ?? "").trim() : "";
+  return path.isAbsolute(home) ? { ...knobs, javaHome: home } : knobs;
+}
+
+export const COMMON_BINS = Object.freeze(["node", "pnpm", "nice", "git", "maestro", "java"]);
 export const PLATFORM_BINS = Object.freeze({
-  android: Object.freeze(["adb", "emulator", "java", "unzip"]),
+  android: Object.freeze(["adb", "emulator", "unzip"]),
   ios: Object.freeze(["xcrun", "pod"]),
 });
 
@@ -498,7 +515,14 @@ export function deviceEnv(env, { bins, knobs }) {
   });
 }
 
-/** pnpm, expo prebuild, gradle / pod / xcodebuild. */
+/** buildEnv without NODE_ENV, for `pnpm install`. */
+export function installEnv(env) {
+  const out = { ...env };
+  delete out.NODE_ENV;
+  return out;
+}
+
+/** expo prebuild, gradle / pod / xcodebuild (and, without NODE_ENV, pnpm install). */
 export function buildEnv(env, { bins, knobs, platform, expoValues }) {
   const extra = {
     ...expoValues,
@@ -560,9 +584,56 @@ async function quick(ctx, cmd, args, { timeoutMs = QUICK_MS, env, cwd } = {}) {
   });
 }
 
-function killGroup(deps, child) {
+/**
+ * SIGTERM <child>'s process group, then SIGKILL it once <graceMs> has gone by
+ * if the leader is still alive (a gradle or xcodebuild that ignores SIGTERM).
+ */
+export function killGroup(deps, child, graceMs = KILL_GRACE_MS) {
   if (!child?.pid) return;
-  if (!deps.kill(-child.pid, "SIGTERM")) deps.kill(child.pid, "SIGTERM");
+  const pid = child.pid;
+  if (!deps.kill(-pid, "SIGTERM")) deps.kill(pid, "SIGTERM");
+  const timer = setTimeout(() => {
+    if (deps.isPidAlive(pid) && !deps.kill(-pid, "SIGKILL")) deps.kill(pid, "SIGKILL");
+  }, graceMs);
+  timer.unref?.();
+}
+
+// ── process groups on record ────────────────────────────────────────────────
+// The long steps and the emulator lead process groups of their own, so a
+// signal to the supervisor's group doesn't reach them. Their pgids are kept in
+// <runDir>/pgids.json, so housekeeping and stop can still kill them when the
+// supervisor is gone or wedged. <match> must appear in the leader's command
+// line before it is signalled (pid reuse).
+
+export function readGroups(fs, runDir) {
+  const parsed = runDir ? parseJson(readText(fs, path.join(runDir, PGIDS_FILE)), null) : null;
+  return parsed && typeof parsed === "object" ? parsed : {};
+}
+
+export function recordGroup(ctx, kind, pid, match) {
+  if (!ctx.recordGroups) return;
+  try {
+    const groups = readGroups(ctx.deps.fs, ctx.runDir);
+    if (Number.isInteger(pid) && pid > 1) groups[kind] = { pid, match };
+    else delete groups[kind];
+    writeJsonAtomic(ctx.deps.fs, path.join(ctx.runDir, PGIDS_FILE), groups);
+  } catch {
+    /* best effort: housekeeping also stops devices by port and UDID */
+  }
+}
+
+/** Signal every recorded group whose leader is still the process recorded. */
+export async function killRecordedGroups(runDir, signal, deps) {
+  const killed = [];
+  for (const entry of Object.values(readGroups(deps.fs, runDir))) {
+    const pid = entry?.pid;
+    if (!Number.isInteger(pid) || pid <= 1 || !deps.isPidAlive(pid)) continue;
+    const command = await deps.psCommand(pid);
+    if (!entry.match || !command.includes(entry.match)) continue;
+    if (!deps.kill(-pid, signal)) deps.kill(pid, signal);
+    killed.push(pid);
+  }
+  return killed;
 }
 
 /**
@@ -589,10 +660,12 @@ export async function guardedRun(ctx, cmd, args, opts) {
       ...opts,
       onChild: (c) => {
         ctx.status.child = c;
+        recordGroup(ctx, "child", c?.pid, path.basename(cmd));
       },
     });
   } finally {
     clearInterval(timer);
+    if (ctx.status.child) recordGroup(ctx, "child", null);
     ctx.status.child = null;
   }
   if (hit) throw new Interrupt(hit);
@@ -624,11 +697,26 @@ function makeChecks(ctx) {
  * while a tick does.
  */
 export async function ensureDeviceWorktrees({ repoRoot, sha, platforms, knobs }, deps) {
+  const usable = async (root) => {
+    const r = await deps.git(["rev-parse", "--is-inside-work-tree"], { cwd: root });
+    return r.code === 0 && r.stdout.trim() === "true";
+  };
   for (const p of platforms) {
     const root = deviceRootFor(knobs, p);
-    if (deps.fs.existsSync(root)) continue;
-    await deps.git(["worktree", "prune"], { cwd: repoRoot });
-    const r = await deps.git(["worktree", "add", "--detach", root, sha], { cwd: repoRoot });
+    if (deps.fs.existsSync(root)) {
+      if (await usable(root)) continue;
+      // Its registration is gone or broken (a prune while the volume was
+      // away): repair it, and failing that start the root over.
+      await deps.git(["worktree", "repair", root], { cwd: repoRoot });
+      if (await usable(root)) continue;
+      rmQuiet(deps.fs, root);
+    }
+    // Never `git worktree prune` here: it would also drop the registrations
+    // of worktrees on a build volume that isn't mounted right now
+    // (nightly-support.sh). --force adds over a missing-but-registered path.
+    const r = await deps.git(["worktree", "add", "--force", "--detach", root, sha], {
+      cwd: repoRoot,
+    });
     if (r.code !== 0) throw new Error(`worktree add ${root} failed`);
   }
 }
@@ -690,7 +778,11 @@ export async function prepareDeviceRoot(ctx, platform, sha) {
     throw new PlatformError("unavailable:env-not-dev", err.message);
   }
 
-  const env = buildEnv(deps.env, { bins: meta.bins, knobs: meta.knobs, platform, expoValues });
+  // No NODE_ENV=production for the install: pnpm would skip devDependencies
+  // the bundle step needs (babel plugins). Prebuild and the build keep it.
+  const env = installEnv(
+    buildEnv(deps.env, { bins: meta.bins, knobs: meta.knobs, platform, expoValues }),
+  );
   const log = path.join(ctx.platDir, "install.log");
   const timeoutMs = meta.knobs.installTimeoutSec * 1000;
   let ok = false;
@@ -1046,6 +1138,7 @@ export async function bootEmulator(ctx) {
   });
   if (!spawned.ok) throw new PlatformError("failed:boot", spawned.reason);
   ctx.devices.emulatorPid = spawned.pid;
+  recordGroup(ctx, "emulator", spawned.pid, AVD_NAME);
   const deadline = deps.nowMs() + knobs.bootTimeoutMin * MINUTE_MS;
   for (;;) {
     await ctx.checkpoint();
@@ -1110,6 +1203,7 @@ export async function stopEmulator(ctx, pid) {
         if (deps.isPidAlive(p) && !deps.kill(-p, "SIGKILL")) deps.kill(p, "SIGKILL");
       }
     }
+    recordGroup(ctx, "emulator", null);
     return { stopped: pids };
   } catch (err) {
     return { stopped: [], error: err.message };
@@ -1393,24 +1487,19 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
   const results = [];
   const env = maestroFlowEnv(ctx.devEnv, account);
   const secrets = account ? { password: account.password } : {};
-  for (const [i, flow] of flows.entries()) {
-    const index = i + 1;
-    const nn = String(index).padStart(2, "0");
-    const slug = flowSlug(flow);
-    const junit = path.join(ctx.rawDir, `${nn}-${slug}.junit.xml`);
-    rmQuiet(deps.fs, junit);
-    const log = path.join(ctx.rawDir, `${nn}-${slug}.log`);
-    const started = deps.nowMs();
-    ctx.log(`maestro: ${platform} ${flowName(flow)} starting`);
-    const r = await guardedRun(
+  // One RUN_ID for the platform's whole run, as the README's sequential runs
+  // use: a changed 03 or 04 finds the notebook the flows before it created.
+  const runEpoch = Math.floor(deps.nowMs() / 1000);
+  const maestro = (flowPath, junit, log) =>
+    guardedRun(
       ctx,
       meta.bins.maestro,
       maestroArgs({
         deviceId,
-        flowPath: path.join(root, flow),
+        flowPath,
         junit,
         rawDir: ctx.rawDir,
-        runEpoch: Math.floor(deps.nowMs() / 1000),
+        runEpoch,
         email: account?.email ?? null,
       }),
       {
@@ -1421,6 +1510,28 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
         stderrFile: log,
       },
     );
+  for (const [i, flow] of flows.entries()) {
+    const index = i + 1;
+    const nn = String(index).padStart(2, "0");
+    const slug = flowSlug(flow);
+    const junit = path.join(ctx.rawDir, `${nn}-${slug}.junit.xml`);
+    rmQuiet(deps.fs, junit);
+    const log = path.join(ctx.rawDir, `${nn}-${slug}.log`);
+    const started = deps.nowMs();
+    const signIn = await signInBefore(ctx, { flow, root, account, nn, maestro, platform });
+    if (signIn) {
+      results.push({
+        name: flowName(flow),
+        status: "ERROR",
+        durationS: Math.round((deps.nowMs() - started) / 1000),
+        failure: signIn,
+      });
+      await captureShot(ctx, { platform, deviceId, index, flow });
+      ctx.onFlow?.(results);
+      continue;
+    }
+    ctx.log(`maestro: ${platform} ${flowName(flow)} starting`);
+    const r = await maestro(path.join(root, flow), junit, log);
     const durationS = Math.round((deps.nowMs() - started) / 1000);
     const parsed = filterJunit(readText(deps.fs, junit), { secrets });
     let status;
@@ -1445,6 +1556,48 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
     ctx.onFlow?.(results);
   }
   return results;
+}
+
+export const SIGN_IN_PRELUDE = `${E2E_DIR}/.device-lane-sign-in.yaml`;
+
+/**
+ * The lane's sign-in before a flow that assumes a signed-in app: the repo's
+ * vetted helpers/sign-in-clean.yaml (a clean start, then the account's
+ * sign-in), with the password read from MAESTRO_E2E_TEST_PASSWORD.
+ */
+export function signInPreludeYaml() {
+  return [
+    "appId: eu.drafto.mobile",
+    "---",
+    "# Written by the factory's device lane (device-lane.mjs) into its build root:",
+    "# a clean start, signed in as the lane's account, before a flow that assumes",
+    "# a signed-in app.",
+    "- runFlow:",
+    "    file: helpers/sign-in-clean.yaml",
+    "    env:",
+    "      SIGN_IN_EMAIL: ${E2E_TEST_EMAIL}",
+    "      SIGN_IN_PASSWORD: \"${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}\"",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Sign in before <flow> when it needs it (flowNeedsSignIn). Returns null when
+ * the flow may run, or why it can't (the row's failure).
+ */
+async function signInBefore(ctx, { flow, root, account, nn, maestro, platform }) {
+  const fs = ctx.deps.fs;
+  if (!flowNeedsSignIn(readText(fs, path.join(root, flow)))) return null;
+  if (!account) return "needs a signed-in app, and the run has no account";
+  const prelude = path.join(root, SIGN_IN_PRELUDE);
+  fs.writeFileSync(prelude, signInPreludeYaml());
+  ctx.log(`maestro: ${platform} signing in before ${flowName(flow)}`);
+  const r = await maestro(
+    prelude,
+    path.join(ctx.rawDir, `${nn}-sign-in.junit.xml`),
+    path.join(ctx.rawDir, `${nn}-sign-in.log`),
+  );
+  return r.code === 0 && !r.timedOut ? null : "the lane's sign-in before this flow failed";
 }
 
 /** Maestro's environment: the device env plus, with an account, the password. */
@@ -1605,6 +1758,7 @@ function makeCtx({ deps, meta, runDir, status, output, save, account, log }) {
     platDir: runDir,
     rawDir: path.join(runDir, "private"),
     stepLog: null,
+    recordGroups: true,
   });
 }
 
@@ -1670,6 +1824,7 @@ export async function runSupervise({ runDir }, { deps = createDeviceDeps() } = {
   } finally {
     clearTimeout(deadline);
     await stopAllDevices(ctx, meta.iosSimUdid);
+    rmQuiet(fs, path.join(runDir, PGIDS_FILE));
     if (!meta.knobs.keepRaw) rmQuiet(fs, path.join(runDir, "private"));
     output.finishedAt = isoSeconds(deps.now());
     save();
@@ -1843,7 +1998,7 @@ export async function runStart(opts, deps) {
   const { issue, pr, sha, repoRoot } = opts;
   const runRoot = opts.runRoot ?? defaultRunRoot(repoRoot);
   const now = opts.now ?? deps.now();
-  const knobs = readDeviceKnobs(deps.env);
+  const knobs = await withJavaHome(readDeviceKnobs(deps.env), deps);
   const mode = opts.mode ?? "smoke";
   const trigger = opts.trigger ?? "testing";
   const ledgerFile = ledgerPath(repoRoot);
@@ -1870,7 +2025,10 @@ export async function runStart(opts, deps) {
   if (view.state !== "OPEN" || view.headRefOid !== sha) {
     return refuse("head-moved", { headSha: view.headRefOid, prState: view.state });
   }
-  const files = (Array.isArray(view.files) ? view.files : []).map((f) => f?.path).filter(Boolean);
+  const fileRows = (Array.isArray(view.files) ? view.files : []).filter((f) => f?.path);
+  const files = fileRows.map((f) => f.path);
+  // gh lists deleted files too: they still change the app, but never run.
+  const deletedFiles = fileRows.filter((f) => f.changeType === "DELETED").map((f) => f.path);
   const requested = parsePlatforms(opts.platforms);
   // The flows' tags come from the PR head, which needs the commit locally.
   const fetched = await deps.git(["fetch", "--quiet", "origin", `pull/${pr}/head`], {
@@ -1882,6 +2040,7 @@ export async function runStart(opts, deps) {
     diffFiles: files,
     scenarioSections: opts.scenarioSections ?? [],
     flowTags,
+    deletedFiles,
   });
   if (!requested && !plan.applicable) return refuse("not-applicable", { reasons: plan.reasons });
   const order = PLATFORMS.filter((p) =>
@@ -2091,6 +2250,8 @@ export async function runStop(opts, deps) {
       signalled = deps.kill(-pid, "SIGTERM") || signalled;
     }
   }
+  // No live supervisor to wind its children down: their groups directly.
+  const groups = signalled ? [] : await killRecordedGroups(inFlight.runDir, "SIGTERM", deps);
   const refund = REFUNDED_STOPS.has(reason) ? "attempt" : "none";
   const now = opts.now ?? deps.now();
   const finished = await finishLedgerRun(ledgerFile, inFlight.runId, {
@@ -2102,6 +2263,7 @@ export async function runStop(opts, deps) {
     runId: inFlight.runId,
     reason,
     signalled,
+    groups,
     refund,
     ...(finished ? {} : { finishedElsewhere: true }),
   };
@@ -2174,6 +2336,8 @@ export async function runHousekeeping(opts, deps) {
     if (why) {
       signalRun(inFlight, why, deps);
       deps.kill(-inFlight.pid, poll.signal ?? "SIGTERM");
+      // Overdue: the supervisor is wedged and may never stop its children.
+      if (poll.state === "overdue") await killRecordedGroups(inFlight.runDir, poll.signal, deps);
       const refund = REFUNDED_STOPS.has(why) ? "attempt" : "none";
       // The supervisor shuts its device down and drops the device lock itself;
       // until it has, the lock keeps the next run from starting.
@@ -2192,8 +2356,12 @@ export async function runHousekeeping(opts, deps) {
   }
   if (poll.state === "starting" || poll.state === "running") return { ...base, state: poll.state };
   if (poll.state === "overdue") {
-    if (!opts.dryRun) deps.kill(-inFlight.pid, poll.signal);
-    return { ...base, state: "overdue", signal: poll.signal };
+    let groups = [];
+    if (!opts.dryRun) {
+      deps.kill(-inFlight.pid, poll.signal);
+      groups = await killRecordedGroups(inFlight.runDir, poll.signal, deps);
+    }
+    return { ...base, state: "overdue", signal: poll.signal, groups };
   }
   if (opts.dryRun) return { ...base, state: poll.state, dryRun: true };
   if (poll.unattached) {
@@ -2201,6 +2369,7 @@ export async function runHousekeeping(opts, deps) {
     if (!Array.isArray(procs)) return { ...base, state: "lost", deferred: "ps-failed" };
     const orphans = supervisorPids(procs, inFlight.runId);
     for (const pid of orphans) deps.kill(-pid, "SIGTERM");
+    if (orphans.length === 0) await killRecordedGroups(inFlight.runDir, "SIGTERM", deps);
     await finishLedgerRun(ledgerFile, inFlight.runId, {
       refund: "attempt",
       last: lastFor(inFlight, "retry:lost", now),
@@ -2219,8 +2388,10 @@ export async function runHousekeeping(opts, deps) {
     maxAttempts: knobs.maxAttempts,
   });
   let devices = null;
+  let groups = [];
   if (!exit) {
-    // A supervisor that died never shut its device down.
+    // A supervisor that died never stopped its children or its device.
+    groups = await killRecordedGroups(inFlight.runDir, "SIGKILL", deps);
     const ctx = hkCtx(deps, knobs, repoRoot);
     devices = await stopAllDevices(ctx, readIosSimUdid(repoRoot, deps.fs));
   }
@@ -2235,7 +2406,7 @@ export async function runHousekeeping(opts, deps) {
     outcome: c.state,
     refund: c.refund,
     runDir: inFlight.runDir,
-    ...(devices ? { devices } : {}),
+    ...(devices ? { devices, groups } : {}),
     ...(finished ? {} : { finishedElsewhere: true }),
     reaped,
   };
@@ -2306,7 +2477,7 @@ function javaMajor(text) {
 
 /** Read-only checks of the lane's setup. {ok, checks: [{name, ok, detail}]} */
 export async function runSelftestChecks({ repoRoot, platforms }, deps) {
-  const knobs = readDeviceKnobs(deps.env);
+  const knobs = await withJavaHome(readDeviceKnobs(deps.env), deps);
   const bins = resolveDeviceBins({ env: deps.env, isExecutable: deps.isExecutable, knobs });
   const checks = [];
   const add = (name, ok, detail = "") => checks.push({ name, ok: Boolean(ok), detail });
@@ -2314,18 +2485,21 @@ export async function runSelftestChecks({ repoRoot, platforms }, deps) {
   for (const name of [...COMMON_BINS, ...platforms.flatMap((p) => PLATFORM_BINS[p])]) {
     add(`bin ${name}`, bins[name], bins[name] ?? "not found");
   }
+  // Maestro's JVM on both platforms (17+); gradle's on Android (17–24).
+  const gradle = platforms.includes("android");
+  const javaName = gradle ? "java 17–24" : "java 17+";
+  if (bins.java) {
+    const r = await deps.exec(bins.java, ["-version"], { timeoutMs: QUICK_MS });
+    const major = javaMajor(`${r.stdout}\n${r.stderr}`);
+    add(
+      javaName,
+      major !== null && major >= 17 && (!gradle || major <= 24),
+      major ? `java ${major} (${knobs.javaHome})` : "unknown version",
+    );
+  } else {
+    add(javaName, false, "no FACTORY_DEVICE_JAVA_HOME and java_home found none");
+  }
   if (platforms.includes("android")) {
-    if (bins.java) {
-      const r = await deps.exec(bins.java, ["-version"], { timeoutMs: QUICK_MS });
-      const major = javaMajor(`${r.stdout}\n${r.stderr}`);
-      add(
-        "java 17–24",
-        major !== null && major >= 17 && major <= 24,
-        major ? `java ${major}` : "unknown version",
-      );
-    } else {
-      add("java 17–24", false, "FACTORY_DEVICE_JAVA_HOME unset or has no bin/java");
-    }
     add(`AVD ${AVD_NAME}`, avdExists(knobs, deps.fs), knobs.avdHome);
     add("debug keystore", deps.fs.existsSync(knobs.keystore), knobs.keystore);
   }
@@ -2377,7 +2551,7 @@ export function selftestTable(checks) {
  * that needs no sign-in, shut down. In the foreground, holding the device lock.
  */
 export async function runSelftestBuild({ repoRoot, platform, runRoot }, deps) {
-  const knobs = readDeviceKnobs(deps.env);
+  const knobs = await withJavaHome(readDeviceKnobs(deps.env), deps);
   const deferred = await deferReason({ knobs, lockPaths: betaLockPaths(deps.env) }, deps);
   if (deferred) return { ok: false, reason: deferred.reason };
   const bins = resolveDeviceBins({ env: deps.env, isExecutable: deps.isExecutable, knobs });
@@ -2427,6 +2601,15 @@ export async function runSelftestBuild({ repoRoot, platform, runRoot }, deps) {
     const status = { terminated: false, timedOut: false, child: null, stopReason: null };
     const log = (line) => appendLog(path.join(runDir, "supervisor.log"), line);
     const ctx = makeCtx({ deps, meta, runDir, status, output, save, account: null, log });
+    // In the foreground: Ctrl-C (or a SIGTERM) stops the step's process group
+    // and unwinds through the checkpoints, so the device still goes down.
+    const onSignal = () => {
+      status.terminated = true;
+      log("stop signal received");
+      killGroup(deps, status.child);
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
     try {
       await runPlatform(ctx, platform, {
         flows: [SELFTEST_FLOW],
@@ -2437,7 +2620,10 @@ export async function runSelftestBuild({ repoRoot, platform, runRoot }, deps) {
       output.platforms[platform].state = err instanceof Interrupt ? err.state : `failed:error`;
       log(`selftest ended early: ${err.message}`);
     } finally {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
       await stopAllDevices(ctx, meta.iosSimUdid);
+      rmQuiet(deps.fs, path.join(runDir, PGIDS_FILE));
       if (!knobs.keepRaw) rmQuiet(deps.fs, path.join(runDir, "private"));
       output.finishedAt = isoSeconds(deps.now());
       save();
