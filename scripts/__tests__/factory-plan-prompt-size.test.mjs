@@ -9,7 +9,8 @@ import { parsePlanSize } from "../lib/factory-bundle.mjs";
 // The plan size estimate (ADR-0083). PRs adding 1,500+ lines cost ~4× more and
 // nothing at plan time flagged them, so every plan carries a size estimate and
 // a marker bash reads to label the card. A large plan proposes a split, as
-// advice: the operator files sub-issues by hand, and the factory never does.
+// advice: the planner never files issues. The operator files the sub-cards by
+// hand, or comments `/split` and the factory files them (ADR-0104).
 
 const promptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "factory-plan-prompt.md");
 const prompt = readFileSync(promptPath, "utf8");
@@ -94,18 +95,19 @@ describe("planner prompt — Proposed split is advice only", () => {
     assert.match(flat, /\*\*If approved as-is:\*\*/);
   });
 
-  it("tells the planner the operator files sub-issues by hand and it never files issues", () => {
+  it("tells the planner it never files issues, and that /split has the factory file them", () => {
     assert.match(
       flat,
-      /The operator files any sub-issues by hand; you never file issues, and neither does the factory/,
+      /You never file issues\. The operator either files the sub-cards by hand or comments `\/split`, and then the factory files one sub-card per part from this section \(ADR-0104\)/,
     );
+    assert.match(flat, /give each part a concrete title/);
     assert.match(
       flat,
       /It is advice only: never file an issue for a part \(`gh issue create` stays refused\)/,
     );
     assert.match(
       flat,
-      /reply that the operator files the sub-issues by hand from the \*\*Proposed split\*\*/,
+      /reply that a comment of just `\/split` has the factory file the sub-cards from the \*\*Proposed split\*\*, or that the operator can file them by hand/,
     );
     assert.match(flat, /No `gh pr \.\.\.` \/ `gh issue edit` \/ `gh issue create`/);
   });

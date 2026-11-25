@@ -148,11 +148,11 @@ describe("factory-agent.sh browser runner: static wiring", () => {
 
   it("gives Chrome to exactly one claude call and --no-chrome to every other one", () => {
     const calls = claudeCalls(script);
-    assert.equal(calls.length, 7, "six stage calls plus the browser runner");
+    assert.equal(calls.length, 8, "seven stage calls plus the browser runner");
     const chrome = calls.filter((c) => /\s--chrome\b/.test(c));
     const noChrome = calls.filter((c) => /\s--no-chrome\b/.test(c));
     assert.equal(chrome.length, 1, "only run_browser_task may pass --chrome");
-    assert.equal(noChrome.length, 6, "every stage call must pass --no-chrome explicitly");
+    assert.equal(noChrome.length, 7, "every stage call must pass --no-chrome explicitly");
     // --no-chrome sits AFTER --effort so factory-agent-effort.test.mjs's
     // `--dangerously-skip-permissions --effort "$X"` counts keep holding. The
     // implement call's effort is IMPL_EFFORT (coding or revision, ADR-0101).
@@ -214,7 +214,7 @@ describe("factory-agent.sh browser runner: static wiring", () => {
       extract("evidence_upload"),
       /node "\$SCRIPT_DIR\/lib\/evidence-upload\.mjs" upload --issue "\$issue_num"/,
     );
-    assert.equal(claudeCalls(script).length, 7, "no claude call was added for it");
+    assert.equal(claudeCalls(script).length, 8, "no claude call was added for it");
     for (const c of claudeCalls(script)) {
       assert.doesNotMatch(c, /evidence-upload|evidence_upload|publish_screenshots/);
     }

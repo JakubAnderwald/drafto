@@ -510,9 +510,11 @@ describe("setup-factory-labels.sh: oversize-approved", () => {
     const header = readFileSync(labelsPath, "utf8").split("\n");
     const end = header.indexOf("", 1);
     assert.equal(r.stdout, header.slice(1, end).join("\n") + "\n");
+    assert.match(r.stdout, /oversize-approved lets such a card be implemented as-is \(ADR-0103\)/);
+    // The header's last line (ADR-0104's), so nothing after the blank line leaks.
     assert.match(
       r.stdout,
-      /oversize-approved lets such a card be implemented as-is \(ADR-0103\)\.\n$/,
+      /factory-split marks a card the factory split into sub-cards \(ADR-0104\)\.\n$/,
     );
   });
 });
