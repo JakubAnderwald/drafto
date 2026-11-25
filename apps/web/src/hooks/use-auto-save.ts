@@ -67,6 +67,17 @@ async function sendPatch(noteId: string, data: SaveData): Promise<Response> {
   }
 }
 
+/**
+ * Keep a save sent outside the drain loop in the logout flush until it settles. Logout then
+ * waits for it even when the page hide or unmount that sent it happened earlier, so signing
+ * out can't end the session under it.
+ */
+function holdForLogout(save: Promise<void>): Promise<void> {
+  const unregister = registerPendingSaveFlusher(() => save);
+  void save.then(unregister, unregister);
+  return save;
+}
+
 /** Report a failed save to Sentry. The payload is note content, so it is never attached. */
 function captureSaveFailure(failure: SaveFailure, where: SaveSource, noteId: string) {
   if ("error" in failure) {
@@ -123,14 +134,18 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   // The newest `updated_at` recorded, so an older response landing late (a page-hide
   // flush overtook it) doesn't roll `lastSavedAt` back.
   const lastSavedAtRef = useRef<string | null>(null);
-  // The payload the drain loop has in flight, and whether a flush has since re-sent it
-  // (with newer edits on top). A superseded request's failure restores nothing: the newer
-  // request carries everything it did.
-  const inFlightRef = useRef<SaveData | null>(null);
+  // The payload the drain loop has in flight, with the cancel generation it was sent under,
+  // and whether a flush has since re-sent it (with newer edits on top). A superseded
+  // request's failure restores nothing: the newer request carries everything it did.
+  const inFlightRef = useRef<{ data: SaveData; cancelGen: number } | null>(null);
   const supersededRef = useRef(false);
   // Bumped by `cancelPendingSave`. A request sent before a cancel carries discarded edits,
   // so its failure must not bring them back.
   const cancelGenRef = useRef(0);
+  // The newest value typed for each field since the last cancel. A failed request puts back
+  // only the fields still holding it: an older value would overwrite a newer edit that is
+  // queued, in flight on another request, or already saved.
+  const latestEditRef = useRef<SaveData>({});
 
   const recordSaved = useCallback((updated: unknown) => {
     if (typeof updated !== "object" || updated === null) return;
@@ -152,11 +167,22 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
     [noteId],
   );
 
-  /** Put a failed payload back in the queue, under anything typed since. */
+  /**
+   * Put a failed payload back in the queue, under anything typed since. Only the fields
+   * still holding the newest value typed go back. Returns null once this hook no longer
+   * edits the note, otherwise whether any field went back.
+   */
   const restorePending = useCallback(
-    (data: SaveData) => {
-      if (!noteId || activeNoteIdRef.current !== noteId) return false;
-      pendingData.current = { ...data, ...pendingData.current };
+    (data: SaveData): boolean | null => {
+      if (!noteId || activeNoteIdRef.current !== noteId) return null;
+      const latest = latestEditRef.current;
+      const current = Object.fromEntries(
+        Object.entries(data).filter(
+          ([field, value]) => field in latest && Object.is(latest[field], value),
+        ),
+      );
+      if (Object.keys(current).length === 0) return false;
+      pendingData.current = { ...current, ...pendingData.current };
       setHasPendingChanges(true);
       return true;
     },
@@ -166,14 +192,17 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   /**
    * After a failed save: requeue the payload and report the first failure of the streak.
    * When this hook no longer edits the note, nothing will retry it, so always report.
+   * Returns whether any edit went back in the queue.
    */
   const handleFailure = useCallback(
-    (data: SaveData, failure: SaveFailure, where: SaveSource) => {
-      if (restorePending(data)) {
-        reportFailure(failure, where);
-      } else if (noteId) {
-        captureSaveFailure(failure, where, noteId);
+    (data: SaveData, failure: SaveFailure, where: SaveSource): boolean => {
+      const restored = restorePending(data);
+      if (restored === null) {
+        if (noteId) captureSaveFailure(failure, where, noteId);
+        return false;
       }
+      reportFailure(failure, where);
+      return restored;
     },
     [noteId, reportFailure, restorePending],
   );
@@ -232,7 +261,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
           setSaveStatus("saving");
           const sent: SaveData = toSave;
           const cancelGen = cancelGenRef.current;
-          inFlightRef.current = sent;
+          inFlightRef.current = { data: sent, cancelGen };
           supersededRef.current = false;
 
           try {
@@ -304,8 +333,8 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
 
   /**
    * Send a payload outside the drain loop, for a page that may not live to read the
-   * response (unmount, page hide). On failure the payload goes back in the queue while
-   * this hook still edits the note; after that it can only be reported.
+   * response (unmount, page hide). On failure, the fields no newer edit has replaced go back
+   * in the queue while this hook still edits the note; after that it can only be reported.
    */
   const sendDetached = useCallback(
     async (data: SaveData, where: SaveSource) => {
@@ -327,9 +356,10 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
           }
           return;
         }
-        // Discarded by `cancelPendingSave` while in flight: let it go.
-        if (cancelGen !== cancelGenRef.current) return;
         const body: unknown = await readJson(res);
+        // Discarded by `cancelPendingSave` while in flight, or while its body was read: let
+        // it go.
+        if (cancelGen !== cancelGenRef.current) return;
         const quotaError = contentQuotaErrorFromResponse(res.status, body);
         if (quotaError) {
           if (restorePending(data)) {
@@ -344,23 +374,25 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
         failure = { error };
       }
 
-      if (activeNoteIdRef.current === noteId) {
+      // When a newer save carries every field, nothing is unsaved: leave the status to it.
+      if (handleFailure(data, failure, where)) {
         setSaveStatus("error");
         setSaveError(null);
       }
-      handleFailure(data, failure, where);
     },
     [noteId, expireSession, recordSaved, handleFailure, restorePending],
   );
 
   /**
    * The payload to send outside the drain loop: pending edits over the one in flight, if
-   * any. Marks the request in flight superseded, so its failure restores nothing.
+   * any. Marks the request in flight superseded, so its failure restores nothing. Edits
+   * `cancelPendingSave` discarded while in flight are not sent again.
    */
   const takeOverInFlight = useCallback((pending: SaveData): SaveData => {
-    if (!inFlightRef.current) return pending;
+    const inFlight = inFlightRef.current;
+    if (!inFlight || inFlight.cancelGen !== cancelGenRef.current) return pending;
     supersededRef.current = true;
-    return { ...inFlightRef.current, ...pending };
+    return { ...inFlight.data, ...pending };
   }, []);
 
   /**
@@ -382,7 +414,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
         // The drain loop would hold this until the save in flight answers, which a
         // closing page never sees. Send it now, over the payload in flight, so this
         // request alone settles both.
-        waits.push(sendDetached(takeOverInFlight(pending), "page-hide"));
+        waits.push(holdForLogout(sendDetached(takeOverInFlight(pending), "page-hide")));
       } else {
         save(pending);
       }
@@ -394,6 +426,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   const debouncedSave = useCallback(
     (data: SaveData) => {
       pendingData.current = { ...pendingData.current, ...data };
+      latestEditRef.current = { ...latestEditRef.current, ...data };
       setHasPendingChanges(true);
 
       if (timerRef.current) {
@@ -423,6 +456,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
    */
   const cancelPendingSave = useCallback(() => {
     cancelGenRef.current += 1;
+    latestEditRef.current = {};
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -462,6 +496,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
   useEffect(() => {
     activeNoteIdRef.current = noteId;
     lastSavedAtRef.current = null;
+    latestEditRef.current = {};
     return () => {
       activeNoteIdRef.current = null;
       if (timerRef.current) {
@@ -471,7 +506,7 @@ export function useAutoSave({ noteId, debounceMs = 500 }: UseAutoSaveOptions) {
       if (pendingData.current && noteId && !sessionExpiredRef.current) {
         const data = takeOverInFlight(pendingData.current);
         pendingData.current = null;
-        void sendDetached(data, "unmount");
+        void holdForLogout(sendDetached(data, "unmount"));
       }
     };
   }, [noteId, sendDetached, takeOverInFlight]);

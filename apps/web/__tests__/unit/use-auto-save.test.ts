@@ -527,20 +527,33 @@ describe("useAutoSave", () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it("removes its listeners on unmount", () => {
+    it("removes the listeners it added on unmount", () => {
+      const addWindow = vi.spyOn(window, "addEventListener");
+      const addDocument = vi.spyOn(document, "addEventListener");
       const removeWindow = vi.spyOn(window, "removeEventListener");
       const removeDocument = vi.spyOn(document, "removeEventListener");
-      const { unmount } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 1000 }));
-      unmount();
+      try {
+        const { unmount } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 1000 }));
+        const pageHide = addWindow.mock.calls.find(([type]) => type === "pagehide")?.[1];
+        const visibility = addDocument.mock.calls.find(
+          ([type]) => type === "visibilitychange",
+        )?.[1];
+        expect(pageHide).toBeTypeOf("function");
+        expect(visibility).toBeTypeOf("function");
+        unmount();
 
-      expect(removeWindow).toHaveBeenCalledWith("pagehide", expect.any(Function));
-      expect(removeDocument).toHaveBeenCalledWith("visibilitychange", expect.any(Function));
-      act(() => {
-        window.dispatchEvent(new Event("pagehide"));
-      });
-      expect(mockFetch).not.toHaveBeenCalled();
-      removeWindow.mockRestore();
-      removeDocument.mockRestore();
+        expect(removeWindow).toHaveBeenCalledWith("pagehide", pageHide);
+        expect(removeDocument).toHaveBeenCalledWith("visibilitychange", visibility);
+        act(() => {
+          window.dispatchEvent(new Event("pagehide"));
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
+      } finally {
+        addWindow.mockRestore();
+        addDocument.mockRestore();
+        removeWindow.mockRestore();
+        removeDocument.mockRestore();
+      }
     });
 
     it("flushes to the new note only after noteId changes", () => {
@@ -663,6 +676,196 @@ describe("useAutoSave", () => {
       expect(result.current.hasPendingChanges).toBe(false);
       unmount();
       expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * "a" is in flight when switching tabs sends "ab" outside the drain loop. Back on the
+     * tab, "abc" waits in the queue until "a" answers.
+     */
+    async function typeAcrossATabSwitch(result: { current: ReturnType<typeof useAutoSave> }) {
+      act(() => {
+        result.current.debouncedSave({ title: "a" });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      act(() => {
+        result.current.debouncedSave({ title: "ab" });
+      });
+      setVisibility("hidden");
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      setVisibility("visible");
+      expect(sentBody(1)).toEqual({ title: "ab" });
+      act(() => {
+        result.current.debouncedSave({ title: "abc" });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+    }
+
+    it("doesn't put a failed flush's edit back over a newer one that was saved", async () => {
+      const inFlight = deferredFetch();
+      const flush = deferredFetch();
+      const { result, unmount } = renderHook(() =>
+        useAutoSave({ noteId: "note-1", debounceMs: 100 }),
+      );
+      await typeAcrossATabSwitch(result);
+      await act(async () => {
+        inFlight.resolve(okResponse);
+      });
+      expect(sentBody(2)).toEqual({ title: "abc" });
+      expect(result.current.saveStatus).toBe("saved");
+
+      // The "ab" flush fails last, and so does its plain-fetch retry.
+      mockFetch.mockRejectedValueOnce(new Error("offline"));
+      await act(async () => {
+        flush.reject(new Error("offline"));
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(result.current.hasPendingChanges).toBe(false);
+      expect(result.current.saveStatus).toBe("saved");
+      unmount();
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it("doesn't put a failed flush's edit back over a newer one still in flight", async () => {
+      const inFlight = deferredFetch();
+      const flush = deferredFetch();
+      const newest = deferredFetch();
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      await typeAcrossATabSwitch(result);
+      await act(async () => {
+        inFlight.resolve(okResponse);
+      });
+      expect(sentBody(2)).toEqual({ title: "abc" });
+
+      // "ab" fails while "abc" is in flight, then "abc" fails too (each with its retry).
+      mockFetch.mockRejectedValueOnce(new Error("offline"));
+      await act(async () => {
+        flush.reject(new Error("offline"));
+      });
+      mockFetch.mockRejectedValueOnce(new Error("offline"));
+      await act(async () => {
+        newest.reject(new Error("offline"));
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(5);
+
+      act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      expect(sentBody(5)).toEqual({ title: "abc" });
+    });
+
+    it("puts back only the fields of a failed flush that no newer save replaced", async () => {
+      const inFlight = deferredFetch();
+      const flush = deferredFetch();
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      act(() => {
+        result.current.debouncedSave({ title: "A" });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      act(() => {
+        result.current.debouncedSave({ title: "B", content: ["typed"] });
+      });
+      act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      expect(sentBody(1)).toEqual({ title: "B", content: ["typed"] });
+      act(() => {
+        result.current.debouncedSave({ title: "C" });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      await act(async () => {
+        inFlight.resolve(okResponse);
+      });
+      expect(sentBody(2)).toEqual({ title: "C" });
+
+      mockFetch.mockRejectedValueOnce(new Error("offline"));
+      await act(async () => {
+        flush.reject(new Error("offline"));
+      });
+
+      // The content is still unsaved; the title "B" would overwrite the saved "C".
+      expect(result.current.saveStatus).toBe("error");
+      expect(result.current.hasPendingChanges).toBe(true);
+      act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      expect(sentBody(4)).toEqual({ content: ["typed"] });
+    });
+
+    it("leaves edits discarded while in flight out of a later flush", async () => {
+      const inFlight = deferredFetch();
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      act(() => {
+        result.current.debouncedSave({ content: ["discarded"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      act(() => {
+        result.current.cancelPendingSave();
+      });
+      act(() => {
+        result.current.debouncedSave({ title: "After the reload" });
+      });
+      act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+
+      expect(sentBody(1)).toEqual({ title: "After the reload" });
+      await act(async () => {
+        inFlight.resolve(okResponse);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("lets a failed flush go when its edits are discarded while its response is read", async () => {
+      const inFlight = deferredFetch();
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      act(() => {
+        result.current.debouncedSave({ content: ["local"] });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      let sendBody: (body: unknown) => void = () => {};
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () =>
+          new Promise((resolve) => {
+            sendBody = resolve;
+          }),
+      });
+      act(() => {
+        result.current.debouncedSave({ title: "Local" });
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+
+      act(() => {
+        result.current.cancelPendingSave();
+      });
+      await act(async () => {
+        sendBody({});
+      });
+      await act(async () => {
+        inFlight.resolve(okResponse);
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(result.current.hasPendingChanges).toBe(false);
+      expect(sentry.captureMessage).not.toHaveBeenCalled();
     });
 
     it("requeues a page-hide flush that fails while the note is still open", async () => {
@@ -910,6 +1113,44 @@ describe("useAutoSave", () => {
         await flushed;
       });
       expect(done).toBe(true);
+    });
+
+    it("waits for a save an earlier page hide sent outside the drain loop", async () => {
+      const inFlight = deferredFetch();
+      const flush = deferredFetch();
+      const { result } = renderHook(() => useAutoSave({ noteId: "note-1", debounceMs: 100 }));
+      act(() => {
+        result.current.debouncedSave({ title: "First" });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      act(() => {
+        result.current.debouncedSave({ title: "Second" });
+      });
+      act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      // The drain loop is done, and nothing is queued, but the flush is still in flight.
+      await act(async () => {
+        inFlight.resolve(okResponse);
+      });
+
+      let done = false;
+      const flushed = flushPendingSaves({ timeoutMs: 60000 }).then(() => {
+        done = true;
+      });
+      await act(async () => {
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+      });
+      expect(done).toBe(false);
+
+      await act(async () => {
+        flush.resolve(okResponse);
+        await flushed;
+      });
+      expect(done).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it("unregisters on unmount", async () => {

@@ -150,7 +150,7 @@ describe("AppMenu", () => {
     expect(mockPush).toHaveBeenCalledWith("/admin");
   });
 
-  it("calls signOut and redirects on logout", async () => {
+  it("waits for pending saves to flush, then calls signOut and redirects on logout", async () => {
     const user = userEvent.setup();
 
     // Mock window.location
@@ -159,6 +159,16 @@ describe("AppMenu", () => {
       value: locationMock,
       writable: true,
     });
+
+    // The flush stays in flight until the test finishes it.
+    let finishFlush: () => void = () => {};
+    mockFlushPendingSaves.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          logoutSteps.push("flush");
+          finishFlush = resolve;
+        }),
+    );
 
     render(
       <AppMenu
@@ -171,12 +181,19 @@ describe("AppMenu", () => {
     await user.click(screen.getByTestId("app-menu-trigger"));
     await user.click(screen.getByTestId("logout-button"));
 
-    // Wait for async signOut to complete
+    // Sign-out waits while the flush is still running.
+    await vi.waitFor(() => {
+      expect(mockFlushPendingSaves).toHaveBeenCalled();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(locationMock.href).toBe("");
+
+    finishFlush();
     await vi.waitFor(() => {
       expect(locationMock.href).toBe("/login");
     });
     expect(mockSignOut).toHaveBeenCalled();
-    expect(mockFlushPendingSaves).toHaveBeenCalled();
     expect(logoutSteps).toEqual(["flush", "signOut"]);
   });
 });

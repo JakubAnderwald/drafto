@@ -176,6 +176,8 @@ test.describe("Note editing flow", () => {
   });
 
   test("a title typed just before a reload is saved by the page-hide flush", async ({ page }) => {
+    // Fake timers, running in real time until the test holds them below.
+    await page.clock.install();
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
@@ -186,11 +188,14 @@ test.describe("Note editing flow", () => {
     await expect(titleInput).toBeVisible({ timeout: 5000 });
     await expect(titleInput).toHaveValue("");
 
-    // Reload straight away, inside the 500 ms autosave debounce: only the flush on
-    // `pagehide` can save this title.
+    // Hold the page's timers, so the 500 ms autosave debounce can't fire however long the
+    // reload takes to start: only the flush on `pagehide` can save this title.
+    await page.clock.pauseAt(Date.now() + 1000);
     const noteTitle = `E2E Reload Flush ${Date.now()}`;
     await titleInput.fill(noteTitle);
     await page.reload();
+    // The reloaded page replays the pause; let its timers run again.
+    await page.clock.resume();
 
     // The keepalive PATCH may land just after the reloaded page fetches its list, so
     // reload until the row shows up.
