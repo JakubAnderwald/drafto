@@ -222,7 +222,8 @@ fi
 
 # Automatic re-runs per PR head SHA for required checks GitHub cancelled before
 # they could judge the code (no runner acquired). Spent → one comment and a hold.
-# See rerun_infra_failures.
+# See rerun_infra_failures. Red checks a no-op fix pass left as they were spend
+# the same budget, and park the card in Blocked once it is spent (ADR-0100).
 FACTORY_CI_RERUN_MAX="${FACTORY_CI_RERUN_MAX:-2}"
 # No leading zeros: bash arithmetic reads "08" as invalid octal, and a failed
 # -ge comparison would mean an unlimited budget.
@@ -4237,11 +4238,12 @@ is_ci_infra_step() {
 }
 
 # The GitHub Actions run IDs behind the failing required checks, deduped, one per
-# line. Only meaningful once classify_failing_required said "infra", which
-# guarantees every one of them is an Actions job.
+# line. After an "infra" classification every one of them is an Actions job; a
+# red one a no-op fix pass left (ADR-0100) may not be, and a check with no
+# Actions run URL (an outside service's status, or none at all) is skipped.
 pr_infra_rerun_ids() {
   pr_failing_required_checks "$1" | jq -r '
-    [ .[] | (.url | capture("/actions/runs/(?<id>[0-9]+)") | .id) ] | unique[]' 2>/dev/null || true
+    [ .[] | ((.url // "") | capture("/actions/runs/(?<id>[0-9]+)")? | .id) ] | unique[]' 2>/dev/null || true
 }
 
 # Re-runs already spent on <head_sha> (state field ciRerun = "<sha>:<count>"). 0
@@ -4263,10 +4265,18 @@ ci_rerun_count() {
 # the run also carries non-required jobs (Mobile/Desktop Checks), so it waits on
 # the RUN's status, not the required checks'. The attempt is counted BEFORE
 # calling gh, so a re-run GitHub keeps refusing still spends the budget instead
-# of retrying every tick forever.
+# of retrying every tick forever. <kind> (default "infra") only words the log:
+# "noop" is red CI a no-op fix pass left as it was (recover_noop_red_ci,
+# ADR-0100), which spends the same budget.
 rerun_infra_failures() {
-  local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4"
-  local run_ids count id status
+  local issue_num="$1" pr_num="$2" head_sha="$3" pr_view="$4" kind="${5:-infra}"
+  local run_ids count id status what why
+  what="cancelled required check(s)"
+  why="were cancelled before they ran the code (no runner, or timed out while setting up)"
+  if [[ "$kind" == "noop" ]]; then
+    what="red required check(s) a no-op fix pass left as they were"
+    why="are still red on the head a no-op fix pass left unchanged (flaky?)"
+  fi
   run_ids=$(pr_infra_rerun_ids "$pr_view")
   [[ -n "$run_ids" ]] || return 1
   while IFS= read -r id; do
@@ -4278,7 +4288,7 @@ rerun_infra_failures() {
       return 0
     fi
     if [[ "$status" != "completed" ]]; then
-      log "Issue #$issue_num: PR #$pr_num has cancelled required check(s) but run $id is still $status; re-running once it finishes"
+      log "Issue #$issue_num: PR #$pr_num has $what but run $id is still $status; re-running once it finishes"
       return 0
     fi
   done <<< "$run_ids"
@@ -4288,12 +4298,12 @@ rerun_infra_failures() {
   fi
   count=$((count + 1))
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "DRY-RUN: would re-run cancelled required checks on PR #$pr_num (run(s) $(echo "$run_ids" | tr '\n' ' '), attempt $count/$FACTORY_CI_RERUN_MAX)"
+    log "DRY-RUN: would re-run $what on PR #$pr_num (run(s) $(echo "$run_ids" | tr '\n' ' '), attempt $count/$FACTORY_CI_RERUN_MAX)"
     return 0
   fi
   node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciRerun "$head_sha:$count" \
     --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
-  log "Issue #$issue_num: PR #$pr_num required check(s) were cancelled before they ran the code (no runner, or timed out while setting up); re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
+  log "Issue #$issue_num: PR #$pr_num required check(s) $why; re-running (attempt $count/$FACTORY_CI_RERUN_MAX)"
   while IFS= read -r id; do
     gh run rerun "$id" --failed --repo JakubAnderwald/drafto >>"$LOG_FILE" 2>&1 \
       || log "WARNING: gh run rerun $id --failed refused for PR #$pr_num (counted against the re-run budget)"
@@ -4345,6 +4355,122 @@ recover_cancelled_ci() {
   rerun_infra_failures "$issue_num" "$pr_num" "$head_sha" "$pr_view" && return 0
   log "Issue #$issue_num: PR #$pr_num required check(s) still couldn't run after $(ci_rerun_count "$issue_num" "$head_sha") re-run(s); holding in $where"
   comment_ci_infra_hold "$issue_num" "$pr_num" "$head_sha" "$pr_view" "$where"
+}
+
+# ── Red CI a no-op fix pass left as it was (ADR-0100) ───────────────────────
+# A --watch fix pass that ends `noop` on red CI found nothing in the code to
+# change. Another Claude pass on the same head and the same red checks would
+# see the same thing (#899 spent ten of them), so bash records what the pass
+# looked at (state field ciNoop) and, the next time it sees exactly that, re-runs
+# the checks itself under the ciRerun budget (FACTORY_CI_RERUN_MAX). Once that
+# is spent the card goes to Blocked with one comment. A new push changes the
+# head SHA and re-arms the card; so does clearing ciNoop by hand.
+
+# pr_ci_noop_key <pr-view-json> — "<head sha>:<failing required check names,
+# sorted, comma-joined>", or nothing when the head or the failing set is unknown.
+pr_ci_noop_key() {
+  local pr_view="$1" sha names
+  sha=$(echo "$pr_view" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
+  [[ -n "$sha" ]] || return 0
+  names=$(pr_failing_required_checks "$pr_view" | jq -r '[ .[].name ] | unique | join(",")' 2>/dev/null || echo "")
+  [[ -n "$names" ]] || return 0
+  echo "$sha:$names"
+}
+
+# record_ci_noop <issue> <pr-view-json> — called by the noop arm on red CI.
+record_ci_noop() {
+  local issue_num="$1" key
+  key=$(pr_ci_noop_key "$2")
+  [[ -n "$key" ]] || return 0
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: would record ciNoop for #$issue_num ($key)"
+    return 0
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" ciNoop "$key" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+}
+
+# ci_noop_repeat <issue> <pr-view-json> — exit 0 when the PR is red on the same
+# head SHA with the same failing required checks a no-op fix pass already saw.
+# An unreadable record is no match: the fix loop runs as before.
+ci_noop_repeat() {
+  local issue_num="$1" key record
+  key=$(pr_ci_noop_key "$2")
+  [[ -n "$key" ]] || return 1
+  record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+    --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.ciNoop // ""' 2>/dev/null || echo "")
+  [[ "$record" == "$key" ]]
+}
+
+# comment_ci_noop_hold <issue> <item-id> <pr> <head-sha> <pr-view-json>
+# The re-runs are spent and the checks are still red: comment once per head SHA
+# (drafto-factory-ci-noop-hold:<sha12>) with the gh run rerun commands, move the
+# card to Blocked and free its worktree slot. It holds no lock on anything a
+# person needs, and the fix agent has nothing left to try. A tick that can't
+# read the issue's comments, or can't post, leaves the card for the next tick
+# rather than park it without the notice.
+comment_ci_noop_hold() {
+  local issue_num="$1" item_id="$2" pr_num="$3" head_sha="$4" pr_view="$5"
+  local sha12="${head_sha:0:12}" rc=0 summary commands count tried
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    log "DRY-RUN: would comment on #$issue_num and move it to Blocked (red CI on ${sha12} after a no-op fix pass and the re-runs)"
+    return 0
+  fi
+  issue_marker_check "$issue_num" "drafto-factory-ci-noop-hold:$sha12" || rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    log "WARNING: couldn't read #$issue_num's comments (transient?); holding the card in In Review until the next tick"
+    return 1
+  fi
+  if [[ "$rc" -eq 1 ]]; then
+    count=$(ci_rerun_count "$issue_num" "$head_sha")
+    if [[ "$count" -gt 0 ]]; then
+      tried="The factory re-ran them $count time(s), and they stayed red."
+    else
+      tried="The factory didn't re-run them (\`FACTORY_CI_RERUN_MAX\` is ${FACTORY_CI_RERUN_MAX:-2}, or none of them is a GitHub Actions job)."
+    fi
+    summary=$(pr_failing_required_summary "$pr_view" | sed 's/^/- /')
+    commands=$(pr_infra_rerun_ids "$pr_view" | sed 's/^/gh run rerun /; s/$/ --failed --repo JakubAnderwald\/drafto/')
+    [[ -n "$commands" ]] || commands="# none of these is a GitHub Actions job; re-run it where it runs"
+    if ! gh issue comment "$issue_num" --repo JakubAnderwald/drafto \
+      --body "🏭 **CI is still red on \`$sha12\`, and the fix agent found nothing to change.**
+
+A fix pass on PR #$pr_num ended \`noop\` with these required checks red:
+
+$summary
+
+$tried To try them again:
+
+\`\`\`bash
+$commands
+\`\`\`
+
+The card is in **Blocked** and its worktree slot is free. Push a fix (a new commit \
+re-arms the factory), or re-run the checks and drag the card back to **In Review** \
+once they're green. To give the fix agent another pass on this same commit, clear \
+the record first: \`node scripts/lib/state-cli.mjs factory:set-issue-field $issue_num ciNoop \"\" --state-file logs/factory-state.json\` \
+in \`drafto-factory\`.
+
+<!-- drafto-factory-ci-noop-hold:$sha12 -->" >>"$LOG_FILE" 2>&1; then
+      log "WARNING: couldn't post the red-CI hold notice on #$issue_num (transient?); holding the card in In Review until the next tick"
+      return 1
+    fi
+  fi
+  transition_status "$item_id" "$issue_num" "Blocked" || true
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" lastError \
+    "red CI on $sha12: a no-op fix pass and the re-runs left it red" \
+    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  release_slot_and_worktree "$issue_num"
+}
+
+# recover_noop_red_ci <issue> <item-id> <pr> <head-sha> <pr-view-json> — --watch,
+# once ci_noop_repeat matched: re-run the red checks (no Claude run, no fix
+# attempt), or, the budget spent, comment once and park the card in Blocked.
+recover_noop_red_ci() {
+  local issue_num="$1" item_id="$2" pr_num="$3" head_sha="$4" pr_view="$5"
+  log "Issue #$issue_num: PR #$pr_num is red on ${head_sha:0:12} with the checks a no-op fix pass already looked at; re-running them in bash, no Claude run (ADR-0100)"
+  rerun_infra_failures "$issue_num" "$pr_num" "$head_sha" "$pr_view" noop && return 0
+  log "Issue #$issue_num: PR #$pr_num required check(s) still red after $(ci_rerun_count "$issue_num" "$head_sha") re-run(s); moving to Blocked"
+  comment_ci_noop_hold "$issue_num" "$item_id" "$pr_num" "$head_sha" "$pr_view"
 }
 
 # Which beta lanes may be dispatched for an In Test card, given the platforms in
@@ -10288,6 +10414,14 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
           log "WARNING: couldn't look up PR #$PR_NUM's cancelled jobs (transient?); skipping this tick"
           continue ;;
       esac
+      # Red CI a no-op fix pass already looked at, on the same head with the
+      # same failing checks (ADR-0100): another Claude pass would find nothing
+      # new. Re-run the checks in bash, or park the card in Blocked once the
+      # re-runs are spent.
+      if ci_noop_repeat "$ISSUE_NUM" "$PR_VIEW"; then
+        recover_noop_red_ci "$ISSUE_NUM" "$ITEM_ID" "$PR_NUM" "$WATCH_HEAD_SHA" "$PR_VIEW"
+        continue
+      fi
     fi
 
     if [[ "$FAILING" -gt 0 || "$THREAD_COUNT" -gt 0 || "$CONFLICTING" -eq 1 ]]; then
@@ -10576,9 +10710,13 @@ A human should take a look. Reset with \
           # runner checks never get here (re-run above), so what's left is a red
           # the agent can't fix: spend an attempt so it ends in Blocked, not an
           # endless loop (--release hands red Approved cards back here — ADR-0041).
+          # Also record the head and the red checks (ciNoop): the next tick that
+          # sees the same re-runs them in bash instead of another Claude pass,
+          # and parks the card in Blocked once the re-runs are spent (ADR-0100).
           if [[ "$FAILING" -gt 0 ]]; then
             log "Issue #$ISSUE_NUM: no-op fix pass on $FAILING failing required check(s); spending one attempt"
             node "$SCRIPT_DIR/lib/state-cli.mjs" factory:bump-attempts "$ISSUE_NUM" --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+            record_ci_noop "$ISSUE_NUM" "$PR_VIEW"
           fi
           ;;
         blocked)

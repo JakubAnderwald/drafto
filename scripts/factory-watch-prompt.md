@@ -253,8 +253,12 @@ attempt.
 1. **Triage.** Read `ciSummaryEnveloped`, `unresolvedComments` and
    `reviewThreads`. Decide which are actionable. A flaky / infrastructure
    failure (network, runner timeout, Vercel rate-limit) is **not** something you
-   can fix — emit `action=noop` so bash leaves the card for the next tick rather
-   than burning the retry budget.
+   can fix — emit `action=noop`. A `noop` on red CI still spends one attempt,
+   and bash records the PR head and the red checks: when it next sees the same
+   red on the same head, it re-runs those checks itself instead of invoking you
+   again, and moves the card to Blocked once its re-runs are spent. So emit
+   `noop` only when nothing in the code could make the red pass; if you can
+   reproduce it and fix it, do.
 
    You may be invoked with **green CI and only review threads** to address. That
    is a normal run, not an error.
@@ -364,7 +368,9 @@ attempt.
    - `action=fixed` — you pushed a fix; bash leaves the card In Review and
      re-checks CI next tick.
    - `action=noop` — nothing actionable this tick (transient failure, or the
-     comments needed no code change); bash leaves the card In Review.
+     comments needed no code change); bash leaves the card In Review. On red
+     CI it also spends an attempt and re-runs the red checks in bash next tick,
+     with no further fix pass on that head (step 1).
    - `action=blocked` — the fix needs to leave the plan's scope / phase, or the
      failure is unrecoverable; bash advances the card to Blocked.
    - `pr=<url>` — always the PR URL (the PR already exists).

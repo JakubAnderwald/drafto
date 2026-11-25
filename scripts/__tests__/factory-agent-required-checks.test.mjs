@@ -29,6 +29,11 @@ describe("factory-agent required-context gating: static wiring", () => {
     assert.match(script, /^rerun_infra_failures\(\) \{/m);
     assert.match(script, /^comment_ci_infra_hold\(\) \{/m);
     assert.match(script, /^recover_cancelled_ci\(\) \{/m);
+    assert.match(script, /^pr_ci_noop_key\(\) \{/m);
+    assert.match(script, /^record_ci_noop\(\) \{/m);
+    assert.match(script, /^ci_noop_repeat\(\) \{/m);
+    assert.match(script, /^comment_ci_noop_hold\(\) \{/m);
+    assert.match(script, /^recover_noop_red_ci\(\) \{/m);
   });
 
   it("fetches the required contexts in BOTH --watch and --release", () => {
@@ -131,6 +136,36 @@ describe("factory-agent required-context gating: static wiring", () => {
       noop[0],
       /if \[\[ "\$FAILING" -gt 0 \]\]; then[\s\S]*?factory:bump-attempts "\$ISSUE_NUM"/,
     );
+  });
+
+  // #899 / PR #915: ten Claude passes ended `noop` on the same red checks of
+  // the same head. ADR-0100 records the first and re-runs the checks in bash.
+  it("--watch records a no-op pass over red CI (ciNoop) along with the attempt", () => {
+    const noop = script.match(/ {8}noop\)\n[\s\S]*?\n {10};;/);
+    assert.ok(noop, "noop arm not found");
+    assert.match(
+      noop[0],
+      /if \[\[ "\$FAILING" -gt 0 \]\]; then[\s\S]*?factory:bump-attempts "\$ISSUE_NUM"[^\n]*\n\s*record_ci_noop "\$ISSUE_NUM" "\$PR_VIEW"\n\s*fi/,
+    );
+  });
+
+  it("--watch re-runs red CI a no-op pass already saw before any fix pass, after classifying it", () => {
+    const infraAt = script.search(
+      /if \[\[ "\$CONFLICTING" -eq 0 && "\$FAILING" -gt 0 && "\$\{REQUIRED_CONTEXTS_JSON:-\[\]\}" != "\[\]" \]\]; then/,
+    );
+    const fixLoopAt = script.search(
+      /failing check\(s\), \$THREAD_COUNT open thread\(s\) → fix loop/,
+    );
+    const block = script.slice(infraAt, fixLoopAt);
+    const classifyAt = block.search(/classify_failing_required/);
+    const repeatAt = block.search(
+      /if ci_noop_repeat "\$ISSUE_NUM" "\$PR_VIEW"; then\n\s*recover_noop_red_ci "\$ISSUE_NUM" "\$ITEM_ID" "\$PR_NUM" "\$WATCH_HEAD_SHA" "\$PR_VIEW"\n\s*continue\n/,
+    );
+    assert.ok(repeatAt > 0, "the ciNoop repeat check is not in the watch CI block");
+    assert.ok(classifyAt < repeatAt, "cancelled-before-a-runner checks keep their own path");
+    // Nothing between the check and the fix loop's Claude call can be reached
+    // on a repeat: the block ends in `continue`.
+    assert.doesNotMatch(block.slice(repeatAt), /run-claude\.mjs/);
   });
 
   it("surfaces advisory (non-required) reds in the In Test hand-off comment", () => {
@@ -614,6 +649,16 @@ EOF`,
       const other = "https://github.com/JakubAnderwald/drafto/actions/runs/42/job/7";
       assert.equal(ids(withCheck("SonarCloud", { detailsUrl: other })), "37371041547\n42");
     });
+
+    it("skips a red check that isn't an Actions job (a no-op pass's red may hold one)", () => {
+      const view = withCheck("SonarCloud", { detailsUrl: "https://sonarcloud.io/dashboard?id=x" });
+      assert.equal(ids(view), "37371041547");
+      const none = {
+        headRefOid: SHA,
+        statusCheckRollup: [{ context: "SonarCloud", state: "FAILURE" }],
+      };
+      assert.equal(ids(none), "");
+    });
   });
 
   describe("rerun_infra_failures", () => {
@@ -780,6 +825,257 @@ EOF`,
       const out = run(1);
       assert.match(out, /still couldn't run after 2 re-run\(s\); holding in In Review/);
       assert.match(out, new RegExp(`HOLD 654 657 ${SHA} In Review`));
+    });
+  });
+  // ADR-0100 — #899 / PR #915: ten Claude passes ended `noop` on the same red
+  // checks of the same head. The first one is recorded (ciNoop); a repeat
+  // re-runs the checks in bash under the ciRerun budget, then parks the card
+  // in Blocked with one comment. A new head SHA re-arms the card.
+  describe("red CI a no-op fix pass left (ADR-0100)", () => {
+    const SHA_915 = "9b9d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c";
+    const PR_915 = {
+      headRefOid: SHA_915,
+      statusCheckRollup: [
+        { name: "Unit & Integration Tests", conclusion: "FAILURE", detailsUrl: `${RUN}/3` },
+        { name: "Lint & Typecheck", conclusion: "SUCCESS", detailsUrl: `${RUN}/1` },
+        { name: "E2E Tests", conclusion: "FAILURE", detailsUrl: `${RUN}/4` },
+        { context: "CodeRabbit", state: "FAILURE" },
+      ],
+    };
+    const KEY_915 = `${SHA_915}:E2E Tests,Unit & Integration Tests`;
+    const ALL = [
+      "pr_failing_required_checks",
+      "pr_failing_required_summary",
+      "pr_infra_rerun_ids",
+      "ci_rerun_count",
+      "rerun_infra_failures",
+      "pr_ci_noop_key",
+      "record_ci_noop",
+      "ci_noop_repeat",
+      "comment_ci_noop_hold",
+      "recover_noop_red_ci",
+    ];
+
+    it("pr_ci_noop_key: head SHA plus the required red check names, sorted", () => {
+      const key = (view) =>
+        runBash(
+          ["pr_failing_required_checks", "pr_ci_noop_key"],
+          `pr_ci_noop_key ${q(view)}`,
+        ).stdout.trim();
+      assert.equal(key(PR_915), KEY_915);
+      // No head SHA, or nothing failing: no key, so nothing is ever matched.
+      assert.equal(key({ ...PR_915, headRefOid: "" }), "");
+      assert.equal(key({ headRefOid: SHA_915, statusCheckRollup: [] }), "");
+    });
+
+    it("record_ci_noop stores the key in ciNoop", () => {
+      const out = runBash(
+        ["pr_failing_required_checks", "pr_ci_noop_key", "record_ci_noop"],
+        `record_ci_noop 899 ${q(PR_915)}`,
+        {
+          pre: 'node() { echo "NODE $*"; }',
+        },
+      ).stdout;
+      assert.ok(
+        out.includes(
+          `NODE /nonexistent/lib/state-cli.mjs factory:set-issue-field 899 ciNoop ${KEY_915}`,
+        ),
+        out,
+      );
+    });
+
+    it("record_ci_noop writes nothing on a dry run", () => {
+      const out = runBash(
+        ["pr_failing_required_checks", "pr_ci_noop_key", "record_ci_noop"],
+        `record_ci_noop 899 ${q(PR_915)}`,
+        {
+          pre: 'node() { echo "NODE $*"; }',
+          env: { DRY_RUN: "1" },
+        },
+      ).stdout;
+      assert.doesNotMatch(out, /NODE/);
+      assert.match(out, /DRY-RUN: would record ciNoop for #899/);
+    });
+
+    describe("ci_noop_repeat", () => {
+      const repeat = (view, record, pre = "") =>
+        runBash(
+          ["pr_failing_required_checks", "pr_ci_noop_key", "ci_noop_repeat"],
+          `ci_noop_repeat 899 ${q(view)}; echo "RC=$?"`,
+          { pre: `node() { echo '{"ciNoop":${JSON.stringify(record)}}'; }\n${pre}` },
+        ).stdout;
+
+      it("matches the same head with the same red checks", () => {
+        assert.match(repeat(PR_915, KEY_915), /RC=0/);
+      });
+
+      it("a new push (new head SHA) re-arms the card", () => {
+        assert.match(repeat({ ...PR_915, headRefOid: "f".repeat(40) }, KEY_915), /RC=1/);
+      });
+
+      it("a different set of red checks is new to the fix agent", () => {
+        const view = {
+          ...PR_915,
+          statusCheckRollup: PR_915.statusCheckRollup.filter((c) => c.name !== "E2E Tests"),
+        };
+        assert.match(repeat(view, KEY_915), /RC=1/);
+      });
+
+      it("no record, or an unreadable one, is no match: the fix loop runs as before", () => {
+        assert.match(repeat(PR_915, null), /RC=1/);
+        assert.match(repeat(PR_915, KEY_915, "node() { return 1; }"), /RC=1/);
+      });
+    });
+
+    // Two ticks of --watch and more, against a state file: the noop arm
+    // records, each repeat re-runs under the budget with no Claude run, the
+    // spent budget parks the card in Blocked with one comment, and a new push
+    // re-arms it.
+    it("end to end: recorded, re-run twice with no Claude, then Blocked once; a new head re-arms", () => {
+      // Every stub and tick marker writes to $LOG_FILE, where the helpers send
+      // gh and node output too, so the printed log keeps the order.
+      const state = [
+        'say() { echo "$*" >>"$LOG_FILE"; }',
+        'STATE=$(mktemp); echo "{}" >"$STATE"',
+        'node() { case "$2" in',
+        '  factory:get-issue) cat "$STATE" ;;',
+        '  factory:set-issue-field) jq --arg f "$4" --arg v "$5" \'.[$f] = $v\' "$STATE" >"$STATE.new" && mv "$STATE.new" "$STATE"; say "SET $4 $5" ;;',
+        '  *) say "NODE $*" ;;',
+        "esac; }",
+        'gh() { if [[ "$1 $2" == "run view" ]]; then echo completed; else say "GH $*"; fi; }',
+        'issue_marker_check() { grep -q "COMMENTED" "$STATE.marks" 2>/dev/null && return 0; return 1; }',
+        'transition_status() { say "TRANSITION $1 $2 $3"; }',
+        'release_slot_and_worktree() { say "RELEASE $1"; }',
+      ].join("\n");
+      const view = q(PR_915);
+      const tick = `if ci_noop_repeat 899 ${view}; then recover_noop_red_ci 899 ITEM_899 915 "${SHA_915}" ${view}; else say "FIX PASS"; fi`;
+      const body = [
+        "say '--- tick 1 (fix pass ended noop)'",
+        `record_ci_noop 899 ${view}`,
+        "say '--- tick 2'",
+        tick,
+        "say '--- tick 3'",
+        tick,
+        "say '--- tick 4'",
+        tick,
+        'echo COMMENTED >"$STATE.marks"',
+        "say '--- tick 5 (operator dragged it back unchanged)'",
+        tick,
+        "say '--- tick 6 (new push)'",
+        `if ci_noop_repeat 899 ${q({ ...PR_915, headRefOid: "f".repeat(40) })}; then say REPEAT; else say "FIX PASS"; fi`,
+        'rm -f "$STATE" "$STATE.marks"',
+      ].join("\n");
+      const res = runBash(ALL, body, { pre: state });
+      assert.equal(res.stderr, "");
+      const ticks = res.stdout.split(/^--- /m);
+      const [t1, t2, t3, t4, t5, t6] = ticks.slice(1);
+      assert.ok(t1.includes(`SET ciNoop ${KEY_915}`), t1);
+      for (const [t, n] of [
+        [t2, 1],
+        [t3, 2],
+      ]) {
+        assert.ok(t.includes(`SET ciRerun ${SHA_915}:${n}`), t);
+        assert.match(t, /GH run rerun 37371041547 --failed --repo JakubAnderwald\/drafto/);
+        assert.doesNotMatch(t, /FIX PASS|run-claude|NODE|TRANSITION|GH issue comment/);
+      }
+      assert.match(t4, /^GH issue comment 899 --repo JakubAnderwald\/drafto --body/m);
+      assert.match(
+        t4,
+        /CI is still red on `9b9d1c2e3f4a`, and the fix agent found nothing to change/,
+      );
+      assert.match(t4, /re-ran them 2 time\(s\), and they stayed red/);
+      assert.match(t4, /^gh run rerun 37371041547 --failed --repo JakubAnderwald\/drafto$/m);
+      assert.match(
+        t4,
+        /factory:set-issue-field 899 ciNoop "" --state-file logs\/factory-state\.json/,
+      );
+      assert.match(t4, /<!-- drafto-factory-ci-noop-hold:9b9d1c2e3f4a -->/);
+      assert.match(t4, /TRANSITION ITEM_899 899 Blocked/);
+      assert.match(t4, /SET lastError red CI on 9b9d1c2e3f4a/);
+      assert.match(t4, /RELEASE 899/);
+      assert.doesNotMatch(t4, /GH run rerun|FIX PASS/);
+      // The comment goes out once per head; the card still goes back to Blocked.
+      assert.doesNotMatch(t5, /GH issue comment/);
+      assert.match(t5, /TRANSITION ITEM_899 899 Blocked/);
+      assert.match(t6, /FIX PASS/);
+    });
+
+    describe("comment_ci_noop_hold", () => {
+      const hold = ({ marker = 1, ghComment = 0, env = {} } = {}) =>
+        runBash(
+          [
+            "pr_failing_required_checks",
+            "pr_failing_required_summary",
+            "pr_infra_rerun_ids",
+            "ci_rerun_count",
+            "comment_ci_noop_hold",
+          ],
+          `comment_ci_noop_hold 899 ITEM_899 915 "${SHA_915}" ${q(PR_915)}; echo "RC=$?"`,
+          {
+            pre: [
+              `issue_marker_check() { return ${marker}; }`,
+              `gh() { if [[ "$1 $2" == "issue comment" ]]; then echo "GH $*"; return ${ghComment}; fi; echo "GH $*"; }`,
+              `node() { if [[ "$2" == "factory:get-issue" ]]; then echo '{"ciRerun":"${SHA_915}:0"}'; else echo "NODE $*"; fi; }`,
+              'transition_status() { echo "TRANSITION $1 $2 $3"; }',
+              'release_slot_and_worktree() { echo "RELEASE $1"; }',
+            ].join("\n"),
+            env,
+          },
+        ).stdout;
+
+      it("says so when nothing was re-run, and still lists the commands", () => {
+        const out = hold({ env: { FACTORY_CI_RERUN_MAX: "0" } });
+        assert.doesNotMatch(out, /re-ran them/);
+        assert.match(out, /didn't re-run them \(`FACTORY_CI_RERUN_MAX` is 0/);
+        assert.match(out, /- E2E Tests — FAILURE/);
+        assert.doesNotMatch(out, /CodeRabbit/);
+        assert.match(out, /TRANSITION ITEM_899 899 Blocked/);
+        assert.match(out, /RC=0/);
+      });
+
+      it("comments unreadable: no comment, no move; the next tick tries again", () => {
+        const out = hold({ marker: 2 });
+        assert.doesNotMatch(out, /GH issue comment|TRANSITION|RELEASE/);
+        assert.match(out, /RC=1/);
+      });
+
+      it("a comment GitHub refused: no move without the notice", () => {
+        const out = hold({ ghComment: 1 });
+        assert.match(out, /GH issue comment/);
+        assert.doesNotMatch(out, /TRANSITION|RELEASE/);
+        assert.match(out, /couldn't post the red-CI hold notice/);
+        assert.match(out, /RC=1/);
+      });
+
+      it("dry run neither comments nor moves the card", () => {
+        const out = hold({ env: { DRY_RUN: "1" } });
+        assert.doesNotMatch(out, /GH issue comment|TRANSITION|RELEASE/);
+        assert.match(out, /DRY-RUN: would comment on #899 and move it to Blocked/);
+      });
+    });
+
+    it("rerun_infra_failures words the noop re-run as such", () => {
+      const out = runBash(
+        [
+          "pr_failing_required_checks",
+          "pr_infra_rerun_ids",
+          "ci_rerun_count",
+          "rerun_infra_failures",
+        ],
+        `rerun_infra_failures 899 915 "${SHA_915}" ${q(PR_915)} noop; echo "RC=$?"`,
+        {
+          pre: [
+            'node() { if [[ "$2" == "factory:get-issue" ]]; then echo "{}"; else echo "NODE $*"; fi; }',
+            'gh() { if [[ "$1 $2" == "run view" ]]; then echo completed; else echo "GH $*"; fi; }',
+          ].join("\n"),
+        },
+      ).stdout;
+      assert.match(
+        out,
+        /required check\(s\) are still red on the head a no-op fix pass left unchanged/,
+      );
+      assert.doesNotMatch(out, /were cancelled/);
+      assert.match(out, /RC=0/);
     });
   });
 });

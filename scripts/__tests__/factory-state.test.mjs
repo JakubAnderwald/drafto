@@ -358,6 +358,18 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["9"].ciRerun, null);
   });
 
+  it("tracks ciNoop (red CI a no-op fix pass left, ADR-0100) and clears it", () => {
+    // The key carries the head SHA and check names with spaces, `&` and commas
+    // between them; the operator's re-arm is `factory:set-issue-field <n> ciNoop ""`.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 899).ciNoop, null);
+    const key = "5a5201f119ea5c7020b17bc5f098ceed4841c80f:E2E Tests,Unit & Integration Tests";
+    setIssueField(s, 899, "ciNoop", key);
+    assert.equal(s.issues["899"].ciNoop, key);
+    setIssueField(s, 899, "ciNoop", "");
+    assert.equal(s.issues["899"].ciNoop, null);
+  });
+
   it("tracks the migration renumber gate's fields (ADR-0077)", () => {
     // The gate won't renumber unless it can record the count, and carry-over
     // reads the rest; a rejected write must not fail silently.

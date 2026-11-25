@@ -4,6 +4,8 @@
 - **Date**: 2026-10-08
 - **Authors**: Jakub Anderwald
 
+> **Amended by [ADR-0100](./0100-factory-reruns-red-ci-after-noop-pass.md)** (2026-11-25): A `noop` fix pass on red CI (point 2) still spends an attempt, and now also records the head SHA and the red checks (`ciNoop`). When `--watch` next sees the same red on the same head, it re-runs those checks in bash under the `ciRerun` budget instead of starting another Claude pass. Once the budget is spent it comments once (`drafto-factory-ci-noop-hold:<sha12>`) and moves the card to **Blocked**, releasing its slot.
+
 > **Update 2026-10-27**: Every job in `.github/workflows/ci.yml` now has a `timeout-minutes`, well above its usual run. Before, a job slowed to a crawl in the Playwright browser install held a PR's checks with no end in sight, because GitHub's default limit is 6 hours. This amends Decision point 1 and point 2, and the "Treat every `CANCELLED` as infra" alternative. A job that **timed out** (`CANCELLED` or `TIMED_OUT`, confirmed by its "exceeded the maximum execution time" annotation) in a step that can't be the code's fault now joins point 1 as "CI couldn't run" and is re-run under the same budget. Those steps (`is_ci_infra_step`) are the runner's set-up and cleanup, checkout, toolchain setup, cache and artifact transfers, the browser install and SonarCloud. Everything else in point 2 stands: a timeout in `pnpm install`, the build or the tests is still red, and a job someone cancelled by hand is still never re-run, so the alternative's reasoning still holds for both.
 
 ## Context
