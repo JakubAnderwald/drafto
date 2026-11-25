@@ -132,7 +132,7 @@ function loadedIndex(): AttachmentCacheIndex {
   try {
     const dir = getAttachmentCacheDir();
     if (dir.exists) {
-      // A cache made before the backup flag existed (1.4.x) gets it now.
+      // A cache made before the backup flag existed (1.5.0–1.7.0) gets it now.
       ensureAttachmentCacheRoot();
       walk(dir, "", found);
       const file = indexFile();

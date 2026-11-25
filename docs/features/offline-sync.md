@@ -133,8 +133,8 @@ by `attachmentCacheRelativePath`):
   ([ADR-0099](../adr/0099-mobile-attachment-cache-excluded-from-backups.md)).
   On iOS, `ensureAttachmentCacheRoot()` (`src/lib/data/attachment-cache-root.ts`)
   creates the folder and flags it `isExcludedFromBackup` through the local
-  `backup-exclusion` native module, once per launch and again after a sign-out
-  wipe recreates it; a write still goes ahead if the flag can't be set. On
+  `backup-exclusion` native module, once per launch and again when the folder is
+  created again after a sign-out wipe; a write still goes ahead if the flag can't be set. On
   Android the folder is in Auto Backup's `file` domain, which expo-secure-store's
   include-only rules (`sharedpref` alone) already leave out;
   `__tests__/unit/android-backup-rules.test.ts` pins that. Desktop sets

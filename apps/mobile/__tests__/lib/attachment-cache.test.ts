@@ -656,11 +656,16 @@ describe("the cache folder stays out of backups (ADR-0099)", () => {
     expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
   });
 
-  it("flags the folder before a download writes into it", async () => {
+  it("flags the folder before a download writes into it, its partial file included", async () => {
     fakeFs.download.mockResolvedValue({ size: 42, mtime: 5 });
-    const seen = writtenAtFlag(`${CACHE}/u/n/a.jpg`);
+    const anythingInCache: boolean[] = [];
+    mockExcludeFromBackup.mockImplementation((dir: { uri: string }) => {
+      expect(dir.uri).toBe(CACHE);
+      anythingInCache.push([...fakeFs.files.keys()].some((key) => key.startsWith(`${CACHE}/`)));
+      return true;
+    });
     await downloadToCache("u/n/a.jpg", "https://signed/a");
-    expect(seen).toEqual([false]);
+    expect(anythingInCache).toEqual([false]);
     expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
   });
 

@@ -9,7 +9,11 @@ import appConfig from "../../app.config";
 // `android:dataExtractionRules`), and those only include the `sharedpref`
 // domain. Once a rules file has an <include>, Auto Backup backs up only what
 // it includes, so the cache stays out of Android backups (ADR-0099). These
-// tests fail when a change to the app or an upgrade breaks that chain.
+// tests run secure-store's own manifest plugin with app.config.ts's options
+// and read the rules files it names, so a change to the app or a secure-store
+// upgrade that breaks the chain fails them. A plugin from another package that
+// writes backup attributes isn't seen here: the manual prebuild check in
+// docs/architecture/testing.md covers the whole built manifest.
 
 // Node's fs, read through jest: the mobile tsconfig has no Node types.
 interface ReadFs {
@@ -41,14 +45,74 @@ function secureStoreEntry(): unknown {
   );
 }
 
+type ApplicationAttributes = Record<string, string>;
+interface ManifestModConfig {
+  mods: {
+    android: {
+      manifest: (config: object) => Promise<{
+        modResults: { manifest: { application: { $: ApplicationAttributes }[] } };
+      }>;
+    };
+  };
+}
+type SecureStorePlugin = (config: object, options: object) => ManifestModConfig;
+
+/**
+ * The <application> attributes expo-secure-store's own plugin writes, run with
+ * app.config.ts's options on the template's manifest after Expo's
+ * withAllowBackup (`android:allowBackup="true"`, no rules file).
+ */
+async function secureStoreApplicationAttributes(): Promise<ApplicationAttributes> {
+  const entry = secureStoreEntry();
+  const options = Array.isArray(entry) ? ((entry[1] ?? {}) as object) : {};
+  const loaded = jest.requireActual<{ default?: SecureStorePlugin } | SecureStorePlugin>(
+    "expo-secure-store/app.plugin",
+  );
+  const plugin = typeof loaded === "function" ? loaded : loaded.default;
+  if (!plugin) throw new Error("expo-secure-store/app.plugin exports no plugin");
+  const withPlugin = plugin({ name: "drafto", slug: "drafto" }, options);
+  const application = {
+    $: { "android:name": ".MainApplication", "android:allowBackup": "true" },
+  };
+  const result = await withPlugin.mods.android.manifest({
+    ...withPlugin,
+    modResults: { manifest: { $: {}, application: [application] } },
+    modRequest: {
+      platform: "android",
+      modName: "manifest",
+      projectRoot: MOBILE_ROOT,
+      platformProjectRoot: `${MOBILE_ROOT}/android`,
+      introspect: true,
+    },
+  });
+  return result.modResults.manifest.application[0].$;
+}
+
+/** The rules file an `@xml/<name>` resource names, in the installed expo-secure-store. */
+function rulesFile(resource: string | undefined): string {
+  const name = /^@xml\/(\w+)$/.exec(resource ?? "")?.[1];
+  if (!name) throw new Error(`not an @xml resource: ${resource}`);
+  return fs.readFileSync(`${RULES_DIR}/${name}.xml`, "utf8");
+}
+
 /** The `domain` of every <include> inside `<section>…</section>` of `xml`. */
 function includeDomains(xml: string, section: string): string[] {
   const body = new RegExp(`<${section}>([\\s\\S]*?)</${section}>`).exec(xml)?.[1];
   if (body === undefined) throw new Error(`no <${section}> in the rules file`);
-  return [...body.matchAll(/<include\b[^>]*\bdomain="([^"]+)"/g)].map((match) => match[1]);
+  const includes = [...body.matchAll(/<include\b[^>]*>/g)].map((match) => match[0]);
+  return includes.map((tag) => {
+    const domain = /\bdomain=(["'])([^"']*)\1/.exec(tag)?.[2];
+    if (domain === undefined) throw new Error(`an <include> without a readable domain: ${tag}`);
+    return domain;
+  });
 }
 
 describe("Android Auto Backup leaves the attachment cache out", () => {
+  let attributes: ApplicationAttributes;
+  beforeAll(async () => {
+    attributes = await secureStoreApplicationAttributes();
+  });
+
   it("keeps expo-secure-store's backup rules on (configureAndroidBackup isn't false)", () => {
     const entry = secureStoreEntry();
     expect(entry).toBeDefined();
@@ -58,8 +122,15 @@ describe("Android Auto Backup leaves the attachment cache out", () => {
     }
   });
 
+  it("gets its backup rules written into the manifest by expo-secure-store's plugin", () => {
+    expect(attributes["android:fullBackupContent"]).toBe("@xml/secure_store_backup_rules");
+    expect(attributes["android:dataExtractionRules"]).toBe(
+      "@xml/secure_store_data_extraction_rules",
+    );
+  });
+
   it("uses rules that include only the sharedpref domain (Android 11 and lower)", () => {
-    const xml = fs.readFileSync(`${RULES_DIR}/secure_store_backup_rules.xml`, "utf8");
+    const xml = rulesFile(attributes["android:fullBackupContent"]);
     const domains = includeDomains(xml, "full-backup-content");
     // With no <include> at all, everything would be backed up.
     expect(domains.length).toBeGreaterThan(0);
@@ -69,7 +140,7 @@ describe("Android Auto Backup leaves the attachment cache out", () => {
   it.each(["cloud-backup", "device-transfer"])(
     "uses rules whose %s includes only the sharedpref domain (Android 12 and higher)",
     (section) => {
-      const xml = fs.readFileSync(`${RULES_DIR}/secure_store_data_extraction_rules.xml`, "utf8");
+      const xml = rulesFile(attributes["android:dataExtractionRules"]);
       const domains = includeDomains(xml, section);
       expect(domains.length).toBeGreaterThan(0);
       expect(domains.every((domain) => domain === "sharedpref")).toBe(true);
