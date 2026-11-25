@@ -98,21 +98,41 @@ export function adrIndexNumbers(text) {
 // twice (adrIndexDuplicates). On any other line, such as the intro, the "when
 // to write an ADR" list, or the table's header and separator that a re-padded
 // table rewrites, union would quietly keep both wordings (ADR-0105).
+//
+// The markers are read strictly: a hunk is exactly one of each, in that order,
+// and a marker-like line anywhere else (a setext `=======` underline, say) is
+// neither a row nor a marker, so it refuses union rather than being mistaken
+// for a separator. A hunk where a side dropped a base row (a row deleted on one
+// side, edited on the other) refuses too: union would keep the edited row and
+// quietly undo the deletion.
 export function conflictsOnlyOnIndexRows(merged, markerSize) {
   const marker = (ch) => new RegExp(`^\\${ch}{${markerSize}}(?: |$)`);
-  const open = marker("<");
-  const middle = [marker("|"), marker("=")];
-  const close = marker(">");
-  let inHunk = false;
+  // In hunk order: what each marker opens.
+  const markers = [
+    [marker("<"), "ours"],
+    [marker("|"), "base"],
+    [marker("="), "theirs"],
+    [marker(">"), null],
+  ];
+  let at = -1; // index into markers of the last one seen; -1 outside a hunk
+  let rows = null;
   for (const line of String(merged ?? "").split("\n")) {
-    if (!inHunk) {
-      if (open.test(line)) inHunk = true;
+    const seen = markers.findIndex(([re]) => re.test(line));
+    if (seen !== -1) {
+      if (seen !== (at + 1) % markers.length) return false;
+      if (seen === 0) rows = { ours: new Set(), base: new Set(), theirs: new Set() };
+      if (seen === 3) {
+        for (const n of rows.base) if (!rows.ours.has(n) || !rows.theirs.has(n)) return false;
+      }
+      at = seen === 3 ? -1 : seen;
       continue;
     }
-    if (close.test(line)) inHunk = false;
-    else if (!middle.some((re) => re.test(line)) && !INDEX_ROW.test(line)) return false;
+    if (at === -1) continue;
+    const row = INDEX_ROW.exec(line);
+    if (!row) return false;
+    rows[markers[at][1]].add(row[1]);
   }
-  return !inHunk;
+  return at === -1;
 }
 
 // Numbers the index lists on more than one row: [{ number, rows }], in number

@@ -1901,11 +1901,11 @@ issue_already_impl_stubbed() {
 # When the spec says schema changes, the bundle also carries `migrations`
 # (implement_migration_versions, ADR-0079): the versions the implementer names
 # its new migrations with, in order, clear of main and of every other open
-# PR's. When the approved plan mentions docs/adr or an ADR-, it also carries
+# PR's. When the approved plan mentions docs/adr or an ADR, it also carries
 # `adr` (implement_adr_numbers, ADR-0105): the number a new ADR takes, clear
-# of main and of every other open PR's. If the bundle with them can't be
-# built, the first one (both null) is used, with a warning: the prompt's
-# fallback rules and the conflict pass cover it.
+# of main and of every other open PR's. Each is added in a rebuild of its
+# own; one that can't be is left null, with a warning: the prompt's fallback
+# rules and the conflict pass cover it.
 build_implement_bundle() {
   local issue_entry="$1"
   local approved_plan="${2:-null}"
@@ -1969,26 +1969,30 @@ build_implement_bundle() {
     fi
   fi
   # The same sweep for ADR numbers, paid only by a card whose approved plan
-  # mentions an ADR: the spec has no field for it.
-  if jq -e '(.body // "") | test("docs/adr|ADR-")' <<<"$approved_plan" >/dev/null 2>&1; then
+  # mentions an ADR in any case ("a new adr", "docs/adr/", "ADR-0079"): the
+  # spec has no field for it. A plan that only cites an existing ADR pays for
+  # a sweep it doesn't need, which is cheaper than missing one that adds an ADR.
+  if jq -e '(.body // "") | test("docs/adr|\\badrs?\\b"; "i")' <<<"$approved_plan" >/dev/null 2>&1; then
     adr=$(implement_adr_numbers "$own_pr")
     if [[ "$adr" != "null" ]]; then
       extra=$(jq -c --argjson adr "$adr" '. + {adr: $adr}' <<<"$extra")
     fi
   fi
-  if [[ "$extra" != "{}" ]]; then
-    if with_extra=$(jq -c --argjson extra "$extra" '. + $extra' <<<"$input" \
-        | node "$SCRIPT_DIR/lib/factory-bundle.mjs"); then
+  # Each field is added in its own rebuild, so a problem with one never costs
+  # the other.
+  local field with_input
+  for field in migrations adr; do
+    jq -e --arg f "$field" 'has($f)' <<<"$extra" >/dev/null 2>&1 || continue
+    if with_input=$(jq -c --argjson extra "$extra" --arg f "$field" '. + {($f): $extra[$f]}' <<<"$input") \
+        && with_extra=$(node "$SCRIPT_DIR/lib/factory-bundle.mjs" <<<"$with_input"); then
+      input="$with_input"
       bundle="$with_extra"
+    elif [[ "$field" == "migrations" ]]; then
+      logerr "WARNING: couldn't add the migration versions to the implement bundle; the implementer falls back to the date rule"
     else
-      if jq -e 'has("migrations")' <<<"$extra" >/dev/null 2>&1; then
-        logerr "WARNING: couldn't add the migration versions to the implement bundle; the implementer falls back to the date rule"
-      fi
-      if jq -e 'has("adr")' <<<"$extra" >/dev/null 2>&1; then
-        logerr "WARNING: couldn't add the ADR number to the implement bundle; the implementer falls back to the next number on main"
-      fi
+      logerr "WARNING: couldn't add the ADR number to the implement bundle; the implementer falls back to the next number on main"
     fi
-  fi
+  done
   printf '%s\n' "$bundle"
 }
 

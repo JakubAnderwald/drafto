@@ -940,6 +940,48 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
     });
   });
 
+  // The real merge can disagree with the preview (git's merge diffs with
+  // histogram, merge-file with myers; a criss-cross history has a virtual
+  // base). Here an in-tree attribute, which outranks the factory's attributes
+  // file, sends the index to a driver that keeps the PR's side on the first
+  // merge and conflicts on the second. merge-main must throw the unchecked
+  // union merge away and merge again without union.
+  it("merges again without union when the union merge differs from the preview", () => {
+    const index = mainIndex();
+    const flagDir = mkdtempSync(join(tmpdir(), "wt-cli-driver-"));
+    const flag = join(flagDir, "ran");
+    gitIn(repo, [
+      "config",
+      "merge.flaky.driver",
+      `if [ -e '${flag}' ]; then exit 1; fi; touch '${flag}'; exit 0`,
+    ]);
+    try {
+      const wt = prWorktree(220, {
+        ".gitattributes": "docs/adr/README.md merge=flaky\n",
+        "docs/adr/README.md": `${index}| [0016](./0016-from-the-pr.md) | from the pr |\n`,
+      });
+      const prIndex = gitIn(wt, ["show", "HEAD:docs/adr/README.md"]);
+      advanceMain({
+        "docs/adr/README.md": `${index}| [0015](./0015-from-main.md) | from main |\n`,
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(existsSync(flag), true, "the first merge ran the driver");
+      assert.equal(out.adrIndexUnion, false);
+      assert.equal(out.status, "conflicts");
+      assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+      assert.equal(out.adrIndexReordered, false);
+      // The first merge's commit is gone: HEAD is still the PR's commit, and the
+      // index on disk is the PR's, as the driver left it.
+      assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), out.before);
+      assert.equal(readFileSync(join(wt, "docs/adr/README.md"), "utf8"), prIndex);
+      json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+      assert.equal(gitIn(wt, ["status", "--porcelain"]).trim(), "");
+    } finally {
+      gitIn(repo, ["config", "--unset", "merge.flaky.driver"]);
+      rmSync(flagDir, { recursive: true, force: true });
+    }
+  });
+
   it("merge-check reads a path with a comma in it whole", () => {
     const wt = worktreePathForIssue(repo, 202);
     write(wt, "docs/a,b.md", "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n");

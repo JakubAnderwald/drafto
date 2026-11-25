@@ -176,9 +176,61 @@ describe("the ADR index", () => {
 
     it("refuses an unterminated hunk, and reads markers of the size it is given", () => {
       assert.equal(conflictsOnlyOnIndexRows(`<<<<<<< ours\n${row("0002")}`, 7), false);
-      const big = `${"<".repeat(9)} ours\n${row("0002")}${"=".repeat(9)}\nprose\n${">".repeat(9)} theirs\n`;
+      const big = `${"<".repeat(9)} ours\n${row("0002")}${"|".repeat(9)} base\n${"=".repeat(9)}\nprose\n${">".repeat(9)} theirs\n`;
       assert.equal(conflictsOnlyOnIndexRows(big, 9), false);
       assert.equal(conflictsOnlyOnIndexRows(big.replace("prose", row("0003").trim()), 9), true);
+    });
+
+    // A README line that looks like a marker is neither a row nor a marker: it
+    // must never pass for diff3's separator or close a hunk early.
+    it("refuses a marker-like line out of place, inside a hunk or outside one", () => {
+      // A setext underline on one side reads as a second separator.
+      assert.equal(
+        conflictsOnlyOnIndexRows(hunk(row("0002"), "", "Heading\n=======\n" + row("0003")), 7),
+        false,
+      );
+      // ...or, before the base marker, as a separator out of order.
+      assert.equal(
+        conflictsOnlyOnIndexRows(hunk("=======\n" + row("0002"), "", row("0003")), 7),
+        false,
+      );
+      // A `|||||||` line in the base section.
+      assert.equal(
+        conflictsOnlyOnIndexRows(hunk(row("0002"), "||||||| x\n", row("0003")), 7),
+        false,
+      );
+      // A `>>>>>>>` line that would close the hunk early, hiding the prose after it.
+      assert.equal(
+        conflictsOnlyOnIndexRows(hunk(row("0002"), "", row("0003") + ">>>>>>> x\nprose\n"), 7),
+        false,
+      );
+      // A marker-like line outside any hunk.
+      assert.equal(
+        conflictsOnlyOnIndexRows("Title\n=======\n" + hunk(row("0002"), "", row("0003")), 7),
+        false,
+      );
+      // A hunk with its base section missing is not diff3 output.
+      assert.equal(
+        conflictsOnlyOnIndexRows(
+          `<<<<<<< ours\n${row("0002")}=======\n${row("0003")}>>>>>>> theirs\n`,
+          7,
+        ),
+        false,
+      );
+    });
+
+    // One side deleted a row the other edited: union would keep the edit and
+    // quietly undo the deletion.
+    it("refuses a hunk where a side dropped a base row", () => {
+      assert.equal(conflictsOnlyOnIndexRows(hunk("", row("0001"), row("0001", "main")), 7), false);
+      assert.equal(conflictsOnlyOnIndexRows(hunk(row("0001", "pr"), row("0001"), ""), 7), false);
+      assert.equal(
+        conflictsOnlyOnIndexRows(
+          hunk(row("0002"), row("0001") + row("0002"), row("0001") + row("0002", "main")),
+          7,
+        ),
+        false,
+      );
     });
   });
 });

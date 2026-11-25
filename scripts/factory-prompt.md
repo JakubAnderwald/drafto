@@ -86,7 +86,7 @@ has shape:
     "claimed": [ { "pr": 829, "file": "20261113000003_<name>.sql", "version": "20261113000003" } ],
     "claimedComplete": true   // for the factory, not you: ignore it
   } | null,
-  // Set only when the approved plan mentions an ADR (`docs/adr` or `ADR-`):
+  // Set only when the approved plan mentions an ADR (`docs/adr`, or the word ADR in any case):
   // the number the factory picked for a new ADR. It is after main's newest,
   // after any ADR this card's own PR already adds (on a revision), and after
   // every other open PR's. `claimed` lists the ADRs other open PRs add, for

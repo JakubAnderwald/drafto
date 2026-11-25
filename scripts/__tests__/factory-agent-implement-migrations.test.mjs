@@ -77,12 +77,19 @@ describe("build_implement_bundle — migrations (ADR-0079)", () => {
   // The real builder and allocator, the real factory-bundle.mjs; only the
   // next-version helper is stubbed ($NEXT is its stdout, "fail" a failure), and
   // adr-allocate.mjs's next-adr ($NEXT_ADR, ADR-0103). FAIL_SECOND_BUILD makes
-  // the second factory-bundle.mjs run fail. <plan> is the approved plan's body,
-  // or null for no plan.
+  // the second factory-bundle.mjs run and every later one fail; FAIL_ONLY_BUILD
+  // only the run with that number. <plan> is the approved plan's body, or null
+  // for no plan.
   function build(
     schema,
     next = JSON.stringify(NEXT),
-    { priorPr = "null", failSecond = 0, plan = null, nextAdr = JSON.stringify(NEXT_ADR) } = {},
+    {
+      priorPr = "null",
+      failSecond = 0,
+      failOnly = 0,
+      plan = null,
+      nextAdr = JSON.stringify(NEXT_ADR),
+    } = {},
   ) {
     const snippet = `
 set -euo pipefail
@@ -107,7 +114,8 @@ node() {
   fi
   if [[ "$1" == *factory-bundle.mjs ]]; then
     echo x >>"$DIR/builds"
-    if [[ "$FAIL_SECOND_BUILD" == 1 && $(wc -l <"$DIR/builds") -ge 2 ]]; then
+    if [[ "$FAIL_SECOND_BUILD" == 1 && $(wc -l <"$DIR/builds") -ge 2 ]] \\
+        || [[ $(wc -l <"$DIR/builds") -eq "$FAIL_ONLY_BUILD" ]]; then
       cat >/dev/null
       return 1
     fi
@@ -130,6 +138,7 @@ build_implement_bundle "$ISSUE" "$PLAN" "$PRIOR_PR" 0 "[]" "[]" "[]" ""
           : JSON.stringify({ id: 5, body: plan, createdAt: "2026-11-25T00:00:00Z" }),
       PRIOR_PR: priorPr,
       FAIL_SECOND_BUILD: String(failSecond),
+      FAIL_ONLY_BUILD: String(failOnly),
     });
     assert.equal(r.status, 0, r.stderr);
     return { bundle: JSON.parse(r.stdout), calls: r.calls };
@@ -234,15 +243,29 @@ build_implement_bundle "$ISSUE" "$PLAN" "$PRIOR_PR" 0 "[]" "[]" "[]" ""
       );
     });
 
+    it("asks next-adr when the plan says ADR in any case", () => {
+      for (const plan of [
+        "Record the decision in a new adr.",
+        "Write two ADRs.",
+        "See docs/adr/.",
+      ]) {
+        const { calls } = build("no", undefined, { plan });
+        assert.ok(
+          calls.some((c) => c.startsWith("ADR_HELPER next-adr")),
+          plan,
+        );
+      }
+    });
+
     it("never runs next-adr for a plan that doesn't mention one, or no plan", () => {
-      for (const plan of [null, "Change the editor toolbar.", "an adr in lower case"]) {
+      for (const plan of [null, "Change the editor toolbar.", "Fix the address bar padding."]) {
         const { bundle, calls } = build("no", undefined, { plan });
         assert.equal(bundle.adr, null);
         assert.ok(!calls.some((c) => c.startsWith("ADR_HELPER")), String(plan));
       }
     });
 
-    it("carries both fields from one rebuild when the card needs both", () => {
+    it("carries both fields when the card needs both", () => {
       const { bundle, calls } = build("yes", undefined, { plan: PLAN });
       assert.equal(bundle.adr.next, "0100");
       assert.deepEqual(bundle.migrations.versions, VERSIONS);
@@ -279,6 +302,25 @@ build_implement_bundle "$ISSUE" "$PLAN" "$PRIOR_PR" 0 "[]" "[]" "[]" ""
           /^LOGERR WARNING: couldn't add the migration versions to the implement bundle/.test(c),
         ),
       );
+    });
+
+    // Each field has its own rebuild: one that fails never costs the other.
+    it("keeps the other field when only one field's rebuild fails", () => {
+      // Build 1 is the bare bundle, 2 adds the migrations, 3 the ADR number.
+      const noMigrations = build("yes", undefined, { plan: PLAN, failOnly: 2 });
+      assert.equal(noMigrations.bundle.migrations, null);
+      assert.equal(noMigrations.bundle.adr.next, "0100");
+      assert.ok(
+        noMigrations.calls.some((c) => /couldn't add the migration versions/.test(c)),
+        noMigrations.calls.join("\n"),
+      );
+      assert.ok(!noMigrations.calls.some((c) => /couldn't add the ADR number/.test(c)));
+
+      const noAdr = build("yes", undefined, { plan: PLAN, failOnly: 3 });
+      assert.equal(noAdr.bundle.adr, null);
+      assert.deepEqual(noAdr.bundle.migrations.versions, VERSIONS);
+      assert.ok(noAdr.calls.some((c) => /couldn't add the ADR number/.test(c)));
+      assert.ok(!noAdr.calls.some((c) => /couldn't add the migration versions/.test(c)));
     });
   });
 
