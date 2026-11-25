@@ -1,0 +1,9 @@
+# Merge attributes for the factory's conflict pass (ADR-0103).
+#
+# worktree-cli.mjs merge-main passes this file to `git merge` with
+# `-c core.attributesFile=<this file>`, so it applies whatever the PR branch
+# carries: an old branch has no .gitattributes of its own. The union driver
+# keeps every line both sides added, so two PRs that each appended a row to the
+# ADR index merge cleanly instead of stopping the merge for a Claude run.
+# merge-main then checks the result for an ADR listed twice.
+docs/adr/README.md merge=union

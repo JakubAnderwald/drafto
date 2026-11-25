@@ -60,6 +60,13 @@ function bash(snippet, env = {}) {
 
 describe("build_implement_bundle — migrations (ADR-0079)", () => {
   const VERSIONS = ["20261113000002", "20261113000003", "20261113000004"];
+  const NEXT_ADR = {
+    mainNewest: "0098",
+    next: "0100",
+    own: [],
+    claimed: [{ pr: 901, file: "0099-x.md" }],
+    skipped: [],
+  };
   const NEXT = {
     mainNewest: "20261112000002",
     ownNewest: null,
@@ -68,9 +75,15 @@ describe("build_implement_bundle — migrations (ADR-0079)", () => {
     skipped: [840],
   };
   // The real builder and allocator, the real factory-bundle.mjs; only the
-  // next-version helper is stubbed ($NEXT is its stdout, "fail" a failure).
-  // FAIL_SECOND_BUILD makes the second factory-bundle.mjs run fail.
-  function build(schema, next = JSON.stringify(NEXT), { priorPr = "null", failSecond = 0 } = {}) {
+  // next-version helper is stubbed ($NEXT is its stdout, "fail" a failure), and
+  // adr-allocate.mjs's next-adr ($NEXT_ADR, ADR-0103). FAIL_SECOND_BUILD makes
+  // the second factory-bundle.mjs run fail. <plan> is the approved plan's body,
+  // or null for no plan.
+  function build(
+    schema,
+    next = JSON.stringify(NEXT),
+    { priorPr = "null", failSecond = 0, plan = null, nextAdr = JSON.stringify(NEXT_ADR) } = {},
+  ) {
     const snippet = `
 set -euo pipefail
 CALLS="$DIR/calls"; : >"$CALLS"
@@ -86,6 +99,12 @@ node() {
     printf '%s\\n' "$NEXT"
     return 0
   fi
+  if [[ "$1" == *adr-allocate.mjs ]]; then
+    echo "ADR_HELPER \${*:2}" >>"$CALLS"
+    [[ "$NEXT_ADR" == fail ]] && return 1
+    printf '%s\\n' "$NEXT_ADR"
+    return 0
+  fi
   if [[ "$1" == *factory-bundle.mjs ]]; then
     echo x >>"$DIR/builds"
     if [[ "$FAIL_SECOND_BUILD" == 1 && $(wc -l <"$DIR/builds") -ge 2 ]]; then
@@ -97,12 +116,18 @@ node() {
 }
 ${extract("build_implement_bundle")}
 ${extract("implement_migration_versions")}
-build_implement_bundle "$ISSUE" null "$PRIOR_PR" 0 "[]" "[]" "[]" ""
+${extract("implement_adr_numbers")}
+build_implement_bundle "$ISSUE" "$PLAN" "$PRIOR_PR" 0 "[]" "[]" "[]" ""
 `;
     const issue = JSON.stringify({ number: 794, title: "t", body: body(schema), labels: [] });
     const r = bash(snippet, {
       ISSUE: issue,
       NEXT: next,
+      NEXT_ADR: nextAdr,
+      PLAN:
+        plan === null
+          ? "null"
+          : JSON.stringify({ id: 5, body: plan, createdAt: "2026-11-25T00:00:00Z" }),
       PRIOR_PR: priorPr,
       FAIL_SECOND_BUILD: String(failSecond),
     });
@@ -176,6 +201,85 @@ build_implement_bundle "$ISSUE" null "$PRIOR_PR" 0 "[]" "[]" "[]" ""
       // stdout is the bundle: no log line may land in it (JSON.parse passed).
       assert.ok(!calls.some((c) => c.startsWith("LOG ")));
     }
+  });
+
+  // ADR-0103: a plan that mentions an ADR gets the number the new ADR takes.
+  describe("adr (ADR-0103)", () => {
+    const PLAN = "Write `docs/adr/NNNN-x.md` and amend ADR-0061.";
+
+    it("asks next-adr for the number when the approved plan mentions an ADR", () => {
+      for (const plan of [PLAN, "Amend ADR-0061 only.", "Touch docs/adr/README.md."]) {
+        const { bundle, calls } = build("no", undefined, { plan });
+        assert.deepEqual(bundle.adr, {
+          mainNewest: "0098",
+          next: "0100",
+          own: [],
+          claimed: [{ pr: 901, file: "0099-x.md", number: "0099" }],
+        });
+        assert.ok(
+          calls.some((c) => /^ADR_HELPER next-adr --root \S+$/.test(c)),
+          calls.join("\n"),
+        );
+        assert.ok(!calls.some((c) => c.startsWith("HELPER")), "no migration sweep");
+        assert.equal(bundle.migrations, null);
+      }
+    });
+
+    it("names the card's own PR on a revision", () => {
+      const priorPr = JSON.stringify({ number: 835, state: "OPEN" });
+      const { calls } = build("no", undefined, { plan: PLAN, priorPr });
+      assert.ok(
+        calls.some((c) => /^ADR_HELPER next-adr --root \S+ --own-pr 835$/.test(c)),
+        calls.join("\n"),
+      );
+    });
+
+    it("never runs next-adr for a plan that doesn't mention one, or no plan", () => {
+      for (const plan of [null, "Change the editor toolbar.", "an adr in lower case"]) {
+        const { bundle, calls } = build("no", undefined, { plan });
+        assert.equal(bundle.adr, null);
+        assert.ok(!calls.some((c) => c.startsWith("ADR_HELPER")), String(plan));
+      }
+    });
+
+    it("carries both fields from one rebuild when the card needs both", () => {
+      const { bundle, calls } = build("yes", undefined, { plan: PLAN });
+      assert.equal(bundle.adr.next, "0100");
+      assert.deepEqual(bundle.migrations.versions, VERSIONS);
+      assert.ok(calls.some((c) => c.startsWith("HELPER")));
+      assert.ok(calls.some((c) => c.startsWith("ADR_HELPER")));
+    });
+
+    it("falls back to null with a warning when next-adr fails, and still builds", () => {
+      for (const nextAdr of ["fail", "not json", '{"next":"99"}', '{"next":null}']) {
+        const { bundle, calls } = build("yes", undefined, { plan: PLAN, nextAdr });
+        assert.equal(bundle.adr, null, nextAdr);
+        assert.deepEqual(bundle.migrations.versions, VERSIONS, "the migrations still land");
+        assert.ok(
+          calls.some((c) =>
+            /^LOGERR WARNING: couldn't pick an ADR number for the implement bundle/.test(c),
+          ),
+          nextAdr,
+        );
+      }
+    });
+
+    it("keeps the first bundle, warning for each field, when the rebuild fails", () => {
+      const { bundle, calls } = build("yes", undefined, { plan: PLAN, failSecond: 1 });
+      assert.equal(bundle.adr, null);
+      assert.equal(bundle.migrations, null);
+      assert.ok(
+        calls.some((c) =>
+          /^LOGERR WARNING: couldn't add the ADR number to the implement bundle/.test(c),
+        ),
+        calls.join("\n"),
+      );
+      assert.ok(
+        calls.some((c) =>
+          /^LOGERR WARNING: couldn't add the migration versions to the implement bundle/.test(c),
+        ),
+      );
+    });
   });
 
   // The versions are a help, not a precondition: a failed rebuild keeps the first bundle.

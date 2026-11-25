@@ -295,6 +295,39 @@ describe("watcher prompt — conflict pass (ADR-0061)", () => {
     assert.match(flat, /Main's ADR has the same number and its references must not change/);
   });
 
+  // ADR-0103: the index merges with the union driver, so a row both sides
+  // edited comes back twice, and the agent keeps one per ADR.
+  it("documents the union-merged ADR index and how to reconcile a duplicate row", () => {
+    assert.match(prompt, /"adrIndexDuplicates": \[ \{ "number": "0059", "rows": 2 \} \]/);
+    assert.match(
+      flat,
+      /or the ADR index lists one ADR on two rows \(`mergeConflict\.adrIndexDuplicates`\)/,
+    );
+    assert.match(
+      flat,
+      /bash merges it with git's union driver, which keeps every line either side wrote/,
+    );
+    assert.match(flat, /Keep exactly one row per ADR, in number order: main's row as main has it/);
+    assert.match(
+      flat,
+      /`pnpm exec prettier --write docs\/adr\/README\.md` to re-pad the ADR index/,
+    );
+    assert.match(flat, /or an index fix alone as `fix: reconcile the ADR index after main moved`/);
+  });
+
+  it("names every mergeConflict field the bundle carries", async () => {
+    const { buildFactoryWatchBundle } = await import("../lib/factory-bundle.mjs");
+    const shaped = buildFactoryWatchBundle({
+      issue: { number: 1, title: "x", body: "", labels: [] },
+      config: { phase: "C" },
+      repo: { nameWithOwner: "JakubAnderwald/drafto" },
+      mergeConflict: { mainSha: "a" },
+    }).mergeConflict;
+    for (const field of Object.keys(shaped)) {
+      assert.match(prompt, new RegExp(`"${field}"`), field);
+    }
+  });
+
   it("never drops main's side to make the PR apply", () => {
     assert.match(flat, /Never drop or revert main's side/);
     assert.match(flat, /run `git merge --abort`, post a one-line PR comment/);

@@ -1036,7 +1036,7 @@ function runGh(args, { timeoutMs = ghTimeoutMs(), cwd } = {}) {
 }
 
 // A claim's path: a `<version>_<name>.sql` file directly under the migrations
-// directory.
+// directory. The ADR sweep (adr-allocate.mjs, ADR-0103) passes its own.
 const CLAIM_PATH_RE = /^supabase\/migrations\/\d+_[^/]+\.sql$/;
 // The files API statuses that put a version in use: a new file, or a rename's
 // new name. A PR that edits or deletes one of main's migrations claims nothing.
@@ -1053,7 +1053,9 @@ const CLAIM_STATUSES = new Set(["added", "renamed"]);
 // sweep; the plan just doesn't avoid that PR's versions. `prs` is the open PRs
 // when the caller already listed them ([{number}]); without it a failing `gh
 // pr list` throws. Once `deadline` (a `now()` time) passes, no more PRs are
-// read: `gaveUp` is true and `checked` of `total` PRs were read.
+// read: `gaveUp` is true and `checked` of `total` PRs were read. `pathRe` and
+// `what` sweep other files the same way: adr-allocate.mjs passes docs/adr's
+// numbered ADRs (ADR-0103).
 export function claimedVersions({
   excludePr,
   gh = runGh,
@@ -1061,6 +1063,8 @@ export function claimedVersions({
   prs,
   deadline,
   now = Date.now,
+  pathRe = CLAIM_PATH_RE,
+  what = "migration versions",
 } = {}) {
   const list =
     prs ??
@@ -1095,7 +1099,7 @@ export function claimedVersions({
       }
       skipped.push(number);
       warn(
-        `migration-renumber: couldn't list PR #${number}'s files, so its migration versions ` +
+        `migration-renumber: couldn't list PR #${number}'s files, so its ${what} ` +
           `aren't avoided: ${err.message}`,
       );
       continue;
@@ -1103,7 +1107,7 @@ export function claimedVersions({
     checked += 1;
     for (const line of String(files).split("\n")) {
       const [status, file] = line.trim().split("\t");
-      if (CLAIM_STATUSES.has(status) && CLAIM_PATH_RE.test(file ?? "")) {
+      if (CLAIM_STATUSES.has(status) && pathRe.test(file ?? "")) {
         claimed.push({ pr: number, file: path.posix.basename(file) });
       }
     }
@@ -1365,8 +1369,9 @@ const SWEEP_GH_BUDGET_MS = 60_000;
 // claimedVersions() under SWEEP_GH_BUDGET_MS: each call gets at most
 // SWEEP_GH_TIMEOUT_MS and what's left of the budget; past it no more PRs are
 // read and the result has gaveUp. An injected `gh` (tests) skips the per-call
-// cap but not the deadline.
-export function sweepClaims({ excludePr, gh, now = Date.now, cwd } = {}) {
+// cap but not the deadline. `pathRe` and `what` pass through to
+// claimedVersions (the ADR sweep, ADR-0103).
+export function sweepClaims({ excludePr, gh, now = Date.now, cwd, pathRe, what } = {}) {
   const deadline = now() + SWEEP_GH_BUDGET_MS;
   const call =
     gh ??
@@ -1375,10 +1380,17 @@ export function sweepClaims({ excludePr, gh, now = Date.now, cwd } = {}) {
       if (left <= 0) throw new Error("gh ran out of time");
       return runGh(args, { timeoutMs: Math.min(SWEEP_GH_TIMEOUT_MS, left), cwd });
     });
-  return claimedVersions({ excludePr, gh: call, deadline, now });
+  return claimedVersions({
+    excludePr,
+    gh: call,
+    deadline,
+    now,
+    ...(pathRe ? { pathRe } : {}),
+    ...(what ? { what } : {}),
+  });
 }
 
-function gaveUpReason({ checked, total }) {
+export function gaveUpReason({ checked, total }) {
   return (
     `gave up listing the open PRs' files after ${SWEEP_GH_BUDGET_MS / 1000}s ` +
     `(checked ${checked} of ${total})`

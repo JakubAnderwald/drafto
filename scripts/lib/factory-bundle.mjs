@@ -94,6 +94,10 @@
 //                        "claimed": [{ "pr", "file" }] }
 //                      (migration-renumber.mjs next-version; only when the spec
 //                      says schema changes, ADR-0079),
+//     "adr"?:          { "mainNewest", "next", "own": [...],
+//                        "claimed": [{ "pr", "file" }] }
+//                      (adr-allocate.mjs next-adr; only when the approved plan
+//                      mentions an ADR, ADR-0103),
 //     "config":        { "phase", ... },
 //     "repo":          { "nameWithOwner", "headRef" }
 //   }
@@ -693,6 +697,41 @@ export function shapeMigrations(m) {
   };
 }
 
+// ADR numbers (ADR-0103): adr-allocate.mjs next-adr's result, checked and
+// capped like the migration versions above, or null.
+const MAX_CLAIMED_ADRS = 100;
+const ADR_NUMBER = /^\d{4}$/;
+const ADR_FILE = /^(\d{4})-[A-Za-z0-9_.-]{1,120}\.md$/;
+
+export function shapeAdr(a) {
+  if (!a || typeof a !== "object") return null;
+  if (typeof a.next !== "string" || !ADR_NUMBER.test(a.next) || a.next === "0000") return null;
+  const mainNewest =
+    typeof a.mainNewest === "string" && ADR_NUMBER.test(a.mainNewest) ? a.mainNewest : null;
+  // `next` is past main's newest by construction; anything else is a bug upstream.
+  if (mainNewest !== null && a.next <= mainNewest) return null;
+  const own = (Array.isArray(a.own) ? a.own : []).filter(
+    (f) => typeof f === "string" && ADR_FILE.test(f),
+  );
+  const claimed = (Array.isArray(a.claimed) ? a.claimed : [])
+    .filter(
+      (c) =>
+        c &&
+        Number.isInteger(c.pr) &&
+        c.pr > 0 &&
+        typeof c.file === "string" &&
+        ADR_FILE.test(c.file),
+    )
+    .slice(0, MAX_CLAIMED_ADRS)
+    .map((c) => ({ pr: c.pr, file: c.file, number: ADR_FILE.exec(c.file)[1] }));
+  return {
+    mainNewest,
+    next: a.next,
+    own: own.slice(0, MAX_CLAIMED_ADRS),
+    claimed,
+  };
+}
+
 export function buildFactoryImplementBundle({
   issue,
   approvedPlan,
@@ -704,6 +743,7 @@ export function buildFactoryImplementBundle({
   priorPr = null,
   attempts = 0,
   migrations = null,
+  adr = null,
   config,
   repo,
   nowIso,
@@ -767,6 +807,10 @@ export function buildFactoryImplementBundle({
     // otherwise, or when bash couldn't work them out, and the prompt's date
     // rule applies.
     migrations: spec.schemaChanges === true ? shapeMigrations(migrations) : null,
+    // The number for a new ADR, clear of main and of every other open PR's
+    // (ADR-0103). Only when the approved plan mentions an ADR; null otherwise,
+    // or when bash couldn't work it out, and the prompt's fallback applies.
+    adr: shapeAdr(adr),
     config: shapeConfig(config),
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
@@ -842,7 +886,8 @@ export function buildFactoryWatchBundle({
     reviewThreads: envelopeReviewThreads(reviewThreads),
     // Set only on a conflict pass (ADR-0061): bash has merged origin/main into
     // the branch and stopped on these files, or git merged cleanly but left two
-    // ADRs sharing a number. null on every other pass.
+    // ADRs sharing a number, or the ADR index listing one twice (ADR-0103).
+    // null on every other pass.
     mergeConflict: shapeMergeConflict(mergeConflict),
     comments: envelopeComments(comments),
     reporter: reporterFromBody(issue.body ?? ""),
@@ -871,6 +916,15 @@ function shapeMergeConflict(mc) {
       .filter((c) => c && typeof c.number === "string" && /^\d{4}$/.test(c.number))
       .map((c) => ({ number: c.number, files: names(c.files) })),
     nextFreeAdr: /^\d{4}$/.test(mc.nextFreeAdr ?? "") ? mc.nextFreeAdr : null,
+    // ADRs the merged README index lists on more than one row (ADR-0103): the
+    // union merge kept both sides' version of a row they both edited.
+    adrIndexDuplicates: (Array.isArray(mc.adrIndexDuplicates) ? mc.adrIndexDuplicates : [])
+      .filter(
+        (d) =>
+          d && typeof d.number === "string" && /^\d{4}$/.test(d.number) && Number.isInteger(d.rows),
+      )
+      .slice(0, MAX_CONFLICT_FILES)
+      .map((d) => ({ number: d.number, rows: d.rows })),
     // Migrations this PR adds that no longer sort after main's (ADR-0077):
     // merge-main's {reason, file, version?, suggested?}, string fields only.
     migrationErrors: (Array.isArray(mc.migrationErrors) ? mc.migrationErrors : [])
@@ -1866,6 +1920,7 @@ async function main() {
       priorPr: input.priorPr,
       attempts: input.attempts,
       migrations: input.migrations,
+      adr: input.adr,
       config: input.config,
       repo: input.repo,
       nowIso: input.nowIso,
