@@ -355,6 +355,17 @@ describe("split_card (extracted, real bash, gh/board/claude stubbed)", () => {
     }
   });
 
+  it("passes a refusal on once, with a single closing full stop", () => {
+    const dir = newDir();
+    try {
+      const r = splitCard(dir, { claudeOut: splitOut({ refused: "There is only one part." }) });
+      assert.match(r.posted, /the splitter declined: There is only one part\.\n/);
+      assert.doesNotMatch(r.posted, /part\.\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs every body through the spec gate before filing any", () => {
     const dir = newDir();
     try {

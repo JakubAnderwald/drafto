@@ -1973,7 +1973,7 @@ split_ack_lines() {
 # the operator why, and ack the directives so the splitter doesn't run again
 # every tick. A new `/split` comment tries again.
 split_abort() {
-  local issue_num="$1" triggers="${2:-[]}" reason="$3"
+  local issue_num="$1" triggers="${2:-[]}" reason="${3%.}"
   log "Issue #$issue_num: /split not filed: $reason"
   if printf '%s' "🏭 **Split not filed.** ${reason}.
 
