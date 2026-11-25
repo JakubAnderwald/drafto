@@ -129,6 +129,16 @@ by `attachmentCacheRelativePath`):
   (`src/lib/editor-page.ts`), so WebKit can read the cached images. The walk
   skips that folder like `.partial/` and `.index.json`, so the page is never
   indexed, evicted or swept; the next editor writes it again after a wipe.
+- The cache is left out of device backups
+  ([ADR-0099](../adr/0099-mobile-attachment-cache-excluded-from-backups.md)).
+  On iOS, `ensureAttachmentCacheRoot()` (`src/lib/data/attachment-cache-root.ts`)
+  creates the folder and flags it `isExcludedFromBackup` through the local
+  `backup-exclusion` native module, once per launch and again after a sign-out
+  wipe recreates it; a write still goes ahead if the flag can't be set. On
+  Android the folder is in Auto Backup's `file` domain, which expo-secure-store's
+  include-only rules (`sharedpref` alone) already leave out;
+  `__tests__/unit/android-backup-rules.test.ts` pins that. Desktop sets
+  `NSURLIsExcludedFromBackupKey` in `ensureDir`.
 
 The editor shows a cached image through a `file://…#drafto-attachment=<path>`
 src; see [editor.md](./editor.md). Opening a non-image attachment still needs
@@ -233,6 +243,7 @@ header's Back arrow and took its taps (PrimeTestLab report 10668, M-03).
 - [0048 — Local Writes Trigger a Debounced Sync](../adr/0048-local-writes-trigger-debounced-sync.md)
 - [0086 — Offline Attachment Cache on Mobile and Desktop](../adr/0086-offline-attachment-cache.md)
 - [0088 — Activity Days Instead of Event Analytics](../adr/0088-activity-days-instead-of-event-analytics.md)
+- [0099 — Mobile Attachment Cache Excluded from Device Backups](../adr/0099-mobile-attachment-cache-excluded-from-backups.md)
 
 ## Cross-platform notes
 

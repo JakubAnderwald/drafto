@@ -1,8 +1,7 @@
-import { Directory, File, Paths } from "expo-file-system";
+import { Directory, File } from "expo-file-system";
 import { Q } from "@nozbe/watermelondb";
 
 import {
-  ATTACHMENT_CACHE_DIR_NAME,
   ATTACHMENT_CACHE_INDEX_FILE_NAME,
   AttachmentCacheIndex,
   EDITOR_PAGE_DIR_NAME,
@@ -15,11 +14,18 @@ import type { AttachmentCacheEntry, AttachmentCacheFile } from "@drafto/shared";
 
 import { database, Attachment, Note } from "@/db";
 import { generateId } from "@/lib/generate-id";
+import {
+  ensureAttachmentCacheRoot,
+  forgetAttachmentCacheRoot,
+  getAttachmentCacheDir,
+} from "@/lib/data/attachment-cache-root";
 
 // The device's copy of each image attachment, so images show offline
 // (ADR-0086). Files live under <Documents>/attachment-cache/<storage path>,
 // the directory the editor WebView is given read access to. On iOS the editor
-// page itself is kept there too, in .editor/ (see editor-page.ts). Mirrors
+// page itself is kept there too, in .editor/ (see editor-page.ts). The folder
+// stays out of iCloud and device backups: everything written into it goes
+// through ensureAttachmentCacheRoot() first (ADR-0099). Mirrors
 // apps/desktop/src/lib/data/attachment-cache.ts (react-native-fs there).
 
 /** Cap on the cache. Files whose upload hasn't finished don't count against eviction. */
@@ -53,9 +59,7 @@ let evictionInFlight: Promise<void> | null = null;
 // Set by a call that joined the running eviction: it runs once more.
 let evictAgain = false;
 
-export function getAttachmentCacheDir(): Directory {
-  return new Directory(Paths.document, ATTACHMENT_CACHE_DIR_NAME);
-}
+export { getAttachmentCacheDir };
 
 function fileAt(relativePath: string): File {
   return new File(getAttachmentCacheDir(), ...relativePath.split("/"));
@@ -66,8 +70,12 @@ export function cacheFileFor(filePath: string): File {
   return fileAt(attachmentCacheRelativePath(filePath));
 }
 
-/** `cacheFileFor(filePath)`, with its folders created so a file can be written there. */
+/**
+ * `cacheFileFor(filePath)`, with its folders created so a file can be written
+ * there, and the cache folder flagged to stay out of backups.
+ */
 export function prepareCacheFile(filePath: string): File {
+  ensureAttachmentCacheRoot();
   const file = cacheFileFor(filePath);
   file.parentDirectory.create({ intermediates: true, idempotent: true });
   return file;
@@ -124,6 +132,8 @@ function loadedIndex(): AttachmentCacheIndex {
   try {
     const dir = getAttachmentCacheDir();
     if (dir.exists) {
+      // A cache made before the backup flag existed (1.4.x) gets it now.
+      ensureAttachmentCacheRoot();
       walk(dir, "", found);
       const file = indexFile();
       if (file.exists) saved = parseAttachmentCacheIndex(file.textSync());
@@ -262,7 +272,7 @@ async function download(filePath: string, url: string, startedIn: number): Promi
 
   // Each download writes to a file of its own (a fresh id), so one a wipe
   // overtook never writes into a later session's partial file.
-  const partialDir = new Directory(getAttachmentCacheDir(), PARTIAL_DIR_NAME);
+  const partialDir = new Directory(ensureAttachmentCacheRoot(), PARTIAL_DIR_NAME);
   partialDir.create({ intermediates: true, idempotent: true });
   const partialName = `${generateId()}.part`;
   const partial = new File(partialDir, partialName);
@@ -500,6 +510,8 @@ export function deleteAttachmentCache(): void {
   index.clear();
   downloadsInFlight.clear();
   held.clear();
+  // The backup flag goes with the folder: the next folder is flagged again.
+  forgetAttachmentCacheRoot();
   try {
     const dir = getAttachmentCacheDir();
     if (dir.exists) dir.delete();

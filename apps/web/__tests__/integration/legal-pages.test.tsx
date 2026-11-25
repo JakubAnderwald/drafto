@@ -96,7 +96,7 @@ describe("Privacy policy page", () => {
     render(<PrivacyPolicyPage />);
 
     expect(screen.getByText(/Effective date: March 8, 2026/)).toHaveTextContent(
-      "Last updated: November 22, 2026",
+      "Last updated: November 25, 2026",
     );
   });
 
@@ -120,6 +120,10 @@ describe("Privacy policy page", () => {
     );
     expect(offline).toMatch(/Images in\s+notes in the trash are kept/);
     expect(offline).toMatch(/The local copy, attachments included, is erased when you sign out/);
+    // The image copies are a re-downloadable cache, left out of device backups (ADR-0099).
+    expect(offline).toMatch(/These copies are left out of your\s+device.s backups/);
+    expect(offline).toMatch(/iCloud backups on iPhone and iPad/);
+    expect(offline).toMatch(/Android device backups/);
   });
 
   it("identifies the data controller and a contact address", () => {

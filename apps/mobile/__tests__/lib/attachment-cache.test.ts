@@ -42,6 +42,12 @@ jest.mock("@/db", () => ({
   },
 }));
 
+// The iOS backup flag (ADR-0099): the native module isn't there under Jest.
+const mockExcludeFromBackup = jest.fn();
+jest.mock("@/lib/backup-exclusion", () => ({
+  excludeFromBackup: (dir: { uri: string }) => mockExcludeFromBackup(dir),
+}));
+
 let mockIdCounter = 0;
 jest.mock("@/lib/generate-id", () => ({
   generateId: () => `id-${++mockIdCounter}`,
@@ -63,6 +69,8 @@ beforeEach(() => {
   mockAllRows.mockResolvedValue([]);
   mockNoteIds.mockReset();
   mockNoteIds.mockResolvedValue([]);
+  mockExcludeFromBackup.mockReset();
+  mockExcludeFromBackup.mockReturnValue(true);
 });
 
 describe("cacheFileFor", () => {
@@ -618,5 +626,84 @@ describe("deleteAttachmentCache", () => {
     remove.mockRestore();
     expect(warn).toHaveBeenCalledWith("Failed to delete the attachment cache:", expect.any(Error));
     warn.mockRestore();
+  });
+});
+
+describe("the cache folder stays out of backups (ADR-0099)", () => {
+  /** Record, at each flag, whether `uri` had been written yet. */
+  const writtenAtFlag = (uri: string): boolean[] => {
+    const seen: boolean[] = [];
+    mockExcludeFromBackup.mockImplementation((dir: { uri: string }) => {
+      expect(dir.uri).toBe(CACHE);
+      seen.push(fakeFs.files.has(uri));
+      return true;
+    });
+    return seen;
+  };
+
+  it("flags the folder before copyIntoCache writes into it", () => {
+    fakeFs.files.set("file:///picker/a.jpg", { size: 5, mtime: 1 });
+    const seen = writtenAtFlag(`${CACHE}/u/n/a.jpg`);
+    copyIntoCache("file:///picker/a.jpg", "u/n/a.jpg");
+    expect(seen).toEqual([false]);
+  });
+
+  it("flags the folder before retainInCache moves a file into it", () => {
+    fakeFs.files.set("file:///docs/attachments/id_a.jpg", { size: 5, mtime: 1 });
+    const seen = writtenAtFlag(`${CACHE}/u/n/a.jpg`);
+    retainInCache("file:///docs/attachments/id_a.jpg", "u/n/a.jpg");
+    expect(seen).toEqual([false]);
+    expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+  });
+
+  it("flags the folder before a download writes into it", async () => {
+    fakeFs.download.mockResolvedValue({ size: 42, mtime: 5 });
+    const seen = writtenAtFlag(`${CACHE}/u/n/a.jpg`);
+    await downloadToCache("u/n/a.jpg", "https://signed/a");
+    expect(seen).toEqual([false]);
+    expect(fakeFs.files.has(`${CACHE}/u/n/a.jpg`)).toBe(true);
+  });
+
+  it("flags a cache made before the flag existed on the first index load", () => {
+    put("u/n/a.jpg", 10);
+    listAttachmentCache();
+    expect(mockExcludeFromBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it("neither creates nor flags a folder on the index load when there is no cache", () => {
+    listAttachmentCache();
+    expect(fakeFs.dirs.has(CACHE)).toBe(false);
+    expect(mockExcludeFromBackup).not.toHaveBeenCalled();
+  });
+
+  it("sets the flag once per launch", () => {
+    fakeFs.files.set("file:///picker/a.jpg", { size: 5, mtime: 1 });
+    copyIntoCache("file:///picker/a.jpg", "u/n/a.jpg");
+    copyIntoCache("file:///picker/a.jpg", "u/n/b.jpg");
+    expect(mockExcludeFromBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it("flags the next folder again after the sign-out wipe deletes the cache", () => {
+    fakeFs.files.set("file:///picker/a.jpg", { size: 5, mtime: 1 });
+    copyIntoCache("file:///picker/a.jpg", "u/n/a.jpg");
+    deleteAttachmentCache();
+    expect(fakeFs.dirs.has(CACHE)).toBe(false);
+    copyIntoCache("file:///picker/a.jpg", "u/n/a.jpg");
+    expect(mockExcludeFromBackup).toHaveBeenCalledTimes(2);
+  });
+
+  it("still writes when the flag can't be set, and tries again on the next write", () => {
+    fakeFs.files.set("file:///picker/a.jpg", { size: 5, mtime: 1 });
+    mockExcludeFromBackup.mockReturnValue(false);
+    expect(copyIntoCache("file:///picker/a.jpg", "u/n/a.jpg")).toBe(`${CACHE}/u/n/a.jpg`);
+    const triedSoFar = mockExcludeFromBackup.mock.calls.length;
+    copyIntoCache("file:///picker/a.jpg", "u/n/b.jpg");
+    expect(mockExcludeFromBackup.mock.calls.length).toBeGreaterThan(triedSoFar);
+    // Once it is set, it isn't set again.
+    mockExcludeFromBackup.mockReturnValue(true);
+    copyIntoCache("file:///picker/a.jpg", "u/n/c.jpg");
+    const setAt = mockExcludeFromBackup.mock.calls.length;
+    copyIntoCache("file:///picker/a.jpg", "u/n/d.jpg");
+    expect(mockExcludeFromBackup).toHaveBeenCalledTimes(setAt);
   });
 });

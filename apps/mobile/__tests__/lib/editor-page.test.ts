@@ -3,12 +3,19 @@ import { editorPageFileName } from "@drafto/shared";
 
 import { fakeFs, resetFakeFs } from "../helpers/fake-expo-file-system";
 import { ensureEditorPage, usesEditorPageFile, writeEditorPage } from "@/lib/editor-page";
+import { forgetAttachmentCacheRoot } from "@/lib/data/attachment-cache-root";
 
 jest.mock(
   "expo-file-system",
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   () => require("../helpers/fake-expo-file-system").fakeFs.module,
 );
+
+// The iOS backup flag (ADR-0099): the native module isn't there under Jest.
+const mockExcludeFromBackup = jest.fn();
+jest.mock("@/lib/backup-exclusion", () => ({
+  excludeFromBackup: (dir: { uri: string }) => mockExcludeFromBackup(dir),
+}));
 
 const mockHtml = "<!doctype html><html><head></head><body>editor</body></html>";
 jest.mock("@10play/tentap-editor", () => ({
@@ -24,6 +31,9 @@ const FakeFile = fakeFs.module.File as { prototype: { write: (content: string) =
 
 beforeEach(() => {
   resetFakeFs();
+  forgetAttachmentCacheRoot();
+  mockExcludeFromBackup.mockReset();
+  mockExcludeFromBackup.mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -120,5 +130,41 @@ describe("ensureEditorPage", () => {
       "Failed to write the editor page; loading it inline:",
       expect.any(Error),
     );
+  });
+});
+
+describe("the cache folder stays out of backups (ADR-0099)", () => {
+  it("flags the cache folder before the page is written", () => {
+    const seen: boolean[] = [];
+    mockExcludeFromBackup.mockImplementation((dir: { uri: string }) => {
+      expect(dir.uri).toBe(CACHE);
+      seen.push(fakeFs.files.has(PAGE));
+      return true;
+    });
+    writeEditorPage();
+    expect(seen).toEqual([false]);
+  });
+
+  it("flags it when the page is already there too (a cache made before the flag existed)", () => {
+    fakeFs.files.set(PAGE, { size: mockHtml.length, mtime: 1 });
+    const write = jest.spyOn(FakeFile.prototype, "write");
+    expect(writeEditorPage().uri).toBe(PAGE);
+    expect(write).not.toHaveBeenCalled();
+    expect(mockExcludeFromBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it("flags it once per launch, and again after the sign-out wipe", () => {
+    writeEditorPage();
+    writeEditorPage();
+    expect(mockExcludeFromBackup).toHaveBeenCalledTimes(1);
+    forgetAttachmentCacheRoot();
+    writeEditorPage();
+    expect(mockExcludeFromBackup).toHaveBeenCalledTimes(2);
+  });
+
+  it("still writes the page when the flag can't be set", () => {
+    mockExcludeFromBackup.mockReturnValue(false);
+    expect(writeEditorPage().uri).toBe(PAGE);
+    expect(fakeFs.files.get(PAGE)?.text).toBe(mockHtml);
   });
 });

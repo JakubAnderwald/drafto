@@ -1,13 +1,10 @@
-import { Directory, File, Paths } from "expo-file-system";
+import { Directory, File } from "expo-file-system";
 import { Platform } from "react-native";
 import { editorHtml } from "@10play/tentap-editor";
-import {
-  ATTACHMENT_CACHE_DIR_NAME,
-  EDITOR_PAGE_DIR_NAME,
-  editorPageFileName,
-  editorPageLocation,
-} from "@drafto/shared";
+import { EDITOR_PAGE_DIR_NAME, editorPageFileName, editorPageLocation } from "@drafto/shared";
 import type { EditorPageLocation } from "@drafto/shared";
+
+import { ensureAttachmentCacheRoot } from "@/lib/data/attachment-cache-root";
 
 // The note editor's page as a file inside the attachment cache (ADR-0086).
 // WebKit lets the editor read cached images only when its page is loaded from
@@ -37,11 +34,6 @@ function currentPageFileName(): string {
   return pageFileName;
 }
 
-/** The attachment cache directory (attachment-cache.ts's, without loading the database). */
-function cacheDir(): Directory {
-  return new Directory(Paths.document, ATTACHMENT_CACHE_DIR_NAME);
-}
-
 /** Delete earlier versions of the page and leftovers of an interrupted write. Best-effort. */
 function removeStalePages(dir: Directory, keep: string): void {
   for (const item of dir.list()) {
@@ -57,12 +49,14 @@ function removeStalePages(dir: Directory, keep: string): void {
 /**
  * Write the editor page into the cache unless it is already there (a sign-out
  * deletes the whole cache, so it is checked every time), and return where it
- * is. It is written beside its final name and then moved there, so a
- * half-written page is never loaded. Throws when the write fails.
+ * is. The cache folder is created and flagged to stay out of backups first,
+ * even when the page is already there (ADR-0099). The page is written beside
+ * its final name and then moved there, so a half-written page is never
+ * loaded. Throws when the write fails.
  */
 export function writeEditorPage(): EditorPageLocation {
   const name = currentPageFileName();
-  const cache = cacheDir();
+  const cache = ensureAttachmentCacheRoot();
   const location = editorPageLocation(cache.uri, name);
   const dir = new Directory(cache, EDITOR_PAGE_DIR_NAME);
   const target = new File(dir, name);
