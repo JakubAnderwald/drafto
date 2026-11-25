@@ -370,6 +370,17 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["899"].ciNoop, null);
   });
 
+  it("tracks splitChildren (/split's filed sub-cards, ADR-0104) and clears it", () => {
+    // split_file_children records each sub-card as it files it, so a split that
+    // stopped part-way resumes without filing a duplicate.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 9).splitChildren, null);
+    setIssueField(s, 9, "splitChildren", "3456789012:3:1001,1002");
+    assert.equal(s.issues["9"].splitChildren, "3456789012:3:1001,1002");
+    setIssueField(s, 9, "splitChildren", "");
+    assert.equal(s.issues["9"].splitChildren, null);
+  });
+
   it("tracks the migration renumber gate's fields (ADR-0077)", () => {
     // The gate won't renumber unless it can record the count, and carry-over
     // reads the rest; a rejected write must not fail silently.

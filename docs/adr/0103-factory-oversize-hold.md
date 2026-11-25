@@ -4,6 +4,8 @@
 - **Date**: 2026-11-25
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Amended by [ADR-0104](./0104-factory-split-command.md)** (2026-11-25): `/split` is live, so the hold comment's first option works as written. An OWNER comment of just `/split` on a held card files the plan's **Proposed split** as sub-cards and parks this card in Backlog with `factory-split`. Decision 2's "the command comes with ADR-0104" and the Neutral consequence's "until that lands, a `/split` comment … starts a replan" no longer apply.
+
 ## Context
 
 [ADR-0083](./0083-planner-size-estimate-and-oversize-label.md) made every plan carry a size estimate, labelled cards estimated at 1,500 added lines or more `factory-oversize`, and gave large plans a **Proposed split** as advice. The label informs the operator; it doesn't change what the factory does. Once the plan is approved, the card is implemented as one PR whatever its size.
