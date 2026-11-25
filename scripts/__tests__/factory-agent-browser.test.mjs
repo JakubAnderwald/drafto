@@ -154,9 +154,13 @@ describe("factory-agent.sh browser runner: static wiring", () => {
     assert.equal(chrome.length, 1, "only run_browser_task may pass --chrome");
     assert.equal(noChrome.length, 6, "every stage call must pass --no-chrome explicitly");
     // --no-chrome sits AFTER --effort so factory-agent-effort.test.mjs's
-    // `--dangerously-skip-permissions --effort "$X"` counts keep holding.
+    // `--dangerously-skip-permissions --effort "$X"` counts keep holding. The
+    // implement call's effort is IMPL_EFFORT (coding or revision, ADR-0101).
     for (const c of noChrome) {
-      assert.match(c, /--effort "\$FACTORY(_PLAN|_WATCH)?_EFFORT" --no-chrome --strict-mcp-config/);
+      assert.match(
+        c,
+        /--effort "\$(FACTORY_PLAN_EFFORT|FACTORY_WATCH_EFFORT|IMPL_EFFORT)" --no-chrome --strict-mcp-config/,
+      );
     }
   });
 
@@ -703,13 +707,14 @@ preview_url_for_sha ${SHA}
 });
 
 describe("run_browser_task", () => {
-  // The model knob block (ADR-0080), so a run with `model` set goes through the
-  // same validation the factory does at startup.
+  // The model knob block (ADR-0080, ADR-0101), so a run with `model` set goes
+  // through the same validation the factory does at startup.
   const modelKnobs = script.match(/^MODEL_KNOB_RE=[\s\S]*?^ {2}FACTORY_INTEST_MODEL=""\nfi\n/m);
 
   // `model` undefined: FACTORY_BROWSER_MODEL is unset altogether and the knob
   // block left out, so the function itself must cope under `set -u`.
-  function run({ verifyRc = 0, runnerRc = 0, transcript = true, model } = {}) {
+  // `factoryModel` sets FACTORY_MODEL (unset otherwise).
+  function run({ verifyRc = 0, runnerRc = 0, transcript = true, model, factoryModel } = {}) {
     assert.ok(modelKnobs, "model knob block not found");
     const dir = mkdtempSync(join(tmpdir(), "browser-task-"));
     const calls = join(dir, "calls.txt");
@@ -758,6 +763,7 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
     const env = hermeticEnv({ HOME: dir });
     delete env.CLAUDE_CONFIG_DIR;
     if (model !== undefined) env.FACTORY_BROWSER_MODEL = model;
+    if (factoryModel !== undefined) env.FACTORY_MODEL = factoryModel;
     const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env });
     const callLog = existsSync(calls) ? readFileSync(calls, "utf8") : "";
     const stdin = existsSync(stdinFile) ? readFileSync(stdinFile, "utf8") : "";
@@ -770,15 +776,25 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
       .filter((l) => l.startsWith("arg:"))
       .map((l) => l.slice(4));
 
-  it("passes no --model when FACTORY_BROWSER_MODEL is unset or empty", () => {
-    for (const model of [undefined, ""]) {
-      const { r, dir, callLog } = run({ model });
+  it("passes FACTORY_MODEL when FACTORY_BROWSER_MODEL is unset or empty (ADR-0101)", () => {
+    // --setting-sources "" drops ~/.claude/settings.json: without --model the
+    // runner would run on the CLI's built-in default.
+    for (const [model, factoryModel, want] of [
+      [undefined, undefined, "opus[1m]"],
+      ["", undefined, "opus[1m]"],
+      ["", "claude-opus-4-1-20250805", "claude-opus-4-1-20250805"],
+    ]) {
+      const { r, dir, callLog } = run({ model, factoryModel });
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /rc=0 result=ran /);
       const args = argsOf(callLog);
-      assert.ok(!args.includes("--model"), `no --model for ${JSON.stringify(model)}`);
-      assert.deepEqual(args.slice(-2), ["--effort", "xhigh"]);
-      assert.match(r.stdout, /Invoking the browser runner \(intest, [^\n]*model=default\)/);
+      const label = JSON.stringify({ model, factoryModel });
+      assert.deepEqual(args.slice(-4), ["--model", want, "--effort", "xhigh"], label);
+      assert.equal(args.indexOf("--model"), args.lastIndexOf("--model"), "--model only once");
+      assert.ok(
+        r.stdout.includes(`model=${want})`),
+        `the log names ${want} for ${label}: ${r.stdout}`,
+      );
       assert.equal(r.stderr, "");
       rmSync(dir, { recursive: true, force: true });
     }
@@ -806,7 +822,9 @@ echo "rc=$rc result=$BROWSER_RESULT out=$BROWSER_OUT"
     assert.match(r.stdout, /rc=0 result=ran /);
     assert.match(r.stderr, /invalid FACTORY_BROWSER_MODEL='sonnet --dangerously-skip-permissions'/);
     const args = argsOf(callLog);
-    assert.ok(!args.includes("--model"));
+    // FACTORY_MODEL instead.
+    assert.deepEqual(args.slice(-4), ["--model", "opus[1m]", "--effort", "xhigh"]);
+    assert.ok(!args.includes("sonnet --dangerously-skip-permissions"));
     assert.ok(!args.includes("--dangerously-skip-permissions"));
     rmSync(dir, { recursive: true, force: true });
   });
