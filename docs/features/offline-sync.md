@@ -139,6 +139,14 @@ by `attachmentCacheRelativePath`):
   include-only rules (`sharedpref` alone) already leave out;
   `__tests__/unit/android-backup-rules.test.ts` pins that. Desktop sets
   `NSURLIsExcludedFromBackupKey` in `ensureDir`.
+- A backup can't bring back a picked image that hadn't uploaded yet. The cache
+  is the only copy of such an image, and the cache isn't in the backup. On iOS
+  the database is (WatermelonDB keeps it in `Documents`), so after a restore the
+  row comes back pending with no file. Its upload fails with "Local file not
+  found", the row turns `failed`, and every retry fails the same way. The user
+  has to attach the image again from the original. On Android the backup has
+  neither the database nor the cache, since only `sharedpref` is backed up, so
+  the row is gone as well.
 
 The editor shows a cached image through a `file://…#drafto-attachment=<path>`
 src; see [editor.md](./editor.md). Opening a non-image attachment still needs
