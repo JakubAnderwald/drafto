@@ -64,6 +64,8 @@ import {
   PGIDS_FILE,
   SIGN_IN_PRELUDE,
   WARMUP_FLOW,
+  flowDependsOnEarlier,
+  killLingeringGroups,
   isAdbDrop,
   warmUpYaml,
   ensureDeviceWorktrees,
@@ -180,6 +182,7 @@ function makeHarness() {
     volFree: 400,
     rootFree: 100,
     alive: new Set(),
+    aliveGroups: new Set(),
     procs: [],
     calls: [],
     spawns: [],
@@ -211,6 +214,11 @@ function makeHarness() {
       pid === SUP_PID ? `node device-lane.mjs _supervise ${state.runId ?? ""}` : "",
     listProcesses: async () => state.procs,
     kill: (pid, signal) => {
+      // Signal 0 only asks whether the process (or group) still exists.
+      if (signal === 0) {
+        const id = Math.abs(pid);
+        return state.alive.has(id) || state.aliveGroups.has(id);
+      }
       state.kills.push({ pid, signal });
       return true;
     },
@@ -1336,6 +1344,31 @@ describe("review fixes", () => {
       ]);
     });
 
+    it("killGroup SIGKILLs a group whose leader exited but whose members live on", async () => {
+      h.aliveGroups.add(7600); // gradle's wrapper gone, its forked daemon still building
+      await killGroup(h.deps, { pid: 7600 }, 5);
+      assert.deepEqual(h.kills, [
+        { pid: -7600, signal: "SIGTERM" },
+        { pid: -7600, signal: "SIGKILL" },
+      ]);
+    });
+
+    it("the supervisor kills a lingering step group before forgetting it, but leaves the emulator", async () => {
+      const runDir = path.join(h.repoRoot, "lingering");
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(
+        path.join(runDir, PGIDS_FILE),
+        JSON.stringify({
+          child: { pid: 7700, match: "gradle" },
+          emulator: { pid: 7701, match: "qemu" },
+        }),
+      );
+      h.aliveGroups.add(7700);
+      h.aliveGroups.add(7701);
+      assert.deepEqual(await killLingeringGroups(runDir, h.deps), [7700]);
+      assert.deepEqual(h.kills, [{ pid: -7700, signal: "SIGKILL" }]);
+    });
+
     it("selftest --build: Ctrl-C stops the step and still shuts the emulator down", async () => {
       const before = process.listenerCount("SIGINT");
       h.onRun = (cmd) => {
@@ -1425,10 +1458,17 @@ describe("review fixes", () => {
         "apps/mobile/e2e/02-create-notebook.yaml",
         "apps/mobile/e2e/06-forgot-password.yaml",
       ]);
-      const runIds = new Set(
-        callsOf("maestro").map((c) => c.args.find((a) => a.startsWith("RUN_ID="))),
+      const runIdOf = (flow) =>
+        callsOf("maestro")
+          .find((c) => c.args[3].endsWith(flow))
+          .args.find((a) => a.startsWith("RUN_ID="));
+      // The smoke flow keeps the base RUN_ID; 02 and 06 each get a fresh one,
+      // so 02's notebook can't collide with the smoke flow's "NB <RUN_ID>".
+      const ids = ["ios-all.yaml", "02-create-notebook.yaml", "06-forgot-password.yaml"].map(
+        runIdOf,
       );
-      assert.equal(runIds.size, 1);
+      assert.equal(new Set(ids).size, 3);
+      for (const id of ids) assert.match(id, /^RUN_ID=\d{10}$/);
       const prelude = readFileSync(
         path.join(deviceRootFor(h.knobs, "ios"), SIGN_IN_PRELUDE),
         "utf8",
@@ -1477,18 +1517,49 @@ describe("review fixes", () => {
       assert.ok(!/E2E_TEST|runScript|runFlow/.test(yaml));
     });
 
-    it("retries a flow once when the device dropped off adb, and says so if it still fails", async () => {
+    it("retries an Android flow once when the device dropped off adb, and says so if it still fails", async () => {
+      h.prView.files = [{ path: "apps/mobile/src/app.tsx" }];
+      let smokeRuns = 0;
+      h.onRun = (cmd, args, opts) => {
+        if (path.basename(cmd) !== "maestro" || !args[3].endsWith("android-all.yaml")) return null;
+        smokeRuns += 1;
+        writeFileSync(opts.stdoutFile, "java.io.IOException: device offline\n");
+        return { code: 1, stdout: "", timedOut: false };
+      };
+      const { output } = await startAndSupervise({ platforms: "android" });
+      assert.equal(smokeRuns, 2);
+      assert.match(output.platforms.android.flows[0].failure, /after one retry for an adb drop/);
+    });
+
+    it("never treats an iOS failure as an adb drop", async () => {
       h.prView.files = [{ path: "apps/mobile/src/app.tsx" }];
       let smokeRuns = 0;
       h.onRun = (cmd, args, opts) => {
         if (path.basename(cmd) !== "maestro" || !args[3].endsWith("ios-all.yaml")) return null;
         smokeRuns += 1;
-        writeFileSync(opts.stdoutFile, "java.io.IOException: device offline\n");
+        writeFileSync(opts.stdoutFile, "device 'ABCD' not found\n");
         return { code: 1, stdout: "", timedOut: false };
       };
       const { output } = await startAndSupervise({ platforms: "ios" });
-      assert.equal(smokeRuns, 2);
-      assert.match(output.platforms.ios.flows[0].failure, /after one retry for an adb drop/);
+      assert.equal(smokeRuns, 1);
+      assert.doesNotMatch(output.platforms.ios.flows[0].failure ?? "", /adb drop/);
+    });
+
+    it("a flow that depends on an earlier one shares the smoke flow's RUN_ID", () => {
+      assert.equal(
+        flowDependsOnEarlier("appId: x\n# Depends on: 02-create-notebook (NB <RUN_ID> exists)\n"),
+        true,
+      );
+      assert.equal(flowDependsOnEarlier("appId: x\n# Pass -e RUN_ID=<timestamp>\n"), false);
+      assert.equal(
+        flowDependsOnEarlier("appId: x\n# Depends on: 01-login (user is logged in)\n"),
+        false,
+      );
+      const real = readFileSync(
+        path.join(REPO, "apps/mobile/e2e/03-create-edit-note.yaml"),
+        "utf8",
+      );
+      assert.equal(flowDependsOnEarlier(real), true);
     });
 
     it("recognises Maestro's adb-drop signatures only", () => {

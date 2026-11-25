@@ -539,8 +539,21 @@ export function resolveDeviceBins({ env = process.env, isExecutable, knobs }) {
  * what macOS's /usr/libexec/java_home finds for 17 or newer. Unchanged
  * (javaHome null) when neither gives one; the java bin check then refuses.
  */
+export const GRADLE_JDK_MIN = 17;
+export const GRADLE_JDK_MAX = 24;
+
 export async function withJavaHome(knobs, deps) {
   if (knobs.javaHome || !deps.exec) return knobs;
+  // Gradle 9 runs only on JDK 17–24, and Maestro needs 17+: prefer the newest
+  // installed JDK in 17–24 (java_home returns the newest JDK, e.g. 27, even
+  // when asked for -v 21), and fall back to java_home's 17+ for Maestro only.
+  if (deps.fs) {
+    const inRange = findJdkHomes(knobs, deps.fs)
+      .map((h) => ({ h, v: jdkMajor(deps.fs, h) }))
+      .filter(({ v }) => v >= GRADLE_JDK_MIN && v <= GRADLE_JDK_MAX)
+      .sort((a, b) => b.v - a.v);
+    if (inRange.length) return { ...knobs, javaHome: inRange[0].h };
+  }
   const r = await deps.exec("/usr/libexec/java_home", ["-v", "17+"], { timeoutMs: QUICK_MS });
   const home = r.code === 0 ? String(r.stdout ?? "").trim() : "";
   return path.isAbsolute(home) ? { ...knobs, javaHome: home } : knobs;
@@ -658,13 +671,20 @@ async function quick(ctx, cmd, args, { timeoutMs = QUICK_MS, env, cwd } = {}) {
  * if the leader is still alive (a gradle or xcodebuild that ignores SIGTERM).
  */
 export function killGroup(deps, child, graceMs = KILL_GRACE_MS) {
-  if (!child?.pid) return;
+  if (!child?.pid) return null;
   const pid = child.pid;
   if (!deps.kill(-pid, "SIGTERM")) deps.kill(pid, "SIGTERM");
-  const timer = setTimeout(() => {
-    if (deps.isPidAlive(pid) && !deps.kill(-pid, "SIGKILL")) deps.kill(pid, "SIGKILL");
-  }, graceMs);
-  timer.unref?.();
+  // Escalate on the group, not its leader: gradle's wrapper can exit on
+  // SIGTERM while the daemon it forked keeps building. kill(-pid, 0) is true
+  // while any member is left. The timer is kept referenced, so a supervisor
+  // that is about to exit still sends it.
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      if (deps.kill(-pid, 0)) deps.kill(-pid, "SIGKILL");
+      else if (deps.isPidAlive(pid)) deps.kill(pid, "SIGKILL");
+      resolve();
+    }, graceMs);
+  });
 }
 
 // ── process groups on record ────────────────────────────────────────────────
@@ -692,15 +712,31 @@ export function recordGroup(ctx, kind, pid, match) {
 }
 
 /** Signal every recorded group whose leader is still the process recorded. */
-export async function killRecordedGroups(runDir, signal, deps) {
+export async function killRecordedGroups(runDir, signal, deps, { skip = [], only = null } = {}) {
   const killed = [];
-  for (const entry of Object.values(readGroups(deps.fs, runDir))) {
+  for (const [kind, entry] of Object.entries(readGroups(deps.fs, runDir))) {
+    if (skip.includes(kind) || (only && !only.includes(kind))) continue;
     const pid = entry?.pid;
     if (!Number.isInteger(pid) || pid <= 1 || !deps.isPidAlive(pid)) continue;
     const command = await deps.psCommand(pid);
     if (!entry.match || !command.includes(entry.match)) continue;
     if (!deps.kill(-pid, signal)) deps.kill(pid, signal);
     killed.push(pid);
+  }
+  return killed;
+}
+
+/**
+ * SIGKILL each recorded group that still has members. Unlike
+ * killRecordedGroups this doesn't need the leader alive: kill(-pgid, 0) asks
+ * the group itself. The emulator is left to stopAllDevices, which runs first.
+ */
+export async function killLingeringGroups(runDir, deps) {
+  const killed = [];
+  for (const [kind, entry] of Object.entries(readGroups(deps.fs, runDir))) {
+    const pid = entry?.pid;
+    if (kind === "emulator" || !Number.isInteger(pid) || pid <= 1) continue;
+    if (deps.kill(-pid, 0) && deps.kill(-pid, "SIGKILL")) killed.push(pid);
   }
   return killed;
 }
@@ -1023,6 +1059,16 @@ export function androidBuildArgs(knobs, jdkHomes = []) {
 
 export async function buildAndroid(ctx, root, env) {
   const { deps, meta } = ctx;
+  const javaMajorFound = meta.knobs.javaHome ? jdkMajor(deps.fs, meta.knobs.javaHome) : null;
+  if (
+    javaMajorFound !== null &&
+    (javaMajorFound < GRADLE_JDK_MIN || javaMajorFound > GRADLE_JDK_MAX)
+  ) {
+    throw new PlatformError(
+      "unavailable:java",
+      `gradle needs JDK ${GRADLE_JDK_MIN}–${GRADLE_JDK_MAX}, not ${javaMajorFound}`,
+    );
+  }
   const apk = androidApkPath(root);
   rmQuiet(deps.fs, apk);
   const log = path.join(ctx.platDir, "build.log");
@@ -1560,10 +1606,16 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
   const results = [];
   const env = maestroFlowEnv(ctx.devEnv, account);
   const secrets = account ? { password: account.password } : {};
-  // One RUN_ID for the platform's whole run, as the README's sequential runs
-  // use: a changed 03 or 04 finds the notebook the flows before it created.
+  // RUN_IDs: the smoke flow (the first) gets the base epoch. A flow whose
+  // header says "Depends on:" (03, 04: "NB <RUN_ID> exists") reuses it, since
+  // the smoke flow created that notebook. Every other flow, and every retry,
+  // gets a fresh one, so data from an earlier flow or a failed attempt can't
+  // collide with it (02 refuses a notebook name that's taken). Each is still
+  // an epoch timestamp, which the E2E clean-up patterns match.
   const runEpoch = Math.floor(deps.nowMs() / 1000);
-  const maestro = (flowPath, junit, log) =>
+  let epochSeq = 0;
+  const freshEpoch = () => runEpoch + epochSeq++;
+  const maestro = (flowPath, junit, log, epoch = runEpoch) =>
     guardedRun(
       ctx,
       meta.bins.maestro,
@@ -1572,7 +1624,7 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
         flowPath,
         junit,
         rawDir: ctx.rawDir,
-        runEpoch,
+        runEpoch: epoch,
         email: account?.email ?? null,
       }),
       {
@@ -1584,6 +1636,7 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
       },
     );
   await warmUp(ctx, { root, platform, maestro });
+  freshEpoch(); // the base epoch belongs to the smoke flow
   for (const [i, flow] of flows.entries()) {
     const index = i + 1;
     const nn = String(index).padStart(2, "0");
@@ -1604,15 +1657,24 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
       ctx.onFlow?.(results);
       continue;
     }
+    const shared = i === 0 || flowDependsOnEarlier(readText(deps.fs, path.join(root, flow)));
+    const epochFor = () => (shared ? runEpoch : freshEpoch());
     ctx.log(`maestro: ${platform} ${flowName(flow)} starting`);
-    let r = await maestro(path.join(root, flow), junit, log);
+    let r = await maestro(path.join(root, flow), junit, log, epochFor());
     let retried = false;
-    if (r.code !== 0 && !r.timedOut && isAdbDrop(readText(deps.fs, log))) {
-      // An adb drop is the harness, not the app: one more try, recorded.
+    if (
+      platform === "android" &&
+      r.code !== 0 &&
+      !r.timedOut &&
+      isAdbDrop(readText(deps.fs, log))
+    ) {
+      // An adb drop is the harness, not the app: one more try, recorded. A
+      // flow with its own RUN_ID gets a fresh one, so the failed attempt's
+      // data can't collide with the retry.
       ctx.log(`maestro: ${platform} ${flowName(flow)} lost the device (adb); retrying once`);
       rmQuiet(deps.fs, junit);
       retried = true;
-      r = await maestro(path.join(root, flow), junit, log);
+      r = await maestro(path.join(root, flow), junit, log, epochFor());
     }
     const durationS = Math.round((deps.nowMs() - started) / 1000);
     const parsed = filterJunit(readText(deps.fs, junit), { secrets });
@@ -1645,7 +1707,16 @@ export const SIGN_IN_PRELUDE = `${E2E_DIR}/.device-lane-sign-in.yaml`;
 export const WARMUP_FLOW = `${E2E_DIR}/.device-lane-warmup.yaml`;
 const WARMUP_ATTEMPTS = 2;
 
-/** Maestro's signature for the device dropping off adb mid-command. */
+/**
+ * A flow that needs data an earlier flow made under the same RUN_ID: 03 and
+ * 04 say "# Depends on: 02-create-notebook (NB <RUN_ID> exists)". A sign-in
+ * dependency ("Depends on: 01-login") doesn't count: the lane signs in itself.
+ */
+export function flowDependsOnEarlier(flowText) {
+  return /^#\s*Depends on:.*<RUN_ID>/im.test(flowText || "");
+}
+
+/** Maestro's signature for the device dropping off adb mid-command (Android). */
 export function isAdbDrop(logText) {
   return /device offline|device '[^']*' not found/i.test(logText || "");
 }
@@ -1954,6 +2025,9 @@ export async function runSupervise({ runDir }, { deps = createDeviceDeps() } = {
   } finally {
     clearTimeout(deadline);
     await stopAllDevices(ctx, meta.iosSimUdid);
+    // A step's leader can be gone while members of its group live on (a
+    // forked gradle daemon): end them before forgetting the group.
+    await killLingeringGroups(runDir, deps);
     rmQuiet(fs, path.join(runDir, PGIDS_FILE));
     if (!meta.knobs.keepRaw) rmQuiet(fs, path.join(runDir, "private"));
     output.finishedAt = isoSeconds(deps.now());
@@ -2425,7 +2499,14 @@ async function reapIdle({ repoRoot, runRoot, knobs, now, liveRunId = null }, dep
   }
   const procs = names.length ? await deps.listProcesses() : [];
   const commands = Array.isArray(procs) ? procs.map((p) => p.command) : null;
-  const isLive = (id) => id === liveRunId || !commands || commands.some((c) => c.includes(id));
+  // A foreground `selftest --build` never has its run id on a command line,
+  // but it holds the device lock for its whole run.
+  const selftestLive = holder.alive;
+  const isLive = (id) =>
+    id === liveRunId ||
+    !commands ||
+    commands.some((c) => c.includes(id)) ||
+    (selftestLive && id.startsWith("selftest-"));
   for (const name of names) {
     const full = path.join(runRoot, name);
     if (isLive(name)) continue;
@@ -2520,10 +2601,15 @@ export async function runHousekeeping(opts, deps) {
   let devices = null;
   let groups = [];
   if (!exit) {
-    // A supervisor that died never stopped its children or its device.
-    groups = await killRecordedGroups(inFlight.runDir, "SIGKILL", deps);
+    // A supervisor that died never stopped its children or its device. The
+    // emulator is shut down cleanly first (a SIGKILLed qemu can leave AVD
+    // locks and an unclean snapshot); its group is killed only if that fails.
+    groups = await killRecordedGroups(inFlight.runDir, "SIGKILL", deps, { skip: ["emulator"] });
     const ctx = hkCtx(deps, knobs, repoRoot);
     devices = await stopAllDevices(ctx, readIosSimUdid(repoRoot, deps.fs));
+    groups.push(
+      ...(await killRecordedGroups(inFlight.runDir, "SIGKILL", deps, { only: ["emulator"] })),
+    );
   }
   const finished = await finishLedgerRun(ledgerFile, inFlight.runId, {
     refund: c.refund,
