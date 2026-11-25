@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SearchOverlay } from "@/components/search/search-overlay";
+import { MAX_SEARCH_QUERY_LENGTH } from "@/lib/search-query";
 
 vi.mock("@/lib/handle-auth-error", () => ({
   handleAuthError: () => false,
@@ -67,6 +68,38 @@ describe("SearchOverlay", () => {
       />,
     );
     expect(screen.getByPlaceholderText("Search notes and notebooks...")).toBeInTheDocument();
+  });
+
+  it("caps a pasted query at the length the search route accepts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText<HTMLInputElement>("Search notes and notebooks...");
+    expect(input.maxLength).toBe(MAX_SEARCH_QUERY_LENGTH);
+
+    await user.click(input);
+    await user.paste("a".repeat(MAX_SEARCH_QUERY_LENGTH + 50));
+    vi.advanceTimersByTime(300);
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/notes/search?q=${"a".repeat(MAX_SEARCH_QUERY_LENGTH)}`,
+        expect.anything(),
+      );
+    });
+    expect(input.value).toHaveLength(MAX_SEARCH_QUERY_LENGTH);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    vi.useRealTimers();
   });
 
   it("calls onClose when close button is clicked", async () => {

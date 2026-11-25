@@ -2,6 +2,7 @@ import { type NextRequest } from "next/server";
 
 import { getAuthenticatedUserFast, errorResponse, successResponse } from "@/lib/api/utils";
 import { reportError } from "@/lib/report-error";
+import { MAX_SEARCH_QUERY_LENGTH } from "@/lib/search-query";
 
 interface SearchNoteResult {
   id: string;
@@ -24,8 +25,11 @@ export async function GET(request: NextRequest) {
     return errorResponse("Query parameter 'q' is required", 400);
   }
 
-  if (q.length > 200) {
-    return errorResponse("Query parameter 'q' must be 200 characters or less", 400);
+  if (q.length > MAX_SEARCH_QUERY_LENGTH) {
+    return errorResponse(
+      `Query parameter 'q' must be ${MAX_SEARCH_QUERY_LENGTH} characters or less`,
+      400,
+    );
   }
 
   // search_notes RPC not in generated types — Database.Functions is Record<string, never>

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 import { handleAuthError } from "@/lib/handle-auth-error";
 import { reportError } from "@/lib/report-error";
+import { MAX_SEARCH_QUERY_LENGTH } from "@/lib/search-query";
 
 interface SearchResult {
   id: string;
@@ -192,6 +193,8 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            // The route rejects a longer query, which would only ever show as a failed search.
+            maxLength={MAX_SEARCH_QUERY_LENGTH}
             placeholder="Search notes and notebooks..."
             className="flex-1"
           />
