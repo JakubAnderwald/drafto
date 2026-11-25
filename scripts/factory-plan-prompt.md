@@ -235,7 +235,8 @@ an unverified guess as settled fact.>
 ### Size
 
 <Your estimate of the PR this plan produces: added lines as a range (count
-every line the diff will add: code, tests, docs, migrations), the number of
+every line the diff will add: code, tests and their fixtures, docs and ADRs,
+new helpers, migrations, and edits to prompts and the runbook), the number of
 files, the platforms, and a class: `S` (under 200 lines), `M` (200–699), `L`
 (700–1,499) or `XL` (1,500 and up). It follows **Confidence**, and
 **Browser probe** when the plan has one.>
@@ -333,6 +334,15 @@ Constraints:
   range (`1100`, not `1,100` or `900-1300`). Bash reads it to label an
   oversize card `factory-oversize`, so re-emit it, re-estimated, on every
   replan, as you do the ack markers. Write exactly one.
+- Estimates run low: past factory PRs added 1.1–2.4× the top of their plan's
+  range, mostly in tests, fixtures, docs and ADRs, helpers, and prompt and
+  runbook edits. Count those, and put `<estLines>` near the top of your range,
+  not its middle.
+- An `XL` card is held. When the estimate is at or above the factory's
+  oversize threshold (1,500 lines by default), an approved card goes back to
+  Plan Review instead of being implemented, until it is split or the operator
+  adds the `oversize-approved` label (ADR-0103). Never lower `<estLines>` to
+  stay under the threshold: the hold exists for exactly those cards.
 - A plan of class `L` or `XL` also has a **Proposed split** section. It is
   advice only: never file an issue for a part (`gh issue create` stays
   refused), and if a comment asks you to split the card, reply that a comment

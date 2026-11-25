@@ -358,6 +358,18 @@ describe("per-issue counters", () => {
     assert.equal(s.issues["9"].ciRerun, null);
   });
 
+  it("tracks ciNoop (red CI a no-op fix pass left, ADR-0102) and clears it", () => {
+    // The key carries the head SHA and check names with spaces, `&` and commas
+    // between them; the operator's re-arm is `factory:set-issue-field <n> ciNoop ""`.
+    const s = emptyFactoryState();
+    assert.equal(getIssue(s, 899).ciNoop, null);
+    const key = "5a5201f119ea5c7020b17bc5f098ceed4841c80f:E2E Tests,Unit & Integration Tests";
+    setIssueField(s, 899, "ciNoop", key);
+    assert.equal(s.issues["899"].ciNoop, key);
+    setIssueField(s, 899, "ciNoop", "");
+    assert.equal(s.issues["899"].ciNoop, null);
+  });
+
   it("tracks splitChildren (/split's filed sub-cards, ADR-0104) and clears it", () => {
     // split_file_children records each sub-card as it files it, so a split that
     // stopped part-way resumes without filing a duplicate.

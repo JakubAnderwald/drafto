@@ -19,6 +19,8 @@ PR #841 failed on a model that both decided and wrote the split, triggered by an
 
 This decision answers each one with a narrow trigger and bash-owned writes.
 
+[ADR-0103](./0103-factory-oversize-hold.md) holds an approved oversize card in Plan Review until it is split or carries `oversize-approved`, and its hold comment already tells the operator to comment `/split`. This decision delivers that command, so the cheapest way out of the hold is one comment.
+
 ## Decision
 
 1. **The trigger is one exact command.** In the `--plan` Plan Review sweep, before any replan, the factory looks for an OWNER comment newer than the plan whose whole body, trimmed, is `/split`.

@@ -14,10 +14,18 @@ vi.mock("@/lib/handle-auth-error", () => ({
   handleAuthError: vi.fn((res: { status: number }) => res.status === 401),
 }));
 
+const sentry = vi.hoisted(() => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
+vi.mock("@sentry/nextjs", () => sentry);
+
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
 
 const { useAutoSave } = await import("@/hooks/use-auto-save");
+const { handleAuthError } = await import("@/lib/handle-auth-error");
+const { flushPendingSaves } = await import("@/lib/pending-saves");
 
 describe("useAutoSave — edge cases", () => {
   beforeEach(() => {
@@ -99,6 +107,46 @@ describe("useAutoSave — edge cases", () => {
     });
 
     expect(result.current.saveStatus).toBe("error");
+  });
+
+  it("drops the payload on 401 and sends nothing more against the expired session", async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 401 });
+
+    const { result, unmount } = renderHook(() =>
+      useAutoSave({ noteId: "note-1", debounceMs: 100 }),
+    );
+
+    act(() => {
+      result.current.debouncedSave({ title: "Typed as the session expired" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(handleAuthError).toHaveBeenCalledTimes(1);
+    expect(result.current.saveStatus).toBe("error");
+
+    // Later edits, timers, a page hide, the logout flush and the unmount flush all stay quiet:
+    // the redirect to /login proceeds instead of a retry loop.
+    act(() => {
+      result.current.debouncedSave({ title: "More typing" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    act(() => {
+      result.current.debouncedSave({ title: "Even more" });
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await act(async () => {
+      await flushPendingSaves();
+    });
+    unmount();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(sentry.captureException).not.toHaveBeenCalled();
+    expect(sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   it("merges data from multiple rapid saves", async () => {

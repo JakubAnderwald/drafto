@@ -921,6 +921,79 @@ export function truncateDiff(text, { maxBytes = 200_000, maxLines = 4000 } = {})
   return { text: out, truncated, omittedLines };
 }
 
+// The statuses GitHub's pulls/<n>/files endpoint reports for a file.
+const PR_FILE_STATUSES = new Set([
+  "added",
+  "removed",
+  "modified",
+  "renamed",
+  "copied",
+  "changed",
+  "unchanged",
+]);
+// The most file rows a review bundle carries. The files endpoint lists up to
+// 3000; the bundle travels in claude's argv, and a reviewer with this many
+// files lists the rest itself (factory-review-prompt.md, "File-list mode").
+// The same cap applies to `prFiles` in file-list mode, which repeats the paths.
+export const REVIEW_FILE_STATS_MAX = 1000;
+// GitHub's pulls/<n>/files endpoint stops at this many files, with no error.
+export const PR_FILES_API_MAX = 3000;
+
+// jq's @tsv escapes a backslash, tab, newline and carriage return in a field as
+// \\, \t, \n and \r. Undo that, so a path reaches the reviewer as git spells it.
+function unescapeTsvField(field) {
+  return field.replace(/\\([\\tnr])/g, (_, c) =>
+    c === "t" ? "\t" : c === "n" ? "\n" : c === "r" ? "\r" : "\\",
+  );
+}
+
+// Parse the review stage's file listing: one `status<TAB>path<TAB>additions<TAB>
+// deletions` line per file, as `gh api --paginate repos/…/pulls/<n>/files --jq
+// '.[]|[.status,.filename,.additions,.deletions]|@tsv'` prints it. A line that
+// doesn't have that shape is dropped rather than guessed at; use
+// parsePrFileStatsCounted when the caller must know how many were dropped.
+export function parsePrFileStats(text) {
+  return parsePrFileStatsCounted(text).files;
+}
+
+// parsePrFileStats plus `dropped`: the non-blank lines it couldn't parse. Each
+// is still a changed file the reviewer has to cover, so it counts as omitted.
+export function parsePrFileStatsCounted(text) {
+  const raw = typeof text === "string" ? text : "";
+  const files = [];
+  let dropped = 0;
+  for (const rawLine of raw.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (line.trim() === "") continue;
+    const parts = line.split("\t");
+    const [status, rawPath, additions, deletions] = parts;
+    const path = parts.length === 4 ? unescapeTsvField(rawPath) : "";
+    if (
+      parts.length !== 4 ||
+      !PR_FILE_STATUSES.has(status) ||
+      !path ||
+      path.length > 500 ||
+      !/^\d+$/.test(additions) ||
+      !/^\d+$/.test(deletions)
+    ) {
+      dropped += 1;
+      continue;
+    }
+    files.push({ status, path, additions: Number(additions), deletions: Number(deletions) });
+  }
+  return { files, dropped };
+}
+
+// The first <max> non-blank lines of <text>, newline-joined ("" for a non-string).
+function capLines(text, max) {
+  if (typeof text !== "string") return "";
+  return text
+    .split("\n")
+    .filter((l) => l.trim() !== "")
+    .slice(0, max)
+    .join("\n");
+}
+
 // Bundle for the code-review stage (`factory-agent.sh --watch`, In Review, once
 // per head SHA on a green PR). Read-only: the model reads the diff and posts
 // each finding as an inline review thread plus one marked summary comment. It
@@ -928,12 +1001,22 @@ export function truncateDiff(text, { maxBytes = 200_000, maxLines = 4000 } = {})
 // change) and the diff (what actually changed) — enough to catch scope drift as
 // well as defects. Deliberately NO comment thread: a reviewer should judge the
 // diff, not be primed by what people have already said about it.
+//
+// Two modes (`reviewDiffMode`). "inline" carries the whole diff, as before. A
+// diff truncateDiff would cut, or one `gh pr diff` refused (HTTP 406 over 300
+// files or 20,000 lines, so `prDiff` is empty), goes "file-list" instead: an
+// empty diff envelope plus `prFileStats`, one {status, path, additions,
+// deletions} per file, and the reviewer fetches each file's patch itself. A
+// truncated inline diff cost the most and was fetched again in full anyway.
+// Without a file listing (`prFileStats` empty: the files call failed) a large
+// diff stays inline and truncated, flagged by `prDiffTruncated`.
 export function buildFactoryReviewBundle({
   issue,
   approvedPlan,
   priorPr = null,
   prDiff = "",
   prFiles = "",
+  prFileStats = "",
   headSha = "",
   config,
   repo,
@@ -950,6 +1033,18 @@ export function buildFactoryReviewBundle({
   // coerces any non-string to ""), which would hand the reviewer a zero-byte
   // diff and make the whole gate decorative.
   const diff = truncateDiff(prDiff);
+  const { files: stats, dropped: statsDropped } = parsePrFileStatsCounted(prFileStats);
+  const diffText = typeof prDiff === "string" ? prDiff : "";
+  // A listing whose every row was unreadable still says the PR has files the
+  // reviewer must fetch, so it goes file-list too, never "inline, empty diff".
+  const fileList = (diff.truncated || diffText === "") && stats.length + statsDropped > 0;
+  // In file-list mode nothing is inline: every line of the diff is omitted. With
+  // no diff at all (gh refused it), the files' changed-line counts stand in.
+  const omittedLines = !fileList
+    ? diff.omittedLines
+    : diffText === ""
+      ? stats.reduce((sum, f) => sum + f.additions + f.deletions, 0)
+      : diffText.split("\n").length;
   return {
     kind: "factory_review",
     issue: shapeIssue(issue),
@@ -972,14 +1067,33 @@ export function buildFactoryReviewBundle({
         }
       : null,
     headSha: typeof headSha === "string" ? headSha : "",
+    // Not `prDiffMode`: the In Test bundle already uses that name for its
+    // full/delta choice.
+    reviewDiffMode: fileList ? "file-list" : "inline",
     // Enveloped like every other untrusted input: a hunk may quote a directive
     // and must never be read as an instruction.
-    prDiffEnveloped: envelopeBody(diff.text, "pr-diff"),
+    prDiffEnveloped: envelopeBody(fileList ? "" : diff.text, "pr-diff"),
     // The reviewer needs to know when it is looking at a partial diff, or it
-    // will review the first 4000 lines and call the PR clean.
-    prDiffTruncated: diff.truncated,
-    prDiffOmittedLines: diff.omittedLines,
-    prFiles: typeof prFiles === "string" ? prFiles : "",
+    // will review the first 4000 lines and call the PR clean. Always true in
+    // file-list mode, where nothing is inline.
+    prDiffTruncated: fileList || diff.truncated,
+    prDiffOmittedLines: omittedLines,
+    prFileStats: fileList ? stats.slice(0, REVIEW_FILE_STATS_MAX) : [],
+    // Rows past the cap plus rows parsePrFileStats couldn't read: both are in
+    // the listing the reviewer saves, and both must be covered.
+    prFileStatsOmitted: fileList
+      ? Math.max(0, stats.length - REVIEW_FILE_STATS_MAX) + statsDropped
+      : 0,
+    // The files endpoint returned its ceiling, so the PR may have more files
+    // than any listing shows. The reviewer can't reach those and must say so.
+    prFileListCapped: fileList && stats.length + statsDropped >= PR_FILES_API_MAX,
+    // In file-list mode prFileStats already carries the paths; cap the repeat so
+    // a 3000-file PR doesn't put every path in argv twice.
+    prFiles: fileList
+      ? capLines(prFiles, REVIEW_FILE_STATS_MAX)
+      : typeof prFiles === "string"
+        ? prFiles
+        : "",
     config: shapeConfig(config),
     repo: shapeRepo(repo),
     nowIso: typeof nowIso === "string" ? nowIso : new Date().toISOString(),
@@ -1932,6 +2046,7 @@ async function main() {
       priorPr: input.priorPr,
       prDiff: input.prDiff,
       prFiles: input.prFiles,
+      prFileStats: input.prFileStats,
       headSha: input.headSha,
       config: input.config,
       repo: input.repo,

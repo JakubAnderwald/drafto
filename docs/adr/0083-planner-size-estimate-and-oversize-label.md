@@ -4,6 +4,8 @@
 - **Date**: 2026-11-16
 - **Authors**: Jakub Anderwald, with Claude Code
 
+> **Amended by [ADR-0103](./0103-factory-oversize-hold.md)** (2026-11-25): an oversize estimate no longer only labels the card. `--implement` sends a card that hasn't started, whose approved plan estimates at least `FACTORY_PLAN_OVERSIZE_LINES`, back to Plan Review unless the operator added `oversize-approved` (`FACTORY_OVERSIZE_HOLD`, default on). The planner prompt now counts tests, fixtures, docs and ADRs, helpers, and prompt and runbook edits, and asks for `<estLines>` near the top of the range. The label, the marker and the size classes are unchanged.
+
 > **Amended by [ADR-0104](./0104-factory-split-command.md)** (2026-11-25): the factory now files a plan's **Proposed split** when the operator comments `/split` on the card. Decision 2's "the operator files any sub-issues by hand" and "the factory never files issues" no longer hold, and Alternative 1 (automated split on request) is revisited there in a narrower form. The planner itself still never files issues. A tool-less splitter run writes the bodies, and bash checks and files them.
 
 ## Context

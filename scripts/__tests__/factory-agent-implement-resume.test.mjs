@@ -17,6 +17,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = resolve(HERE, "..");
@@ -54,7 +55,7 @@ describe("implement resume: wiring in the --implement block", () => {
   it("passes the session flag as plain strings and the 30 s kill grace on the implement call only", () => {
     assert.match(
       IMPLEMENT,
-      /CLAUDE_CALL_KILL_GRACE_SEC="\$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \\\n\s*node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p "\$CLAUDE_INPUT" --dangerously-skip-permissions --effort "\$FACTORY_EFFORT" --no-chrome --strict-mcp-config \\\n\s*"\$IMPL_SESSION_FLAG" "\$IMPL_SESSION_ID" \)/,
+      /CLAUDE_CALL_KILL_GRACE_SEC="\$FACTORY_IMPLEMENT_TERM_GRACE_SEC" CLAUDE_CALL_KILL_GROUP=1 \\\n\s*node "\$SCRIPT_DIR\/lib\/run-claude\.mjs" -p "\$CLAUDE_INPUT" --dangerously-skip-permissions --effort "\$IMPL_EFFORT" --no-chrome --strict-mcp-config \\\n\s*--model "\$FACTORY_MODEL" "\$IMPL_SESSION_FLAG" "\$IMPL_SESSION_ID" \)/,
     );
     assert.equal(script.split("CLAUDE_CALL_KILL_GRACE_SEC=").length - 1, 1);
     // Claude's descendants die with it at the cap (#842 review); other calls
@@ -228,7 +229,7 @@ function harness(dir, body, env = {}) {
   ].join("\n");
   const r = spawnSync("bash", ["-c", snippet], {
     encoding: "utf8",
-    env: { ...process.env, HOME: dir, CLAUDE_CONFIG_DIR: "", ...env },
+    env: hermeticEnv({ HOME: dir, CLAUDE_CONFIG_DIR: "", ...env }),
   });
   let log = "";
   try {
@@ -262,7 +263,7 @@ describe("implement_runtime_facts (real helper)", () => {
     withDir((dir) => {
       const wt = makeWorktree(dir);
       const wtJson = JSON.stringify({ path: wt, branch: "factory/issue-7", reused: true });
-      const r = harness(dir, `implement_runtime_facts 1763294400 0 '${wtJson}' "${wt}"`);
+      const r = harness(dir, `implement_runtime_facts 1763294400 0 '${wtJson}' "${wt}" xhigh`);
       assert.equal(r.status, 0, r.stderr + r.log);
       assert.deepEqual(JSON.parse(r.stdout), {
         capMinutes: 45,
@@ -270,6 +271,7 @@ describe("implement_runtime_facts (real helper)", () => {
         softDeadlineAt: "2025-11-16T12:30:00Z",
         hardDeadlineAt: "2025-11-16T12:45:00Z",
         resumed: false,
+        effort: "xhigh",
         worktree: { reused: true, leftoversRef: null, unpushedCommits: 1, uncommittedChanges: 1 },
       });
     });
@@ -300,6 +302,20 @@ describe("implement_runtime_facts (real helper)", () => {
       });
       const t = JSON.parse(tiny.stdout);
       assert.equal(t.softDeadlineAt, t.hardDeadlineAt);
+    });
+  });
+
+  it("passes the run's effort through, and defaults to FACTORY_EFFORT, then ultracode", () => {
+    withDir((dir) => {
+      const wt = makeWorktree(dir);
+      const call = (arg, env) =>
+        JSON.parse(
+          harness(dir, `implement_runtime_facts 1763294400 0 '{}' "${wt}"${arg}`, env).stdout,
+        ).effort;
+      assert.equal(call(" ultracode", { FACTORY_EFFORT: "xhigh" }), "ultracode");
+      assert.equal(call("", { FACTORY_EFFORT: "high" }), "high");
+      assert.equal(call("", { FACTORY_EFFORT: "" }), "ultracode");
+      assert.equal(call(' ""', { FACTORY_EFFORT: "" }), "ultracode");
     });
   });
 
@@ -736,7 +752,7 @@ describe("result handler on a resumed run whose predecessor already pushed (real
       "_arms",
       'echo "exit-ok"',
     ].join("\n");
-    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8" });
+    const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: hermeticEnv() });
     const read = (f) => {
       try {
         return readFileSync(f, "utf8");
