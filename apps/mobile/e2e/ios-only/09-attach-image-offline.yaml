@@ -23,8 +23,10 @@ tags:
 #                       then the notebook is deleted.
 #
 # Self-contained ("Attach NB" / "Attach", the names 07-attach-image.yaml
-# uses: give it a RUN_ID no 07 run has used). Assumes the
-# user is logged in. Pass -e RUN_ID=<timestamp>, the same for all three phases.
+# uses: give it a RUN_ID no 07 run has used). The prepare phase signs in when
+# the app shows Log In (helpers/sign-in-if-needed.yaml): pass
+# -e E2E_TEST_EMAIL / E2E_TEST_PASSWORD. Pass -e RUN_ID=<timestamp>, the same
+# for all three phases.
 # Needs a build made with EXPO_PUBLIC_E2E_PROBES=1, which alone has the image
 # status views (docs/architecture/testing.md, "E2E probe builds").
 # iPhone simulator only (see 07-attach-image.yaml), with photo access granted:
@@ -43,11 +45,7 @@ tags:
       # Newest photo in the library, so it is first in the picker
       - addMedia:
           - "../fixtures/attachment-photo.jpg"
-      - launchApp
-      - extendedWaitUntil:
-          visible:
-            id: "search-button"
-          timeout: 30000
+      - runFlow: ../helpers/sign-in-if-needed.yaml
       - tapOn:
           id: "add"
       - assertVisible: "Notebook name"

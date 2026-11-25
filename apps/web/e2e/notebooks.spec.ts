@@ -166,6 +166,62 @@ test.describe("Notebook management lifecycle", () => {
     await expect(page.locator("nav li").filter({ hasText: notebookName })).toHaveCount(1);
   });
 
+  test("issue #480: creating a notebook with Enter sends one request and lists it above the others", async ({
+    page,
+  }, testInfo) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+
+    // The notebooks listed before the create, for the order check at the end.
+    const names = page.getByTestId("notebook-name");
+    await expect(names.first()).toBeVisible();
+    const existing = await names.allTextContents();
+
+    const isCreate = (method: string, url: string) =>
+      method === "POST" && new URL(url).pathname === "/api/notebooks";
+    let createRequests = 0;
+    page.on("request", (request) => {
+      if (isCreate(request.method(), request.url())) createRequests += 1;
+    });
+
+    const name = `Test Notebook ${Date.now()}`;
+    await page.getByRole("button", { name: "New notebook" }).click();
+    const createInput = page.getByPlaceholder("Notebook name");
+    await expect(createInput).toBeVisible();
+    await createInput.fill(name);
+
+    const created = page.waitForResponse((res) =>
+      isCreate(res.request().method(), res.request().url()),
+    );
+    await createInput.press("Enter");
+    const res = await created;
+    expect(res.ok()).toBe(true);
+    recordRunNotebook(testInfo, ((await res.json()) as { id: string }).id);
+
+    // Enter closes the field. Its blur must not send the create a second time.
+    await expect(createInput).toBeHidden();
+    // Leave a stray second request time to go out before counting.
+    await page.waitForTimeout(500);
+    expect(createRequests).toBe(1);
+
+    // Creating also selects the new notebook, and selecting refetches `GET /api/notebooks`
+    // straight away (`AppShell.handleSelectNotebook` bumps `refreshTrigger`). So this reads the
+    // server's list, newest `updated_at` first, not the optimistic insert: the integration test
+    // covers that. Other workers may create notebooks meanwhile and list them above this one,
+    // so check only that none of the notebooks listed before the create sits above it.
+    await expect
+      .poll(
+        async () => {
+          const order = await names.allTextContents();
+          const at = order.indexOf(name);
+          if (at === -1) return [`"${name}" is not listed`];
+          return order.slice(0, at).filter((row) => existing.includes(row));
+        },
+        { message: "no notebook listed before the create may sit above the new one" },
+      )
+      .toEqual([]);
+  });
+
   test("default notebook exists on first visit", async ({ page }) => {
     await page.goto("/");
 
