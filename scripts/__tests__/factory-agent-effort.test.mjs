@@ -21,11 +21,11 @@ const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "facto
 const script = readFileSync(scriptPath, "utf8");
 
 describe("factory-agent Claude effort", () => {
-  it("passes --effort at all six Claude call sites", () => {
-    // Four read-only sites (plan + replan + In Test scenario + code review) use
-    // the plan effort; the implement site uses this run's implement effort
-    // (IMPL_EFFORT: the coding effort, or the revision effort, ADR-0101) and
-    // the watch fix site its own (ADR-0076).
+  it("passes --effort at all seven Claude call sites", () => {
+    // Five read-only sites (plan + replan + /split + In Test scenario + code
+    // review) use the plan effort; the implement site uses this run's
+    // implement effort (IMPL_EFFORT: the coding effort, or the revision
+    // effort, ADR-0101) and the watch fix site its own (ADR-0076).
     const planFlags =
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_PLAN_EFFORT"/g) || [];
     const codeFlags =
@@ -34,8 +34,8 @@ describe("factory-agent Claude effort", () => {
       script.match(/--dangerously-skip-permissions --effort "\$FACTORY_WATCH_EFFORT"/g) || [];
     assert.equal(
       planFlags.length,
-      4,
-      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + In Test + review sites',
+      5,
+      'expected --effort "$FACTORY_PLAN_EFFORT" at the plan + replan + split + In Test + review sites',
     );
     assert.equal(codeFlags.length, 1, 'expected --effort "$IMPL_EFFORT" at the implement site');
     assert.doesNotMatch(
@@ -50,7 +50,7 @@ describe("factory-agent Claude effort", () => {
     );
     assert.equal(
       planFlags.length + codeFlags.length + watchFlags.length,
-      6,
+      7,
       "every factory Claude call must carry an effort flag",
     );
   });
@@ -70,15 +70,26 @@ describe("factory-agent Claude effort", () => {
     assert.doesNotMatch(watch[0], /--effort "\$FACTORY_EFFORT"/);
   });
 
-  it("runs the browser runner (the seventh call) at the read-only (plan) effort", () => {
+  it("runs the browser runner (the eighth call) at the read-only (plan) effort", () => {
     // ADR-0051: the locked-down Chrome runner has no --dangerously-skip-
     // permissions, so the counts above don't see it. It reads pages and prints
     // a report — plan-tier effort, like the scenario writer.
     const calls = script.match(/run-claude\.mjs" -p\b/g) || [];
-    assert.equal(calls.length, 7, "six stage calls plus the browser runner");
+    assert.equal(calls.length, 8, "seven stage calls plus the browser runner");
     assert.match(
       script,
       /run-claude\.mjs" -p --chrome(?:[^\n]*\\\n){1,3}[^\n]*--effort "\$FACTORY_PLAN_EFFORT" \)/,
+    );
+  });
+
+  it("runs the /split splitter at the read-only (plan) effort, with no tools, on a pinned model", () => {
+    // ADR-0104: the splitter only prints text; bash files what it checked.
+    const block = script.match(/Invoking claude for #\$issue_num \(split[\s\S]{0,800}/);
+    assert.ok(block, "split claude invocation not found");
+    assert.match(block[0], /effort=\$FACTORY_PLAN_EFFORT, model=\$\{FACTORY_MODEL:-opus\[1m\]\}/);
+    assert.match(
+      block[0],
+      /--effort "\$FACTORY_PLAN_EFFORT" --no-chrome --strict-mcp-config \\\n\s+--tools "" --model "\$\{FACTORY_MODEL:-opus\[1m\]\}" >/,
     );
   });
 
@@ -302,10 +313,11 @@ describe("factory-agent Claude model knobs (ADR-0080, ADR-0101)", () => {
     }
   });
 
-  it("passes --model at every one of the seven calls, always quoted", () => {
-    // Seven calls still, so the effort and --no-chrome counts above hold.
+  it("passes --model at every one of the eight calls, always quoted", () => {
+    // Eight calls (seven stage calls plus the browser runner), so the effort
+    // and --no-chrome counts above hold.
     const calls = script.match(/run-claude\.mjs" -p\b(?:[^\n]*\\\n)*[^\n]*/g) || [];
-    assert.equal(calls.length, 7);
+    assert.equal(calls.length, 8);
     for (const c of calls) {
       assert.equal((c.match(/ --model /g) || []).length, 1, `one --model in: ${c}`);
       // Quoted: unquoted, opus[1m] is a glob.
@@ -317,7 +329,8 @@ describe("factory-agent Claude model knobs (ADR-0080, ADR-0101)", () => {
 
   it("puts --model where no pinned shape breaks", () => {
     // After `--effort … --no-chrome --strict-mcp-config` at the six stage
-    // calls, so that run stays adjacent (factory-agent-browser.test.mjs).
+    // calls, so that run stays adjacent (factory-agent-browser.test.mjs). The
+    // /split splitter puts `--tools ""` first; its own test pins that shape.
     for (const [site, model] of [
       ["plan + replan", '"\\$FACTORY_MODEL"'],
       ["code review", '"\\$\\{FACTORY_MODEL:-opus\\[1m\\]\\}"'],
@@ -360,6 +373,7 @@ describe("factory-agent Claude model knobs (ADR-0080, ADR-0101)", () => {
       /Invoking claude for #\$ISSUE_NUM \(--plan, [^\n]*model=\$FACTORY_MODEL, /,
       /Invoking claude for #\$ISSUE_NUM \(--plan replan, [^\n]*model=\$FACTORY_MODEL, /,
       /Invoking claude for #\$issue_num \(code review [^\n]*model=\$\{FACTORY_MODEL:-opus\[1m\]\}\)/,
+      /Invoking claude for #\$issue_num \(split, [^\n]*model=\$\{FACTORY_MODEL:-opus\[1m\]\}, /,
       /Invoking claude for #\$issue_num \(In Test scenario, [^\n]*model=\$intest_model\)/,
       /Invoking the browser runner \([^\n]*model=\$runner_model\)/,
       /Invoking claude for #\$ISSUE_NUM \(--implement, [^\n]*model=\$FACTORY_MODEL\)/,

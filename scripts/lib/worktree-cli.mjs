@@ -56,10 +56,20 @@
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./is-main.mjs";
-import { ADR_DIR, newAdrCollisions, nextFreeAdrNumber } from "./adr-numbers.mjs";
+import {
+  ADR_DIR,
+  ADR_INDEX,
+  adrIndexSorted,
+  conflictsOnlyOnIndexRows,
+  newAdrCollisions,
+  newAdrIndexDuplicates,
+  nextFreeAdrNumber,
+  sortAdrIndex,
+} from "./adr-numbers.mjs";
 import {
   checkMigrationOrder,
   directMigrationNames,
@@ -644,6 +654,156 @@ function adrState(files, wtPath, mainSha) {
   };
 }
 
+// ── The ADR index (ADR-0105) ───────────────────────────────────────────────
+
+// The attributes file every merge-main passes to git: `docs/adr/README.md
+// merge=union`. It is resolved next to this module, so the factory checkout's
+// copy applies whatever the PR branch carries; a branch cut before it existed
+// has no .gitattributes of its own, and a repo .gitattributes would only reach
+// branches that merged it.
+export const MERGE_ATTRIBUTES_FILE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "adr-index.gitattributes",
+);
+
+// The index's text at <ref>, or, with ref null, as staged (stage 0) mid-merge.
+// null when it isn't there: no index on that side, or a conflicted one.
+function adrIndexAt(wtPath, ref) {
+  const res = git(["show", ref === null ? `:${ADR_INDEX}` : `${ref}:${ADR_INDEX}`], {
+    cwd: wtPath,
+    allowFail: true,
+  });
+  return res.status === 0 ? String(res.stdout) : null;
+}
+
+// Git's default conflict-marker length, which the preview merge below keeps
+// (merge-file's --marker-size is newer than some CI images' git). A README
+// line that looks like a marker can only make the preview refuse union.
+const PREVIEW_MARKER_SIZE = 7;
+
+// Whether merge-main may merge the index with the union driver, and what the
+// union merge should give. Union is meant for rows two PRs appended; on any
+// other line both sides changed (the intro, the "when to write an ADR" list,
+// the table header a re-padded table rewrites) it would keep both wordings, and
+// a clean merge would push them with no one looking. So a preview 3-way merge
+// of the index (the merge base's, the PR's at <before>, main's) must conflict
+// only on index rows. Returns { union, expected }: `expected` is the preview's
+// union result, which the real merge must match (null: nothing to compare). A
+// preview that fails means no union, as before ADR-0105.
+function adrIndexMergePlan(wtPath, before, mainSha) {
+  if (!before || !mainSha) return { union: false, expected: null };
+  const ours = adrIndexAt(wtPath, before);
+  const theirs = adrIndexAt(wtPath, mainSha);
+  // Missing on a side: git doesn't line-merge it, so the driver never runs.
+  if (ours === null || theirs === null) return { union: true, expected: null };
+  const mergeBase = git(["merge-base", before, mainSha], { cwd: wtPath, allowFail: true });
+  const baseSha = mergeBase.status === 0 ? String(mergeBase.stdout).trim().split("\n")[0] : "";
+  const base = (baseSha && adrIndexAt(wtPath, baseSha)) ?? "";
+  // One side left the index alone: git takes the other's, nothing to union.
+  if (ours === theirs || ours === base || theirs === base) return { union: true, expected: null };
+
+  let dir = null;
+  try {
+    dir = mkdtempSync(path.join(tmpdir(), "adr-index-merge-"));
+    const files = ["ours", "base", "theirs"];
+    [ours, base, theirs].forEach((text, i) => writeFileSync(path.join(dir, files[i]), text));
+    // merge-file exits with the number of conflicts, or above 127 on an error.
+    const run = (args) =>
+      git(["merge-file", "-p", ...args, ...files], { cwd: dir, allowFail: true });
+    const preview = run(["--diff3"]);
+    if (typeof preview.status !== "number" || preview.status > 127) {
+      return { union: false, expected: null };
+    }
+    if (!conflictsOnlyOnIndexRows(preview.stdout, PREVIEW_MARKER_SIZE)) {
+      return { union: false, expected: null };
+    }
+    const union = run(["--union"]);
+    if (union.status !== 0) return { union: false, expected: null };
+    return { union: true, expected: String(union.stdout) };
+  } catch {
+    return { union: false, expected: null };
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Whether the union merge of the index came out other than the preview said
+// (the merge's own diff or conflict style differs, or a criss-cross merge base):
+// then nobody has checked what union kept, and merge-main merges again without
+// it. `res` is the merge's git result.
+function adrIndexUnionDiverged(wtPath, res, expected) {
+  if (expected === null) return false;
+  let merged = null;
+  if (res.status === 0) merged = adrIndexAt(wtPath, "HEAD");
+  else if (mergeInProgress(wtPath)) merged = adrIndexAt(wtPath, null);
+  return merged !== null && merged !== expected;
+}
+
+// ADRs the index at <ref> lists on more than one row, where main's index
+// doesn't: [{number, rows}]. The union merge keeps both sides' version of a
+// row they both edited, so a clean merge can leave one, and the conflict pass
+// gets it like an ADR file clash.
+function adrIndexDuplicatesAt(wtPath, ref, mainSha) {
+  if (!mainSha) return [];
+  const text = adrIndexAt(wtPath, ref);
+  if (text === null) return [];
+  return newAdrIndexDuplicates(text, adrIndexAt(wtPath, mainSha) ?? "");
+}
+
+// Put the index rows the union merge just combined back in number order: the
+// driver keeps the PR's new row and main's in the order git met them. Only
+// when both sides were in order and the result lists no ADR twice
+// (sortAdrIndex). `committed` is a clean merge: the sorted index is amended
+// into the merge commit, which hasn't been pushed. Otherwise the merge is
+// still in progress and the sorted index is staged for the conflict pass to
+// commit. Best effort: on any failure the index is left as git merged it.
+// Returns whether it reordered the rows.
+function sortMergedAdrIndex(wtPath, { committed, before, mainSha }) {
+  const merged = adrIndexAt(wtPath, committed ? "HEAD" : null);
+  if (merged === null) return false;
+  for (const side of [before, mainSha]) {
+    const text = side ? adrIndexAt(wtPath, side) : null;
+    if (text !== null && !adrIndexSorted(text)) return false;
+  }
+  const sorted = sortAdrIndex(merged);
+  if (sorted === null) return false;
+  const file = path.join(wtPath, ADR_INDEX);
+  // Back to the index as git merged it: HEAD's on a clean merge (the working
+  // tree and the staged copy), the staged text otherwise.
+  const restore = () => {
+    if (committed) {
+      git(["checkout", "HEAD", "--", ADR_INDEX], { cwd: wtPath, allowFail: true });
+      return;
+    }
+    try {
+      writeFileSync(file, merged);
+    } catch {
+      // The staged copy is still git's merge; the conflict pass sees the diff.
+    }
+  };
+  try {
+    writeFileSync(file, sorted);
+  } catch {
+    restore();
+    return false;
+  }
+  if (git(["add", "--", ADR_INDEX], { cwd: wtPath, allowFail: true }).status !== 0) {
+    restore();
+    return false;
+  }
+  if (!committed) return true;
+  // --no-verify: the worktree's hooks need node_modules, which the conflict
+  // pass installs only after the merge, and git's merge message isn't a
+  // conventional commit.
+  const amended = git(["commit", "--amend", "--no-edit", "--no-verify", "--quiet"], {
+    cwd: wtPath,
+    allowFail: true,
+  });
+  if (amended.status === 0) return true;
+  restore();
+  return false;
+}
+
 // Migration-order errors (check-migration-order.mjs, ADR-0057) in a merge of
 // main: <names> are the supabase/migrations/*.sql basenames the merge holds,
 // judged against main's at <mainSha>. A clean merge can carry one (a PR whose
@@ -697,8 +857,15 @@ function firstLine(res) {
 //                 transient, so the caller retries without spending budget.
 // `adrCollisions` lists numbers the merge left on two ADR files that main
 // doesn't itself duplicate — a clean merge can produce one, so it is reported
-// for every status. `migrationErrors` lists the merge's migration-order errors
-// the same way. `ahead` says whether HEAD still has to be pushed.
+// for every status. `adrIndexDuplicates` lists ADRs the merged README index
+// shows on two rows (ADR-0105: the index merges with the union driver, which
+// keeps both sides' version of a row they both edited), and
+// `adrIndexReordered` says the merge's index rows were put back in number
+// order. `adrIndexUnion` says the union driver merged the index: false when
+// the index conflicted on more than its rows, so it conflicts as any file
+// does and the conflict pass reconciles it. `migrationErrors` lists the
+// merge's migration-order errors the same way. `ahead` says whether HEAD still
+// has to be pushed.
 export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
   if (!wtPath) throw new Error("mergeMain requires a worktree path");
   if (mergeInProgress(wtPath)) {
@@ -722,32 +889,59 @@ export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
   const mainSha = revParse(wtPath, mainRef);
   const before = revParse(wtPath, "HEAD");
   // The short name keeps git's default message readable: "Merge
-  // remote-tracking branch 'origin/main' into factory/issue-<n>".
-  const res = git(["merge", "--no-edit", `origin/${mainBranch}`], {
-    cwd: wtPath,
-    allowFail: true,
-  });
+  // remote-tracking branch 'origin/main' into factory/issue-<n>". The
+  // attributes file merges the ADR index with the union driver (ADR-0105), but
+  // only when the index conflicts on nothing but its rows (adrIndexMergePlan).
+  const merge = (union) =>
+    git(
+      [
+        ...(union ? ["-c", `core.attributesFile=${MERGE_ATTRIBUTES_FILE}`] : []),
+        "merge",
+        "--no-edit",
+        `origin/${mainBranch}`,
+      ],
+      { cwd: wtPath, allowFail: true },
+    );
+  const plan = adrIndexMergePlan(wtPath, before, mainSha);
+  let adrIndexUnion = plan.union;
+  let res = merge(adrIndexUnion);
+  if (adrIndexUnion && adrIndexUnionDiverged(wtPath, res, plan.expected)) {
+    // Nothing of this merge has left the worktree: drop it (and the merge
+    // state) and let the index conflict as it did before ADR-0105.
+    git(["reset", "--hard", "--quiet", before], { cwd: wtPath });
+    adrIndexUnion = false;
+    res = merge(false);
+  }
 
   // `before` is what merge-abort --to rolls back to if the pass fails.
   const base = { branch, mainSha, before };
   if (res.status === 0) {
     const status = revParse(wtPath, "HEAD") === before ? "up-to-date" : "clean";
+    const adrIndexReordered =
+      status === "clean" && sortMergedAdrIndex(wtPath, { committed: true, before, mainSha });
     return {
       status,
       ...base,
       conflictedFiles: [],
       ...adrState(adrFileNamesInIndex(wtPath), wtPath, mainSha),
+      adrIndexDuplicates: adrIndexDuplicatesAt(wtPath, "HEAD", mainSha),
+      adrIndexReordered,
+      adrIndexUnion,
       migrationErrors: migrationErrors(migrationNamesInIndex(wtPath), wtPath, mainSha),
       ahead: hasUnpushedCommits(wtPath, branch),
     };
   }
   const conflicted = mergeInProgress(wtPath) ? unmergedFiles(wtPath) : [];
   if (conflicted.length > 0) {
+    const adrIndexReordered = sortMergedAdrIndex(wtPath, { committed: false, before, mainSha });
     return {
       status: "conflicts",
       ...base,
       conflictedFiles: conflicted,
       ...adrState(adrFileNamesInIndex(wtPath), wtPath, mainSha),
+      adrIndexDuplicates: adrIndexDuplicatesAt(wtPath, null, mainSha),
+      adrIndexReordered,
+      adrIndexUnion,
       migrationErrors: migrationErrors(migrationNamesInIndex(wtPath), wtPath, mainSha),
       ahead: true,
     };
@@ -761,6 +955,9 @@ export function mergeMain({ wtPath, mainBranch = "main" } = {}) {
     detail: firstLine(res),
     conflictedFiles: [],
     adrCollisions: [],
+    adrIndexDuplicates: [],
+    adrIndexReordered: false,
+    adrIndexUnion,
     migrationErrors: [],
     ahead: false,
   };
@@ -809,8 +1006,9 @@ function filesWithMarkers(wtPath, files) {
 // commit bash will push — never the working tree: the resolution is accepted
 // only when the merge is committed, nothing tracked is left uncommitted, main
 // is in HEAD, none of those files kept a conflict marker, HEAD's ADRs share
-// no number main doesn't already duplicate, and HEAD's migrations sort after
-// main's (no migration-order error).
+// no number main doesn't already duplicate, HEAD's ADR index lists no ADR
+// twice that main's doesn't, and HEAD's migrations sort after main's (no
+// migration-order error).
 export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
   if (!wtPath) throw new Error("checkMerge requires a worktree path");
   const head = revParse(wtPath, "HEAD");
@@ -827,6 +1025,7 @@ export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
   const mainIsAncestor = Boolean(mainSha && head && isAncestor(wtPath, mainSha, head));
   const markers = filesWithMarkers(wtPath, files);
   const { adrCollisions } = adrState(adrFileNamesAt(wtPath, "HEAD"), wtPath, mainSha);
+  const adrIndexDuplicates = adrIndexDuplicatesAt(wtPath, "HEAD", mainSha);
   const migErrors = migrationErrors(migrationNamesAtRef(wtPath, "HEAD"), wtPath, mainSha);
   return {
     head,
@@ -836,6 +1035,7 @@ export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
     mainIsAncestor,
     filesWithMarkers: markers,
     adrCollisions,
+    adrIndexDuplicates,
     migrationErrors: migErrors,
     resolved:
       !inProgress &&
@@ -843,6 +1043,7 @@ export function checkMerge({ wtPath, mainSha, files = [] } = {}) {
       mainIsAncestor &&
       markers.length === 0 &&
       adrCollisions.length === 0 &&
+      adrIndexDuplicates.length === 0 &&
       migErrors.length === 0,
   };
 }

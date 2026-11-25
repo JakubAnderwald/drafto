@@ -264,7 +264,7 @@ Every significant architectural decision must be recorded in `docs/adr/`.
 
 **Workflow**:
 
-1. Copy `docs/adr/0000-adr-template.md` to a new file with the next sequential number (e.g., `0001-short-title.md`)
+1. Copy `docs/adr/0000-adr-template.md` to a new file with the next free number (e.g., `0001-short-title.md`): one past the newest on main and on every open PR, which `node scripts/lib/adr-allocate.mjs next-adr` prints as `next` ([ADR-0105](./docs/adr/0105-factory-adr-index-union-merge.md)). Gaps on main are normal; never reuse one
 2. Fill in all sections — Context, Decision, Consequences, and Alternatives Considered
 3. Set the status to `Accepted` and the date to today
 4. Add the new entry to the index table in `docs/adr/README.md`

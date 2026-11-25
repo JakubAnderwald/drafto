@@ -54,13 +54,15 @@ You will receive a single JSON bundle (last fenced ` ```json ` block). Shape:
   // null except on a conflict pass. Bash has already merged origin/main (at
   // mainSha) into the branch: conflictedFiles are the files it stopped on,
   // adrCollisions the ADR numbers now carried by two files (nextFreeAdr is the
-  // first unused one), and migrationErrors the migrations in the merge that
-  // don't sort after main's: `reason` is the order check's (stale,
+  // first unused one), adrIndexDuplicates the ADRs the merged README index
+  // lists on more than one row, and migrationErrors the migrations in the
+  // merge that don't sort after main's: `reason` is the order check's (stale,
   // duplicate-base, duplicate, renamed-base, shape), `suggested` the free
   // version it would give, when it has one. See "Conflict pass".
   "mergeConflict": { "mainSha", "conflictedFiles": ["..."],
                      "adrCollisions": [ { "number": "0059", "files": ["0059-a.md", "0059-b.md"] } ],
                      "nextFreeAdr": "0061",
+                     "adrIndexDuplicates": [ { "number": "0059", "rows": 2 } ],
                      "migrationErrors": [ { "reason": "duplicate-base", "file": "20261111000001_x.sql",
                                             "version": "20261111000001", "suggested": "20261113000001" } ] } | null,
   "attempts": 0,
@@ -112,7 +114,8 @@ already handled.
   to renumber this PR's own migration (decision-flow step 3, "Migration order"),
   or as `git mv docs/adr/<old>.md docs/adr/<new>.md`, to renumber this PR's own
   ADR on a conflict pass. On a conflict pass only, also `git merge --abort` and
-  `pnpm install` (to regenerate `pnpm-lock.yaml`, see "Conflict pass").
+  `pnpm install` (to regenerate `pnpm-lock.yaml`, see "Conflict pass"), and
+  `pnpm exec prettier --write docs/adr/README.md` to re-pad the ADR index.
   Refuse `git push --force`, `git reset --hard`, `git checkout <branch>`,
   `git rebase`, `git config`, `git commit --amend`, any other `git merge` (bash
   starts merges, never you), and any other `git mv`.
@@ -174,7 +177,8 @@ Bash has fetched `origin/main` and run `git merge origin/main` in your worktree.
 Either the merge stopped on the files in `mergeConflict.conflictedFiles` (they
 hold conflict markers, and `git status` lists them as unmerged), or git merged
 everything itself and committed, but two ADRs now share a number
-(`mergeConflict.adrCollisions`), or a migration this PR adds no longer sorts
+(`mergeConflict.adrCollisions`), or the ADR index lists one ADR on two rows
+(`mergeConflict.adrIndexDuplicates`), or a migration this PR adds no longer sorts
 after main's (`mergeConflict.migrationErrors`: bash renumbers those itself when
 it can, so you get one only when it couldn't). This pass resolves the merge
 **only**:
@@ -206,12 +210,30 @@ flow below and do this instead, then emit the directive line (step 7):
    - `git mv docs/adr/<NNNN>-<slug>.md docs/adr/<next>-<slug>.md`, where
      `<next>` is `mergeConflict.nextFreeAdr` (one more for each further clash);
    - in `docs/adr/README.md`, keep main's rows and put the PR's row, renumbered,
-     after the highest one;
+     after the highest one, so the rows stay in number order;
    - update the ADR's own heading if it carries its number, and every reference
      to the PR's ADR: its file name (`git grep <NNNN>-<slug>`) and each
      `ADR-<NNNN>` / `[<NNNN>` mention **the PR added**. Main's ADR has the same
      number and its references must not change, so check each bare mention
      against the PR's side of the diff (step 1) before editing it.
+
+   Rows of `docs/adr/README.md` don't conflict: bash merges it with git's union
+   driver, which keeps every line either side wrote, and puts the rows in number
+   order when it can (ADR-0105). It does that only when the two sides clash on
+   index rows alone. When both also changed another line (the intro, a note,
+   or the table header a re-padded table rewrites), the README is in
+   `mergeConflict.conflictedFiles` with ordinary conflict markers: settle the
+   prose like any other file, and the rows as below. Each entry in
+   `mergeConflict.adrIndexDuplicates` is an ADR the merged index now lists on
+   `rows` rows, because both sides changed its row, such as a status change on
+   each side. Keep exactly one row per ADR, in number order: main's row as main
+   has it, plus whatever the PR changed in that row (step 1 shows both sides),
+   and the PR's own new row. When one side re-padded the table, both sides'
+   copies of it can end up in the file: keep one `| # | Title | ...` header and
+   one `| --- |` separator line, above the rows. Then
+   run `pnpm exec prettier --write docs/adr/README.md` and check that every ADR
+   on main is still listed once.
+
 4. **Migrations.** Leave a migration order error for the end of step 6: a
    migration is renumbered only once the merge is committed.
 5. **Check what the merge touched.** `pnpm format:check`, plus lint, typecheck
@@ -220,7 +242,8 @@ flow below and do this instead, then emit the directive line (step 7):
 6. **Commit, don't push.** `git add` the resolved files and finish the merge
    with `git commit --no-edit`, which keeps git's merge message. When git had
    already committed the merge, commit the ADR rename as
-   `fix: renumber ADR-<old> to ADR-<new> after main moved`. **Do not run
+   `fix: renumber ADR-<old> to ADR-<new> after main moved`, or an index fix
+   alone as `fix: reconcile the ADR index after main moved`. **Do not run
    `git push`** on a conflict pass: bash pushes only a resolution that passes
    its checks, so a bad one never reaches the PR.
 
