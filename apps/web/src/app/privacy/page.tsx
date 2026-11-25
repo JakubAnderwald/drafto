@@ -329,8 +329,10 @@ export default function PrivacyPolicyPage() {
             is not removed from the app, so the copies of its images stay too, until you delete the
             note there, the limit removes them, or you sign out. Images in notes in the trash are
             kept, so a restored note still shows them. These copies are left out of your
-            device&apos;s backups: iCloud backups on iPhone and iPad, Android device backups, and
-            Time Machine on macOS.
+            device&apos;s backups: Android device backups and Time Machine on macOS. On iPhone and
+            iPad, the app marks them to be left out of iCloud backups. If setting that mark fails,
+            the app tries again later, and until it succeeds the copies can be included in an iCloud
+            backup.
           </p>
           <p>
             The local copy, attachments included, is erased when you sign out or delete your account

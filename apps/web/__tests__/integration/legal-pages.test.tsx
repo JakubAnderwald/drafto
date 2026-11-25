@@ -122,8 +122,14 @@ describe("Privacy policy page", () => {
     expect(offline).toMatch(/The local copy, attachments included, is erased when you sign out/);
     // The image copies are a re-downloadable cache, left out of device backups (ADR-0099).
     expect(offline).toMatch(/These copies are left out of your\s+device.s backups/);
-    expect(offline).toMatch(/iCloud backups on iPhone and iPad/);
-    expect(offline).toMatch(/Android device backups/);
+    expect(offline).toMatch(/Android device backups and Time Machine on macOS/);
+    // On iOS the flag can fail without blocking the write, so the policy
+    // mustn't promise the copies always stay out of iCloud.
+    expect(offline).toMatch(
+      /On iPhone and\s+iPad, the app marks them to be left out of iCloud backups/,
+    );
+    expect(offline).toMatch(/the copies can be included in an\s+iCloud backup/);
+    expect(offline).not.toMatch(/iCloud backups on iPhone and iPad/);
   });
 
   it("identifies the data controller and a contact address", () => {
