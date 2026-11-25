@@ -3,6 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-11-21
 - **Authors**: Jakub Anderwald (with Claude Code)
+- **Amended by**: [0106](./0106-factory-device-lane.md) (the factory's device lane)
 
 > **Update 2026-11-25 (device lane)**: The factory can now drive an Android emulator and an iOS simulator, through its opt-in device lane ([ADR-0106](./0106-factory-device-lane.md)). It uses dedicated devices, dev-backed builds of the PR head and Maestro run by a supervisor. Running the manual Mobile E2E row and driving the operator's own devices stay interactive-only, and so does the macOS app.
 

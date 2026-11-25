@@ -1,6 +1,6 @@
 # Factory verification before In Test (the Testing column)
 
-**Status:** state machine, shell lane and browser lane built, off by default (`FACTORY_VERIFY=0`) **Updated:** 2026-10-21
+**Status:** state machine, shell lane and browser lane built, off by default (`FACTORY_VERIFY=0`); device lane being built ([ADR-0106](../adr/0106-factory-device-lane.md)) **Updated:** 2026-11-25
 
 ## What it is
 
@@ -188,7 +188,8 @@ The settings table, one-time setup (board, label, bypass secret, canary), triage
 [ADR-0106](../adr/0106-factory-device-lane.md) adds a third lane, off by default. A node supervisor (`scripts/lib/device-lane.mjs`) builds a dev-backed app from the PR head, with the JS bundle embedded. It then runs Maestro on a dedicated headless Android emulator and a dedicated iOS simulator, one at a time.
 
 - **What runs:** the repo flows the PR touches plus the combined `<platform>-all.yaml` flow. Later, the scenario's iOS and Android steps too: a guarded session translates them into YAML, the supervisor validates the YAML and runs it.
-- **Timing:** the lane is serialised with the beta builds. The card waits for it only `FACTORY_VERIFY_DEVICE_WAIT_MIN`. A longer run posts a follow-up comment instead of holding the card.
+- **Timing:** the lane is serialised with the beta builds. The card waits for it only `FACTORY_VERIFY_DEVICE_WAIT_MIN`, and never past the hold cap. A longer run posts a follow-up comment instead of holding the card.
+- **The head moves:** the run is killed when the PR head moves, the PR closes, or the card leaves Testing and In Test. Results for a commit that's no longer the head are never posted.
 - **On demand:** the `factory-device-run` label starts a run on a card in Testing or In Test.
 - **Until it's switched on:** iOS, Android and macOS steps go to the manual list, on the betas dispatched at Testing entry. macOS stays manual either way (ADR-0043).
 
