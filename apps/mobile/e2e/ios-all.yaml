@@ -222,11 +222,39 @@ appId: eu.drafto.mobile
 
 # --- Editor with the keyboard up (check the screenshot: body gutter, toolbar
 # directly on the keyboard, no blank band) ---
-- tapOn:
-    point: "50%,45%"
+# Focus the body by tapping its first paragraph: the Bold text typed above. A
+# tap at a point (50%,45%) landed below the editable area on iOS, so the body
+# text was never typed or saved (#874). The WebView exposes the paragraph's
+# text to accessibility, as flow 08 relies on. Waiting for it first also proves
+# the Bold step typed into the body, not only that something saved.
+- extendedWaitUntil:
+    visible: ".*Bold ${RUN_ID}.*"
+    timeout: 10000
+- tapOn: ".*Bold ${RUN_ID}.*"
 - inputText: "Body ${RUN_ID}"
+# The typing must land in the body: its text shows, and the title keeps exactly
+# its own text (a full match, so a keystroke into the title field fails it).
+# The tap can put the caret inside the Bold text, splitting it, so the Bold
+# text isn't asserted from here on.
+- extendedWaitUntil:
+    visible: ".*Body ${RUN_ID}.*"
+    timeout: 10000
+- assertVisible: "Note ${RUN_ID}"
 - waitForAnimationToEnd
 - takeScreenshot: editor-keyboard-up
+# "Saved" still shows from the Bold save while the body's save waits out the
+# 500 ms autosave debounce, so a "Saved" wait alone could pass before that save
+# even starts. Wait 2 s first: the body's save has then started, so the "Saved"
+# wait covers it and leaving the note doesn't race a pending save. The reopen
+# check below is what proves the body was written.
+- extendedWaitUntil:
+    visible: "never-present-just-wait"
+    timeout: 2000
+    optional: true
+- extendedWaitUntil:
+    visible: "Saved"
+    timeout: 10000
+- assertNotVisible: "Save failed"
 
 # --- Go back (iOS: tap header back button, still labelled "Notes") and rename via long press ---
 - tapOn: "Notes"
@@ -241,6 +269,20 @@ appId: eu.drafto.mobile
 - extendedWaitUntil:
     visible: ".*NoteF ${RUN_ID}.*"
     timeout: 10000
+
+# --- Reopen the note: the body text was saved (#874) ---
+# The notes list shows only titles, so the body text can only come from the
+# editor, which loads the note from the local database.
+- tapOn: ".*NoteF ${RUN_ID}.*"
+- extendedWaitUntil:
+    visible: ".*Body ${RUN_ID}.*"
+    timeout: 15000
+- tapOn: "Notes"
+- extendedWaitUntil:
+    visible: ".*NoteF ${RUN_ID}.*"
+    timeout: 10000
+# iOS keeps the editor in the hierarchy until the pop finishes.
+- waitForAnimationToEnd
 
 # ===== FLOW 04: Navigate back to Notebooks =====
 

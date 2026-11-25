@@ -134,3 +134,5 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0101](./0101-factory-pins-model-and-revision-effort.md)                       | Factory Pins Its Claude Model, and Revision Runs at xhigh                       | Accepted           | 2026-11-25 |
 | [0102](./0102-factory-reruns-red-ci-after-noop-pass.md)                        | Factory Re-runs Red CI a No-op Fix Pass Left, Then Parks the Card               | Accepted           | 2026-11-25 |
 | [0103](./0103-factory-oversize-hold.md)                                        | Factory Holds Unsplit Oversize Cards Before Implementing                        | Accepted           | 2026-11-25 |
+| [0104](./0104-factory-split-command.md)                                        | `/split`: the Factory Files a Plan's Proposed Split                             | Accepted           | 2026-11-25 |
+| [0105](./0105-factory-adr-index-union-merge.md)                                | The Factory Union-Merges the ADR Index and Allocates ADR Numbers                | Accepted           | 2026-11-25 |

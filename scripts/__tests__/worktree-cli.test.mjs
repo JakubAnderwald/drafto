@@ -572,6 +572,13 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
     return JSON.parse(res.stdout);
   }
 
+  const INDEX_0001 = "| [0001](./0001-first.md) | first |\n";
+
+  // main's ADR index as it stands, to append a row to.
+  function mainIndex() {
+    return gitIn(bare, ["show", "main:docs/adr/README.md"]);
+  }
+
   before(() => {
     bare = mkdtempSync(join(tmpdir(), "wt-cli-merge-origin-"));
     gitIn(bare, ["init", "--bare", "-q", "-b", "main"]);
@@ -580,7 +587,7 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
     gitIn(repo, ["config", "user.email", "test@example.com"]);
     gitIn(repo, ["config", "user.name", "Test"]);
     write(repo, "docs/adr/0001-first.md", "# 1\n");
-    write(repo, "docs/adr/README.md", "| 0001 | first |\n");
+    write(repo, "docs/adr/README.md", "| [0001](./0001-first.md) | first |\n");
     commitAll(repo, "seed");
     gitIn(repo, ["remote", "add", "origin", bare]);
     gitIn(repo, ["push", "-q", "-u", "origin", "main"]);
@@ -625,23 +632,29 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
 
   it("leaves a conflicting merge in progress and reports the files and the ADR clash", () => {
     // #755's shape: the PR and main each took the next ADR number and added an
-    // index row on the same line.
+    // index row on the same line. The index merges with the union driver
+    // (ADR-0103), so it keeps both rows, and a file both sides changed stops
+    // the merge.
     const wt = prWorktree(202, {
       "docs/adr/0002-from-the-pr.md": "# 2 (pr)\n",
-      "docs/adr/README.md": "| 0001 | first |\n| 0002 | from the pr |\n",
+      "docs/adr/README.md": `${INDEX_0001}| [0002](./0002-from-the-pr.md) | from the pr |\n`,
+      "notes-202.txt": "the pr's notes\n",
     });
     const mainSha = advanceMain({
       "docs/adr/0002-from-main.md": "# 2 (main)\n",
-      "docs/adr/README.md": "| 0001 | first |\n| 0002 | from main |\n",
+      "docs/adr/README.md": `${INDEX_0001}| [0002](./0002-from-main.md) | from main |\n`,
+      "notes-202.txt": "main's notes\n",
     });
 
     const out = json(runCli(["merge-main", "--path", wt]));
     assert.equal(out.status, "conflicts");
     assert.equal(out.mainSha, mainSha);
-    assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+    assert.deepEqual(out.conflictedFiles, ["notes-202.txt"]);
     assert.deepEqual(out.adrCollisions, [
       { number: "0002", files: ["0002-from-main.md", "0002-from-the-pr.md"] },
     ]);
+    assert.deepEqual(out.adrIndexDuplicates, [{ number: "0002", rows: 2 }]);
+    assert.equal(out.adrIndexReordered, false, "an index listing an ADR twice is never sorted");
     assert.equal(out.nextFreeAdr, "0003");
 
     const midway = json(
@@ -652,11 +665,11 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
         "--main-sha",
         mainSha,
         "--files-json",
-        JSON.stringify(["docs/adr/README.md"]),
+        JSON.stringify(["notes-202.txt"]),
       ]),
     );
     assert.equal(midway.inProgress, true);
-    assert.deepEqual(midway.unmergedFiles, ["docs/adr/README.md"]);
+    assert.deepEqual(midway.unmergedFiles, ["notes-202.txt"]);
     assert.equal(midway.resolved, false);
 
     const again = runCli(["merge-main", "--path", wt]);
@@ -676,16 +689,17 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
   it("accepts a resolution only once it is committed with no markers or ADR clash left", () => {
     const wt = worktreePathForIssue(repo, 202);
     const { mainSha } = json(runCli(["merge-main", "--path", wt]));
-    const files = ["--files-json", JSON.stringify(["docs/adr/README.md"])];
+    const files = ["--files-json", JSON.stringify(["notes-202.txt"])];
 
     // An agent that `git add`s the file with the markers still in it.
-    gitIn(wt, ["add", "docs/adr/README.md"]);
+    gitIn(wt, ["add", "notes-202.txt"]);
     gitIn(wt, ["commit", "-q", "--no-edit"]);
     let check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha, ...files]));
     assert.equal(check.inProgress, false);
     assert.equal(check.mainIsAncestor, true);
-    assert.deepEqual(check.filesWithMarkers, ["docs/adr/README.md"]);
+    assert.deepEqual(check.filesWithMarkers, ["notes-202.txt"]);
     assert.equal(check.adrCollisions.length, 1);
+    assert.deepEqual(check.adrIndexDuplicates, [{ number: "0002", rows: 2 }]);
     assert.equal(check.resolved, false);
 
     // The fix made in the working tree only: what bash would push (HEAD) still
@@ -694,10 +708,13 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
     write(
       wt,
       "docs/adr/README.md",
-      "| 0001 | first |\n| 0002 | from main |\n| 0003 | from the pr |\n",
+      `${INDEX_0001}| [0002](./0002-from-main.md) | from main |\n` +
+        "| [0003](./0003-from-the-pr.md) | from the pr |\n",
     );
+    write(wt, "notes-202.txt", "main's notes\nthe pr's notes\n");
     check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha, ...files]));
     assert.equal(check.adrCollisions.length, 1, "judged on HEAD, not the working tree");
+    assert.equal(check.adrIndexDuplicates.length, 1, "judged on HEAD, not the working tree");
     assert.ok(check.uncommittedFiles.length > 0);
     assert.equal(check.resolved, false);
 
@@ -706,8 +723,263 @@ describe("worktree-cli merge-main / merge-abort / merge-check / push", () => {
     check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha, ...files]));
     assert.deepEqual(check.filesWithMarkers, []);
     assert.deepEqual(check.adrCollisions, []);
+    assert.deepEqual(check.adrIndexDuplicates, []);
     assert.deepEqual(check.uncommittedFiles, []);
     assert.equal(check.resolved, true);
+  });
+
+  // ADR-0103: 21 of 34 conflict passes in 30 days were ADR index rows. Two PRs
+  // that each append a row now merge cleanly, which bash pushes with no Claude
+  // run, and the rows come out in number order.
+  it("merges an index-only conflict cleanly with the union driver, rows in number order", () => {
+    const index = mainIndex();
+    const wt = prWorktree(213, {
+      "docs/adr/0005-from-the-pr.md": "# 5 (pr)\n",
+      "docs/adr/README.md": `${index}| [0005](./0005-from-the-pr.md) | from the pr |\n`,
+    });
+    // The branch carries no .gitattributes: the factory's attributes file does it.
+    assert.equal(existsSync(join(wt, ".gitattributes")), false);
+    const mainSha = advanceMain({
+      "docs/adr/0004-from-main.md": "# 4 (main)\n",
+      "docs/adr/README.md": `${index}| [0004](./0004-from-main.md) | from main |\n`,
+    });
+
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean");
+    assert.deepEqual(out.conflictedFiles, []);
+    assert.deepEqual(out.adrCollisions, []);
+    assert.deepEqual(out.adrIndexDuplicates, []);
+    assert.equal(out.adrIndexReordered, true);
+    assert.equal(out.ahead, true);
+    const merged = gitIn(wt, ["show", "HEAD:docs/adr/README.md"]);
+    assert.equal(
+      merged,
+      `${index}| [0004](./0004-from-main.md) | from main |\n` +
+        "| [0005](./0005-from-the-pr.md) | from the pr |\n",
+    );
+    // Still one merge commit with main as its second parent, and nothing left over.
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD^2"]).trim(), mainSha);
+    assert.equal(gitIn(wt, ["rev-parse", "HEAD^1"]).trim(), out.before);
+    assert.equal(gitIn(wt, ["status", "--porcelain"]).trim(), "");
+    const check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha]));
+    assert.equal(check.resolved, true);
+    json(runCli(["push", "--path", wt]));
+  });
+
+  // Mid-merge the sorted index is staged, for the conflict pass to commit.
+  it("stages the index rows in number order when another file stops the merge", () => {
+    const index = mainIndex();
+    const wt = prWorktree(215, {
+      "docs/adr/README.md": `${index}| [0007](./0007-from-the-pr.md) | from the pr |\n`,
+      "notes-215.txt": "the pr's notes\n",
+    });
+    advanceMain({
+      "docs/adr/README.md": `${index}| [0006](./0006-from-main.md) | from main |\n`,
+      "notes-215.txt": "main's notes\n",
+    });
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "conflicts");
+    assert.deepEqual(out.conflictedFiles, ["notes-215.txt"]);
+    assert.equal(out.adrIndexReordered, true);
+    const want =
+      `${index}| [0006](./0006-from-main.md) | from main |\n` +
+      "| [0007](./0007-from-the-pr.md) | from the pr |\n";
+    assert.equal(gitIn(wt, ["show", ":docs/adr/README.md"]), want);
+    assert.equal(readFileSync(join(wt, "docs/adr/README.md"), "utf8"), want);
+    json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+  });
+
+  // Both sides edited one row: the union keeps both versions, and the conflict
+  // pass gets the merge like an ADR file clash.
+  it("reports an ADR the merged index lists twice, and merge-check refuses it", () => {
+    const index = mainIndex();
+    const edit = (to) => index.replace("| first |", `| first (${to}) |`);
+    const wt = prWorktree(214, { "docs/adr/README.md": edit("pr") });
+    const mainSha = advanceMain({ "docs/adr/README.md": edit("main") });
+
+    const out = json(runCli(["merge-main", "--path", wt]));
+    assert.equal(out.status, "clean");
+    assert.deepEqual(out.adrCollisions, []);
+    assert.deepEqual(out.adrIndexDuplicates, [{ number: "0001", rows: 2 }]);
+    assert.equal(out.adrIndexReordered, false);
+    const check = json(runCli(["merge-check", "--path", wt, "--main-sha", mainSha]));
+    assert.deepEqual(check.adrIndexDuplicates, [{ number: "0001", rows: 2 }]);
+    assert.equal(check.resolved, false);
+    json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+  });
+
+  // The README as it really is: prose, then the table with its header and
+  // separator, then the rows. Union would keep both wordings of any line both
+  // sides changed, and nothing counts prose, so merge-main uses it only when
+  // the index conflicts on rows alone.
+  describe("an index with prose around the table", () => {
+    const intro = "This directory holds the ADRs.\n";
+    const header = "| #    | Title |\n| ---- | ----- |\n";
+    const outro = "\nAdd a row for each new ADR.\n";
+    // The README with <rows> (the table's rows, one string) and an intro line.
+    const readme = (rows, { lead = intro, tail = outro, head = header } = {}) =>
+      `# ADRs\n\n${lead}\n${head}${rows}${tail}`;
+    let rows;
+
+    // The PR branches from main as it is now, so the merge base holds the
+    // prose too (the worktrees above branch from the seed).
+    function prFromMain(issue, files) {
+      gitIn(repo, ["pull", "-q", "--ff-only", "origin", "main"]);
+      return prWorktree(issue, files);
+    }
+
+    before(() => {
+      rows = mainIndex();
+      advanceMain({ "docs/adr/README.md": readme(rows) });
+    });
+
+    it("still merges rows two sides appended cleanly", () => {
+      const wt = prFromMain(216, {
+        "docs/adr/README.md": readme(`${rows}| [0009](./0009-from-the-pr.md) | pr |\n`),
+      });
+      advanceMain({
+        "docs/adr/README.md": readme(`${rows}| [0008](./0008-from-main.md) | main |\n`),
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "clean");
+      assert.equal(out.adrIndexUnion, true);
+      assert.equal(out.adrIndexReordered, true);
+      assert.equal(
+        gitIn(wt, ["show", "HEAD:docs/adr/README.md"]),
+        readme(
+          `${rows}| [0008](./0008-from-main.md) | main |\n` +
+            "| [0009](./0009-from-the-pr.md) | pr |\n",
+        ),
+      );
+      json(runCli(["push", "--path", wt]));
+      rows = `${rows}| [0008](./0008-from-main.md) | main |\n`;
+    });
+
+    it("lets a prose line both sides rewrote conflict instead of keeping both", () => {
+      const wt = prFromMain(217, {
+        "docs/adr/README.md": readme(`${rows}| [0011](./0011-from-the-pr.md) | pr |\n`, {
+          lead: "This directory holds the PR wording.\n",
+        }),
+      });
+      const mainSha = advanceMain({
+        "docs/adr/README.md": readme(`${rows}| [0010](./0010-from-main.md) | main |\n`, {
+          lead: "This directory holds the main wording.\n",
+        }),
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "conflicts", "never a clean merge bash would push unread");
+      assert.equal(out.adrIndexUnion, false);
+      assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+      assert.deepEqual(out.adrIndexDuplicates, []);
+      assert.equal(out.adrIndexReordered, false);
+      assert.match(readFileSync(join(wt, "docs/adr/README.md"), "utf8"), /^<{7} /m);
+
+      // A pass that commits the file with both wordings and the markers left in
+      // is refused, as for any conflicted file.
+      gitIn(wt, ["add", "docs/adr/README.md"]);
+      gitIn(wt, ["commit", "-q", "--no-edit"]);
+      const check = json(
+        runCli([
+          "merge-check",
+          "--path",
+          wt,
+          "--main-sha",
+          mainSha,
+          "--files-json",
+          JSON.stringify(out.conflictedFiles),
+        ]),
+      );
+      assert.deepEqual(check.filesWithMarkers, ["docs/adr/README.md"]);
+      assert.equal(check.resolved, false);
+      json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+      assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), out.before);
+      rows = `${rows}| [0010](./0010-from-main.md) | main |\n`;
+    });
+
+    it("lets a prose line next to the new rows conflict instead of keeping both", () => {
+      // The rows alone don't clash, but the note right under the table is
+      // next to the PR's new row, so git's hunk spans both, and union would
+      // keep the old wording beside main's new one.
+      const note = "Add a row for each new ADR.\n";
+      advanceMain({ "docs/adr/README.md": readme(rows, { tail: note }) });
+      const wt = prFromMain(218, {
+        "docs/adr/README.md": readme(`${rows}| [0012](./0012-from-the-pr.md) | pr |\n`, {
+          tail: note,
+        }),
+      });
+      advanceMain({
+        "docs/adr/README.md": readme(rows, { tail: "Add one row per ADR, in order.\n" }),
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "conflicts");
+      assert.equal(out.adrIndexUnion, false);
+      assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+      json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+    });
+
+    it("lets a re-padded table conflict instead of repeating its header", () => {
+      // Prettier re-pads every row and the header when a new row is wider, so
+      // union would repeat the whole table, header and separator included.
+      const tail = "Add one row per ADR, in order.\n";
+      const wide = "| #     | Title  |\n| ----- | ------ |\n";
+      const pad = (text) => text.replace(/^\| \[(\d{4})\]/gm, "|  [$1]");
+      const wt = prFromMain(219, {
+        "docs/adr/README.md": readme(pad(`${rows}| [0014](./0014-from-the-pr.md) | pr |\n`), {
+          head: wide,
+          tail,
+        }),
+      });
+      advanceMain({
+        "docs/adr/README.md": readme(`${rows}| [0013](./0013-from-main.md) | main |\n`, { tail }),
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(out.status, "conflicts");
+      assert.equal(out.adrIndexUnion, false);
+      assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+      json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+    });
+  });
+
+  // The real merge can disagree with the preview (git's merge diffs with
+  // histogram, merge-file with myers; a criss-cross history has a virtual
+  // base). Here an in-tree attribute, which outranks the factory's attributes
+  // file, sends the index to a driver that keeps the PR's side on the first
+  // merge and conflicts on the second. merge-main must throw the unchecked
+  // union merge away and merge again without union.
+  it("merges again without union when the union merge differs from the preview", () => {
+    const index = mainIndex();
+    const flagDir = mkdtempSync(join(tmpdir(), "wt-cli-driver-"));
+    const flag = join(flagDir, "ran");
+    gitIn(repo, [
+      "config",
+      "merge.flaky.driver",
+      `if [ -e '${flag}' ]; then exit 1; fi; touch '${flag}'; exit 0`,
+    ]);
+    try {
+      const wt = prWorktree(220, {
+        ".gitattributes": "docs/adr/README.md merge=flaky\n",
+        "docs/adr/README.md": `${index}| [0016](./0016-from-the-pr.md) | from the pr |\n`,
+      });
+      const prIndex = gitIn(wt, ["show", "HEAD:docs/adr/README.md"]);
+      advanceMain({
+        "docs/adr/README.md": `${index}| [0015](./0015-from-main.md) | from main |\n`,
+      });
+      const out = json(runCli(["merge-main", "--path", wt]));
+      assert.equal(existsSync(flag), true, "the first merge ran the driver");
+      assert.equal(out.adrIndexUnion, false);
+      assert.equal(out.status, "conflicts");
+      assert.deepEqual(out.conflictedFiles, ["docs/adr/README.md"]);
+      assert.equal(out.adrIndexReordered, false);
+      // The first merge's commit is gone: HEAD is still the PR's commit, and the
+      // index on disk is the PR's, as the driver left it.
+      assert.equal(gitIn(wt, ["rev-parse", "HEAD"]).trim(), out.before);
+      assert.equal(readFileSync(join(wt, "docs/adr/README.md"), "utf8"), prIndex);
+      json(runCli(["merge-abort", "--path", wt, "--to", out.before]));
+      assert.equal(gitIn(wt, ["status", "--porcelain"]).trim(), "");
+    } finally {
+      gitIn(repo, ["config", "--unset", "merge.flaky.driver"]);
+      rmSync(flagDir, { recursive: true, force: true });
+    }
   });
 
   it("merge-check reads a path with a comma in it whole", () => {

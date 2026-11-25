@@ -102,6 +102,8 @@ A debug build of a branch runs against the **dev** Supabase project, through the
     -e RUN_ID="$(date +%s)" apps/mobile/e2e/<flow>.yaml
   ```
 
+- **A folder run of `android-only/` or `ios-only/` has no fixed order.** Some flows there leave the device signed out (`android-only/07-auth-callback-link.yaml` starts clean and stays on Log In), so a platform flow that needs a session either starts through `helpers/sign-in-if-needed.yaml`, which signs in as the E2E user only when the app shows Log In, or has a sign-in of its own. A new platform flow that needs a session must do the same: `apps/mobile/__tests__/unit/e2e-platform-flows-sign-in.test.ts` fails for one that only launches the app. Pass the `-e` account variables above on a folder run (an `android-only/` one always needs them, because 07 signs the device out); a flow that has to sign in fails fast without them.
+
 - `11-sign-out-confirm.yaml`'s confirm leg (`-e SIGN_OUT_CONFIRM=1`) signs out a dedicated dev account, `E2E_SIGNOUT_EMAIL` / `E2E_SIGNOUT_PASSWORD` in the same env file, never the shared E2E user. The app's sign-out is global, and on the shared user it ended the session a concurrent web E2E run was using (#877's CI on 2026-11-21). See `apps/mobile/e2e/README.md`.
 
 - **An emulator loads its JavaScript from `10.0.2.2:8081`, not `localhost`.** On a stock emulator React Native asks for the host machine's port 8081 at the emulator's alias for it, `10.0.2.2` (`AndroidInfoHelpers.kt`), and `adb reverse` only redirects the emulator's own `localhost`. So in a worktree, where the main checkout's Metro may already hold 8081:

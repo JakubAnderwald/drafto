@@ -9,8 +9,8 @@ onFlowComplete:
 # start, and syncs on reconnect.
 # Self-contained: creates its own notebook ("OffMode NB", a name no other flow
 # uses, so 06's "OffNB" never matches it) and deletes it at the end, so it runs
-# on its own or after any other flow. Assumes the user is logged in (after
-# 01-login).
+# on its own or after any other flow. Signs in when the app shows Log In
+# (helpers/sign-in-if-needed.yaml): pass -e E2E_TEST_EMAIL / E2E_TEST_PASSWORD.
 # Pass -e RUN_ID=<timestamp>.
 # Run on a release APK built against dev (docs/architecture/testing.md,
 # "Offline flows on Android"): a debug build loads its JavaScript from Metro
@@ -18,11 +18,7 @@ onFlowComplete:
 # Tests: offline banner, offline note creation, opening a note offline, data
 # persistence across an offline cold start, sync on reconnect.
 
-- launchApp
-- extendedWaitUntil:
-    visible:
-      id: "search-button"
-    timeout: 30000
+- runFlow: ../helpers/sign-in-if-needed.yaml
 
 # --- Online: a notebook with one note ---
 - tapOn:

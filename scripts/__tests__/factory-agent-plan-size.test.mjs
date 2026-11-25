@@ -218,8 +218,13 @@ describe("factory-agent.sh plan size: the threshold knob", () => {
     }
   });
 
-  it("has no split-on-request left: no FACTORY_PLAN_SPLIT, splitDir or action=split", () => {
+  it("splits only through /split (ADR-0104), never through the planner's run", () => {
+    // ADR-0083 dropped a split the planner wrote out (FACTORY_PLAN_SPLIT, a
+    // split dir, action=split). /split is bash's own step instead: a
+    // separate, tool-less splitter run, and bash files what it checked.
     assert.doesNotMatch(script, /FACTORY_PLAN_SPLIT|splitDir|plan_split|plan-split\.mjs/);
+    assert.match(script, /^split_card\(\) \{/m);
+    assert.match(script, /lib\/factory-split\.mjs" bundle/);
   });
 });
 

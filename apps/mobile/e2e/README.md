@@ -54,11 +54,15 @@ maestro test apps/mobile/e2e/02-create-notebook.yaml --platform ios -e RUN_ID=$(
 
 ```bash
 # Android-only (uses pressKey: back, toggleAirplaneMode)
-maestro test apps/mobile/e2e/android-only/ --platform android -e RUN_ID=$(date +%s)
+maestro test apps/mobile/e2e/android-only/ --platform android -e RUN_ID=$(date +%s) \
+  -e E2E_TEST_EMAIL="$E2E_TEST_EMAIL" -e E2E_TEST_PASSWORD="$E2E_TEST_PASSWORD"
 
 # iOS-only (uses header back buttons, swipe-to-dismiss modals)
-maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s)
+maestro test apps/mobile/e2e/ios-only/ --platform ios -e RUN_ID=$(date +%s) \
+  -e E2E_TEST_EMAIL="$E2E_TEST_EMAIL" -e E2E_TEST_PASSWORD="$E2E_TEST_PASSWORD"
 ```
+
+Maestro runs a folder's flows in no fixed order, and some of them leave the device signed out (`android-only/07-auth-callback-link.yaml` starts clean and stays on Log In). So each platform flow that needs a session either starts through `helpers/sign-in-if-needed.yaml`, which signs in only when the app shows Log In, or has a sign-in of its own. Run on its own on a signed-in device, such a flow needs no account variables, and on a signed-out one it fails fast without them. A folder run of `android-only/` always needs them, because 07 signs the device out. To keep the password off the command line that `ps` shows, export `MAESTRO_E2E_TEST_PASSWORD` instead of passing `-e E2E_TEST_PASSWORD` (Maestro hands `MAESTRO_*` shell variables to flows). `apps/mobile/__tests__/unit/e2e-platform-flows-sign-in.test.ts` fails for a new platform flow that uses the app without one of these.
 
 A folder run also picks up the report 10668 flows below. Their pass/fail is a host check the folder run doesn't do, and the iOS offline ones need the Mac offline between phases, so add `--exclude-tags qa-10668,requires-host-offline` and run them through their runner.
 
@@ -147,19 +151,22 @@ The main navigation difference between platforms:
 
 - **Android**: Uses `pressKey: back` (hardware back button) to navigate between screens
 - **iOS**: Uses `tapOn: "Notes"` / `tapOn: "Notebooks"` to tap the header back button. "Notebooks" is the tabs screen's title; "Notes" is the editor's fixed `headerBackTitle` (`app/_layout.tsx`), because the notebook screen itself is titled with the notebook's name. Search is a sheet with a close button (`tapOn: { id: "search-close" }`); a note opened from it is a sheet of its own, closed with `tapOn: { id: "note-sheet-close" }`. Assert `notVisible` on the button afterwards: the screen beneath the sheet is still in the view hierarchy, so a `visible` check on it passes even if the sheet didn't close
-- **Editor keyboard check**: `03-create-edit-note.yaml`, `ios-all.yaml` and `android-all.yaml` tap into the note body, type a line, and save an `editor-keyboard-up` screenshot. Look at it after a run: the body text has a side gutter and the formatting toolbar sits directly on the keyboard, with no blank band above it
+- **Editor keyboard check**: `03-create-edit-note.yaml`, `ios-all.yaml` and `android-all.yaml` tap into the note body, type a line, and save an `editor-keyboard-up` screenshot. Look at it after a run: the body text has a side gutter and the formatting toolbar sits directly on the keyboard, with no blank band above it. `ios-all.yaml` focuses the body by tapping its first paragraph (the Bold text the toolbar step typed), not a screen point, asserts the typed body text and the unchanged title, and checks the body text again after reopening the note, so it fails when typing doesn't land (#874). `03-create-edit-note.yaml` still taps a screen point, which on iOS lands below the body, so its iOS run doesn't type the line
 
 ## Notes
 
-- Tests are designed to run **sequentially** (each builds on state from the previous flow)
-- Flow 01 clears app state and logs in fresh; flows 02+ assume prior login
+- The cross-platform flows are designed to run **sequentially** (each builds on state from the previous flow)
+- Flow 01 clears app state and logs in fresh; cross-platform flows 02+ assume prior login. The
+  `android-only/` and `ios-only/` flows don't: they sign in when needed (see
+  [Platform-specific flows](#platform-specific-flows))
 - Flow 06 is the exception: it clears state and runs **signed out**, so run it on its own
   (`maestro test apps/mobile/e2e/06-forgot-password.yaml --platform ios`, no `-e` vars)
   rather than in the middle of the sequence. It requests the reset for an address with no account,
   because dev's mailer won't send to the E2E account (see
   [environments.md](../../../docs/architecture/environments.md#supabase-projects))
-- `android-only/07-auth-callback-link.yaml` also clears state and runs signed out, so run it on its own
-  too (`maestro test apps/mobile/e2e/android-only/07-auth-callback-link.yaml --platform android`)
+- `android-only/07-auth-callback-link.yaml` also clears state and runs signed out, and leaves the
+  device signed out. That still matters before the cross-platform flows 02+, so run `01-login.yaml`
+  after it there. A folder run of `android-only/` needs no care: its flows sign in when needed
 - `11-sign-out-confirm.yaml` only cancels by default, and `ios-all.yaml` and `android-all.yaml` run it
   (Cancel only) at their end. Its `-e SIGN_OUT_CONFIRM=1` leg confirms the sign-out, which the app
   makes global (every session of the account ends). So that leg first switches the device to a

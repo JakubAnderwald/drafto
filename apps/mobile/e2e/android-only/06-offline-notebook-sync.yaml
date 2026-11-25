@@ -6,19 +6,15 @@ onFlowComplete:
   - setAirplaneMode: disabled
 ---
 # Flow 06: Offline notebook creation and multi-operation sync
-# Depends on: 01-login (user is logged in)
+# Signs in when the app shows Log In (helpers/sign-in-if-needed.yaml): pass
+# -e E2E_TEST_EMAIL / E2E_TEST_PASSWORD
 # Pass -e RUN_ID=<timestamp> when running
 # Run on a release APK built against dev (docs/architecture/testing.md,
 # "Offline flows on Android"): a debug build loses Metro in airplane mode.
 # Tests: create notebook offline, create note inside it offline,
 #         all queued operations sync correctly on reconnect
 
-- launchApp
-
-- extendedWaitUntil:
-    visible:
-      id: "search-button"
-    timeout: 30000
+- runFlow: ../helpers/sign-in-if-needed.yaml
 
 # --- Test 1: Go offline and create a notebook ---
 - setAirplaneMode: enabled
