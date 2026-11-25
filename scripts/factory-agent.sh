@@ -4391,15 +4391,25 @@ record_ci_noop() {
 }
 
 # ci_noop_repeat <issue> <pr-view-json> — exit 0 when the PR is red on the same
-# head SHA with the same failing required checks a no-op fix pass already saw.
-# An unreadable record is no match: the fix loop runs as before.
+# head SHA a no-op fix pass already saw, and every failing required check is one
+# that pass saw red. A subset counts: while a re-run is in flight its faster
+# jobs turn red again before the slower ones finish, and a re-run that greens
+# some of the checks leaves red the agent already judged. Both go to
+# rerun_infra_failures, which waits while the run is in progress. A red check
+# the pass didn't see, or an unreadable record, is no match: the fix loop runs
+# as before.
 ci_noop_repeat() {
   local issue_num="$1" key record
   key=$(pr_ci_noop_key "$2")
   [[ -n "$key" ]] || return 1
   record=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
     --state-file "$STATE_FILE" 2>>"$LOG_FILE" | jq -r '.ciNoop // ""' 2>/dev/null || echo "")
-  [[ "$record" == "$key" ]]
+  [[ -n "$record" && "${record%%:*}" == "${key%%:*}" ]] || return 1
+  [[ "$record" == "$key" ]] && return 0
+  jq -en --arg now "${key#*:}" --arg seen "${record#*:}" '
+    ($seen | split(",")) as $s
+    | ($now | split(",")) | length > 0 and all(. as $n | ($s | index($n)) != null)' \
+    >/dev/null 2>&1
 }
 
 # comment_ci_noop_hold <issue> <item-id> <pr> <head-sha> <pr-view-json>
@@ -4408,7 +4418,9 @@ ci_noop_repeat() {
 # card to Blocked and free its worktree slot. It holds no lock on anything a
 # person needs, and the fix agent has nothing left to try. A tick that can't
 # read the issue's comments, or can't post, leaves the card for the next tick
-# rather than park it without the notice.
+# rather than park it without the notice. Those transient paths still return 0:
+# the --watch loop runs under `set -e`, and a non-zero status there would end
+# the whole tick (every later card skipped) and file a factory-failure issue.
 comment_ci_noop_hold() {
   local issue_num="$1" item_id="$2" pr_num="$3" head_sha="$4" pr_view="$5"
   local sha12="${head_sha:0:12}" rc=0 summary commands count tried
@@ -4419,7 +4431,7 @@ comment_ci_noop_hold() {
   issue_marker_check "$issue_num" "drafto-factory-ci-noop-hold:$sha12" || rc=$?
   if [[ "$rc" -eq 2 ]]; then
     log "WARNING: couldn't read #$issue_num's comments (transient?); holding the card in In Review until the next tick"
-    return 1
+    return 0
   fi
   if [[ "$rc" -eq 1 ]]; then
     count=$(ci_rerun_count "$issue_num" "$head_sha")
@@ -4444,15 +4456,15 @@ $tried To try them again:
 $commands
 \`\`\`
 
-The card is in **Blocked** and its worktree slot is free. Push a fix (a new commit \
-re-arms the factory), or re-run the checks and drag the card back to **In Review** \
-once they're green. To give the fix agent another pass on this same commit, clear \
+The card is in **Blocked** and its worktree slot is free. Push a fix and drag the \
+card back to **In Review** (the new commit re-arms the factory), or re-run the \
+checks and drag the card back once they're green. To give the fix agent another pass on this same commit, clear \
 the record first: \`node scripts/lib/state-cli.mjs factory:set-issue-field $issue_num ciNoop \"\" --state-file logs/factory-state.json\` \
 in \`drafto-factory\`.
 
 <!-- drafto-factory-ci-noop-hold:$sha12 -->" >>"$LOG_FILE" 2>&1; then
       log "WARNING: couldn't post the red-CI hold notice on #$issue_num (transient?); holding the card in In Review until the next tick"
-      return 1
+      return 0
     fi
   fi
   transition_status "$item_id" "$issue_num" "Blocked" || true
@@ -10415,11 +10427,12 @@ if [[ "$MODE_WATCH" -eq 1 ]]; then
           continue ;;
       esac
       # Red CI a no-op fix pass already looked at, on the same head with the
-      # same failing checks (ADR-0100): another Claude pass would find nothing
-      # new. Re-run the checks in bash, or park the card in Blocked once the
-      # re-runs are spent.
+      # same failing checks or some of them (ADR-0100): another Claude pass
+      # would find nothing new. Re-run the checks in bash, or park the card in
+      # Blocked once the re-runs are spent. `|| true`: this loop runs under
+      # `set -e`, and one card's hiccup must not end the tick for the rest.
       if ci_noop_repeat "$ISSUE_NUM" "$PR_VIEW"; then
-        recover_noop_red_ci "$ISSUE_NUM" "$ITEM_ID" "$PR_NUM" "$WATCH_HEAD_SHA" "$PR_VIEW"
+        recover_noop_red_ci "$ISSUE_NUM" "$ITEM_ID" "$PR_NUM" "$WATCH_HEAD_SHA" "$PR_VIEW" || true
         continue
       fi
     fi

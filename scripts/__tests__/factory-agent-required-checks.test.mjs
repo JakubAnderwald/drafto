@@ -159,8 +159,9 @@ describe("factory-agent required-context gating: static wiring", () => {
     const block = script.slice(infraAt, fixLoopAt);
     const classifyAt = block.search(/classify_failing_required/);
     const repeatAt = block.search(
-      /if ci_noop_repeat "\$ISSUE_NUM" "\$PR_VIEW"; then\n\s*recover_noop_red_ci "\$ISSUE_NUM" "\$ITEM_ID" "\$PR_NUM" "\$WATCH_HEAD_SHA" "\$PR_VIEW"\n\s*continue\n/,
+      /if ci_noop_repeat "\$ISSUE_NUM" "\$PR_VIEW"; then\n\s*recover_noop_red_ci "\$ISSUE_NUM" "\$ITEM_ID" "\$PR_NUM" "\$WATCH_HEAD_SHA" "\$PR_VIEW" \|\| true\n\s*continue\n/,
     );
+    assert.ok(classifyAt >= 0, "classify_failing_required is not in the watch CI block");
     assert.ok(repeatAt > 0, "the ciNoop repeat check is not in the watch CI block");
     assert.ok(classifyAt < repeatAt, "cancelled-before-a-runner checks keep their own path");
     // Nothing between the check and the fix loop's Claude call can be reached
@@ -272,9 +273,14 @@ describe("cancelled-check recovery helpers (real helpers, jq) — #654", () => {
   // `pre` overrides a stub (later definitions win). The environment is built
   // from scratch so a knob exported by the caller (the factory's plist sets
   // FACTORY_* vars) can't change the results.
-  function runBash(fns, body, { required = REQUIRED_654, pre = "", env = {} } = {}) {
+  // `errexit` runs it under `set -euo pipefail`, as factory-agent.sh runs.
+  function runBash(
+    fns,
+    body,
+    { required = REQUIRED_654, pre = "", env = {}, errexit = false } = {},
+  ) {
     const harness = [
-      "set -uo pipefail",
+      errexit ? "set -euo pipefail" : "set -uo pipefail",
       "LOG_FILE=$(mktemp)",
       `trap 'cat "$LOG_FILE"; rm -f "$LOG_FILE"' EXIT`,
       "SCRIPT_DIR=/nonexistent",
@@ -843,6 +849,12 @@ EOF`,
       ],
     };
     const KEY_915 = `${SHA_915}:E2E Tests,Unit & Integration Tests`;
+    const withCheck915 = (name, patch) => ({
+      ...PR_915,
+      statusCheckRollup: PR_915.statusCheckRollup.map((c) =>
+        c.name === name ? { ...c, ...patch } : c,
+      ),
+    });
     const ALL = [
       "pr_failing_required_checks",
       "pr_failing_required_summary",
@@ -913,10 +925,31 @@ EOF`,
         assert.match(repeat({ ...PR_915, headRefOid: "f".repeat(40) }, KEY_915), /RC=1/);
       });
 
-      it("a different set of red checks is new to the fix agent", () => {
+      it("a red check the no-op pass didn't see is new to the fix agent", () => {
+        const view = withCheck915("Lint & Typecheck", { conclusion: "FAILURE" });
+        assert.match(repeat(view, KEY_915), /RC=1/);
+        // Disjoint from the record: also new.
+        assert.match(repeat(view, `${SHA_915}:Scripts Tests`), /RC=1/);
+      });
+
+      // ci.yml's jobs of one re-run finish minutes apart (Unit before E2E),
+      // and the factory ticks every 5 min: a tick mid-re-run sees one of the
+      // recorded checks red again and the other still running. That is the
+      // red the agent already judged, not a reason for another Claude pass.
+      it("mid-re-run (one recorded check red, the other in progress) still matches", () => {
+        const view = withCheck915("E2E Tests", { conclusion: null, status: "IN_PROGRESS" });
+        assert.match(repeat(view, KEY_915), /RC=0/);
+      });
+
+      it("a re-run that leaves some of the recorded checks red still matches", () => {
+        const view = withCheck915("E2E Tests", { conclusion: "SUCCESS" });
+        assert.match(repeat(view, KEY_915), /RC=0/);
+      });
+
+      it("a subset on a new head SHA doesn't match", () => {
         const view = {
-          ...PR_915,
-          statusCheckRollup: PR_915.statusCheckRollup.filter((c) => c.name !== "E2E Tests"),
+          ...withCheck915("E2E Tests", { conclusion: "SUCCESS" }),
+          headRefOid: "f".repeat(40),
         };
         assert.match(repeat(view, KEY_915), /RC=1/);
       });
@@ -1033,10 +1066,13 @@ EOF`,
         assert.match(out, /RC=0/);
       });
 
+      // The transient paths return 0: the --watch loop runs under `set -e`,
+      // so a non-zero status would end the tick (see the errexit test below).
       it("comments unreadable: no comment, no move; the next tick tries again", () => {
         const out = hold({ marker: 2 });
         assert.doesNotMatch(out, /GH issue comment|TRANSITION|RELEASE/);
-        assert.match(out, /RC=1/);
+        assert.match(out, /couldn't read #899's comments/);
+        assert.match(out, /RC=0/);
       });
 
       it("a comment GitHub refused: no move without the notice", () => {
@@ -1044,13 +1080,101 @@ EOF`,
         assert.match(out, /GH issue comment/);
         assert.doesNotMatch(out, /TRANSITION|RELEASE/);
         assert.match(out, /couldn't post the red-CI hold notice/);
-        assert.match(out, /RC=1/);
+        assert.match(out, /RC=0/);
+      });
+
+      it("tells the operator a push needs the card dragged back too", () => {
+        const out = hold();
+        assert.match(
+          out,
+          /Push a fix and drag the\s+card back to \*\*In Review\*\* \(the new commit re-arms the factory\)/,
+        );
       });
 
       it("dry run neither comments nor moves the card", () => {
         const out = hold({ env: { DRY_RUN: "1" } });
         assert.doesNotMatch(out, /GH issue comment|TRANSITION|RELEASE/);
         assert.match(out, /DRY-RUN: would comment on #899 and move it to Blocked/);
+      });
+    });
+
+    // factory-agent.sh runs under `set -euo pipefail`, and the --watch loop is
+    // top-level code: a non-zero status from the repeat path would end the
+    // tick, skip every later card and fire the EXIT trap's factory-failure
+    // issue. Run the hold's transient paths the way the watch block does, in a
+    // loop over two cards, with errexit on.
+    describe("under set -e, as the --watch loop runs", () => {
+      const loop = (pre) =>
+        runBash(
+          ALL,
+          [
+            "for card in 899 900; do",
+            `  if ci_noop_repeat "$card" ${q(PR_915)}; then`,
+            `    recover_noop_red_ci "$card" "ITEM_$card" 915 "${SHA_915}" ${q(PR_915)}`,
+            '    echo "NEXT $card" >>"$LOG_FILE"',
+            "    continue",
+            "  fi",
+            "done",
+            'echo "TICK DONE" >>"$LOG_FILE"',
+          ].join("\n"),
+          {
+            errexit: true,
+            pre: [
+              `node() { if [[ "$2" == "factory:get-issue" ]]; then echo '{"ciNoop":"${KEY_915}","ciRerun":"${SHA_915}:2"}'; else echo "NODE $*"; fi; }`,
+              'transition_status() { echo "TRANSITION $1 $2 $3"; }',
+              'release_slot_and_worktree() { echo "RELEASE $1"; }',
+              pre,
+            ].join("\n"),
+          },
+        );
+
+      it("a refused hold comment holds the card and the loop goes on", () => {
+        const res = loop(
+          'gh() { if [[ "$1 $2" == "run view" ]]; then echo completed; elif [[ "$1 $2" == "issue comment" ]]; then return 1; fi; }\nissue_marker_check() { return 1; }',
+        );
+        assert.equal(res.status, 0, res.stdout);
+        assert.match(res.stdout, /couldn't post the red-CI hold notice on #899/);
+        assert.match(res.stdout, /couldn't post the red-CI hold notice on #900/);
+        assert.match(res.stdout, /NEXT 899[\s\S]*NEXT 900[\s\S]*TICK DONE/);
+        assert.doesNotMatch(res.stdout, /TRANSITION/);
+      });
+
+      it("unreadable comments hold the card and the loop goes on", () => {
+        const res = loop(
+          'gh() { if [[ "$1 $2" == "run view" ]]; then echo completed; fi; }\nissue_marker_check() { return 2; }',
+        );
+        assert.equal(res.status, 0, res.stdout);
+        assert.match(res.stdout, /NEXT 899[\s\S]*NEXT 900[\s\S]*TICK DONE/);
+        assert.doesNotMatch(res.stdout, /TRANSITION/);
+      });
+
+      it("mid-re-run: waits for the run, no re-run and no Claude, and the loop goes on", () => {
+        const midRun = q(withCheck915("E2E Tests", { conclusion: null, status: "IN_PROGRESS" }));
+        const res = runBash(
+          ALL,
+          [
+            `if ci_noop_repeat 899 ${midRun}; then`,
+            `  recover_noop_red_ci 899 ITEM_899 915 "${SHA_915}" ${midRun}`,
+            "else",
+            '  echo "FIX PASS" >>"$LOG_FILE"',
+            "fi",
+            'echo "TICK DONE" >>"$LOG_FILE"',
+          ].join("\n"),
+          {
+            errexit: true,
+            pre: [
+              `node() { if [[ "$2" == "factory:get-issue" ]]; then echo '{"ciNoop":"${KEY_915}","ciRerun":"${SHA_915}:1"}'; else echo "NODE $*" >>"$LOG_FILE"; fi; }`,
+              'gh() { if [[ "$1 $2" == "run view" ]]; then echo in_progress; else echo "GH $*" >>"$LOG_FILE"; fi; }',
+            ].join("\n"),
+          },
+        );
+        assert.equal(res.status, 0, res.stdout);
+        assert.match(
+          res.stdout,
+          /run 37371041547 is still in_progress; re-running once it finishes/,
+        );
+        assert.doesNotMatch(res.stdout, /FIX PASS|GH run rerun|NODE|GH issue comment/);
+        assert.match(res.stdout, /TICK DONE/);
       });
     });
 
