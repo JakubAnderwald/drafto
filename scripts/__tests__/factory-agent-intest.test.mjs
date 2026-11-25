@@ -18,6 +18,7 @@ import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { buildBody } from "../comment-intest-build.mjs";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 // Tests for the In Review → In Test hand-off: the stage that writes the human
 // test scenario and posts it as the In Test comment.
@@ -239,8 +240,8 @@ describe("intest_handoff — failure degrades, never escalates", () => {
 });
 
 describe("intest_handoff — the scenario writer's claude call (extracted, real bash)", () => {
-  // The model knob block (ADR-0080), so a run with `model` set goes through the
-  // same validation the factory does at startup.
+  // The model knob block (ADR-0080, ADR-0101), so a run with `model` set goes
+  // through the same validation the factory does at startup.
   const modelKnobs = script.match(/^MODEL_KNOB_RE=[\s\S]*?^ {2}FACTORY_INTEST_MODEL=""\nfi\n/m);
   const SHA = "c".repeat(40);
 
@@ -248,7 +249,8 @@ describe("intest_handoff — the scenario writer's claude call (extracted, real 
   // the argv run-claude.mjs got (NUL-separated, since the prompt is multi-line).
   // `model` undefined: FACTORY_INTEST_MODEL is unset altogether and the knob
   // block left out, so the function itself must cope under `set -u`.
-  function runHandoff({ model } = {}) {
+  // `factoryModel` sets FACTORY_MODEL (unset otherwise).
+  function runHandoff({ model, factoryModel } = {}) {
     assert.ok(modelKnobs, "model knob block not found");
     const dir = mkdtempSync(join(tmpdir(), "intest-handoff-"));
     const argsFile = join(dir, "args.bin");
@@ -296,6 +298,7 @@ echo "rc=$?"
 `;
     const env = { PATH: process.env.PATH, HOME: dir, TMPDIR: dir };
     if (model !== undefined) env.FACTORY_INTEST_MODEL = model;
+    if (factoryModel !== undefined) env.FACTORY_MODEL = factoryModel;
     const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env });
     const args = existsSync(argsFile)
       ? readFileSync(argsFile, "utf8").split("\0").slice(0, -1)
@@ -305,9 +308,13 @@ echo "rc=$?"
     return { r, args, events: log, dir };
   }
 
-  it("passes no --model when FACTORY_INTEST_MODEL is unset or empty", () => {
-    for (const model of [undefined, ""]) {
-      const { r, args, events, dir } = runHandoff({ model });
+  it("passes FACTORY_MODEL when FACTORY_INTEST_MODEL is unset or empty (ADR-0101)", () => {
+    for (const [model, factoryModel, want] of [
+      [undefined, undefined, "opus[1m]"],
+      ["", undefined, "opus[1m]"],
+      ["", "opus", "opus"],
+    ]) {
+      const { r, args, events, dir } = runHandoff({ model, factoryModel });
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /^rc=0$/m);
       assert.ok(args, "run-claude.mjs was not called");
@@ -317,10 +324,15 @@ echo "rc=$?"
         "xhigh",
         "--no-chrome",
         "--strict-mcp-config",
+        "--model",
+        want,
       ]);
       assert.equal(args[0], "-p");
       assert.match(args[1], /# In Test scenario prompt[\s\S]*"bundle":true/);
-      assert.match(r.stdout, /In Test scenario, cap 600s, effort=xhigh, model=default\)/);
+      assert.ok(
+        r.stdout.includes(`In Test scenario, cap 600s, effort=xhigh, model=${want})`),
+        r.stdout,
+      );
       assert.match(events, new RegExp(`pwd:${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       assert.match(events, /timeout:600/);
       assert.match(events, new RegExp(`recorded ${SHA}`));
@@ -350,9 +362,9 @@ echo "rc=$?"
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /invalid FACTORY_INTEST_MODEL='--chrome'/);
     assert.ok(args, "run-claude.mjs was not called");
-    assert.ok(!args.includes("--model"));
     assert.ok(!args.includes("--chrome"));
-    assert.equal(args.at(-1), "--strict-mcp-config");
+    // FACTORY_MODEL instead.
+    assert.deepEqual(args.slice(-3), ["--strict-mcp-config", "--model", "opus[1m]"]);
   });
 });
 
@@ -928,7 +940,7 @@ describe("intest_dispatch_betas — idempotency and reporting", () => {
       const run = (script, from = primary) =>
         spawnSync("bash", ["-c", `cd ${JSON.stringify(from)} || exit 10\n${script}`], {
           encoding: "utf8",
-          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+          env: hermeticEnv({ PATH: `${bin}:${process.env.PATH}` }),
         });
 
       const both = run(`${cmd.mobile} || exit 11\n${cmd.desktop} || exit 12`);
@@ -1101,10 +1113,9 @@ if [[ -n "$HELD_PID" ]]; then
 fi
 cat "$STATE_FILE"
 `;
-    // An operator's exported FACTORY_LSOF_BIN must not leak into every case; only
-    // a test that sets it on purpose gets one.
-    const childEnv = { ...process.env, PATH: path, ...env };
-    if (!("FACTORY_LSOF_BIN" in env)) delete childEnv.FACTORY_LSOF_BIN;
+    // An operator's exported FACTORY_LSOF_BIN (or any other FACTORY_* knob) must
+    // not leak into every case; only a test that sets it on purpose gets one.
+    const childEnv = hermeticEnv({ PATH: path, ...env });
     const r = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: childEnv });
     // gh output is redirected into $LOG_FILE, so comment assertions must read it
     // there — pointing LOG_FILE at /dev/null (as this harness used to) silently
@@ -2347,7 +2358,7 @@ ${script}
 if [[ -s "$BODY_FILE" ]]; then cat "$BODY_FILE"; fi
 rm -f "$BODY_FILE"`,
       ],
-      { encoding: "utf8", env: { ...process.env, ...env } },
+      { encoding: "utf8", env: hermeticEnv(env) },
     );
     assert.equal(r.status, 0, r.stderr);
     return r.stdout;
@@ -2436,7 +2447,7 @@ extract_plan_comment() { echo null; }
 gh() { :; }
 intest_handoff 794 802 '{"number":802,"url":"u","headRef":"h","state":"OPEN"}' "" "" ${"c".repeat(40)} "apps/mobile/a.ts" '{"mobile":true}' "$BETA" ""`,
         ],
-        { encoding: "utf8", env: { ...process.env, COMMENTS: comments, BETA: beta } },
+        { encoding: "utf8", env: hermeticEnv({ COMMENTS: comments, BETA: beta }) },
       );
       assert.equal(r.status, 0, r.stderr);
       assert.deepEqual(JSON.parse(r.stdout).betaDispatch.reused, [
@@ -2844,7 +2855,7 @@ ${FNS.map(extract).join("\n")}
 intest_handoff ${ISSUE} 802 '{"number":802,"url":"u","headRef":"factory/issue-${ISSUE}","state":"OPEN"}' "https://preview.example" "" "$HEAD" "apps/web/a.ts" '${platforms}' "" ""
 `;
     try {
-      const r = spawnSync("bash", ["-c", harness], { encoding: "utf8", env: { ...process.env } });
+      const r = spawnSync("bash", ["-c", harness], { encoding: "utf8", env: hermeticEnv() });
       const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
       const input = read(join(dir, "claude.input"));
       const json = /```json\n([\s\S]*)\n```/.exec(input);

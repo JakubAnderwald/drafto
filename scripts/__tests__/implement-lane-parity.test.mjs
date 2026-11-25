@@ -37,24 +37,37 @@ describe("detached implement = the synchronous call (parity)", () => {
     // The detached start adds no second one: it builds its argv in node.
     assert.equal(
       script.split(
-        'run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$FACTORY_EFFORT"',
+        'run-claude.mjs" -p "$CLAUDE_INPUT" --dangerously-skip-permissions --effort "$IMPL_EFFORT"',
       ).length - 1,
       1,
     );
   });
 
+  it("the synchronous call takes this run's effort and FACTORY_MODEL", () => {
+    // IMPL_EFFORT: the coding or the revision effort (ADR-0101); the detached
+    // start hands the same two to implement-lane.mjs (below).
+    const flags = words(SYNC.flags);
+    assert.equal(flags[flags.indexOf("--effort") + 1], '"$IMPL_EFFORT"');
+    assert.equal(flags[flags.indexOf("--model") + 1], '"$FACTORY_MODEL"');
+  });
+
   for (const mode of ["fresh", "resume"]) {
     it(`flags: buildImplementArgv({mode: "${mode}"}) is the synchronous call's argv`, () => {
       const sync = words(SYNC.flags).map((w) =>
-        w === '"$FACTORY_EFFORT"'
-          ? "ultracode"
-          : w === '"$IMPL_SESSION_FLAG"'
-            ? SESSION_FLAGS[mode]
-            : w === '"$IMPL_SESSION_ID"'
-              ? SID
-              : w,
+        w === '"$IMPL_EFFORT"'
+          ? "xhigh"
+          : w === '"$FACTORY_MODEL"'
+            ? "opus[1m]"
+            : w === '"$IMPL_SESSION_FLAG"'
+              ? SESSION_FLAGS[mode]
+              : w === '"$IMPL_SESSION_ID"'
+                ? SID
+                : w,
       );
-      assert.deepEqual(buildImplementArgv({ effort: "ultracode", mode, sessionId: SID }), sync);
+      assert.deepEqual(
+        buildImplementArgv({ effort: "xhigh", model: "opus[1m]", mode, sessionId: SID }),
+        sync,
+      );
     });
   }
 
@@ -88,7 +101,8 @@ describe("detached implement = the synchronous call (parity)", () => {
   it("the start passes those same knobs, the claude input untouched, and the worktree", () => {
     const start = script.match(/\nimplement_lane_start\(\) \{[\s\S]*?\n\}\n/)[0];
     for (const re of [
-      /--arg effort "\$FACTORY_EFFORT"/,
+      /--arg effort "\$\{IMPL_EFFORT:-\$\{FACTORY_EFFORT:-ultracode\}\}"/,
+      /--arg model "\$\{FACTORY_MODEL:-opus\[1m\]\}"/,
       /--arg sessionId "\$IMPL_SESSION_ID"/,
       /--arg timeoutSec "\$IMPLEMENT_TIMEOUT_SEC"/,
       /--arg termGraceSec "\$FACTORY_IMPLEMENT_TERM_GRACE_SEC"/,
