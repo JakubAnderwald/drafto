@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 // The support-forward gate (ADR-0066, issue #469). support-agent step 4.5
 // forwards a customer's email reply onto the linked issue under the Mac mini's
@@ -106,8 +107,8 @@ function run(body, { comments = [], reporters = {}, stateFile, log = "", stateFr
       body,
     ].join("\n");
     const env = stateFromHome
-      ? { ...process.env, HOME: dir, DRAFTO_SUPPORT_STATE_FILE: "~/support-state.json" }
-      : { ...process.env, DRAFTO_SUPPORT_STATE_FILE: stateFile ?? files.state };
+      ? hermeticEnv({ HOME: dir, DRAFTO_SUPPORT_STATE_FILE: "~/support-state.json" })
+      : hermeticEnv({ DRAFTO_SUPPORT_STATE_FILE: stateFile ?? files.state });
     const r = spawnSync("/bin/bash", ["-c", snippet], { encoding: "utf8", env });
     return {
       status: r.status,
