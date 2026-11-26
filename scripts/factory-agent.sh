@@ -8807,6 +8807,24 @@ verify_device_report_posted() {
   return 0
 }
 
+# verify_device_report_retry_pending <issue> <sha> <run-dir> <state-json> — a
+# report composed for <sha> showing this run's finished results
+# (report-composed.pending) couldn't be posted, and verify_report_retry will
+# try it again: its saved body still carries them, so the follow-up must wait
+# for it rather than post the same results first. Fails once the report is
+# posted (verify_device_report_posted then leaves report-composed and the run
+# is recorded :in-report), the body is gone or the retries are spent.
+verify_device_report_retry_pending() {
+  local issue_num="$1" sha="$2" run_dir="$3" state_json="$4" body_file n
+  [[ -f "$run_dir/report-composed.pending" ]] || return 1
+  [[ "$(head -1 "$run_dir/report-composed.pending" 2>/dev/null)" == "$sha" ]] || return 1
+  [[ "$(echo "$state_json" | jq -r '.verifyReportSha // ""' 2>/dev/null)" != "$sha" ]] || return 1
+  body_file="$VERIFY_DIR/report-$issue_num-$sha.md"
+  [[ -s "$body_file" ]] || return 1
+  n=$(verify_sha_count "$(echo "$state_json" | jq -r '.verifyReportPosts // ""' 2>/dev/null || echo "")" "$sha")
+  [[ "$n" -lt "$VERIFY_REPORT_POST_MAX" ]]
+}
+
 # verify_device_work <issue> <pr> <head-sha> <platforms-json> <lane-states-json>
 # Start the device lane for <head-sha> (device-lane.mjs start --trigger
 # testing) unless its state is terminal or a run is already going. Only a PR
@@ -8994,7 +9012,10 @@ verify_device_outcome_state() {
 # In Review (after a hand-back): that report carries its results. Once the
 # report is posted showing them (verify_device_report_posted left
 # "<run-dir>/report-composed") the run is recorded as ":in-report" and nothing
-# more is posted. The hold is released, and the follow-up posted, by a report
+# more is posted. It holds too while that report was composed with them but
+# couldn't be posted, and the In Test sweep's retry will post its saved body
+# (verify_device_report_retry_pending). The hold is released, and the
+# follow-up posted, by a report
 # without them, by the card being anywhere else, or once
 # FACTORY_VERIFY_HOLD_MAX_MIN + 60 minutes have passed since the run finished
 # (<finished-at>); a head that moves releases it too, and device_post_followup
@@ -9039,6 +9060,12 @@ verify_device_collect() {
     case "$lstate" in
       done:*|timeout|failed:*|unavailable|unavailable:*)
         if [[ "$round" -eq 1 ]]; then
+          # The In Test sweep's report retry still carries these results: hold
+          # for it while the card is in In Test (where that retry runs).
+          if verify_device_report_retry_pending "$issue_num" "$sha" "$run_dir" "$state_json"; then
+            column=$(device_card_column "$issue_num")
+            [[ -n "$column" && "$column" != "In Test" ]] || return 0
+          fi
           if [[ "$(echo "$state_json" | jq -r '.verifyReportSha // ""' 2>/dev/null)" == "$sha" ]]; then
             if [[ -e "$run_dir/report-composed" ]]; then
               log "Issue #$issue_num: device run $run_id's results went out in the verification report; no follow-up"

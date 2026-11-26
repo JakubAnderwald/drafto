@@ -4129,6 +4129,46 @@ describe("the device lane: review round 4 (run identity, board column, account f
     });
   });
 
+  it("holds the follow-up while a saved report with its results waits for a retry", () => {
+    const inTest = JSON.stringify({ itemId: "ITEM", contentId: "N", status: "In Test" });
+    const seed = [
+      seedDeviceRun({ ledgerState: "done:PASS" }),
+      setRunDir,
+      'printf "%s\\n" "$HEAD" > "$RUN_DIR/report-composed.pending"',
+      'mkdir -p "$VERIFY_DIR"',
+      `printf 'report with device rows <!-- drafto-factory-verify-report --> <!-- drafto-factory-verify-sha:%s -->\\n' "$HEAD" > "$VERIFY_DIR/report-7-$HEAD.md"`,
+      'touch -t 202601010000 "$VERIFY_DIR/report-7-$HEAD.md"',
+    ];
+    const state = round({ verifyDevice: `${HEAD}:reported:pass`, verifyReportPosts: `${HEAD}:1` });
+    const retry = `verify_report_retry 7 "$HEAD" "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")"`;
+    // The retry is still to come: no follow-up; once it posts, the run is in-report.
+    withBash(
+      [...seed, "verify_device_housekeeping", retry, "verify_device_housekeeping"].join("\n"),
+      { env: env({ ITEM_STATUS_STUB: inTest }), state },
+      (r) => {
+        assert.equal(followups(r).length, 0, "the results went out once, in the report");
+        assert.equal(reports(r).length, 1);
+        assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}:in-report`);
+      },
+    );
+    // Retries spent: the follow-up posts.
+    withBash(
+      [...seed, "verify_device_housekeeping"].join("\n"),
+      {
+        env: env({ ITEM_STATUS_STUB: inTest }),
+        state: { ...state, verifyReportPosts: `${HEAD}:4` },
+      },
+      (r) => assert.equal(followups(r).length, 1),
+    );
+    // The card left In Test (the retry runs only there): the follow-up posts.
+    const approved = JSON.stringify({ itemId: "ITEM", contentId: "N", status: "Approved" });
+    withBash(
+      [...seed, "verify_device_housekeeping"].join("\n"),
+      { env: env({ ITEM_STATUS_STUB: approved }), state },
+      (r) => assert.equal(followups(r).length, 1),
+    );
+  });
+
   it("from In Test: continues a round promoted for its head even when its report never posted", () => {
     const promote = `verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"skipped:lane-off","browser":"skipped:not-web","device":"skipped:beta-build"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
     const startedStub = `DEVICE_START_STUB='{"started":true,"runId":"${DEVICE_RUN_ID}","runDir":"/runs/x"}'`;
