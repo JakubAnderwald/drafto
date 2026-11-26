@@ -908,6 +908,7 @@ const DEVICE_SCENARIO_STATES = {
   timeout: "stopped at its time or run cap",
   error: "failed",
   stopped: "stopped with the run",
+  "skipped:time": "skipped: too little of the run was left",
 };
 
 // A platform that didn't finish: its state, with the reason as a sentence.

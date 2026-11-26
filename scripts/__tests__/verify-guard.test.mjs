@@ -12,6 +12,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -762,28 +763,53 @@ describe("device-scenario mode", () => {
     }
   });
 
-  it("Bash: device-run on a flow, or --wait, and read-only commands in the dir", () => {
+  it("Bash: only device-run on a flow, or --wait, exactly", () => {
     for (const command of [
       "device-run flows/01-x.yaml",
-      "device-run ./flows/01-create-notebook.yaml",
-      `${path.join(cwd, "bin", "device-run")} flows/01-x.yaml`,
+      "device-run flows/02-create-notebook.yaml",
       "device-run --wait 3",
-      "ls -la flows",
-      "cat flows/01-x.yaml",
-      "head -50 examples/02-create-notebook.yaml",
-      "grep -rn tapOn examples",
-      "wc -l flows/*.yaml",
-      "ls iter-shots && cat requests/1.result.json",
-      "cat flows/01-x.yaml | grep tapOn | wc -l",
-      `cat ${path.join(cwd, "flows", "01-x.yaml")}`,
-      "ls 2>/dev/null",
     ]) {
       assert.equal(sh(command).allow, true, command);
     }
   });
 
-  it("Bash: device tools, the network, ps and writes are denied", () => {
+  it("Bash: every other command and any shell syntax is denied", () => {
     for (const command of [
+      // Read-only commands are gone too: the session reads with Read/Grep/Glob.
+      "ls -la flows",
+      "cat flows/01-x.yaml",
+      "grep -rn tapOn examples",
+      // The review's escapes.
+      "sort --compress-program sh flows/01-x.yaml",
+      "sort --files0-from=flows/01-x.yaml",
+      "sort --out=bin/device-run flows/01-x.yaml",
+      "grep -r . .{.,}/private",
+      "ls ../*",
+      // device-run, but not exactly.
+      "device-run ./flows/01-x.yaml",
+      `${path.join(cwd, "bin", "device-run")} flows/01-x.yaml`,
+      "device-run  flows/01-x.yaml",
+      " device-run flows/01-x.yaml",
+      "device-run flows/01-x.yaml ",
+      "device-run flows/01-x.yaml\n",
+      "device-run flows/01-x.yaml; ls",
+      "device-run flows/01-x.yaml && ls",
+      "device-run flows/01-x.yaml | cat",
+      "device-run flows/01-x.yaml > /dev/null",
+      "device-run flows/01-x.yaml #",
+      "device-run 'flows/01-x.yaml'",
+      "device-run flows/0?-x.yaml",
+      "device-run flows/*.yaml",
+      "device-run flows/{01,02}-x.yaml",
+      "device-run $(echo flows/01-x.yaml)",
+      "device-run flows/01-x.yaml extra",
+      "device-run examples/02-create-notebook.yaml",
+      "device-run flows/../../meta.json",
+      "device-run flows/sub/01-x.yaml",
+      "device-run --wait 0",
+      "device-run --wait 3 4",
+      "device-run",
+      // Device tools, the network, ps.
       "maestro test flows/01-x.yaml",
       "adb shell input tap 1 1",
       "xcrun simctl io booted screenshot x.png",
@@ -793,53 +819,62 @@ describe("device-scenario mode", () => {
       "curl https://example.com",
       "ps eww",
       "env",
-      "node -e 1",
-      "sh flows/01-x.yaml",
-      "device-run flows/01-x.yaml extra",
-      "device-run examples/02-create-notebook.yaml",
-      "device-run flows/../../meta.json",
-      "device-run --wait 0",
-      "echo hi > flows/01-x.yaml",
-      "cat flows/01-x.yaml > requests/9.json",
-      "sort -o flows/01-x.yaml flows/02-y.yaml",
-      "cat ../meta.json",
-      "cat /etc/passwd",
-      "ls ~",
-      "cat examples/leak.yaml",
-      "ls $HOME",
-      "cat `ls`",
-      "cat $(ls)",
-      "X=1 ls",
-      "cat <<EOF\nhi\nEOF",
-      "cat flows/01-x.yaml | sh",
-      "sed -n 1p flows/01-x.yaml",
-      "find . -name x",
-      "/bin/ls",
-      "ls 'unclosed",
     ]) {
-      assert.equal(sh(command).allow, false, command);
+      assert.equal(sh(command).allow, false, JSON.stringify(command));
     }
   });
 
-  it("Read, Grep and Glob only inside the dir, never through a symlink out", () => {
+  it("Read, Grep and Glob only inside flows/, examples/, helpers/ and iter-shots/", () => {
     assert.equal(pre("Read", { file_path: path.join(cwd, "flows", "01-x.yaml") }).allow, true);
     assert.equal(pre("Read", { file_path: "iter-shots/1-01-x.png" }).allow, true);
+    assert.equal(pre("Read", { file_path: "examples/02-create-notebook.yaml" }).allow, true);
     assert.equal(pre("Grep", { pattern: "tapOn", path: "examples" }).allow, true);
+    assert.equal(pre("Grep", { pattern: "tapOn", path: "examples", glob: "*.yaml" }).allow, true);
     assert.equal(pre("Glob", { pattern: "flows/*.yaml" }).allow, true);
-    assert.equal(pre("Glob", { pattern: "**/*.yaml" }).allow, true);
+    assert.equal(pre("Glob", { pattern: "**/*.yaml", path: "examples" }).allow, true);
+    assert.equal(pre("Glob", { pattern: `${cwd}/iter-shots/*.png` }).allow, true);
     for (const [tool, input] of [
       ["Read", { file_path: path.join(cwd, "..", "meta.json") }],
       ["Read", { file_path: "../meta.json" }],
       ["Read", { file_path: "/etc/hosts" }],
+      // A symlink out, a brace expansion, the supervisor's own dirs.
       ["Read", { file_path: "examples/leak.yaml" }],
+      ["Read", { file_path: ".{.,}/private/x" }],
+      ["Read", { file_path: "private/curl.cfg" }],
+      ["Read", { file_path: "requests/1.result.json" }],
+      ["Read", { file_path: "bin/device-run" }],
+      ["Read", { file_path: "flows" + "/../../meta.json" }],
       ["Read", { file_path: "~/drafto-secrets/x" }],
+      ["Read", { file_path: "$HOME/x" }],
       ["Grep", { pattern: "x", path: "/" }],
-      ["Grep", { pattern: "x", path: cwd, glob: "../*" }],
+      ["Grep", { pattern: "x" }],
+      ["Grep", { pattern: "x", path: "requests" }],
+      ["Grep", { pattern: "x", path: "examples", glob: "../*" }],
+      ["Grep", { pattern: "x", path: "examples", glob: "{a,b}" }],
       ["Glob", { pattern: "../**" }],
+      ["Glob", { pattern: "**/../*" }],
+      ["Glob", { pattern: "flows/**/../../private/*" }],
+      ["Glob", { pattern: ".{.,}/private/*" }],
+      ["Glob", { pattern: "**/*.yaml" }],
+      ["Glob", { pattern: "*" }],
+      ["Glob", { pattern: "private/*" }],
       ["Glob", { pattern: "/Users/*" }],
     ]) {
       assert.equal(pre(tool, input).allow, false, `${tool} ${JSON.stringify(input)}`);
     }
+  });
+
+  it("Write accepts the directory's real path too", () => {
+    const real = realpathSync(cwd);
+    const content = "appId: eu.drafto.mobile\n---\n- back\n";
+    assert.equal(
+      pre("Write", { file_path: path.join(real, "flows", "03-real.yaml"), content }).allow,
+      true,
+    );
+    assert.equal(
+      pre("Write", { file_path: path.join(real, "examples", "03-real.yaml"), content }).allow,
+      false,
+    );
   });
 
   it("the settings keep every tool but Write removed", () => {

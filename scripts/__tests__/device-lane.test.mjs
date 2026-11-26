@@ -2315,6 +2315,9 @@ describe("scenario sessions", () => {
     assert.equal(at("--tools"), "Bash,Read,Grep,Glob,Write");
     assert.equal(at("--allowedTools"), "Bash,Read,Grep,Glob,Write");
     assert.equal(at("--session-id"), UUID);
+    // meta.json's model, with the knobs' defaults when the env had none.
+    assert.equal(at("--model"), "opus[1m]");
+    assert.equal(at("--effort"), "xhigh");
     for (const f of ["--dangerously-skip-permissions", "--chrome", "--mcp-config", "--add-dir"]) {
       assert.ok(!claudeArgs.includes(f), f);
     }
@@ -2572,14 +2575,115 @@ describe("scenario sessions", () => {
     assert.equal(existsSync(file), false);
 
     writeFileSync(file, JSON.stringify([{ heading: "iOS", text: "1. ios step" }, { nope: 1 }]));
-    h.env.FACTORY_DEVICE_SCENARIO = "0";
+    h.env.FACTORY_MODEL = "sonnet";
+    h.env.FACTORY_PLAN_EFFORT = "high";
     const r = await start({ scenarioFile: file });
     assert.equal(r.started, true);
     assert.equal(r.scenarioSections, 1);
     const meta = readJson(path.join(r.runDir, "meta.json"));
     assert.deepEqual(meta.scenario, { sections: [{ heading: "iOS", text: "1. ios step" }] });
-    assert.equal(meta.knobs.scenario, false);
+    // The factory's model and effort, for the supervisor's scrubbed env.
+    assert.deepEqual(meta.claude, { effort: "high", model: "sonnet" });
+    assert.equal(meta.knobs.scenario, true);
     assert.ok(!JSON.stringify(meta).includes(PASSWORD));
+  });
+
+  it("with the knob off, scenario sections change nothing, not even the plan", async () => {
+    // The diff selects iOS alone; an Android section would add Android.
+    const sections = [{ heading: "Android", text: "1. android step" }];
+    h.env.FACTORY_DEVICE_SCENARIO = "0";
+    const off = await start({ scenarioSections: sections });
+    assert.deepEqual(Object.keys(off.platforms), ["ios"]);
+    assert.equal(off.scenarioSections, 0);
+    const metaOff = readJson(path.join(off.runDir, "meta.json"));
+    assert.equal(Object.hasOwn(metaOff, "scenario"), false);
+    assert.equal(Object.hasOwn(metaOff, "claude"), false);
+    rmSync(tmp, { recursive: true, force: true });
+    h = makeHarness();
+    h.env.FACTORY_DEVICE_SCENARIO = "1";
+    h.prView.files = [{ path: "apps/mobile/e2e/ios-all.yaml" }];
+    const on = await start({ scenarioSections: sections });
+    assert.deepEqual(Object.keys(on.platforms).sort(), ["android", "ios"]);
+  });
+
+  it("reserves time for a platform still to come: skipped:time", async () => {
+    // Both platforms; Android first, with a section, and 80 minutes in all:
+    // 80 - 20 (its final pass) - 60 (iOS still to come) leaves no session.
+    h.env.FACTORY_DEVICE_RUN_MAX_MIN = "80";
+    h.prView.files = [{ path: "packages/shared/src/x.ts" }];
+    fakeSession();
+    const { output } = await startAndSupervise({
+      scenarioSections: [{ heading: "Android", text: "1. android step" }],
+    });
+    assert.equal(sessionCalls().length, 0);
+    assert.equal(output.platforms.android.scenarioState, "skipped:time");
+    assert.equal(output.platforms.android.state, "done");
+  });
+
+  it("a failed reset is an ERROR, and the flow never runs", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    const session = h.onRun;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && String(args[3]).endsWith(".reset.yaml")) {
+        return { code: 1, timedOut: false, stdout: "" };
+      }
+      return session(cmd, args, opts);
+    };
+    const { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(h.results[0].text, /ERROR\nfailure: the lane's reset before this flow failed/);
+    assert.ok(!callsOf("maestro").some((c) => String(c.args[3]).endsWith(`${path.sep}01-nb.yaml`)));
+    const row = output.platforms.ios.flows.find((f) => f.name === "scenario: 01-nb.yaml");
+    assert.equal(row.failure, "the lane's reset before this flow failed");
+  });
+
+  it("an adb-drop retry draws a fresh RUN_ID that no later run reuses", async () => {
+    h.prView.files = [{ path: "apps/mobile/e2e/android-all.yaml" }];
+    const sections = [{ heading: "Android", text: "1. step" }];
+    fakeSession({
+      flows: { "01-nb.yaml": GOOD_FLOW, "02-nb.yaml": GOOD_FLOW },
+      requests: ["flows/01-nb.yaml", "flows/02-nb.yaml"],
+    });
+    const session = h.onRun;
+    let dropped = false;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && String(args[3]).endsWith(`${path.sep}01-nb.yaml`)) {
+        if (!dropped) {
+          dropped = true;
+          writeFileSync(opts.stdoutFile, "device offline\n");
+          return { code: 1, timedOut: false, stdout: "" };
+        }
+      }
+      return session(cmd, args, opts);
+    };
+    await startAndSupervise({ scenarioSections: sections });
+    const runIds = callsOf("maestro")
+      .filter((c) => /flows[/\\]0[12]-nb\.yaml$/.test(String(c.args[3])))
+      .map((c) => c.args.find((a) => String(a).startsWith("RUN_ID=")));
+    // 01 twice (the drop and the retry) and 02 during the session, then the
+    // final pass's two: five runs, five RUN_IDs.
+    assert.equal(runIds.length, 5);
+    assert.equal(new Set(runIds).size, 5);
+  });
+
+  it("the flow's own screenshots come back from Maestro's --test-output-dir", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    const session = h.onRun;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && String(args[3]).endsWith(`${path.sep}01-nb.yaml`)) {
+        const out = args[args.indexOf("--test-output-dir") + 1];
+        mkdirSync(path.join(out, "2026-11-26_000000"), { recursive: true });
+        writeFileSync(path.join(out, "2026-11-26_000000", "After Create.png"), PNG);
+      }
+      return session(cmd, args, opts);
+    };
+    const { runDir } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(h.results[0].text, /- iter-shots\/1-01-nb-1-after-create\.png/);
+    assert.ok(
+      existsSync(path.join(runDir, "scenario-ios", "iter-shots", "1-01-nb-1-after-create.png")),
+    );
+    // …and never into the published evidence.
+    const shots = readJson(path.join(runDir, "evidence", "shots.json"));
+    assert.ok(!JSON.stringify(shots).includes("after-create"));
   });
 
   it("device-run refuses a path outside flows/ and waits on --wait", async () => {

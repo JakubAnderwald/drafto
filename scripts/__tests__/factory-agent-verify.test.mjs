@@ -3225,6 +3225,7 @@ describe("verify_device_work", () => {
 });
 
 describe("verify_device_work: the scenario's mobile sections (--scenario-file)", () => {
+  const SCENARIO_ON = { ...DEVICE_ON, FACTORY_DEVICE_SCENARIO: "1" };
   const work = `verify_device_work 7 70 "$HEAD" '{"web":false,"mobile":true,"desktop":false}' '{"device":"none"}'`;
   const scenario = (sha, sections) => [
     {
@@ -3242,7 +3243,7 @@ describe("verify_device_work: the scenario's mobile sections (--scenario-file)",
 
   it("passes the scenario's mobile sections in a mode-600 file, removed after start", () => {
     const comments = scenario(HEAD, ["### Web", "1. web", "### iOS", "1. ios step"]);
-    withBash(work, { env: { HEAD, ...DEVICE_ON }, comments }, (r) => {
+    withBash(work, { env: { HEAD, ...SCENARIO_ON }, comments }, (r) => {
       const m = /^device start .* --repo-root \S+ --scenario-file (\S+)$/m.exec(r.calls);
       assert.ok(m, r.calls);
       assert.ok(m[1].startsWith(`${r.dir}/logs/factory/device/scenario-7-`), m[1]);
@@ -3259,7 +3260,7 @@ describe("verify_device_work: the scenario's mobile sections (--scenario-file)",
       [scenario("b".repeat(40), ["### iOS", "1. ios"]), {}],
       [scenario(HEAD, ["### iOS", "1. ios"]), { COMMENTS_FAIL: "1" }],
     ]) {
-      withBash(work, { env: { HEAD, ...DEVICE_ON, ...env }, comments }, (r) => {
+      withBash(work, { env: { HEAD, ...SCENARIO_ON, ...env }, comments }, (r) => {
         assert.match(r.calls, /^device start /m);
         assert.doesNotMatch(r.calls, /--scenario-file/);
         assert.deepEqual(
@@ -3268,6 +3269,29 @@ describe("verify_device_work: the scenario's mobile sections (--scenario-file)",
         );
       });
     }
+  });
+
+  it("with FACTORY_DEVICE_SCENARIO off, fetches nothing and passes no file", () => {
+    const comments = scenario(HEAD, ["### iOS", "1. ios step"]);
+    // A counting fetch: the knob must stop it before any GitHub read.
+    const body = [`fetch_issue_comments() { call "fetch $1"; cat "$COMMENTS_FILE"; }`, work].join(
+      "\n",
+    );
+    for (const knob of [undefined, "0", "yes"]) {
+      const env = {
+        HEAD,
+        ...DEVICE_ON,
+        ...(knob === undefined ? {} : { FACTORY_DEVICE_SCENARIO: knob }),
+      };
+      withBash(body, { env, comments }, (r) => {
+        assert.match(r.calls, /^device start /m);
+        assert.doesNotMatch(r.calls, /--scenario-file|^fetch /m, String(knob));
+      });
+    }
+    withBash(body, { env: { HEAD, ...SCENARIO_ON }, comments }, (r) => {
+      assert.match(r.calls, /^fetch 7$/m);
+      assert.match(r.calls, /--scenario-file /);
+    });
   });
 
   it("the on-demand start passes it too", () => {

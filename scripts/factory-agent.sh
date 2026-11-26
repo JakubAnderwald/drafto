@@ -8833,8 +8833,11 @@ verify_device_report_retry_pending() {
 # file) when there are no such sections or the comments can't be read: the
 # repo flows run without them. The caller passes it to `start
 # --scenario-file`, which copies the sections into the run, then removes it.
+# Only with FACTORY_DEVICE_SCENARIO=1 (read by device-lane.mjs too): off, it
+# fetches nothing and prints nothing, so the lane runs exactly as without it.
 verify_device_scenario_file() {
   local issue_num="$1" head_sha="$2" dir file comments_json
+  [[ "${FACTORY_DEVICE_SCENARIO:-0}" == "1" ]] || return 0
   dir="$(dirname "$(verify_device_ledger)")"
   mkdir -p "$dir" 2>>"$LOG_FILE" || return 0
   comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE") || return 0

@@ -148,34 +148,14 @@ export const DEVICE_RUN_BIN = "device-run";
 // The only files a scenario session may write: flows/NN-<slug>.yaml.
 export const DEVICE_FLOW_FILE_RE = /^[0-9]{2}-[a-z0-9][a-z0-9-]{0,59}\.yaml$/;
 export const DEVICE_FLOW_MAX_BYTES = 20 * 1024;
-// Read-only commands a scenario session may run on its own directory. No
-// sed, awk, find, tee or uniq: each of those can write a file.
-export const DEVICE_READ_COMMANDS = Object.freeze([
-  "ls",
-  "cat",
-  "head",
-  "tail",
-  "wc",
-  "grep",
-  "egrep",
-  "fgrep",
-  "file",
-  "stat",
-  "sort",
-  "diff",
-  "cut",
-  "tr",
-  "nl",
-  "echo",
-  "printf",
-  "pwd",
-  "basename",
-  "dirname",
-  "true",
-  "false",
-  "test",
-  "[",
-]);
+// The one Bash command a scenario session may run, matched against the raw
+// command text: no shell metacharacters, quotes or extra spaces at all.
+export const DEVICE_RUN_COMMAND_RE =
+  /^device-run (?:flows\/[0-9]{2}-[a-z0-9][a-z0-9-]{0,59}\.yaml|--wait [1-9][0-9]{0,3})$/;
+// The scenario directory's subdirectories a session may read (Read, Grep,
+// Glob). bin/ and requests/ are the supervisor's: device-run prints a
+// request's answer, so the session never needs to read them.
+export const DEVICE_READ_DIRS = Object.freeze(["flows", "examples", "helpers", "iter-shots"]);
 
 // Command words a lane session never runs, whatever their arguments.
 export const DENY_COMMANDS = Object.freeze([
@@ -1653,40 +1633,49 @@ export function decidePre({ tool, input, config }) {
 }
 
 // ── Device scenario mode ────────────────────────────────────────────────────
-// A device-lane scenario session (device-lane.mjs) works in its own directory,
-// config.worktree (<runDir>/scenario-<platform>/), and nowhere else. It writes
-// Maestro YAML into flows/ and asks the supervisor to run a flow with
-// `device-run flows/<file>.yaml`; the supervisor validates the YAML and runs
-// Maestro outside the session. So, in this mode:
-//   - Write only to <cwd>/flows/NN-<slug>.yaml, never through a symlink, under
+// A device-lane scenario session (device-scenario.mjs) works in its own
+// directory, config.worktree (<runDir>/scenario-<platform>/), and nowhere
+// else. It writes Maestro YAML into flows/ and asks the supervisor to run a
+// flow with `device-run`; the supervisor validates the YAML and runs Maestro
+// outside the session. So, in this mode:
+//   - Bash runs only `device-run flows/NN-<slug>.yaml` or `device-run --wait
+//     <n>`, matched against the raw text (DEVICE_RUN_COMMAND_RE): no other
+//     command, no shell syntax of any kind. maestro, adb, xcrun, emulator,
+//     gradle, xcodebuild, curl and ps are all out (ps could show Maestro's
+//     environment, which holds the account's password).
+//   - Write only to flows/NN-<slug>.yaml directly under the directory (as
+//     given, or its real path), never through a symlink, under
 //     DEVICE_FLOW_MAX_BYTES. Edit, NotebookEdit, WebFetch, WebSearch: denied.
-//   - Read, Grep, Glob only inside <cwd> (real paths too), no `..`.
-//   - Bash: `device-run flows/<file>.yaml` (or `device-run --wait <n>`), and
-//     the read-only DEVICE_READ_COMMANDS on paths inside <cwd>. No variables,
-//     no command substitution, no heredocs, no redirection but to /dev/null,
-//     no assignments. Everything else, maestro, adb, xcrun, emulator, gradle,
-//     xcodebuild, curl and ps included, isn't on the list and is denied: ps
-//     could show Maestro's environment, which holds the account's password.
+//   - Read, Grep and Glob only inside DEVICE_READ_DIRS, real paths too. No
+//     `..`, braces, `~` or `$` in any path or pattern, and a Grep / Glob
+//     pattern's fixed part must place it inside one of those directories.
 
 function insideDir(abs, dir) {
   return abs === dir || abs.startsWith(`${dir}/`);
 }
 
-/** Why <p> (relative to the session's dir) is outside it, or null. */
-function deviceOutsideReason(p, config) {
-  const s = String(p);
-  if (s.split("/").includes("..")) return "`..` isn't allowed: stay in this run's directory";
-  if (/^~|^\$/.test(s)) return "only this run's directory may be named";
+// The directory as given and as its real path (macOS: /var → /private/var).
+function deviceRoots(config) {
   const dir = config.worktree;
-  const abs = path.resolve(dir, s);
-  const realDir = safeRealpath(dir) ?? dir;
-  if (!insideDir(abs, dir) && !insideDir(abs, realDir)) {
-    return "a scenario session may only use its own directory";
+  const real = safeRealpath(dir) ?? dir;
+  return [...new Set([dir, real])];
+}
+
+/** Why <p> (relative to the session's dir) isn't readable, or null. */
+function deviceReadReason(p, config) {
+  const s = String(p);
+  if (/[{}~$\u0000-\u001f]/.test(s))
+    return "braces, `~`, `$` and control characters aren't allowed in a path";
+  if (s.split(/[/\\]/).includes("..")) return "`..` isn't allowed: stay in this run's directory";
+  const roots = deviceRoots(config);
+  const abs = path.resolve(config.worktree, s);
+  const allowed = roots.flatMap((r) => DEVICE_READ_DIRS.map((d) => path.join(r, d)));
+  const inside = (x) => allowed.some((d) => insideDir(x, d));
+  if (!inside(abs)) {
+    return `a scenario session may only read ${DEVICE_READ_DIRS.map((d) => `${d}/`).join(", ")} in its own directory`;
   }
   const real = safeRealpath(abs);
-  if (real && !insideDir(real, realDir) && !insideDir(real, dir)) {
-    return "that path leads out of this run's directory";
-  }
+  if (real && !inside(real)) return "that path leads out of this run's directory";
   return null;
 }
 
@@ -1698,16 +1687,19 @@ function deviceWriteDecision(input, config) {
     return deny(`a flow may be at most ${DEVICE_FLOW_MAX_BYTES / 1024} KB`);
   }
   if (p.split("/").includes("..")) return deny("`..` isn't allowed in a flow's path");
-  const dir = config.worktree;
-  const flowsDir = path.join(dir, "flows");
-  const abs = path.resolve(dir, p);
-  if (path.dirname(abs) !== flowsDir || !DEVICE_FLOW_FILE_RE.test(path.basename(abs))) {
+  const abs = path.resolve(config.worktree, p);
+  const roots = deviceRoots(config);
+  const parent = path.dirname(abs);
+  if (
+    !roots.some((r) => parent === path.join(r, "flows")) ||
+    !DEVICE_FLOW_FILE_RE.test(path.basename(abs))
+  ) {
     return deny("Write may only create flows/NN-<slug>.yaml in this run's directory");
   }
   // flows/ itself must be the real directory the supervisor made, and the
   // file, if it exists, a plain file: never a symlink to somewhere else.
-  const realDir = safeRealpath(dir) ?? dir;
-  if (safeRealpath(flowsDir) !== path.join(realDir, "flows")) {
+  const realDir = safeRealpath(config.worktree) ?? config.worktree;
+  if (safeRealpath(parent) !== path.join(realDir, "flows")) {
     return deny("flows/ isn't this run's own directory");
   }
   try {
@@ -1719,57 +1711,6 @@ function deviceWriteDecision(input, config) {
   return allow("Write to a flow file");
 }
 
-function deviceBashDecision(command, config) {
-  if (/[$`]/.test(command)) {
-    return deny("variables and command substitution aren't allowed in a scenario session");
-  }
-  if (command.includes("<<")) return deny("heredocs aren't allowed in a scenario session");
-  let parsed;
-  try {
-    parsed = splitCommands(command, 0);
-  } catch (err) {
-    return deny(`the guard couldn't parse this command (${err.message}); simplify it`);
-  }
-  if (parsed.commands.length === 0) return deny("no command");
-  const fullBin = path.join(config.binDir, DEVICE_RUN_BIN);
-  for (const { words, targets } of parsed.commands) {
-    if (targets.some((t) => t !== "/dev/null")) {
-      return deny("redirecting output to a file isn't allowed: Write creates flows");
-    }
-    let w = words.filter((x) => x !== "");
-    while (w.length && LEADING_KEYWORDS.has(w[0])) w = w.slice(1);
-    if (w.length === 0 || NON_COMMANDS.has(w[0])) continue;
-    if (isAssignment(w[0])) return deny("variable assignments aren't allowed");
-    const [cmd, ...args] = w;
-    if (cmd === DEVICE_RUN_BIN || cmd === fullBin) {
-      const ok =
-        (args.length === 1 &&
-          /^(\.\/)?flows\/[^/]+$/.test(args[0]) &&
-          DEVICE_FLOW_FILE_RE.test(path.basename(args[0]))) ||
-        (args.length === 2 && args[0] === "--wait" && /^[1-9][0-9]{0,3}$/.test(args[1]));
-      if (!ok) return deny("use `device-run flows/NN-<slug>.yaml` (or `device-run --wait <n>`)");
-      continue;
-    }
-    if (cmd.includes("/") || !DEVICE_READ_COMMANDS.includes(cmd)) {
-      return deny(
-        `${base(cmd)} isn't available in a scenario session (device-run and read-only commands only)`,
-      );
-    }
-    if (cmd === "sort" && args.some((a) => /^-[A-Za-z]*o|^--output/.test(a))) {
-      return deny("sort -o writes a file");
-    }
-    for (const a of args) {
-      const value = a.startsWith("-") && a.includes("=") ? a.slice(a.indexOf("=") + 1) : a;
-      if (a.startsWith("-") && value === a) continue;
-      if (value.includes("/") || value === ".." || value.startsWith("~")) {
-        const why = deviceOutsideReason(value, config);
-        if (why) return deny(why);
-      }
-    }
-  }
-  return allow("scenario command checked");
-}
-
 function decideDevicePre({ tool, input, config }) {
   if (!DEVICE_SCENARIO_TOOLS.includes(tool)) {
     return deny(`${tool} isn't available in a scenario session`);
@@ -1777,18 +1718,44 @@ function decideDevicePre({ tool, input, config }) {
   const args = isPlainObject(input) ? input : {};
   if (tool === "Write") return deviceWriteDecision(args, config);
   if (tool === "Bash") {
-    if (typeof args.command !== "string" || args.command.trim() === "") {
-      return deny("the Bash call has no command");
+    if (typeof args.command !== "string" || !DEVICE_RUN_COMMAND_RE.test(args.command)) {
+      return deny(
+        "Bash runs only `device-run flows/NN-<slug>.yaml` or `device-run --wait <n>`; read files with Read, Grep and Glob",
+      );
     }
-    return deviceBashDecision(args.command, config);
+    return allow("device-run");
   }
-  for (const [p] of pathInputs(tool, args, config)) {
-    if (p == null || p === "") continue;
-    if (typeof p !== "string") return deny(`${tool} got a path that isn't a string`);
-    const why = deviceOutsideReason(globPrefix(p) || ".", config) ?? deviceOutsideReason(p, config);
+  if (tool === "Read") {
+    if (typeof args.file_path !== "string" || args.file_path === "")
+      return deny("Read names no file");
+    const why = deviceReadReason(args.file_path, config);
+    return why ? deny(why) : allow("Read inside the run's directory");
+  }
+  // Grep and Glob: the base (`path`, else the session's dir) and every
+  // pattern-ish input are checked, and the fixed part of the pattern, taken
+  // from the base, must already be inside a readable directory.
+  const base = args.path ?? "";
+  if (base !== "" && typeof base !== "string")
+    return deny(`${tool} got a path that isn't a string`);
+  const pattern = tool === "Glob" ? args.pattern : args.glob;
+  for (const v of [base, pattern]) {
+    if (v == null || v === "") continue;
+    if (typeof v !== "string") return deny(`${tool} got a pattern that isn't a string`);
+    if (/[{}~$\u0000-\u001f]/.test(v) || v.split(/[/\\]/).includes("..")) {
+      return deny("braces, `..`, `~` and `$` aren't allowed in a path or pattern");
+    }
+  }
+  const baseAbs = path.resolve(config.worktree, base || ".");
+  const fixed =
+    typeof pattern === "string" && pattern !== ""
+      ? path.resolve(baseAbs, globPrefix(pattern) || ".")
+      : baseAbs;
+  // A given base must be readable itself; without one the pattern's fixed
+  // part alone places the call (a bare `**` starts at the session's dir).
+  for (const p of base ? [baseAbs, fixed] : [fixed]) {
+    const why = deviceReadReason(p, config);
     if (why) return deny(why);
   }
-  // A Grep / Glob pattern is matched under the tool's path, which was checked.
   return allow(`${tool} inside the run's directory`);
 }
 

@@ -102,6 +102,7 @@ import {
   parseJson,
   pollRun,
   positiveInt,
+  readKnobs,
   readText,
   realIsExecutable,
   realIsPidAlive,
@@ -1802,7 +1803,7 @@ export async function captureShot(ctx, { platform, deviceId, index, flow }) {
  * A Maestro runner for <deviceId>: (flowPath, junit, log, epoch) → runStep's
  * result, through guardedRun. The password is only in Maestro's environment.
  */
-export function makeMaestro(ctx, { deviceId, account, root }) {
+export function makeMaestro(ctx, { deviceId, account, root, rawDir = ctx.rawDir }) {
   const { meta } = ctx;
   const env = maestroFlowEnv(ctx.devEnv, account);
   return (flowPath, junit, log, epoch) =>
@@ -1813,7 +1814,7 @@ export function makeMaestro(ctx, { deviceId, account, root }) {
         deviceId,
         flowPath,
         junit,
-        rawDir: ctx.rawDir,
+        rawDir,
         runEpoch: epoch,
         email: account?.email ?? null,
       }),
@@ -2482,6 +2483,7 @@ export async function runStart(opts, deps) {
   const runRoot = opts.runRoot ?? defaultRunRoot(repoRoot);
   const now = opts.now ?? deps.now();
   const knobs = await withJavaHome(readDeviceKnobs(deps.env), deps);
+  const claudeKnobs = readKnobs(deps.env);
   const mode = opts.mode ?? "smoke";
   const trigger = opts.trigger ?? "testing";
   const ledgerFile = ledgerPath(repoRoot);
@@ -2522,9 +2524,12 @@ export async function runStart(opts, deps) {
   // The In Test scenario's mobile sections (factory-agent.sh writes them with
   // `scenario-file`): they add platforms to the plan and, with
   // FACTORY_DEVICE_SCENARIO=1, are what the scenario sessions translate.
-  const scenarioSections =
-    opts.scenarioSections ??
-    (opts.scenarioFile ? readScenarioSections(deps.fs, opts.scenarioFile) : []);
+  // Off (FACTORY_DEVICE_SCENARIO unset or 0), they're ignored altogether: the
+  // plan is the diff's alone.
+  const scenarioSections = !knobs.scenario
+    ? []
+    : (opts.scenarioSections ??
+      (opts.scenarioFile ? readScenarioSections(deps.fs, opts.scenarioFile) : []));
   const plan = deriveDevicePlan({
     diffFiles: files,
     scenarioSections,
@@ -2626,7 +2631,14 @@ export async function runStart(opts, deps) {
       platforms,
       planReasons: plan.reasons,
       // Scenario text, from an OWNER comment: data for the sessions' prompts.
-      ...(scenarioSections.length ? { scenario: { sections: scenarioSections } } : {}),
+      // The scenario sessions' claude flags come from the factory's env, read
+      // here: the supervisor's env is scrubbed (ADR-0101, as verify-lane.mjs).
+      ...(scenarioSections.length
+        ? {
+            scenario: { sections: scenarioSections },
+            claude: { effort: claudeKnobs.effort, model: claudeKnobs.model },
+          }
+        : {}),
       needsAccount: true,
       iosSimUdid: readIosSimUdid(repoRoot, deps.fs),
       bins,

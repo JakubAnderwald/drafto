@@ -89,8 +89,10 @@ export const PROMPT_FILE = path.resolve(LIB_DIR, "..", "factory-device-prompt.md
 const MINUTE_MS = 60_000;
 // Time kept after a session for the final pass, out of the run's deadline.
 const FINAL_RESERVE_MS = 20 * MINUTE_MS;
+// Kept for each platform still to come after this one in the run.
+const PLATFORM_RESERVE_MS = 60 * MINUTE_MS;
 // A session with less than this left isn't worth starting.
-const MIN_SESSION_MS = 5 * MINUTE_MS;
+const MIN_SESSION_MS = 10 * MINUTE_MS;
 // After the run cap is reached the session may still write its summary.
 const RUN_CAP_GRACE_MS = 2 * MINUTE_MS;
 const POLL_MS = 1_000;
@@ -98,6 +100,7 @@ const POLL_MS = 1_000;
 // minutes); a longer run is waited for again with `device-run --wait <n>`.
 const WRAPPER_WAIT_MAX_SEC = 540;
 export const SUMMARY_MAX = 4096;
+const SHOT_MAX_BYTES = 20 * 1024 * 1024;
 const REQUEST_RE = /^([1-9][0-9]{0,3})\.json$/;
 // A few repo flows, copied as read-only examples of the app's selectors.
 export const EXAMPLE_FLOWS = Object.freeze([
@@ -190,10 +193,10 @@ export function deviceRunScript({ nodePath, modulePath = DEVICE_LANE, dir, timeo
   ].join("\n");
 }
 
-function copyIfFile(fs, from, to) {
+function copyIfFile(fs, from, to, maxBytes = MAX_FLOW_BYTES * 4) {
   try {
     const st = fs.lstatSync(from);
-    if (!st.isFile() || st.size > MAX_FLOW_BYTES * 4) return false;
+    if (!st.isFile() || st.size > maxBytes) return false;
     fs.writeFileSync(to, fs.readFileSync(from), { mode: 0o600 });
     return true;
   } catch {
@@ -340,22 +343,44 @@ export function snapshotFlow(ctx, { platform, dirs, root, name, tag }) {
  * its wrapper in the snapshot), then run the snapshot's flow. Returns
  * {status, failure, lines, durationS}. Throws Interrupt.
  */
-async function runSnapshot(ctx, { platform, deviceId, account, snap, label, epoch, tag }) {
+async function runSnapshot(ctx, { platform, deviceId, account, snap, label, nextEpoch, tag }) {
   const { deps } = ctx;
   const fs = deps.fs;
   const secrets = account ? { password: account.password } : {};
-  const maestro = makeMaestro(ctx, { deviceId, account, root: snap.dir });
+  // Maestro's output for this run alone (its takeScreenshot files land in
+  // --test-output-dir in Maestro 2.x), inside the snapshot in private/.
+  const maestro = makeMaestro(ctx, {
+    deviceId,
+    account,
+    root: snap.dir,
+    rawDir: path.join(snap.dir, "out"),
+  });
   const started = deps.nowMs();
+  const epoch = nextEpoch();
+  const elapsed = () => Math.round((deps.nowMs() - started) / 1000);
   const io = (step) => [
     path.join(ctx.rawDir, `${tag}-${step}.junit.xml`),
     path.join(ctx.rawDir, `${tag}-${step}.log`),
   ];
   const reset = path.join(snap.dir, ".reset.yaml");
   fs.writeFileSync(reset, scenarioResetYaml(platform), { mode: 0o600 });
-  await maestro(reset, ...io("reset"), epoch);
+  const reset0 = await maestro(reset, ...io("reset"), epoch);
+  if (reset0.code !== 0 || reset0.timedOut) {
+    return {
+      status: "ERROR",
+      failure: "the lane's reset before this flow failed",
+      lines: [],
+      durationS: elapsed(),
+    };
+  }
   if (flowNeedsSignIn(snap.text)) {
     if (!account) {
-      return { status: "ERROR", failure: "needs a signed-in app, and the run has no account" };
+      return {
+        status: "ERROR",
+        failure: "needs a signed-in app, and the run has no account",
+        lines: [],
+        durationS: elapsed(),
+      };
     }
     ctx.log(`maestro: ${platform} signing in before ${label}`);
     const r = await maestro(path.join(snap.dir, SIGN_IN_WRAPPER), ...io("sign-in"), epoch);
@@ -364,13 +389,15 @@ async function runSnapshot(ctx, { platform, deviceId, account, snap, label, epoc
         status: "ERROR",
         failure: "the lane's sign-in before this flow failed",
         lines: [],
-        durationS: Math.round((deps.nowMs() - started) / 1000),
+        durationS: elapsed(),
       };
     }
   }
   const [junit, log] = io("flow");
   rmQuiet(fs, junit);
-  let next = epoch;
+  // The first attempt has the run's epoch; an adb-drop retry draws a new one
+  // from the same counter, so it never reuses another run's RUN_ID.
+  let first = true;
   const out = await runFlowOnce(ctx, {
     platform,
     maestro,
@@ -378,24 +405,53 @@ async function runSnapshot(ctx, { platform, deviceId, account, snap, label, epoc
     label,
     junit,
     log,
-    epochFor: () => next++,
+    epochFor: () => {
+      if (first) {
+        first = false;
+        return epoch;
+      }
+      return nextEpoch();
+    },
     secrets,
   });
-  return { ...out, durationS: Math.round((deps.nowMs() - started) / 1000) };
+  return { ...out, durationS: elapsed() };
 }
 
-/** Maestro's own takeScreenshot files from a snapshot dir, into iter-shots/. */
-function collectMaestroShots(fs, snapDir, iterShots, prefix) {
+/**
+ * The flow's own screenshots (takeScreenshot, and Maestro's failure shots),
+ * into iter-shots/: Maestro 2.x writes them under --test-output-dir
+ * (<snapshot>/out/maestro), older versions into its working directory (the
+ * snapshot itself). At most 10, renamed to plain names.
+ */
+export function collectMaestroShots(fs, snapDir, iterShots, prefix) {
+  const found = [];
+  const walk = (dir, depth) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries.sort((x, y) => x.name.localeCompare(y.name))) {
+      if (found.length >= 10) return;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory() && depth > 0) walk(p, depth - 1);
+      else if (e.isFile() && /\.png$/i.test(e.name)) found.push(p);
+    }
+  };
+  walk(path.join(snapDir, "out", "maestro"), 3);
+  walk(snapDir, 0);
   const names = [];
-  let entries = [];
-  try {
-    entries = fs.readdirSync(snapDir);
-  } catch {
-    return names;
-  }
-  for (const n of entries.filter((e) => /^[a-z0-9-]{1,40}\.png$/.test(e)).slice(0, 10)) {
-    const to = `${prefix}-${n}`;
-    if (copyIfFile(fs, path.join(snapDir, n), path.join(iterShots, to))) names.push(to);
+  for (const [k, file] of found.entries()) {
+    const base =
+      path
+        .basename(file, path.extname(file))
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 40) || "shot";
+    const to = `${prefix}-${k + 1}-${base}.png`;
+    if (copyIfFile(fs, file, path.join(iterShots, to), SHOT_MAX_BYTES)) names.push(to);
   }
   return names;
 }
@@ -448,7 +504,7 @@ export async function serveRequests(ctx, platform, loop, { dirs, deviceId, accou
           account,
           snap,
           label: `scenario try ${n}: ${name}`,
-          epoch: loop.nextEpoch(),
+          nextEpoch: () => loop.nextEpoch(),
           tag: `scenario-${tag}`,
         });
         const prefix = `${n}-${flowSlug(name)}`;
@@ -517,7 +573,7 @@ export function sanitizeSummary(text, secrets = {}) {
 
 /**
  * Run one platform's scenario session, then the final pass. Writes
- * res.scenarioState ("done" | "timeout" | "error", or "stopped" when the run
+ * res.scenarioState ("done" | "timeout" | "error" | "skipped:time", or "stopped" when the run
  * itself was stopped), res.scenarioSummary and the final pass's rows into
  * res.flows. Never fails phase (a); an Interrupt still stops the run.
  */
@@ -570,11 +626,16 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
     log("claude or perl is missing; no session");
     return { state: "error", summary: null, finalPass: false };
   }
-  const left = Date.parse(meta.deadlineAt) - deps.nowMs() - FINAL_RESERVE_MS;
+  // The run's time left, less this platform's final pass and an hour for
+  // each platform still to come (their builds, flows and sessions).
+  const order = Array.isArray(meta.order) ? meta.order : [platform];
+  const later = Math.max(0, order.length - order.indexOf(platform) - 1);
+  const left =
+    Date.parse(meta.deadlineAt) - deps.nowMs() - FINAL_RESERVE_MS - later * PLATFORM_RESERVE_MS;
   const capMs = Math.min(meta.knobs.scenarioMin * MINUTE_MS, left);
   if (capMs < MIN_SESSION_MS) {
-    log("too little of the run is left for a session");
-    return { state: "timeout", summary: null, finalPass: false };
+    log("too little of the run is left for a session (raise FACTORY_DEVICE_RUN_MAX_MIN)");
+    return { state: "skipped:time", summary: null, finalPass: false };
   }
   const guard = writeGuardFiles({
     runDir: dirs.cwd,
@@ -587,7 +648,8 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
     filesDir: dirs.guard,
     logDir: path.join(dirs.guard, "log"),
   });
-  const vk = readKnobs(deps.env);
+  // From meta.json (start read the factory's env); the supervisor's is scrubbed.
+  const vk = meta.claude ?? readKnobs(deps.env);
   const sessionId = (deps.randomUUID ?? randomUUID)();
   const args = buildClaudeArgs({
     settingsPath: guard.settingsPath,
@@ -741,6 +803,7 @@ export async function finalPass(
   const rows = [];
   const names = listFlowNames(fs, dirs.flows);
   let epoch = Math.floor(deps.nowMs() / 1000) + 1000;
+  const nextEpoch = () => epoch++;
   for (const [i, name] of names.entries()) {
     const index = startIndex + i + 1;
     const label = `scenario: ${name}`;
@@ -760,10 +823,9 @@ export async function finalPass(
         account,
         snap,
         label,
-        epoch,
+        nextEpoch,
         tag: `scenario-final-${String(index).padStart(2, "0")}`,
       });
-      epoch += 10;
       row = {
         name: label,
         status: out.status,

@@ -23,11 +23,17 @@ find. See [ADR-0106](../docs/adr/0106-factory-device-lane.md).
 - `helpers/sign-in.yaml` signs the device in to the lane's dev account from a
   clean start. You never see or type the account's e-mail or password.
 - You have five tools: **Read**, **Grep**, **Glob**, **Write** and **Bash**. A
-  guard hook checks every call. Write may only create `flows/*.yaml`. Bash may
-  only run `device-run` and read-only commands such as `ls`, `cat`, `head`,
-  `grep` and `wc` on this directory. You can't run Maestro, adb, simctl or the
-  network. When the guard denies a call, its reason comes back as the tool's
-  error. Don't try to get around it.
+  guard hook checks every call:
+  - **Bash** runs only `device-run flows/NN-<slug>.yaml` and
+    `device-run --wait <n>`, exactly as written, with nothing else on the line.
+    No other command, no pipes, no quotes.
+  - **Read, Grep and Glob** read only `flows/`, `examples/`, `helpers/` and
+    `iter-shots/`. Give Grep and Glob one of them as `path` (or start the Glob
+    pattern with it), and don't use `..` or braces.
+  - **Write** may only create `flows/NN-<slug>.yaml`.
+
+  You can't run Maestro, adb, simctl or the network. When the guard denies a
+  call, its reason comes back as the tool's error. Don't try to get around it.
 
 ## Running a flow
 

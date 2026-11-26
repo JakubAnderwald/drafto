@@ -3032,6 +3032,13 @@ describe("device lane: the scenario's steps (phase b)", () => {
     assert.doesNotMatch(r.body, /create a notebook: not in the list/);
   });
 
+  it("says when the session was skipped for time", () => {
+    const r = composeDevice({
+      ios: withScenario({ scenarioState: "skipped:time", scenarioSummary: undefined }),
+    });
+    assert.match(r.body, /_Scenario steps: skipped: too little of the run was left\./);
+  });
+
   it("scans the summary: a secret in it withholds the device text", () => {
     const r = composeDevice({
       ios: withScenario({ scenarioSummary: `typed ${DEVICE_PASSWORD} into a note` }),
