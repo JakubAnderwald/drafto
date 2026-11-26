@@ -9305,7 +9305,8 @@ device_run_label_remove() {
 
 # device_run_label_refuse <issue> <head-sha> <why> — the on-demand run can't
 # happen: say so on the issue (a factory comment, so it is never read as
-# feedback), record it, and take the label off.
+# feedback), record it, and take the label off. When the comment can't be
+# posted, nothing is recorded and the label stays: the next tick says it again.
 device_run_label_refuse() {
   local issue_num="$1" head_sha="$2" why="$3"
   if printf '%s\n\n🏭 **Device lane:** the run you asked for with `%s` can'"'"'t start: %s. Remove the cause and add the label again.\n' \
@@ -9313,7 +9314,8 @@ device_run_label_refuse() {
       | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
     :
   else
-    log "WARNING: issue #$issue_num: couldn't post why the on-demand device run can't start"
+    log "WARNING: issue #$issue_num: couldn't post why the on-demand device run can't start ($why); keeping $(device_run_label), the next tick tries again"
+    return 1
   fi
   device_ondemand_request "$issue_num" "${head_sha:-none}:refused"
   device_run_label_remove "$issue_num" || true
@@ -9389,19 +9391,30 @@ verify_device_ondemand_work() {
       state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
         --state-file "$STATE_FILE" 2>/dev/null || echo "{}")
       prev=$(echo "$state_json" | jq -r '.deviceRunRequest // ""' 2>/dev/null || echo "")
+      # Started earlier, but the label wouldn't come off: only that is left,
+      # whatever the PR's head is now (a run already went for this label).
+      # A label added again after it came off starts a new run.
+      if [[ "$prev" == *:label-stuck ]]; then
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+          log "DRY-RUN: would take $(device_run_label) off #$issue_num (its run already started)"
+        else
+          device_run_label_remove "$issue_num" && device_ondemand_request "$issue_num" "${prev%:label-stuck}"
+        fi
+        continue
+      fi
       # find_prior_pr prints "null" for no PR and nothing when GitHub failed.
       pr_obj=$(find_prior_pr "$issue_num" || echo "")
       [[ -n "$pr_obj" ]] || continue   # GitHub couldn't say: next tick
       pr_num=$(echo "$pr_obj" | jq -r '.number // ""' 2>/dev/null || echo "")
       if [[ ! "$pr_num" =~ ^[0-9]+$ ]]; then
-        device_run_label_refuse "$issue_num" "" "the card has no open PR"; continue
+        device_run_label_refuse "$issue_num" "" "the card has no open PR" || true; continue
       fi
       if ! view=$(gh pr view "$pr_num" --repo JakubAnderwald/drafto --json state,headRefOid \
           2>>"$LOG_FILE") || [[ -z "$view" ]]; then
         continue   # GitHub couldn't say: next tick
       fi
       if [[ "$(echo "$view" | jq -r '.state // ""' 2>/dev/null)" != "OPEN" ]]; then
-        device_run_label_refuse "$issue_num" "" "PR #$pr_num isn't open"; continue
+        device_run_label_refuse "$issue_num" "" "PR #$pr_num isn't open" || true; continue
       fi
       head_sha=$(echo "$view" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
       [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || continue
@@ -9409,13 +9422,6 @@ verify_device_ondemand_work() {
         log "DRY-RUN: would start an on-demand device run for #$issue_num at ${head_sha:0:12}"
         continue
       fi
-      # Started last tick, but the label wouldn't come off: only that is left.
-      case "$prev" in
-        "$head_sha":*:label-stuck)
-          device_run_label_remove "$issue_num" && device_ondemand_request "$issue_num" "${prev%:label-stuck}"
-          continue
-          ;;
-      esac
       # A Testing card whose round runs the device lane for this head anyway:
       # one run, whose results come with the report or as its follow-up.
       if [[ "$status" == "Testing" ]] && verify_lane_enabled device \
@@ -9430,7 +9436,9 @@ verify_device_ondemand_work() {
         fi
       fi
       ledger="$(verify_device_ledger)"
-      inflight=$(jq -r --arg i "$issue_num" '.inFlight // {} | select((.issue|tostring) == $i) | .sha // ""' \
+      # A run that is stopping ends without results: it doesn't answer the label.
+      inflight=$(jq -r --arg i "$issue_num" \
+        '.inFlight // {} | select((.issue|tostring) == $i and (.stopping == null)) | .sha // ""' \
         "$ledger" 2>/dev/null || echo "")
       if [[ "$inflight" == "$head_sha" ]]; then
         log "Issue #$issue_num: on-demand device run: one is already going for ${head_sha:0:12}; its results follow"
@@ -9452,6 +9460,8 @@ verify_device_ondemand_work() {
         else
           device_ondemand_request "$issue_num" "$head_sha:$run_id:label-stuck"
         fi
+        # Its follow-up upload runs with --no-compile: build the OCR helper now.
+        evidence_ocr_provision || true
         log "Issue #$issue_num: on-demand device run started for ${head_sha:0:12}: $out"
         continue
       fi
@@ -9461,10 +9471,10 @@ verify_device_ondemand_work() {
         deferred:*|stopped|fetch-failed|pr-unreadable|start-failed|abandoned|error|"")
           device_ondemand_wait "$issue_num" "$head_sha" "${reason:-no-answer}" "$prev" ;;
         head-moved) ;;   # the PR moved between the two reads: next tick
-        account) device_run_label_refuse "$issue_num" "$head_sha" "the factory has no device-lane account (FACTORY_DEVICE_ACCOUNT_FILE)" ;;
-        *-missing) device_run_label_refuse "$issue_num" "$head_sha" "a tool the lane needs is missing on the Mac mini (${reason})" ;;
-        not-applicable) device_run_label_refuse "$issue_num" "$head_sha" "the PR changes nothing the mobile app is built from" ;;
-        *) device_run_label_refuse "$issue_num" "$head_sha" "device-lane.mjs answered ${reason}" ;;
+        account) device_run_label_refuse "$issue_num" "$head_sha" "the factory has no device-lane account (FACTORY_DEVICE_ACCOUNT_FILE)" || true ;;
+        *-missing) device_run_label_refuse "$issue_num" "$head_sha" "a tool the lane needs is missing on the Mac mini (${reason})" || true ;;
+        not-applicable) device_run_label_refuse "$issue_num" "$head_sha" "the PR changes nothing the mobile app is built from" || true ;;
+        *) device_run_label_refuse "$issue_num" "$head_sha" "device-lane.mjs answered ${reason}" || true ;;
       esac
     done
   done

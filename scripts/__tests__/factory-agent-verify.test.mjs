@@ -4350,6 +4350,79 @@ describe("the factory-device-run label: an on-demand device run (ADR-0106 decisi
     });
   });
 
+  it("keeps the label, and records nothing, when the refusal can't be explained on the issue", () => {
+    withBash(
+      "verify_device_ondemand_work",
+      { env: env({ PR_OBJ_STUB: "null", FAIL_COMMENT: "1" }) },
+      (r) => {
+        assert.equal(removed(r).length, 0);
+        assert.equal(r.issue.deviceRunRequest ?? null, null);
+        assert.match(r.log, /couldn't post why the on-demand device run can't start .*keeping/);
+      },
+    );
+  });
+
+  it("only takes a stuck label off, even after the PR head moved", () => {
+    const state = { deviceRunRequest: `${OLD}:${DEVICE_RUN_ID}:label-stuck` };
+    withBash(
+      "verify_device_ondemand_work",
+      { env: env({ DEVICE_START_STUB: started }), state },
+      (r) => {
+        assert.doesNotMatch(r.calls, /^device start/m, "no second run for the same label");
+        assert.ok(removed(r).length >= 1);
+        assert.equal(r.issue.deviceRunRequest, `${OLD}:${DEVICE_RUN_ID}`);
+      },
+    );
+    // Once it came off, a label added again starts a new run.
+    withBash(
+      "verify_device_ondemand_work",
+      {
+        env: env({ DEVICE_START_STUB: started }),
+        state: { deviceRunRequest: `${OLD}:${DEVICE_RUN_ID}` },
+      },
+      (r) => assert.match(r.calls, /^device start --issue 7 /m),
+    );
+  });
+
+  it("doesn't count a stopping run for the head as the one the label asked for", () => {
+    const body = [
+      'mkdir -p "$REPO_ROOT/logs/factory/device"',
+      `echo '{"inFlight":{"issue":7,"sha":"${HEAD}","runId":"r","stopping":{"reason":"feedback"}}}' > "$REPO_ROOT/logs/factory/device/ledger.json"`,
+      "verify_device_ondemand_work",
+    ].join("\n");
+    withBash(
+      body,
+      { env: env({ DEVICE_START_STUB: '{"started":false,"reason":"deferred:busy"}' }) },
+      (r) => {
+        assert.doesNotMatch(r.log, /one is already going/);
+        assert.match(
+          r.calls,
+          /^device start --issue 7 /m,
+          "it asks the lane, which waits for the stop",
+        );
+        assert.equal(removed(r).length, 0, "the request is kept");
+        assert.equal(r.issue.deviceRunRequest, `${HEAD}:waiting:deferred:busy`);
+      },
+    );
+  });
+
+  it("builds the OCR helper when an on-demand run starts", () => {
+    const body = [
+      'mkdir -p "$REPO_ROOT/apps/desktop/e2e/in-test/lib" "$REPO_ROOT/fakebin"',
+      'echo "// ocr" > "$REPO_ROOT/apps/desktop/e2e/in-test/lib/ocr.swift"',
+      `printf '#!/bin/sh\\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\\nprintf "#!/bin/sh\\\\n" > "$out"; chmod +x "$out"\\n' > "$REPO_ROOT/fakebin/swiftc"`,
+      'chmod +x "$REPO_ROOT/fakebin/swiftc"',
+      'PATH="$REPO_ROOT/fakebin:$PATH"',
+      "verify_device_ondemand_work",
+      'for _ in $(seq 1 100); do [[ -x "$LOG_DIR/bin/ocr" && ! -e "$LOG_DIR/bin/ocr.building" ]] && break; sleep 0.1; done',
+      'test -x "$LOG_DIR/bin/ocr" && echo BUILT',
+    ].join("\n");
+    withBash(body, { env: env({ DEVICE_START_STUB: started }) }, (r) => {
+      assert.match(r.stdout, /^BUILT$/m);
+      assert.match(r.log, /Building the OCR helper .* in the background/);
+    });
+  });
+
   it("skips unlabelled, paused, interactive and support cards, and does nothing when the lane isn't built", () => {
     for (const labels of [
       ["status:in-test"],
