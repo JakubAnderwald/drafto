@@ -199,15 +199,15 @@ async function libs() {
 
 // ── knobs ───────────────────────────────────────────────────────────────────
 
-function positiveInt(raw, fallback) {
+export function positiveInt(raw, fallback) {
   return typeof raw === "string" && /^[1-9][0-9]*$/.test(raw) ? Number(raw) : fallback;
 }
 
-function nonNegativeInt(raw, fallback) {
+export function nonNegativeInt(raw, fallback) {
   return typeof raw === "string" && /^(0|[1-9][0-9]*)$/.test(raw) ? Number(raw) : fallback;
 }
 
-function expandTilde(p, home) {
+export function expandTilde(p, home) {
   return typeof p === "string" && p.startsWith("~/") ? path.join(home, p.slice(2)) : p;
 }
 
@@ -266,7 +266,7 @@ export function isoSeconds(iso) {
   return new Date(iso).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-function addMinutes(iso, minutes) {
+export function addMinutes(iso, minutes) {
   return isoSeconds(new Date(Date.parse(iso) + minutes * MINUTE_MS).toISOString());
 }
 
@@ -285,7 +285,7 @@ export function qaTagFor(issue, sha, runId = "") {
   return `${QA_TAG_PREFIX}${issue}-${String(sha).slice(0, 7)}${stamp ? `-${stamp}` : ""}`;
 }
 
-function parseJson(text, fallback = null) {
+export function parseJson(text, fallback = null) {
   try {
     return JSON.parse(text);
   } catch {
@@ -293,7 +293,7 @@ function parseJson(text, fallback = null) {
   }
 }
 
-function readText(fs, file, maxBytes = Infinity) {
+export function readText(fs, file, maxBytes = Infinity) {
   try {
     const text = fs.readFileSync(file, "utf8");
     return text.length > maxBytes ? text.slice(-maxBytes) : text;
@@ -302,13 +302,13 @@ function readText(fs, file, maxBytes = Infinity) {
   }
 }
 
-function writeJsonAtomic(fs, file, value) {
+export function writeJsonAtomic(fs, file, value) {
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 
-function rmQuiet(fs, p) {
+export function rmQuiet(fs, p) {
   try {
     fs.rmSync(p, { recursive: true, force: true });
   } catch {
@@ -929,7 +929,7 @@ export async function runPreviewCurl(
 
 // ── real dependencies ───────────────────────────────────────────────────────
 
-function runCommand(command, args, { cwd, input, env, timeoutMs } = {}) {
+export function runCommand(command, args, { cwd, input, env, timeoutMs } = {}) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -977,7 +977,7 @@ function runCommand(command, args, { cwd, input, env, timeoutMs } = {}) {
 }
 
 // Only a confirmed 'spawn' counts as started (dispatch-release.mjs pattern).
-async function realSpawnDetached(command, args, { cwd, logPath, env }) {
+export async function realSpawnDetached(command, args, { cwd, logPath, env }) {
   let out = "ignore";
   try {
     out = nodeFs.openSync(logPath, "a", 0o600);
@@ -1011,7 +1011,7 @@ async function realSpawnDetached(command, args, { cwd, logPath, env }) {
   return { ok: true, pid: child.pid };
 }
 
-function realIsPidAlive(pid) {
+export function realIsPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -1021,7 +1021,7 @@ function realIsPidAlive(pid) {
   }
 }
 
-function realIsExecutable(file) {
+export function realIsExecutable(file) {
   try {
     nodeFs.accessSync(file, nodeFs.constants.X_OK);
     return nodeFs.statSync(file).isFile();
@@ -1074,19 +1074,27 @@ export function createDeps() {
 // Absolute paths of the binaries the supervisor needs: launchd's PATH is
 // minimal and the supervisor's is SUPERVISED_PATH, so they're resolved here,
 // in the tick, where the factory's PATH (with ~/.local/bin) is in force.
+/**
+ * The absolute path of <name>: <override> when set (and executable), else the
+ * first executable match on env.PATH, then in <extra>. null when none is.
+ * Shared with device-lane.mjs.
+ */
+export function findBin(name, { env = process.env, isExecutable, extra = [], override = null }) {
+  if (override) return isExecutable(override) ? override : null;
+  const candidates = [
+    ...(env.PATH ?? "")
+      .split(":")
+      .filter(Boolean)
+      .map((d) => path.join(d, name)),
+    ...extra,
+  ];
+  return candidates.find((p) => path.isAbsolute(p) && isExecutable(p)) ?? null;
+}
+
 export function resolveBins({ env = process.env, isExecutable }) {
   const home = env.HOME || os.homedir();
-  const find = (name, extra = [], override = null) => {
-    if (override) return isExecutable(override) ? override : null;
-    const candidates = [
-      ...(env.PATH ?? "")
-        .split(":")
-        .filter(Boolean)
-        .map((d) => path.join(d, name)),
-      ...extra,
-    ];
-    return candidates.find((p) => path.isAbsolute(p) && isExecutable(p)) ?? null;
-  };
+  const find = (name, extra = [], override = null) =>
+    findBin(name, { env, isExecutable, extra, override });
   return {
     claude: find(
       "claude",
@@ -1490,7 +1498,7 @@ export async function runStart(opts, deps) {
 
 // ── supervisor (detached) ───────────────────────────────────────────────────
 
-function appendLog(file, line) {
+export function appendLog(file, line) {
   try {
     nodeFs.appendFileSync(file, `[${new Date().toISOString()}] ${line}\n`, { mode: 0o600 });
   } catch {
@@ -1499,7 +1507,9 @@ function appendLog(file, line) {
 }
 
 // Spawn and wait. stdout/stderr go to files (or are captured); never throws.
-function runStep(
+// <group>: the child leads a process group of its own, and a timeout signals
+// the whole group (device-lane.mjs: a gradle or xcodebuild and its workers).
+export function runStep(
   command,
   args,
   {
@@ -1510,6 +1520,8 @@ function runStep(
     stdoutFile = null,
     stderrFile = null,
     capture = false,
+    group = false,
+    graceMs = KILL_GRACE_MS,
     onChild,
   },
 ) {
@@ -1524,6 +1536,7 @@ function runStep(
       child = spawn(command, args, {
         cwd,
         env,
+        detached: group,
         stdio: [input == null ? "ignore" : "pipe", outFd, errFd],
       });
     } catch (err) {
@@ -1538,11 +1551,23 @@ function runStep(
     if (capture && child.stdout) child.stdout.on("data", (d) => chunks.push(d));
     if (capture && child.stderr) child.stderr.on("data", () => {});
     let timedOut = false;
+    const signal = (sig) => {
+      try {
+        if (group && child.pid) process.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        /* already gone */
+      }
+    };
     const timer = timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          child.kill("SIGTERM");
-          setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS).unref();
+          signal("SIGTERM");
+          // A group's leader can exit on SIGTERM (and resolve this step)
+          // while a member that ignores it lives on: the group SIGKILL must
+          // still be sent, so that timer keeps the process alive.
+          const kill = setTimeout(() => signal("SIGKILL"), graceMs);
+          if (!group) kill.unref();
         }, timeoutMs)
       : null;
     child.once("error", (err) => {

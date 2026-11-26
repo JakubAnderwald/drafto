@@ -165,7 +165,7 @@ const SUMMARY_MAX = 600;
 const ASSESSMENT_MAX = 2000;
 const GAPS_MAX = 20;
 const MANUAL_ITEM_MAX = 1000;
-const MOBILE_HEADING = /\b(ios|android|mobile|iphone|ipad)\b/i;
+export const MOBILE_HEADING = /\b(ios|android|mobile|iphone|ipad)\b/i;
 const DESKTOP_HEADING = /\b(macos|mac|desktop)\b/i;
 // The scenario's API-response checks, which the shell lane runs (ADR-0053).
 // Matched on the plain label, so `### **API**` or `### API checks` count too.
