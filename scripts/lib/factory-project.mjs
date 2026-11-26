@@ -70,6 +70,11 @@
 //              [--owner <login>] [--title <title>]
 //   ensure-item --issue <n> [--project-id <id>] [--owner <login>]
 //               [--title <title>] [--repo <owner/name>]
+//   item-status --issue <n> [--project-id <id>] [--owner <login>]
+//               [--title <title>] [--repo <owner/name>]
+//               Read-only findItemForIssue: {itemId, contentId, status}, all
+//               null when the issue doesn't exist. The device lane's
+//               follow-up hold reads the card's column with it (ADR-0106).
 //
 // All subcommands print JSON to stdout and exit 0; errors print
 // `{"error": "..."}` to stderr and exit non-zero — same shape as
@@ -716,6 +721,22 @@ async function main(argv) {
       });
       return ensureItemForIssue(projectId, issueNumber, { repo: flags.repo ?? DEFAULT_REPO });
     }
+    case "item-status": {
+      const issueNumber = Number(flags.issue);
+      if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+        throw new Error("item-status requires --issue <number>");
+      }
+      const projectId = await resolveProjectId({
+        projectId: flags["project-id"],
+        owner: flags.owner,
+        title: flags.title,
+      });
+      const found = await findItemForIssue(projectId, issueNumber, {
+        repo: flags.repo ?? DEFAULT_REPO,
+      });
+      // No such issue reads like a card on no column, never as no answer.
+      return found ?? { itemId: null, contentId: null, status: null };
+    }
     case "--help":
     case "-h":
     case undefined:
@@ -726,7 +747,8 @@ async function main(argv) {
           "export-statuses [--project-id <id>] [--owner <login>] [--title <title>]|" +
           "query-status-items --status <name> [--project-id <id>] [--owner <login>] [--title <title>] [--repo <owner/name>] [--limit <n>]|" +
           "set-status --item-id <id> --status <name> [--project-id <id>] [--owner <login>] [--title <title>]|" +
-          "ensure-item --issue <n> [--project-id <id>] [--owner <login>] [--title <title>] [--repo <owner/name>]>\n",
+          "ensure-item --issue <n> [--project-id <id>] [--owner <login>] [--title <title>] [--repo <owner/name>]|" +
+          "item-status --issue <n> [--project-id <id>] [--owner <login>] [--title <title>] [--repo <owner/name>]>\n",
       );
       return null;
     default:

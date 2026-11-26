@@ -677,6 +677,11 @@ let out;
 if (q.includes("fields(first")) {
   out = { data: { node: { fields: { nodes: [{ __typename: "ProjectV2SingleSelectField", id: "F2", name: "Status",
     options: [{ id: "O_REVIEW", name: "In Review" }, { id: "O_TEST", name: "In Test" }] }] } } } };
+} else if (q.includes("projectItems")) {
+  const n = Number((args.find((a) => a.startsWith("number=")) || "").slice(7));
+  out = { data: { repository: { issue: n === 404 ? null : { id: "ISSUE_NODE", projectItems: {
+    pageInfo: { hasNextPage: false, endCursor: null },
+    nodes: n === 9 ? [{ id: "PVTI_2", project: { id: "PVT_1" }, fieldValueByName: { name: "Testing" } }] : [] } } } } };
 } else if (q.includes("items(first")) {
   out = { data: { node: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
     { id: "PVTI_2", content: { __typename: "Issue", number: 9 },
@@ -735,6 +740,30 @@ fs.writeSync(1, JSON.stringify(out));
     ]);
     assert.equal(r.calls.length, 1);
     assert.ok(!r.calls[0].some((a) => /\bmutation\b/.test(a)));
+  });
+
+  it("item-status prints the card's column, read-only (the device lane's hold, ADR-0106)", () => {
+    const r = runCli(["item-status", "--issue", "9", "--project-id", "PVT_1"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      itemId: "PVTI_2",
+      contentId: "ISSUE_NODE",
+      status: "Testing",
+    });
+    assert.equal(r.calls.length, 1);
+    assert.ok(!r.calls[0].some((a) => /\bmutation\b/.test(a)));
+  });
+
+  it("item-status: no card and no issue both read as no column, never as no answer", () => {
+    const off = runCli(["item-status", "--issue", "3", "--project-id", "PVT_1"]);
+    assert.equal(off.status, 0, off.stderr);
+    assert.equal(JSON.parse(off.stdout).status, null);
+    const gone = runCli(["item-status", "--issue", "404", "--project-id", "PVT_1"]);
+    assert.equal(gone.status, 0, gone.stderr);
+    assert.deepEqual(JSON.parse(gone.stdout), { itemId: null, contentId: null, status: null });
+    const bad = runCli(["item-status", "--project-id", "PVT_1"]);
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /requires --issue/);
   });
 });
 

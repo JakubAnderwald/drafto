@@ -136,3 +136,4 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0103](./0103-factory-oversize-hold.md)                                        | Factory Holds Unsplit Oversize Cards Before Implementing                        | Accepted           | 2026-11-25 |
 | [0104](./0104-factory-split-command.md)                                        | `/split`: the Factory Files a Plan's Proposed Split                             | Accepted           | 2026-11-25 |
 | [0105](./0105-factory-adr-index-union-merge.md)                                | The Factory Union-Merges the ADR Index and Allocates ADR Numbers                | Accepted           | 2026-11-25 |
+| [0106](./0106-factory-device-lane.md)                                          | Factory Device Lane: Maestro on an Android Emulator and an iOS Simulator        | Accepted           | 2026-11-25 |
