@@ -49,8 +49,10 @@ below. If the YAML passes, the supervisor:
 
 1. starts the app clean (cleared state, signed out);
 2. signs in first, unless the flow says `# device-lane: no-sign-in` on a line of
-   its own;
+   its own (such a flow starts with the app open on its login screen);
 3. runs the flow with a fresh `${RUN_ID}`.
+
+An adb drop on Android repeats all three once.
 
 You get back `PASS`, `FAIL` or `ERROR`, the failure's first line, the
 Maestro result lines and the names of screenshots under `iter-shots/`. Read a
@@ -59,7 +61,9 @@ and nothing ran; the errors say which. If it prints that a request is still
 running, run `device-run --wait <n>` with the number it gave.
 
 - You have at most the run-time facts' `runs` runs and `minutes` minutes. A
-  rejected flow doesn't use a run. When either runs out, the session is ended.
+  rejected flow doesn't use a run. Once your last run is answered you have 2
+  minutes to print your summary. When the minutes run out, no run starts, a
+  run still going is cut off, and the session is ended.
 - Use the runs to get each flow right. Don't re-run a flow that already shows
   what its step expects.
 - After you finish, the supervisor checks every file in `flows/` again and runs
@@ -67,7 +71,8 @@ running, run `device-run --wait <n>` with the number it gave.
   screenshots. Only that last pass is published, so each flow must be able to
   run on its own. You can't delete a file: to retire a flow you no longer want
   run (a failed first try you replaced, say), make its first line exactly
-  `# device-lane: skip`. The last pass leaves it out.
+  `# device-lane: skip`. The last pass leaves it out, and a flow that
+  `runFlow`s a retired one is rejected.
 - A screenshot over about 4.5 MB is scaled down or left out; the answer says
   which.
 

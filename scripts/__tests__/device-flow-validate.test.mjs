@@ -69,7 +69,12 @@ describe("validateFlow: allowed commands", () => {
     longPressOn: ['- longPressOn:\n    text: "Note"\n    below: "Header"\n'],
     inputText: ['- inputText: "NB ${RUN_ID}"\n', "- inputText: plain\n"],
     inputRandomText: ["- inputRandomText\n", "- inputRandomText:\n    length: 8\n"],
-    eraseText: ["- eraseText\n", "- eraseText: 20\n"],
+    eraseText: [
+      "- eraseText\n",
+      "- eraseText: 20\n",
+      "- eraseText: 100\n",
+      "- eraseText:\n    charactersToErase: 100\n",
+    ],
     assertVisible: ['- assertVisible: "Notebooks"\n', '- assertVisible:\n    id: "x"\n'],
     assertNotVisible: ['- assertNotVisible: "Error"\n'],
     extendedWaitUntil: ['- extendedWaitUntil:\n    visible: "Notebooks"\n    timeout: 30000\n'],
@@ -119,6 +124,13 @@ describe("validateFlow: denied constructs", () => {
     bad("- stopRecording\n", /stopRecording: isn't allowed/);
     bad("- travel:\n    points: []\n", /travel: isn't allowed/);
     bad("- setLocation:\n    latitude: 1\n", /setLocation: isn't allowed/);
+  });
+
+  it("caps eraseText at Maestro's documented maximum of 100", () => {
+    bad("- eraseText: 101\n", /must erase 1 to 100 characters/);
+    bad("- eraseText: 1000\n", /must erase 1 to 100 characters/);
+    bad("- eraseText: 0\n", /must erase 1 to 100 characters/);
+    bad("- eraseText:\n    charactersToErase: 500\n", /must erase 1 to 100 characters/);
   });
 
   it("denies an unknown command", () => {

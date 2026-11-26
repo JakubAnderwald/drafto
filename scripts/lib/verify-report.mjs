@@ -869,6 +869,8 @@ function shapeDeviceFlow(raw) {
     status: own(DEVICE_VERDICT_RANK, f.status) ? f.status : "ERROR",
     durationS: Number.isFinite(f.durationS) ? Math.max(0, Math.round(f.durationS)) : null,
     failure: typeof f.failure === "string" && f.failure.trim() ? f.failure : null,
+    // A scenario final-pass row the supervisor actually ran (device-scenario.mjs).
+    dispatched: f.dispatched === true,
   };
 }
 
@@ -1066,18 +1068,22 @@ function deviceDetailsText(lane) {
     if (v.flows.length > shown.length) lines.push(`- …and ${v.flows.length - shown.length} more.`);
     if (!v.flows.length) lines.push("_No flow ran._");
     if (v.scenario) {
-      // The provenance line only when a session ran: it finished, hit a cap
-      // or was stopped, or its flows are in the list.
-      const ran =
-        ["done", "timeout", "stopped"].includes(v.scenario.raw) ||
-        v.flows.some((f) => f.name.startsWith("scenario: "));
-      lines.push(
-        "",
-        ran
-          ? `_Scenario steps: ${v.scenario.state}. A guarded session wrote the \`scenario:\` flows; ` +
-              "the supervisor validated them and ran them again after the session ended._"
-          : `_Scenario steps: ${v.scenario.state}._`,
-      );
+      // The session's state, then who wrote the `scenario:` rows, only when
+      // there are some. The re-run is claimed only for a row the supervisor
+      // ran (dispatched); a validator-rejected flow never ran.
+      const rows = v.flows.filter((f) => f.name.startsWith("scenario: "));
+      const rerun = rows.filter((f) => f.dispatched).length;
+      let text = `_Scenario steps: ${v.scenario.state}.`;
+      if (rows.length) {
+        text += " A guarded session wrote the `scenario:` flows; ";
+        text +=
+          rerun === rows.length
+            ? "the supervisor validated them and ran them again after the session ended."
+            : rerun
+              ? "the supervisor validated them and ran the valid ones again after the session ended."
+              : "none passed the supervisor's validation, so none ran.";
+      }
+      lines.push("", `${text}_`);
       if (v.scenario.summary) lines.push("", closeFences(defang(v.scenario.summary)));
     }
     lines.push("");

@@ -2843,6 +2843,284 @@ describe("scenario sessions", () => {
     );
   });
 
+  it("runFlow can't name the raw sign-in helper, only its wrapper", async () => {
+    const raw = GOOD_FLOW.replace(
+      '- tapOn: "Notebooks"',
+      "- runFlow: ../helpers/sign-in-clean.yaml",
+    );
+    const wrapped = GOOD_FLOW.replace('- tapOn: "Notebooks"', "- runFlow: ../helpers/sign-in.yaml");
+    fakeSession({
+      flows: { "01-raw.yaml": raw, "02-wrapped.yaml": wrapped },
+      requests: ["flows/01-raw.yaml", "flows/02-wrapped.yaml"],
+    });
+    await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(h.results[0].text, /REJECTED/);
+    assert.match(h.results[0].text, /sign-in-clean\.yaml.*isn't one of the files runFlow may use/);
+    assert.match(h.results[1].text, /request 2 \(flows\/02-wrapped\.yaml\): PASS/);
+  });
+
+  it("the reset leaves a no-sign-in flow's app running, and stops it before a sign-in", async () => {
+    const noSignIn = GOOD_FLOW.replace("---\n", "---\n# device-lane: no-sign-in\n");
+    fakeSession({
+      flows: { "01-out.yaml": noSignIn, "02-in.yaml": GOOD_FLOW },
+      requests: ["flows/01-out.yaml", "flows/02-in.yaml"],
+    });
+    const session = h.onRun;
+    const resets = [];
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && String(args[3]).endsWith(".reset.yaml")) {
+        resets.push(readFileSync(args[3], "utf8"));
+      }
+      return session(cmd, args, opts);
+    };
+    await startAndSupervise({ scenarioSections: SECTIONS });
+    // The try and the final pass, each: 01 (no sign-in), then 02.
+    assert.equal(resets.length, 4);
+    for (const [i, text] of resets.entries()) {
+      assert.match(text, /- launchApp:\n {4}clearState: true/);
+      assert.equal(/- stopApp/.test(text), i % 2 === 1, `reset ${i}`);
+    }
+  });
+
+  it("a flow that runFlows a retired one is rejected, in the session and in the final pass", async () => {
+    const retired = `# device-lane: skip\n${GOOD_FLOW}`;
+    const parent = GOOD_FLOW.replace('- tapOn: "Notebooks"', "- runFlow: 01-old.yaml");
+    fakeSession({
+      flows: { "01-old.yaml": retired, "02-parent.yaml": parent },
+      requests: ["flows/02-parent.yaml"],
+    });
+    const { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(h.results[0].text, /REJECTED/);
+    assert.match(
+      h.results[0].text,
+      /flows\/02-parent\.yaml: runFlow names flows\/01-old\.yaml, which is marked `# device-lane: skip`/,
+    );
+    assert.ok(!callsOf("maestro").some((c) => /0[12]-(old|parent)\.yaml$/.test(String(c.args[3]))));
+    const row = output.platforms.ios.flows.find((f) => f.name === "scenario: 02-parent.yaml");
+    assert.equal(row.status, "ERROR");
+    assert.match(row.failure, /rejected by the validator: .*01-old\.yaml, which is marked/);
+    assert.equal(row.dispatched, undefined);
+    assert.ok(!output.platforms.ios.flows.some((f) => f.name === "scenario: 01-old.yaml"));
+  });
+
+  it("marks the final-pass rows the supervisor ran as dispatched", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW, "02-bad.yaml": BAD_FLOW } });
+    const { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    const rows = output.platforms.ios.flows;
+    assert.equal(rows.find((f) => f.name === "scenario: 01-nb.yaml").dispatched, true);
+    assert.equal(rows.find((f) => f.name === "scenario: 02-bad.yaml").dispatched, undefined);
+  });
+
+  it("the last allowed run starts the grace, even with no further request", async () => {
+    h.env.FACTORY_DEVICE_SCENARIO_RUNS = "1";
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"], hang: true });
+    h.deps.sleep = async () => {
+      h.clock += 30_000;
+      await macrotask();
+    };
+    const kill = h.deps.kill;
+    h.deps.kill = (pid, signal) => {
+      if (pid === -SESSION_PID && signal === "SIGTERM") h.release?.();
+      return kill(pid, signal);
+    };
+    const { output, runDir } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.equal(h.results.length, 1);
+    assert.match(h.results[0].text, /PASS[\s\S]*runs left: 0/);
+    const sup = readFileSync(path.join(runDir, "supervisor.log"), "utf8");
+    assert.match(sup, /stopping the session \(run cap\)/);
+    assert.doesNotMatch(sup, /stopping the session \(time cap\)/);
+    assert.equal(output.platforms.ios.scenarioState, "timeout");
+  });
+
+  it("the session's setup comes out of its time cap", async () => {
+    h.env.FACTORY_DEVICE_SCENARIO_MIN = "10";
+    fakeSession({ hang: true });
+    const session = h.onRun;
+    let sessionAt = null;
+    h.onRun = async (cmd, args, opts) => {
+      if (isSession(args)) sessionAt = h.clock;
+      return session(cmd, args, opts);
+    };
+    // Five minutes go by between the cap's calculation and the session's start.
+    h.deps.randomUUID = () => {
+      h.clock += 5 * 60_000;
+      return UUID;
+    };
+    h.deps.sleep = async () => {
+      h.clock += 60_000;
+      await macrotask();
+    };
+    let killedAt = null;
+    const kill = h.deps.kill;
+    h.deps.kill = (pid, signal) => {
+      if (pid === -SESSION_PID && signal === "SIGTERM") {
+        killedAt ??= h.clock;
+        h.release?.();
+      }
+      return kill(pid, signal);
+    };
+    await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.ok(killedAt != null);
+    assert.ok(
+      killedAt - sessionAt <= 5 * 60_000,
+      `killed ${(killedAt - sessionAt) / 60_000} min in`,
+    );
+  });
+
+  it("no run is admitted past the session's cap, and a run is cut off at it", async () => {
+    h.env.FACTORY_DEVICE_SCENARIO_MIN = "10";
+    h.env.FACTORY_DEVICE_FLOW_TIMEOUT_MIN = "20";
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    const session = h.onRun;
+    const timeouts = [];
+    h.onRun = async (cmd, args, opts) => {
+      const inSnapshot = opts.cwd?.includes(`${path.sep}snapshots${path.sep}`);
+      if (path.basename(cmd) === "maestro" && inSnapshot && !h.sessionEnded) {
+        timeouts.push(opts.timeoutMs);
+        // The first run takes the session past its 10-minute cap: its flow
+        // is the call that the cap's timeout cuts off.
+        h.clock += 4 * 60_000;
+        if (String(args[3]).endsWith(`${path.sep}01-nb.yaml`)) {
+          return { code: 1, timedOut: true, stdout: "" };
+        }
+      }
+      return session(cmd, args, opts);
+    };
+    // A second request, queued beside the first.
+    let second = null;
+    const sessionWithSecond = h.onRun;
+    h.onRun = async (cmd, args, opts) => {
+      if (isSession(args)) {
+        writeFileSync(path.join(opts.cwd, "requests", "2.json"), '{"flow":"flows/01-nb.yaml"}');
+        second = path.join(opts.cwd, "requests", "2.result.json");
+      }
+      return sessionWithSecond(cmd, args, opts);
+    };
+    await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.ok(second);
+    assert.match(h.results[0].text, /request 1 \(flows\/01-nb\.yaml\)/);
+    // Three steps of 4 minutes: the reset at 10, the sign-in at 6, the flow at 2.
+    assert.deepEqual(
+      timeouts,
+      [10, 6, 2].map((m) => m * 60_000),
+    );
+    assert.match(h.results[0].text, /the session's time ran out before this run finished/);
+    const r2 = JSON.parse(readFileSync(second, "utf8"));
+    assert.equal(r2.status, "REFUSED");
+    assert.match(r2.errors[0], /time is up/);
+  });
+
+  it("an adb-drop retry repeats the reset and the sign-in before the flow", async () => {
+    h.prView.files = [{ path: "apps/mobile/e2e/android-all.yaml" }];
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    const session = h.onRun;
+    const steps = [];
+    let dropped = false;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && !h.sessionEnded) {
+        const flow = path.basename(String(args[3]));
+        if (/^(\.reset|sign-in|01-nb)\.yaml$/.test(flow)) steps.push(flow);
+        if (flow === "01-nb.yaml" && !dropped) {
+          dropped = true;
+          writeFileSync(opts.stdoutFile, "device offline\n");
+          return { code: 1, timedOut: false, stdout: "" };
+        }
+      }
+      return session(cmd, args, opts);
+    };
+    await startAndSupervise({ scenarioSections: [{ heading: "Android", text: "1. step" }] });
+    assert.deepEqual(steps, [
+      ".reset.yaml",
+      "sign-in.yaml",
+      "01-nb.yaml",
+      ".reset.yaml",
+      "sign-in.yaml",
+      "01-nb.yaml",
+    ]);
+    assert.match(h.results[0].text, /request 1 \(flows\/01-nb\.yaml\): PASS/);
+  });
+
+  it("a session that run-claude cut off (exit 124) is a timeout", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, exit: 124 });
+    const { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.equal(output.platforms.ios.scenarioState, "timeout");
+    assert.ok(output.platforms.ios.flows.some((f) => f.name === "scenario: 01-nb.yaml"));
+  });
+
+  it("a supervisor error while serving still checks and stops the session's group", async () => {
+    fakeSession({ hang: true });
+    const session = h.onRun;
+    h.onRun = async (cmd, args, opts) => {
+      if (isSession(args)) {
+        // A request whose answer can't be written: a directory is in the way.
+        writeFileSync(path.join(opts.cwd, "flows", "01-nb.yaml"), GOOD_FLOW);
+        writeFileSync(path.join(opts.cwd, "requests", "1.json"), '{"flow":"flows/01-nb.yaml"}');
+        mkdirSync(path.join(opts.cwd, "requests", "1.result.json", "x"), { recursive: true });
+      }
+      return session(cmd, args, opts);
+    };
+    // The group never dies: the supervisor must keep at it, then give up.
+    h.aliveGroups.add(SESSION_PID);
+    const kill = h.deps.kill;
+    h.deps.kill = (pid, signal) => {
+      if (pid === -SESSION_PID && signal === "SIGTERM") h.release?.();
+      return kill(pid, signal);
+    };
+    const { output, runDir } = await startAndSupervise({ scenarioSections: SECTIONS });
+    const terms = h.kills.filter((k) => k.pid === -SESSION_PID && k.signal === "SIGTERM");
+    assert.ok(terms.length >= 2, `${terms.length} SIGTERMs`);
+    assert.equal(output.platforms.ios.scenarioState, "error");
+    assert.deepEqual(
+      output.platforms.ios.flows.map((f) => f.name),
+      ["ios-all.yaml"],
+    );
+    assert.match(readFileSync(path.join(runDir, "supervisor.log"), "utf8"), /scenario: ios: /);
+  });
+
+  it("a final pass that throws after a row leaves a verdict that matches its rows", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW, "02-nb.yaml": GOOD_FLOW } });
+    const session = h.onRun;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && h.sessionEnded) {
+        const flow = String(args[3]);
+        if (flow.endsWith(`${path.sep}01-nb.yaml`)) return { code: 1, timedOut: false, stdout: "" };
+        if (flow.endsWith(`${path.sep}02-nb.yaml`)) throw new Error("disk went away");
+      }
+      return session(cmd, args, opts);
+    };
+    const { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    const ios = output.platforms.ios;
+    assert.equal(ios.scenarioState, "error");
+    assert.deepEqual(
+      ios.flows.map((f) => [f.name, f.status]),
+      [
+        ["ios-all.yaml", "PASS"],
+        ["scenario: 01-nb.yaml", "ERROR"],
+      ],
+    );
+    assert.equal(ios.verdict, "ERROR");
+  });
+
+  it("reads a whole scenario file whose JSON escapes run past 256 KB, and caps the sections", async () => {
+    const lane = await import("../lib/device-lane.mjs");
+    const file = path.join(tmp, "big.json");
+    const sections = Array.from({ length: 25 }, (_, i) => ({
+      heading: i % 2 ? "iOS" : "Android",
+      text: "\\".repeat(9000),
+    }));
+    writeFileSync(file, JSON.stringify(sections));
+    assert.ok(nodeFs.statSync(file).size > 256 * 1024);
+    const read = lane.readScenarioSections(nodeFs, file);
+    assert.equal(read.length, 20);
+    assert.ok(read.every((s) => s.text.length === 8000));
+    // A file too large to be one the lane wrote is refused whole.
+    writeFileSync(
+      file,
+      `[${'{"heading":"iOS","text":"x"},'.repeat(200_000)}{"heading":"iOS","text":"x"}]`,
+    );
+    assert.deepEqual(lane.readScenarioSections(nodeFs, file), []);
+  });
+
   it("device-run refuses a path outside flows/ and waits on --wait", async () => {
     const dir = path.join(tmp, "sd");
     mkdirSync(path.join(dir, "requests"), { recursive: true });

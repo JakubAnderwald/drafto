@@ -1803,9 +1803,19 @@ export async function captureShot(ctx, { platform, deviceId, index, flow }) {
  * A Maestro runner for <deviceId>: (flowPath, junit, log, epoch) → runStep's
  * result, through guardedRun. The password is only in Maestro's environment.
  */
-export function makeMaestro(ctx, { deviceId, account, root, rawDir = ctx.rawDir }) {
+export function makeMaestro(
+  ctx,
+  { deviceId, account, root, rawDir = ctx.rawDir, deadlineMs = null },
+) {
   const { meta } = ctx;
   const env = maestroFlowEnv(ctx.devEnv, account);
+  // <deadlineMs> (a scenario session's cap) cuts each call's timeout to the
+  // time left before it, so no run outlasts the session.
+  const timeoutMs = () => {
+    const cap = meta.knobs.flowTimeoutMin * MINUTE_MS;
+    if (deadlineMs == null) return cap;
+    return Math.max(1000, Math.min(cap, deadlineMs - ctx.deps.nowMs()));
+  };
   return (flowPath, junit, log, epoch) =>
     guardedRun(
       ctx,
@@ -1821,7 +1831,7 @@ export function makeMaestro(ctx, { deviceId, account, root, rawDir = ctx.rawDir 
       {
         cwd: root,
         env,
-        timeoutMs: meta.knobs.flowTimeoutMin * MINUTE_MS,
+        timeoutMs: timeoutMs(),
         stdoutFile: log,
         stderrFile: log,
       },
@@ -2462,16 +2472,13 @@ function readIosSimUdid(repoRoot, fs) {
 const SCENARIO_MAX_SECTIONS = 20;
 const SCENARIO_MAX_HEADING = 200;
 const SCENARIO_MAX_TEXT = 8000;
+// Far above what the capped sections can take up, JSON escapes included.
+const SCENARIO_FILE_MAX_BYTES = 4 * 1024 * 1024;
 
-/**
- * The scenario sections in a `scenario-file` JSON file ([{heading, text}]),
- * shape-checked and capped. [] when the file is missing or isn't that shape:
- * the repo flows still run.
- */
-export function readScenarioSections(fs, file) {
-  const parsed = parseJson(readText(fs, file, 256 * 1024), null);
-  if (!Array.isArray(parsed)) return [];
-  return parsed
+/** Scenario sections ([{heading, text}]), shape-checked and capped: what the file may hold. */
+export function capScenarioSections(list) {
+  if (!Array.isArray(list)) return [];
+  return list
     .filter(
       (s) =>
         s !== null &&
@@ -2486,6 +2493,20 @@ export function readScenarioSections(fs, file) {
       heading: s.heading.slice(0, SCENARIO_MAX_HEADING),
       text: s.text.slice(0, SCENARIO_MAX_TEXT),
     }));
+}
+
+/**
+ * The scenario sections in a `scenario-file` JSON file, capped on the
+ * decoded data. [] when the file is missing, too large or isn't that shape
+ * (never a parse of a cut-off file): the repo flows still run.
+ */
+export function readScenarioSections(fs, file) {
+  try {
+    if (fs.statSync(file).size > SCENARIO_FILE_MAX_BYTES) return [];
+  } catch {
+    return [];
+  }
+  return capScenarioSections(parseJson(readText(fs, file), null));
 }
 
 export async function runStart(opts, deps) {

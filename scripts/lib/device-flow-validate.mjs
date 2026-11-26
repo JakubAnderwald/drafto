@@ -32,6 +32,8 @@ export const MAX_COMMANDS = 200;
 export const MAX_REPEAT_TIMES = 10;
 export const MAX_RETRIES = 3;
 export const MAX_TIMEOUT_MS = 120_000;
+// Maestro's documented maximum for eraseText (docs.maestro.dev).
+export const MAX_ERASE = 100;
 export const SCREENSHOT_NAME_RE = /^[a-z0-9-]{1,40}$/;
 const TAG_RE = /^[A-Za-z0-9._-]{1,40}$/;
 const MAX_ERRORS = 20;
@@ -301,11 +303,12 @@ const COMMANDS = {
   },
   eraseText(w, a) {
     if (a === null) return undefined;
-    if (typeof a === "number") {
-      if (!Number.isInteger(a) || a < 1 || a > 1000) this.error(w, "must erase 1 to 1000");
-      return undefined;
-    }
-    return this.mapping(w, a, { ...COMMON, charactersToErase: "index" });
+    const count = (x, n) => {
+      if (!Number.isInteger(n) || n < 1 || n > MAX_ERASE)
+        this.error(x, `must erase 1 to ${MAX_ERASE} characters`);
+    };
+    if (typeof a === "number") return count(w, a);
+    return this.mapping(w, a, { ...COMMON, charactersToErase: count });
   },
   assertVisible(w, a) {
     return this.selector(w, a);

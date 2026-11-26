@@ -2998,7 +2998,13 @@ describe("device lane: the scenario's steps (phase b)", () => {
     devicePlatform("done", {
       flows: [
         { name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null },
-        { name: "scenario: 01-create-notebook.yaml", status: "FAIL", durationS: 30, failure: "x" },
+        {
+          name: "scenario: 01-create-notebook.yaml",
+          status: "FAIL",
+          durationS: 30,
+          failure: "x",
+          dispatched: true,
+        },
       ],
       verdict: "FAIL",
       scenarioState: "done",
@@ -3043,23 +3049,36 @@ describe("device lane: the scenario's steps (phase b)", () => {
     assert.match(r.body, /_Scenario steps: skipped: too little of the run was left\._/);
   });
 
-  it("names the session as the flows' author only when a session ran", () => {
+  it("names the session as the flows' author only when there are scenario rows", () => {
     const phaseA = [{ name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null }];
-    for (const [state, ran] of [
-      ["done", true],
-      ["timeout", true],
-      ["stopped", true],
-      ["skipped:time", false],
-      ["error", false],
-    ]) {
+    for (const state of ["done", "timeout", "stopped", "skipped:time", "error"]) {
       const r = composeDevice({
         ios: withScenario({ scenarioState: state, scenarioSummary: undefined, flows: phaseA }),
       });
-      assert.equal(/A guarded session wrote/.test(r.body), ran, state);
+      // A session that left no flows: its state, and no claim about flows.
+      assert.doesNotMatch(r.body, /A guarded session wrote/, state);
+      assert.doesNotMatch(r.body, /ran them again/, state);
+      assert.match(r.body, /_Scenario steps: [^_]+\._/, state);
     }
     // An error after the session wrote flows still says who wrote them.
     const r = composeDevice({ ios: withScenario({ scenarioState: "error" }) });
-    assert.match(r.body, /A guarded session wrote/);
+    assert.match(r.body, /_Scenario steps: failed\. A guarded session wrote/);
+  });
+
+  it("claims the final re-run only for flows the supervisor ran", () => {
+    const row = (name, extra) => ({ name, status: "ERROR", durationS: 0, failure: "x", ...extra });
+    const rejected = row("scenario: 01-bad.yaml", {
+      failure: "rejected by the validator: commands[0]: nope",
+    });
+    const ran = row("scenario: 02-ok.yaml", { status: "PASS", failure: null, dispatched: true });
+    const body = (flows) => composeDevice({ ios: withScenario({ flows }) }).body;
+    const none = body([rejected]);
+    assert.doesNotMatch(none, /ran them again/);
+    assert.match(none, /none passed the supervisor's validation, so none ran\._/);
+    assert.match(body([rejected, ran]), /ran the valid ones again after the session ended\._/);
+    assert.match(body([ran]), /validated them and ran them again after the session ended\._/);
+    // A row that only claims to be dispatched with a non-boolean doesn't count.
+    assert.match(body([{ ...ran, dispatched: "yes" }]), /none passed/);
   });
 
   it("scans the summary: a secret in it withholds the device text", () => {

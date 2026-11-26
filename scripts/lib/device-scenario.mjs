@@ -49,6 +49,7 @@ import {
   captureShot,
   flowSlug,
   avdExists,
+  capScenarioSections,
   groupAlive,
   isAdbDrop,
   killGroup,
@@ -116,9 +117,11 @@ export const EXAMPLE_FLOWS = Object.freeze([
 export const SIGN_IN_HELPER = "helpers/sign-in-clean.yaml";
 // The supervisor's wrapper around the vetted helper: it maps the account's
 // variables onto the helper's, so a session's flow signs in with
-// `runFlow: ../helpers/sign-in.yaml` and never names a credential.
+// `runFlow: ../helpers/sign-in.yaml` and never names a credential. The helper
+// itself isn't a runFlow target: without the wrapper's bindings it has no
+// account to sign in with.
 export const SIGN_IN_WRAPPER = "helpers/sign-in.yaml";
-const RUN_FLOW_HELPERS = Object.freeze([`../${SIGN_IN_WRAPPER}`, `../${SIGN_IN_HELPER}`]);
+const RUN_FLOW_HELPERS = Object.freeze([`../${SIGN_IN_WRAPPER}`]);
 
 // ── scenario sections ───────────────────────────────────────────────────────
 
@@ -138,9 +141,12 @@ export async function writeScenarioFile({ commentsText, sha, out, fs = nodeFs })
   const { extractScenarioSections, selectScenarioComment } = await import("./factory-bundle.mjs");
   const comments = parseJson(commentsText, null);
   const scenario = selectScenarioComment(Array.isArray(comments) ? comments : [], sha);
-  const sections = scenario
-    ? extractScenarioSections(scenario.body).filter((s) => MOBILE_HEADING.test(s.heading))
-    : [];
+  // Capped as `start` reads them back, so the file stays small.
+  const sections = capScenarioSections(
+    scenario
+      ? extractScenarioSections(scenario.body).filter((s) => MOBILE_HEADING.test(s.heading))
+      : [],
+  );
   rmQuiet(fs, out);
   if (!sections.length) return { written: false, sections: 0 };
   const tmp = `${out}.${process.pid}.tmp`;
@@ -162,8 +168,12 @@ export function signInWrapperYaml() {
   );
 }
 
-/** A clean, signed-out app: the reset before each scenario flow. */
-export function scenarioResetYaml(platform) {
+/**
+ * A clean, signed-out app: the reset before each scenario flow. <stopAfter>
+ * (a flow the lane signs in first: the sign-in starts the app itself) stops
+ * the app; a `no-sign-in` flow starts with it running, on its login screen.
+ */
+export function scenarioResetYaml(platform, { stopAfter = true } = {}) {
   return [
     `appId: ${APP_ID}`,
     "---",
@@ -172,7 +182,7 @@ export function scenarioResetYaml(platform) {
     "- clearKeychain",
     "- launchApp:",
     "    clearState: true",
-    "- stopApp",
+    ...(stopAfter ? ["- stopApp"] : []),
     "",
   ].join("\n");
 }
@@ -316,6 +326,14 @@ export function snapshotFlow(ctx, { platform, dirs, root, name, tag }) {
       return;
     }
     texts[n] = text;
+    // A retired flow never runs through a reference either: the final pass
+    // leaves it out, so the flow that names it is rejected.
+    if (stack.length && isRetiredText(text)) {
+      errors.push(
+        `flows/${stack.at(-1)}: runFlow names flows/${n}, which is marked \`# device-lane: skip\``,
+      );
+      return;
+    }
     const v = validateFlow(text, { platform, runFlowAllow: runFlowAllowFor(names, n) });
     for (const e of v.errors) errors.push(`flows/${n}: ${e}`);
     for (const ref of v.runFlows) {
@@ -363,13 +381,19 @@ async function runStepFlow(ctx, { platform, maestro, file, junit, log, epoch }) 
 
 /**
  * Reset the app, sign in when the flow needs it (the vetted helper, through
- * its wrapper in the snapshot), then run the snapshot's flow. Each Maestro
- * call works in a directory of its own under <snapshot>/out/ (reset,
- * sign-in, flow-<attempt>): a flow's screenshots are then only that
- * attempt's. Returns {status, failure, lines, durationS, resetFailed,
- * shotsDir}. Throws Interrupt.
+ * its wrapper in the snapshot), then run the snapshot's flow. An adb-drop
+ * retry repeats all three, so it starts from the same app state as the first
+ * attempt. Each Maestro call works in a directory of its own under
+ * <snapshot>/out/ (reset-<attempt>, sign-in-<attempt>, flow-<attempt>): a
+ * flow's screenshots are then only that attempt's. With <deadlineMs> (a
+ * session's cap) no step starts after it and none runs past it. Returns
+ * {status, failure, lines, durationS, resetFailed, shotsDir}. Throws
+ * Interrupt.
  */
-async function runSnapshot(ctx, { platform, deviceId, account, snap, label, tag }) {
+async function runSnapshot(
+  ctx,
+  { platform, deviceId, account, snap, label, tag, deadlineMs = null },
+) {
   const { deps } = ctx;
   const fs = deps.fs;
   const secrets = account ? { password: account.password } : {};
@@ -378,11 +402,16 @@ async function runSnapshot(ctx, { platform, deviceId, account, snap, label, tag 
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     // cwd and --test-output-dir both: Maestro 2.x writes takeScreenshot files
     // under the latter, older versions into the former.
-    return { dir, run: makeMaestro(ctx, { deviceId, account, root: dir, rawDir: dir }) };
+    return {
+      dir,
+      run: makeMaestro(ctx, { deviceId, account, root: dir, rawDir: dir, deadlineMs }),
+    };
   };
   const started = deps.nowMs();
   const epoch = nextRunEpoch(ctx);
   const elapsed = () => Math.round((deps.nowMs() - started) / 1000);
+  const late = () => deadlineMs != null && deps.nowMs() >= deadlineMs;
+  const LATE = "the session's time ran out before this run finished";
   const io = (step) => [
     path.join(ctx.rawDir, `${tag}-${step}.junit.xml`),
     path.join(ctx.rawDir, `${tag}-${step}.log`),
@@ -395,42 +424,61 @@ async function runSnapshot(ctx, { platform, deviceId, account, snap, label, tag 
     shotsDir: null,
     ...extra,
   });
+  const needsSignIn = flowNeedsSignIn(snap.text);
+  if (needsSignIn && !account) return fail("needs a signed-in app, and the run has no account");
   const reset = path.join(snap.dir, ".reset.yaml");
-  fs.writeFileSync(reset, scenarioResetYaml(platform), { mode: 0o600 });
-  const [rj, rl] = io("reset");
-  const resetOk = await runStepFlow(ctx, {
-    platform,
-    maestro: maestroIn("reset").run,
-    file: reset,
-    junit: rj,
-    log: rl,
-    epoch,
+  fs.writeFileSync(reset, scenarioResetYaml(platform, { stopAfter: needsSignIn }), {
+    mode: 0o600,
   });
-  if (!resetOk) {
-    return fail("the lane's reset before this flow failed", { resetFailed: true });
-  }
-  if (flowNeedsSignIn(snap.text)) {
-    if (!account) return fail("needs a signed-in app, and the run has no account");
+  // The reset, then the sign-in when the flow needs it: null when both
+  // passed, else the row's failure ({failure, resetFailed}).
+  const setup = async (attempt) => {
+    const sfx = attempt === 1 ? "" : `-${attempt}`;
+    if (late()) return { failure: LATE };
+    const [rj, rl] = io(`reset${sfx}`);
+    const resetOk = await runStepFlow(ctx, {
+      platform,
+      maestro: maestroIn(`reset-${attempt}`).run,
+      file: reset,
+      junit: rj,
+      log: rl,
+      epoch,
+    });
+    if (!resetOk) {
+      return late()
+        ? { failure: LATE }
+        : { failure: "the lane's reset before this flow failed", resetFailed: true };
+    }
+    if (!needsSignIn) return null;
+    if (late()) return { failure: LATE };
     ctx.log(`maestro: ${platform} signing in before ${label}`);
-    const [sj, sl] = io("sign-in");
+    const [sj, sl] = io(`sign-in${sfx}`);
     const signedIn = await runStepFlow(ctx, {
       platform,
-      maestro: maestroIn("sign-in").run,
+      maestro: maestroIn(`sign-in-${attempt}`).run,
       file: path.join(snap.dir, SIGN_IN_WRAPPER),
       junit: sj,
       log: sl,
       epoch,
     });
-    if (!signedIn) return fail("the lane's sign-in before this flow failed");
-  }
+    if (!signedIn) return { failure: late() ? LATE : "the lane's sign-in before this flow failed" };
+    return null;
+  };
+  const first = await setup(1);
+  if (first) return fail(first.failure, first.resetFailed ? { resetFailed: true } : {});
   const [junit, log] = io("flow");
   rmQuiet(fs, junit);
   // Each attempt (an adb-drop retry is a second one) has its own output dir
   // and draws its RUN_ID from the run's counter: the first one has <epoch>.
   let attempt = 0;
   let shotsDir = null;
-  const flowMaestro = (file, j, l, e) => {
+  let retrySetup = null;
+  const flowMaestro = async (file, j, l, e) => {
     attempt += 1;
+    if (attempt > 1) {
+      retrySetup = await setup(attempt);
+      if (retrySetup) return { code: 1, timedOut: false };
+    }
     const m = maestroIn(`flow-${attempt}`);
     shotsDir = m.dir;
     return m.run(file, j, l, e);
@@ -445,7 +493,11 @@ async function runSnapshot(ctx, { platform, deviceId, account, snap, label, tag 
     epochFor: () => (attempt === 0 ? epoch : nextRunEpoch(ctx)),
     secrets,
   });
-  return { ...out, durationS: elapsed(), shotsDir };
+  if (retrySetup) {
+    return fail(`${retrySetup.failure} (before its retry for an adb drop)`, { lines: out.lines });
+  }
+  const failure = out.status !== "PASS" && late() ? LATE : out.failure;
+  return { ...out, failure, durationS: elapsed(), shotsDir };
 }
 
 /**
@@ -523,7 +575,12 @@ export function maestroShots(fs, shotsDir, prefix) {
 
 // ── the request loop ────────────────────────────────────────────────────────
 
-/** Answer every new request in requests/. Throws Interrupt (from a flow). */
+/**
+ * Answer every new request in requests/. A request is admitted only while the
+ * run isn't stopped, the session hasn't been told to stop (loop.closed) and
+ * its cap (loop.deadlineMs) hasn't passed; a run it admits is cut off at that
+ * cap. Throws Interrupt.
+ */
 export async function serveRequests(ctx, platform, loop, { dirs, deviceId, account, root }) {
   const { deps, meta } = ctx;
   const fs = deps.fs;
@@ -545,7 +602,18 @@ export async function serveRequests(ctx, platform, loop, { dirs, deviceId, accou
     const rel = typeof req?.flow === "string" ? req.flow.replace(/^\.\//, "") : "";
     const name = /^flows\/[^/]+$/.test(rel) ? rel.slice("flows/".length) : "";
     let result;
-    if (!DEVICE_FLOW_FILE_RE.test(name)) {
+    // Checked per request: an earlier one in this batch may have run past it.
+    await ctx.checkpoint();
+    if (loop.closed || (loop.deadlineMs != null && deps.nowMs() >= loop.deadlineMs)) {
+      result = {
+        status: "REFUSED",
+        errors: [
+          loop.closed
+            ? "this session is being stopped; no more runs"
+            : "this session's time is up; write your summary now",
+        ],
+      };
+    } else if (!DEVICE_FLOW_FILE_RE.test(name)) {
       result = { status: "REJECTED", errors: ["name a flow as flows/NN-<slug>.yaml"] };
     } else if (loop.runs >= meta.knobs.scenarioRuns) {
       loop.capHitAt ??= deps.nowMs();
@@ -570,6 +638,7 @@ export async function serveRequests(ctx, platform, loop, { dirs, deviceId, accou
           snap,
           label: `scenario try ${n}: ${name}`,
           tag: `scenario-${tag}`,
+          deadlineMs: loop.deadlineMs,
         });
         // The lane's own reset failing isn't the session's run: give it back.
         if (out.resetFailed) loop.runs -= 1;
@@ -602,6 +671,9 @@ export async function serveRequests(ctx, platform, loop, { dirs, deviceId, accou
       ...result,
       runsLeft: Math.max(0, meta.knobs.scenarioRuns - loop.runs),
     });
+    // The last run answered: the grace for the summary starts now, whether
+    // or not the session asks for another.
+    if (loop.runs >= meta.knobs.scenarioRuns) loop.capHitAt ??= deps.nowMs();
   }
 }
 
@@ -668,6 +740,9 @@ export async function runScenario(ctx, platform, { deviceId, account, root, res 
         startIndex: res.flows.length,
         onRow: (row) => {
           res.flows.push(row);
+          // Saved with every row, so a pass that throws later never leaves
+          // a verdict that its saved rows contradict.
+          res.verdict = platformVerdict(res.flows);
           ctx.save();
         },
       });
@@ -711,8 +786,10 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
   // each platform still to come (their builds, flows and sessions).
   const order = Array.isArray(meta.order) ? meta.order : [platform];
   const later = order.slice(order.indexOf(platform) + 1).filter((p) => willRun(ctx, p)).length;
+  // One clock for the cap: the session's setup below comes out of it too.
+  const started = deps.nowMs();
   const left =
-    Date.parse(meta.deadlineAt) - deps.nowMs() - FINAL_RESERVE_MS - later * PLATFORM_RESERVE_MS;
+    Date.parse(meta.deadlineAt) - started - FINAL_RESERVE_MS - later * PLATFORM_RESERVE_MS;
   const capMs = Math.min(meta.knobs.scenarioMin * MINUTE_MS, left);
   if (capMs < MIN_SESSION_MS) {
     log("too little of the run is left for a session (raise FACTORY_DEVICE_RUN_MAX_MIN)");
@@ -763,12 +840,13 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
     seen: new Set(),
     runs: 0,
     capHitAt: null,
+    deadlineMs: started + capMs,
+    closed: false,
   };
   let child = null;
   let finished = false;
   let result = null;
   let killed = null;
-  const started = deps.nowMs();
   log(
     `session ${sessionId} starting (${Math.floor(capMs / MINUTE_MS)} min, ${meta.knobs.scenarioRuns} runs)`,
   );
@@ -803,6 +881,7 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
       },
     );
   const kill = (why) => {
+    loop.closed = true;
     if (killed) return;
     killed = why;
     log(`stopping the session (${why})`);
@@ -811,21 +890,24 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
   let interrupt = null;
   try {
     while (!finished) {
-      await serveRequests(ctx, platform, loop, { dirs, deviceId, account, root });
-      if (finished) break;
+      // The stop and the caps first, so a request that waited out the poll
+      // sleep is never admitted past them.
       const why = await ctx.interruptReason();
       if (why) {
         interrupt = why;
         break;
       }
       const now = deps.nowMs();
-      if (now - started >= capMs) kill("time cap");
+      if (now >= loop.deadlineMs) kill("time cap");
       else if (loop.capHitAt != null && now - loop.capHitAt >= RUN_CAP_GRACE_MS) kill("run cap");
+      await serveRequests(ctx, platform, loop, { dirs, deviceId, account, root });
+      if (finished) break;
       await deps.sleep(ctx.scenarioPollMs ?? POLL_MS);
     }
   } catch (err) {
-    if (!(err instanceof Interrupt)) throw err;
-    interrupt = err.state;
+    // Any other error waits for the group check below, then is thrown.
+    if (err instanceof Interrupt) interrupt = err.state;
+    else failed ??= err;
   } finally {
     if (!finished) kill(interrupt ? `run ${interrupt}` : "supervisor");
     await done;
@@ -841,7 +923,12 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
   if (dead && child?.pid) recordGroup(ctx, "scenario-session", null);
   if (interrupt) throw new Interrupt(interrupt);
   if (failed) throw failed;
-  const timedOut = killed === "time cap" || killed === "run cap" || Boolean(result?.timedOut);
+  // 124: run-claude.mjs's own wall-time cap, which can beat the poll above.
+  const timedOut =
+    killed === "time cap" ||
+    killed === "run cap" ||
+    Boolean(result?.timedOut) ||
+    result?.code === 124;
   const state = timedOut ? "timeout" : result?.code === 0 ? "done" : "error";
   const guardOk = await (deps.checkGuard ?? checkGuard)(
     { paths: { guardConfig: guard.configPath }, sessionId },
@@ -904,11 +991,14 @@ export async function finalPass(
         label,
         tag: `scenario-final-${String(index).padStart(2, "0")}`,
       });
+      // dispatched: the supervisor ran it (the report's provenance line
+      // claims a re-run only for such rows; a rejected flow never ran).
       row = {
         name: label,
         status: out.status,
         durationS: out.durationS ?? 0,
         failure: out.failure ?? null,
+        dispatched: true,
       };
       await captureShot(ctx, { platform, deviceId, index, flow: `scenario-${name}` });
     }
@@ -920,12 +1010,16 @@ export async function finalPass(
 
 export const SKIP_MARK = /^#\s*device-lane:\s*skip\s*$/;
 
+function isRetiredText(text) {
+  const first = String(text ?? "").split(/\r?\n/, 1)[0] ?? "";
+  return SKIP_MARK.test(first.trim());
+}
+
 /** Whether a flow's first line retires it: `# device-lane: skip`. */
 export function isRetired(fs, file) {
   try {
     if (!fs.lstatSync(file).isFile()) return false;
-    const first = fs.readFileSync(file, "utf8").split(/\r?\n/, 1)[0] ?? "";
-    return SKIP_MARK.test(first.trim());
+    return isRetiredText(fs.readFileSync(file, "utf8"));
   } catch {
     return false;
   }
