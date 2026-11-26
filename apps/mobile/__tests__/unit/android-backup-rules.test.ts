@@ -1,6 +1,10 @@
 import type { ConfigContext, ExpoConfig } from "expo/config";
+import { XML } from "expo/config-plugins";
 
 import appConfig from "../../app.config";
+
+type XMLObject = XML.XMLObject;
+type XMLValue = XML.XMLValue;
 
 // The attachment cache lives in Expo's Documents directory, which on Android
 // is `context.filesDir`: Auto Backup's `file` domain. Nothing in the app sets
@@ -95,14 +99,40 @@ function rulesFile(resource: string | undefined): string {
   return fs.readFileSync(`${RULES_DIR}/${name}.xml`, "utf8");
 }
 
-/** The `domain` of every <include> inside `<section>…</section>` of `xml`. */
-function includeDomains(xml: string, section: string): string[] {
-  const body = new RegExp(`<${section}>([\\s\\S]*?)</${section}>`).exec(xml)?.[1];
-  if (body === undefined) throw new Error(`no <${section}> in the rules file`);
-  const includes = [...body.matchAll(/<include\b[^>]*>/g)].map((match) => match[0]);
-  return includes.map((tag) => {
-    const domain = /\bdomain=(["'])([^"']*)\1/.exec(tag)?.[2];
-    if (domain === undefined) throw new Error(`an <include> without a readable domain: ${tag}`);
+/** Every element named `name` in the parsed tree, at any depth. */
+function elementsNamed(node: XMLValue | undefined, name: string): XMLValue[] {
+  if (Array.isArray(node)) return node.flatMap((child) => elementsNamed(child, name));
+  if (node === null || typeof node !== "object") return [];
+  return Object.entries(node).flatMap(([key, value]) => {
+    // xml2js keeps attributes under `$` and text under `_`.
+    if (key === "$" || key === "_") return [];
+    const own = key === name ? (Array.isArray(value) ? value : [value ?? null]) : [];
+    return [...own, ...elementsNamed(value, name)];
+  });
+}
+
+function isElement(value: XMLValue): value is XMLObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * The `domain` of every <include> element inside `<section>` of `xml`. The
+ * file is parsed as XML, so a commented-out <include> doesn't count.
+ */
+async function includeDomains(xml: string, section: string): Promise<string[]> {
+  const sections = elementsNamed(await XML.parseXMLAsync(xml), section);
+  if (sections.length === 0) throw new Error(`no <${section}> in the rules file`);
+  // An empty <section/> parses to a string: it has no <include>.
+  const includes = sections.filter(isElement).flatMap((element) => {
+    const children = element.include;
+    return Array.isArray(children) ? children : [];
+  });
+  return includes.map((include) => {
+    const attributes = isElement(include) ? include.$ : undefined;
+    const domain = attributes && isElement(attributes) ? attributes.domain : undefined;
+    if (typeof domain !== "string") {
+      throw new Error(`an <include> without a readable domain: ${JSON.stringify(include)}`);
+    }
     return domain;
   });
 }
@@ -129,9 +159,9 @@ describe("Android Auto Backup leaves the attachment cache out", () => {
     );
   });
 
-  it("uses rules that include only the sharedpref domain (Android 11 and lower)", () => {
+  it("uses rules that include only the sharedpref domain (Android 11 and lower)", async () => {
     const xml = rulesFile(attributes["android:fullBackupContent"]);
-    const domains = includeDomains(xml, "full-backup-content");
+    const domains = await includeDomains(xml, "full-backup-content");
     // With no <include> at all, everything would be backed up.
     expect(domains.length).toBeGreaterThan(0);
     expect(domains.every((domain) => domain === "sharedpref")).toBe(true);
@@ -139,13 +169,28 @@ describe("Android Auto Backup leaves the attachment cache out", () => {
 
   it.each(["cloud-backup", "device-transfer"])(
     "uses rules whose %s includes only the sharedpref domain (Android 12 and higher)",
-    (section) => {
+    async (section) => {
       const xml = rulesFile(attributes["android:dataExtractionRules"]);
-      const domains = includeDomains(xml, section);
+      const domains = await includeDomains(xml, section);
       expect(domains.length).toBeGreaterThan(0);
       expect(domains.every((domain) => domain === "sharedpref")).toBe(true);
     },
   );
+
+  it("reads only active <include> elements, not commented-out ones", async () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+  <cloud-backup>
+    <!-- <include domain="sharedpref" path="."/> -->
+  </cloud-backup>
+  <device-transfer>
+    <include domain="sharedpref" path="."/>
+    <!-- <include domain="file" path="."/> -->
+  </device-transfer>
+</data-extraction-rules>`;
+    expect(await includeDomains(xml, "cloud-backup")).toEqual([]);
+    expect(await includeDomains(xml, "device-transfer")).toEqual(["sharedpref"]);
+  });
 
   it("has no local plugin that writes backup attributes (secure-store would then skip its rules)", () => {
     const pluginsDir = `${MOBILE_ROOT}/plugins`;
