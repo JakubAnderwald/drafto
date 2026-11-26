@@ -23,11 +23,29 @@ describe("DesignSystemPage", () => {
     expect(screen.getByText("Input & Label")).toBeInTheDocument();
     expect(screen.getByText("PasswordInput")).toBeInTheDocument();
     expect(screen.getByText("Badge")).toBeInTheDocument();
+    expect(screen.getByText("Alert")).toBeInTheDocument();
     expect(screen.getByText("Card")).toBeInTheDocument();
     expect(screen.getByText("Skeleton")).toBeInTheDocument();
     expect(screen.getByText("ProgressBar")).toBeInTheDocument();
     expect(screen.getByText("DropdownMenu")).toBeInTheDocument();
     expect(screen.getByText("ConfirmDialog")).toBeInTheDocument();
+  });
+
+  it("renders alert variants: plain, dismissible and with an action", async () => {
+    const user = userEvent.setup();
+    render(<DesignSystemPage />);
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(3);
+    expect(screen.getByText("Couldn't load your notebooks.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Couldn't create the note.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show dismissible alert" }));
+    expect(screen.getByText("Couldn't create the note.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.getByText("(retried 1×)")).toBeInTheDocument();
   });
 
   it("renders color scale swatches", () => {

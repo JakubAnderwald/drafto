@@ -8,6 +8,9 @@ vi.mock("@/env", () => ({
   },
 }));
 
+const { mockReportError } = vi.hoisted(() => ({ mockReportError: vi.fn() }));
+vi.mock("@/lib/report-error", () => ({ reportError: mockReportError }));
+
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
 const mockRpc = vi.fn();
@@ -127,6 +130,20 @@ describe("Search API", () => {
       const request = new NextRequest("http://localhost:3000/api/notes/search?q=test");
       const response = await GET(request);
       expect(response.status).toBe(500);
+      // Reported without the search text: no `extra` at all.
+      expect(mockReportError).toHaveBeenCalledOnce();
+      expect(mockReportError).toHaveBeenCalledWith({ message: "RPC failed" }, "api:notes-search");
+    });
+
+    it("does not report a successful search", async () => {
+      authenticateAs("user-1");
+      mockRpc.mockResolvedValue({ data: [], error: null });
+
+      const { GET } = await import("@/app/api/notes/search/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/search?q=test");
+      const response = await GET(request);
+      expect(response.status).toBe(200);
+      expect(mockReportError).not.toHaveBeenCalled();
     });
   });
 });

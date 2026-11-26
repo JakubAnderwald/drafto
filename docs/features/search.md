@@ -47,10 +47,10 @@ Shipped on all four platforms (web, iOS, Android, macOS).
 ## Cross-platform notes
 
 - **Two implementations, one UX**: web uses a server RPC, mobile/desktop use WatermelonDB queries. Keeping result ranking visually consistent is manual — the ordering rules live in two places.
-- **Offline coverage**: mobile and desktop search works offline against the local DB. Web does not — the overlay simply returns no results without network.
+- **Offline coverage**: mobile and desktop search works offline against the local DB. Web does not. When the request fails (no network, or a non-OK response), the overlay shows "Search failed — try again" with a Retry button instead of "No notes found", and reports the failure to Sentry without the query text. Retry, or Enter in the search box while the error shows, runs the same search again.
 - **Content extraction**: the server uses `jsonb_path_query(content, 'strict $.**.text')`, mobile/desktop match against the raw JSON string with `Q.like`. A user searching for a word that only appears inside a JSON key (not a `text` value) will match on mobile/desktop but not web. This asymmetry is intentional; the canonical behavior is the server extractor.
 - **Trash**: all three implementations include trashed notes in results; the UI is responsible for marking them visually.
-- **Query limits**: the web API enforces `q.length <= 200`. Mobile/desktop have no length cap; empty/whitespace queries return zero results everywhere.
+- **Query limits**: the web API enforces `q.length <= 200` (`MAX_SEARCH_QUERY_LENGTH` in `apps/web/src/lib/search-query.ts`), and the web overlay's input has the same `maxLength`, so a long paste is cut to 200 characters instead of failing. Mobile/desktop have no length cap; empty/whitespace queries return zero results everywhere.
 
 ## Modifying safely
 
@@ -62,7 +62,7 @@ Shipped on all four platforms (web, iOS, Android, macOS).
   - Mobile/desktop `sanitizeLikeString` usage prevents user input from being interpreted as `Q.like` wildcards — keep it.
 - Tests that catch regressions:
   - `apps/web/__tests__/unit/notes-search.test.ts` — auth, query validation, RPC shape.
-  - `apps/web/__tests__/integration/search-overlay.test.tsx` — debounce, abort, keyboard nav.
+  - `apps/web/__tests__/integration/search-overlay.test.tsx` — debounce, abort, keyboard nav, the failed-search state and Retry.
   - `apps/web/e2e/search.spec.ts`, `apps/mobile/e2e/search.yaml`.
   - `apps/mobile/__tests__/hooks/use-search.test.ts`, `apps/desktop/__tests__/hooks/use-search.test.ts`.
 - Files that must change together:

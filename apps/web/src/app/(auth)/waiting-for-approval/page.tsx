@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { reportError } from "@/lib/report-error";
 import { ACCOUNT_INACTIVE_MESSAGE, ACCOUNT_INACTIVE_TITLE } from "@drafto/shared";
 
 // Where the middleware sends a signed-in account whose `profiles.is_approved` is false: a
@@ -24,7 +25,8 @@ export default function WaitingForApprovalPage() {
     const supabase = createClient();
     const { error } = await supabase.auth.signOut();
     if (error) {
-      console.error("Failed to sign out:", error);
+      // Still leave for /login: the user asked to go, and the middleware sends a live session back.
+      reportError(error, "waiting-for-approval:sign-out");
     }
     router.push("/login");
   }

@@ -5,6 +5,7 @@ import { outlineEntry, type OutlineEntry } from "@/components/legal/document-out
 import { LegalLinks } from "@/components/legal/legal-links";
 import { NumberedSection } from "@/components/legal/numbered-section";
 import { TableOfContents } from "@/components/legal/table-of-contents";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardBody, CardFooter } from "@/components/ui/card";
@@ -200,6 +201,8 @@ export default function DesignSystemPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [typedConfirmOpen, setTypedConfirmOpen] = useState(false);
   const [typedConfirmation, setTypedConfirmation] = useState("");
+  const [alertDismissed, setAlertDismissed] = useState(false);
+  const [alertRetries, setAlertRetries] = useState(0);
 
   const closeTypedConfirm = () => {
     setTypedConfirmOpen(false);
@@ -544,6 +547,23 @@ export default function DesignSystemPage() {
           <Badge variant="success">Success</Badge>
           <Badge variant="warning">Warning</Badge>
           <Badge variant="error">Error</Badge>
+        </div>
+      </Section>
+
+      <Section title="Alert">
+        <div className="max-w-md space-y-3">
+          <Alert>Couldn&apos;t load your notebooks.</Alert>
+          {alertDismissed ? (
+            <Button variant="secondary" size="sm" onClick={() => setAlertDismissed(false)}>
+              Show dismissible alert
+            </Button>
+          ) : (
+            <Alert onDismiss={() => setAlertDismissed(true)}>Couldn&apos;t create the note.</Alert>
+          )}
+          <Alert action={{ label: "Retry", onClick: () => setAlertRetries((n) => n + 1) }}>
+            Couldn&apos;t move the note.
+            {alertRetries > 0 && <span className="ml-1 text-xs">(retried {alertRetries}×)</span>}
+          </Alert>
         </div>
       </Section>
 

@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { removeOrphanedAttachments } from "@/lib/storage/remove-orphaned-attachments";
 import { reportStorageOverruns } from "@/lib/storage/report-storage-overruns";
 import { hasCronSecret } from "@/lib/cron/has-cron-secret";
+import { reportError } from "@/lib/report-error";
 import { env } from "@/env";
 
 /** The purge plus up to 10 listing-and-remove rounds of 1,000 files. */
@@ -32,7 +33,7 @@ async function runCleanup() {
   // Service role: cleanup_trashed_notes() isn't granted to the API roles.
   const { data, error } = await admin.rpc("cleanup_trashed_notes");
   if (error) {
-    console.error("[cleanup-trash] RPC failed:", error.message);
+    reportError(error, "cron:cleanup-trash");
     return errorResponse("Failed to cleanup trashed notes", 500);
   }
 

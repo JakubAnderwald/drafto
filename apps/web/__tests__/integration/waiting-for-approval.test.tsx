@@ -23,6 +23,9 @@ vi.mock("@/env", () => ({
   },
 }));
 
+vi.mock("@/lib/report-error", () => ({ reportError: vi.fn() }));
+
+const { reportError } = await import("@/lib/report-error");
 const { default: WaitingPage } = await import("@/app/(auth)/waiting-for-approval/page");
 
 describe("Inactive account page (/waiting-for-approval)", () => {
@@ -72,10 +75,10 @@ describe("Inactive account page (/waiting-for-approval)", () => {
 
     expect(mockSignOut).toHaveBeenCalled();
     expect(mockPush).toHaveBeenCalledWith("/login");
+    expect(reportError).not.toHaveBeenCalled();
   });
 
-  it("navigates to login even when signOut returns an error", async () => {
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  it("reports a sign-out error and still navigates to login", async () => {
     mockSignOut.mockResolvedValueOnce({
       error: { message: "Sign out failed" },
     });
@@ -88,12 +91,10 @@ describe("Inactive account page (/waiting-for-approval)", () => {
     await user.click(screen.getByRole("button", { name: "Log out" }));
 
     expect(mockSignOut).toHaveBeenCalled();
-    expect(consoleSpy).toHaveBeenCalledWith(
-      "Failed to sign out:",
+    expect(reportError).toHaveBeenCalledWith(
       expect.objectContaining({ message: "Sign out failed" }),
+      "waiting-for-approval:sign-out",
     );
     expect(mockPush).toHaveBeenCalledWith("/login");
-
-    consoleSpy.mockRestore();
   });
 });

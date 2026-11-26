@@ -10,6 +10,8 @@ vi.mock("@/env", () => ({
   },
 }));
 
+vi.mock("@/lib/report-error", () => ({ reportError: vi.fn() }));
+
 const mockNotebooks = [
   { id: "nb-1", name: "Notes", created_at: "2026-01-01", updated_at: "2026-01-01", note_count: 3 },
   { id: "nb-2", name: "Work", created_at: "2026-01-02", updated_at: "2026-01-02", note_count: 1 },
@@ -93,6 +95,7 @@ async function openDeleteConfirmForNotes(onSelect = vi.fn()) {
 // The component guards fetching with `if (hasFetched.current) return;` so a
 // single import shares that ref across all tests.
 let NotebooksSidebar: typeof import("@/components/notebooks/notebooks-sidebar").NotebooksSidebar;
+let reportError: typeof import("@/lib/report-error").reportError;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -107,6 +110,8 @@ beforeEach(async () => {
   // Re-import to get a fresh module with a new hasFetched ref
   const mod = await import("@/components/notebooks/notebooks-sidebar");
   NotebooksSidebar = mod.NotebooksSidebar;
+  // resetModules gives the sidebar a fresh report-error mock too; assert against that one.
+  ({ reportError } = await import("@/lib/report-error"));
 });
 
 describe("NotebooksSidebar", () => {
@@ -1053,6 +1058,264 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
       ]);
     });
     expect(mockFetch).toHaveBeenCalledWith("/api/notebooks");
+  });
+
+  it("shows an error with Retry when the notebooks fail to load, and Retry loads them", async () => {
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />);
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't load your notebooks.");
+    expect(screen.queryByText(/No notebooks yet/)).not.toBeInTheDocument();
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), "notebooks-sidebar:load", {
+      extra: { status: 500 },
+    });
+
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Notes")).toBeInTheDocument();
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenCalledWith("nb-1");
+  });
+
+  it("doesn't move a user out of Trash when a Retry succeeds", async () => {
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    let rerender: ReturnType<typeof render>["rerender"] = () => {};
+    await act(async () => {
+      ({ rerender } = render(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />,
+      ));
+    });
+    const alert = await screen.findByRole("alert");
+
+    // The user opens Trash, then retries.
+    await act(async () => {
+      rerender(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} isTrashSelected />,
+      );
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("shows the error state and reports when the notebooks request throws", async () => {
+    const networkError = new TypeError("Failed to fetch");
+    mockFetch.mockRejectedValueOnce(networkError);
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load your notebooks.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(reportError).toHaveBeenCalledWith(networkError, "notebooks-sidebar:load");
+  });
+
+  it("keeps the list on show and only reports when a refresh fails", async () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={onSelect}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 503));
+
+    rerender(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={onSelect}
+        initialNotebooks={mockNotebooks}
+        refreshTrigger={1}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(reportError).toHaveBeenCalledWith(expect.any(Error), "notebooks-sidebar:load", {
+        extra: { status: 503 },
+      });
+    });
+    expect(screen.getByText("Notes")).toBeInTheDocument();
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load your notebooks.")).not.toBeInTheDocument();
+  });
+
+  it("applies only the newest load when an older one settles after it", async () => {
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
+    });
+    const retry = within(await screen.findByRole("alert")).getByRole("button", { name: "Retry" });
+
+    // Two Retries in flight: the newer one finds no notebooks, then the older one fails.
+    let settleOlder: (res: FakeResponse) => void = () => {};
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleOlder = resolve;
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse([]));
+    await user.click(retry);
+    await user.click(retry);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No notebooks yet/)).toBeInTheDocument();
+    });
+    await act(async () => {
+      settleOlder(jsonResponse({ error: "boom" }, 500));
+    });
+
+    // The older failure is still reported, but the error state follows the newest load.
+    await waitFor(() => {
+      expect(reportError).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(/No notebooks yet/)).toBeInTheDocument();
+  });
+
+  it("loads again instead of applying a list read before a create landed", async () => {
+    const user = userEvent.setup();
+    const created = {
+      id: "nb-3",
+      name: "Fresh",
+      created_at: "2026-03-01",
+      updated_at: "2026-03-01",
+    };
+    let settleStale: (res: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return Promise.resolve(jsonResponse(created));
+      return Promise.resolve(jsonResponse([created, ...mockNotebooks]));
+    });
+
+    const { rerender } = render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    // A refresh is in flight, and the server read the list before the create.
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleStale = resolve;
+      }),
+    );
+    rerender(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+        refreshTrigger={1}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Fresh{Enter}");
+    await waitFor(() => {
+      expect(screen.getByText("Fresh")).toBeInTheDocument();
+    });
+    const listLoads = () =>
+      mockFetch.mock.calls.filter(([url, init]) => url === "/api/notebooks" && !init);
+    await waitFor(() => {
+      expect(listLoads()).toHaveLength(2);
+    });
+
+    // The stale list settles last and is ignored: the new notebook stays.
+    await act(async () => {
+      settleStale(jsonResponse(mockNotebooks));
+    });
+    expect(screen.getByText("Fresh")).toBeInTheDocument();
+  });
+
+  it("doesn't load again after a create when no load is in flight", async () => {
+    const user = userEvent.setup();
+    mockFetch.mockImplementation((_url: string, init?: RequestInit) =>
+      Promise.resolve(
+        init?.method === "POST"
+          ? jsonResponse({
+              id: "nb-3",
+              name: "Fresh",
+              created_at: "2026-03-01",
+              updated_at: "2026-03-01",
+            })
+          : jsonResponse(mockNotebooks),
+      ),
+    );
+
+    render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Fresh{Enter}");
+    await waitFor(() => {
+      expect(screen.getByText("Fresh")).toBeInTheDocument();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("still opens the first notebook when a refresh replaces the first load", async () => {
+    const onSelect = vi.fn();
+    let settleFirst: (res: FakeResponse) => void = () => {};
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleFirst = resolve;
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+
+    let rerender: ReturnType<typeof render>["rerender"] = () => {};
+    await act(async () => {
+      ({ rerender } = render(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />,
+      ));
+    });
+    await act(async () => {
+      rerender(
+        <NotebooksSidebar
+          selectedNotebookId={null}
+          onSelectNotebook={onSelect}
+          refreshTrigger={1}
+        />,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(onSelect).toHaveBeenCalledWith("nb-1");
+
+    // The first load settles last; its empty list doesn't replace the newer one.
+    await act(async () => {
+      settleFirst(jsonResponse([]));
+    });
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
   it("starts a new notebook at 0 notes", async () => {

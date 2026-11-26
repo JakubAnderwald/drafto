@@ -381,6 +381,36 @@ test.describe("Note editing flow", () => {
     await expect(noteList.getByText(noteTitle2)).not.toBeVisible({ timeout: 5000 });
   });
 
+  test("a note create the server refuses shows an error above the note list", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    // The server refuses the create. Everything else (the list reads) goes through.
+    await page.route("**/api/notebooks/*/notes", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Internal error" }),
+      });
+    });
+
+    await page.getByRole("button", { name: "New note", exact: true }).click();
+
+    const alert = page.getByTestId("notes-pane").getByRole("alert");
+    await expect(alert).toBeVisible({ timeout: 5000 });
+    await expect(alert).toContainText("Couldn't create the note. Try again.");
+
+    // Dismiss clears it.
+    await alert.getByRole("button", { name: "Dismiss" }).click();
+    await expect(alert).toHaveCount(0);
+  });
+
   test("create multiple notes and switch between them", async ({ page }) => {
     await page.goto("/");
 

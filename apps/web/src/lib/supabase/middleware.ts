@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { env } from "@/env";
 import type { Database } from "@/lib/supabase/database.types";
 import { getVerifiedSessionUser } from "@/lib/supabase/session-claims";
+import { reportError } from "@/lib/report-error";
 
 const PUBLIC_ROUTES = [
   "/login",
@@ -192,7 +193,8 @@ export async function updateSession(request: NextRequest) {
     .single();
 
   if (profileError) {
-    console.error("[middleware] Profile query failed:", profileError);
+    // Once a minute at most, like session-claims.ts: a Supabase outage fails every request.
+    reportError(profileError, "middleware:profile-query", { throttleMs: 60_000 });
     return denyRequest(request, UNAUTHORIZED, "/login");
   }
 
