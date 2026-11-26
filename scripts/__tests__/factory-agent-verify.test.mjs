@@ -69,6 +69,13 @@ const verifyFns = [...script.matchAll(/^(verify_[a-z_]+)\(\) \{/gm)].map((m) => 
 // Every verify_* function plus the real helpers they lean on. Everything that
 // talks to GitHub, the board or claude is stubbed in the harness instead.
 const REAL_HELPERS = [
+  // The factory-device-run label (ADR-0106 decision 7).
+  "device_run_label",
+  "device_run_label_remove",
+  "device_run_label_refuse",
+  "device_ondemand_request",
+  "device_ondemand_wait",
+  "device_ondemand_cutoff_notice",
   // A ci-red hand-back forgets the no-op record (ADR-0102).
   "clear_ci_noop",
   "card_opted_out",
@@ -136,7 +143,7 @@ intest_handoff() {
   call "handoff-platforms $(echo "$8" | jq -c . 2>/dev/null || echo "$8")"
 }
 fetch_issue_comments() { [[ -z "\${COMMENTS_FAIL:-}" ]] || return 1; cat "$COMMENTS_FILE"; }
-find_prior_pr() { echo "\${PR_OBJ_STUB:-null}"; }
+find_prior_pr() { [[ -z "\${FIND_PR_FAIL:-}" ]] || return 0; echo "\${PR_OBJ_STUB:-null}"; }
 fetch_review_threads() { call "threads $1"; [[ -z "\${THREADS_FAIL:-}" ]] || return 1; echo "\${THREADS_STUB:-[]}"; }
 cr_coverage_note() { echo "\${CR_NOTE_STUB:-}"; }
 gh() {
@@ -159,6 +166,7 @@ gh() {
         > "$COMMENTS_FILE.tmp" && mv "$COMMENTS_FILE.tmp" "$COMMENTS_FILE"
       ;;
     "api repos/JakubAnderwald/drafto/labels/status:testing") [[ -z "\${NO_LABEL:-}" ]] ;;
+    "issue edit") [[ -z "\${FAIL_LABEL_EDIT:-}" ]] ;;
     "issue view") printf '%s\\n' "\${ISSUE_VIEW_STUB:-}" ;;
   esac
 }
@@ -4248,5 +4256,297 @@ describe("the device lane: review round 4 (run identity, board column, account f
       { env: env({ FACTORY_EVIDENCE_UPLOAD: "0" }) },
       (r) => assert.match(r.stdout, /^NONE$/m),
     );
+  });
+});
+
+describe("the factory-device-run label: an on-demand device run (ADR-0106 decision 7)", () => {
+  const env = (over = {}) => ({
+    HEAD,
+    PR_OBJ_STUB: PR_OBJ,
+    PR_VIEW_STUB: prView(),
+    // The operator asked: it runs whatever FACTORY_VERIFY_DEVICE says.
+    FACTORY_VERIFY_DEVICE: "0",
+    VERIFY_BUILT_LANES_STUB: "shell,browser,device",
+    TESTING_ITEMS: JSON.stringify([
+      { itemId: "ITEM", issueNumber: 7, labels: ["status:in-test", "factory-device-run"] },
+    ]),
+    ...over,
+  });
+  const started = `{"started":true,"runId":"${DEVICE_RUN_ID}","runDir":"/runs/od"}`;
+  const removed = (r) =>
+    r.calls.match(/^gh issue edit 7 .*--remove-label factory-device-run/gm) ?? [];
+  const notes = (r) => r.comments.filter((c) => /drafto-factory-device-run -->/.test(c.body));
+
+  it("starts the run on the PR head with one allowance past the cap, then takes the label off", () => {
+    withBash("verify_device_ondemand_work", { env: env({ DEVICE_START_STUB: started }) }, (r) => {
+      assert.match(
+        r.calls,
+        new RegExp(
+          `^device start --issue 7 --pr 70 --sha ${HEAD} --trigger on-demand --force-attempt `,
+          "m",
+        ),
+      );
+      // Testing and In Test are both walked; the one labelled card starts once
+      // per column it was listed in, and the label goes after the first.
+      assert.ok(removed(r).length >= 1);
+      assert.equal(r.issue.deviceRunRequest, `${HEAD}:${DEVICE_RUN_ID}`);
+      assert.doesNotMatch(r.calls, /^transition/m, "never moves a card");
+      assert.equal(notes(r).length, 0);
+    });
+  });
+
+  it("keeps the label and waits while the lane is busy or a beta builds, logging once per reason", () => {
+    const body = ["verify_device_ondemand_work", "verify_device_ondemand_work"].join("\n");
+    withBash(
+      body,
+      { env: env({ DEVICE_START_STUB: '{"started":false,"reason":"deferred:beta-build"}' }) },
+      (r) => {
+        assert.equal(removed(r).length, 0);
+        assert.equal(r.issue.deviceRunRequest, `${HEAD}:waiting:deferred:beta-build`);
+        assert.equal(r.log.match(/on-demand device run waits \(deferred:beta-build\)/g)?.length, 1);
+      },
+    );
+  });
+
+  it("says why on the issue and takes the label off when the run can't happen", () => {
+    for (const [reason, why] of [
+      ["account", /no device-lane account/],
+      ["maestro-missing", /a tool the lane needs is missing/],
+      ["not-applicable", /changes nothing the mobile app is built from/],
+    ]) {
+      withBash(
+        "verify_device_ondemand_work",
+        { env: env({ DEVICE_START_STUB: `{"started":false,"reason":"${reason}"}` }) },
+        (r) => {
+          assert.ok(removed(r).length >= 1, reason);
+          assert.equal(r.issue.deviceRunRequest, `${HEAD}:refused`);
+          assert.ok(notes(r).length >= 1, reason);
+          assert.match(notes(r)[0].body, why);
+          // A factory comment: never read as the operator's feedback.
+          assert.match(notes(r)[0].body, /^<!-- drafto-factory/);
+        },
+      );
+    }
+  });
+
+  it("refuses a card with no open PR without asking the lane", () => {
+    withBash("verify_device_ondemand_work", { env: env({ PR_OBJ_STUB: "null" }) }, (r) => {
+      assert.doesNotMatch(r.calls, /^device start/m);
+      assert.match(notes(r)[0].body, /no open PR/);
+      assert.ok(removed(r).length >= 1);
+    });
+  });
+
+  it("takes the label off without a second run when one is already going for the head", () => {
+    const body = [
+      'mkdir -p "$REPO_ROOT/logs/factory/device"',
+      `echo '{"inFlight":{"issue":7,"sha":"${HEAD}","runId":"r"}}' > "$REPO_ROOT/logs/factory/device/ledger.json"`,
+      "verify_device_ondemand_work",
+    ].join("\n");
+    withBash(body, { env: env({ DEVICE_START_STUB: started }) }, (r) => {
+      assert.doesNotMatch(r.calls, /^device start/m);
+      assert.ok(removed(r).length >= 1);
+      assert.match(r.log, /one is already going/);
+    });
+  });
+
+  it("keeps the label, and records nothing, when the refusal can't be explained on the issue", () => {
+    withBash(
+      "verify_device_ondemand_work",
+      { env: env({ PR_OBJ_STUB: "null", FAIL_COMMENT: "1" }) },
+      (r) => {
+        assert.equal(removed(r).length, 0);
+        assert.equal(r.issue.deviceRunRequest ?? null, null);
+        assert.match(r.log, /couldn't post why the on-demand device run can't start .*keeping/);
+      },
+    );
+  });
+
+  it("only takes a stuck label off, even after the PR head moved", () => {
+    const state = { deviceRunRequest: `${OLD}:${DEVICE_RUN_ID}:label-stuck` };
+    withBash(
+      "verify_device_ondemand_work",
+      { env: env({ DEVICE_START_STUB: started }), state },
+      (r) => {
+        assert.doesNotMatch(r.calls, /^device start/m, "no second run for the same label");
+        assert.ok(removed(r).length >= 1);
+        assert.equal(r.issue.deviceRunRequest, `${OLD}:${DEVICE_RUN_ID}`);
+      },
+    );
+    // Once it came off, a label added again starts a new run.
+    withBash(
+      "verify_device_ondemand_work",
+      {
+        env: env({ DEVICE_START_STUB: started }),
+        state: { deviceRunRequest: `${OLD}:${DEVICE_RUN_ID}` },
+      },
+      (r) => assert.match(r.calls, /^device start --issue 7 /m),
+    );
+  });
+
+  it("doesn't count a stopping run for the head as the one the label asked for", () => {
+    const body = [
+      'mkdir -p "$REPO_ROOT/logs/factory/device"',
+      `echo '{"inFlight":{"issue":7,"sha":"${HEAD}","runId":"r","stopping":{"reason":"feedback"}}}' > "$REPO_ROOT/logs/factory/device/ledger.json"`,
+      "verify_device_ondemand_work",
+    ].join("\n");
+    withBash(
+      body,
+      { env: env({ DEVICE_START_STUB: '{"started":false,"reason":"deferred:busy"}' }) },
+      (r) => {
+        assert.doesNotMatch(r.log, /one is already going/);
+        assert.match(
+          r.calls,
+          /^device start --issue 7 /m,
+          "it asks the lane, which waits for the stop",
+        );
+        assert.equal(removed(r).length, 0, "the request is kept");
+        assert.equal(r.issue.deviceRunRequest, `${HEAD}:waiting:deferred:busy`);
+      },
+    );
+  });
+
+  it("builds the OCR helper when an on-demand run starts", () => {
+    const body = [
+      'mkdir -p "$REPO_ROOT/apps/desktop/e2e/in-test/lib" "$REPO_ROOT/fakebin"',
+      'echo "// ocr" > "$REPO_ROOT/apps/desktop/e2e/in-test/lib/ocr.swift"',
+      `printf '#!/bin/sh\\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\\nprintf "#!/bin/sh\\\\n" > "$out"; chmod +x "$out"\\n' > "$REPO_ROOT/fakebin/swiftc"`,
+      'chmod +x "$REPO_ROOT/fakebin/swiftc"',
+      'PATH="$REPO_ROOT/fakebin:$PATH"',
+      "verify_device_ondemand_work",
+      'for _ in $(seq 1 100); do [[ -x "$LOG_DIR/bin/ocr" && ! -e "$LOG_DIR/bin/ocr.building" ]] && break; sleep 0.1; done',
+      'test -x "$LOG_DIR/bin/ocr" && echo BUILT',
+    ].join("\n");
+    withBash(body, { env: env({ DEVICE_START_STUB: started }) }, (r) => {
+      assert.match(r.stdout, /^BUILT$/m);
+      assert.match(r.log, /Building the OCR helper .* in the background/);
+    });
+  });
+
+  it("skips unlabelled, paused, interactive and support cards, and does nothing when the lane isn't built", () => {
+    for (const labels of [
+      ["status:in-test"],
+      ["status:in-test", "factory-device-run", "factory-pause"],
+      ["status:in-test", "factory-device-run", "driver:interactive"],
+      ["status:in-test", "factory-device-run", "support"],
+    ]) {
+      const items = JSON.stringify([{ itemId: "ITEM", issueNumber: 7, labels }]);
+      withBash(
+        "verify_device_ondemand_work",
+        { env: env({ TESTING_ITEMS: items, DEVICE_START_STUB: started }) },
+        (r) => {
+          assert.doesNotMatch(r.calls, /^device start/m, labels.join(","));
+          assert.equal(removed(r).length, 0, labels.join(","));
+        },
+      );
+    }
+    withBash(
+      "verify_device_ondemand_work",
+      { env: env({ VERIFY_BUILT_LANES_STUB: "shell,browser", DEVICE_START_STUB: started }) },
+      (r) => {
+        assert.doesNotMatch(r.calls, /^project /m);
+      },
+    );
+  });
+
+  it("waits, keeping the label, on a transient failure or a failed PR lookup", () => {
+    for (const reason of ["fetch-failed", "pr-unreadable", "start-failed", "abandoned", "error"]) {
+      withBash(
+        "verify_device_ondemand_work",
+        { env: env({ DEVICE_START_STUB: `{"started":false,"reason":"${reason}"}` }) },
+        (r) => {
+          assert.equal(removed(r).length, 0, reason);
+          assert.equal(notes(r).length, 0, reason);
+          assert.equal(r.issue.deviceRunRequest, `${HEAD}:waiting:${reason}`);
+        },
+      );
+    }
+    withBash("verify_device_ondemand_work", { env: env({ FIND_PR_FAIL: "1" }) }, (r) => {
+      assert.equal(notes(r).length, 0, "no 'no open PR' comment when GitHub failed");
+      assert.equal(removed(r).length, 0);
+    });
+    // start exiting non-zero: one log line per head, the label stays.
+    const twice = ["verify_device_ondemand_work", "verify_device_ondemand_work"].join("\n");
+    withBash(twice, { env: env({ DEVICE_FAIL: "1" }) }, (r) => {
+      assert.equal(removed(r).length, 0);
+      assert.equal(r.issue.deviceRunRequest, `${HEAD}:waiting:start-error`);
+      assert.equal(r.log.match(/waits \(start-error\)/g)?.length, 1);
+    });
+  });
+
+  it("a label that wouldn't come off after a start only gets its removal retried", () => {
+    const body = [
+      "verify_device_ondemand_work",
+      "unset FAIL_LABEL_EDIT",
+      "verify_device_ondemand_work",
+    ].join("\n");
+    withBash(body, { env: env({ DEVICE_START_STUB: started, FAIL_LABEL_EDIT: "1" }) }, (r) => {
+      assert.equal(r.calls.match(/^device start /gm)?.length, 1, "never a second forced run");
+      assert.equal(r.issue.deviceRunRequest, `${HEAD}:${DEVICE_RUN_ID}`);
+    });
+  });
+
+  it("leaves a Testing card to its verification round when that round runs the lane for the head", () => {
+    const items = JSON.stringify([
+      { itemId: "ITEM", issueNumber: 7, labels: ["status:testing", "factory-device-run"] },
+    ]);
+    withBash(
+      "verify_device_ondemand_work",
+      {
+        env: env({ ...DEVICE_ON, TESTING_ITEMS: items, DEVICE_START_STUB: started }),
+        state: { verifySha: HEAD, verifyDevice: `${HEAD}:deferred:beta-build` },
+      },
+      (r) => {
+        assert.doesNotMatch(r.calls, /^device start/m);
+        assert.ok(removed(r).length >= 1);
+        assert.equal(r.issue.deviceRunRequest, `${HEAD}:round`);
+      },
+    );
+    // A round whose lane already finished for the head: the operator wants another run.
+    withBash(
+      "verify_device_ondemand_work",
+      {
+        env: env({ ...DEVICE_ON, TESTING_ITEMS: items, DEVICE_START_STUB: started }),
+        state: { verifySha: HEAD, verifyDevice: `${HEAD}:reported:fail` },
+      },
+      (r) => {
+        assert.match(r.calls, /^device start --issue 7 .*--trigger on-demand --force-attempt/m);
+      },
+    );
+  });
+
+  it("says so once when an on-demand run is cut off without results", () => {
+    const body = [
+      'RUN_DIR="$REPO_ROOT/runs/od"',
+      'mkdir -p "$RUN_DIR"',
+      `echo '{"sha":"${HEAD}","pr":70,"runId":"${DEVICE_RUN_ID}","trigger":"on-demand","platforms":{}}' > "$RUN_DIR/device-output.json"`,
+      `verify_device_collect 7 "$HEAD" "${DEVICE_RUN_ID}" "$RUN_DIR" stopped:feedback`,
+      `verify_device_collect 7 "$HEAD" "${DEVICE_RUN_ID}" "$RUN_DIR" stopped:feedback`,
+    ].join("\n");
+    withBash(body, { env: env() }, (r) => {
+      assert.equal(notes(r).length, 1);
+      assert.match(notes(r)[0].body, /was cut off before it finished \(feedback\)/);
+      assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}:cut-off`);
+    });
+    // A Testing round's own run that was stopped says nothing (it is retried).
+    const round = body.replace('"trigger":"on-demand"', '"trigger":"testing"');
+    withBash(round, { env: env() }, (r) => {
+      assert.equal(notes(r).length, 0);
+    });
+  });
+
+  it("is called from --watch right after the In Test device pass, and the label is defined", () => {
+    const pass = script.indexOf("\n  verify_device_intest_work\n", watchStart);
+    const ondemand = script.indexOf("\n  verify_device_ondemand_work\n", watchStart);
+    const candidates = script.indexOf("\n  browser_write_candidates\n", watchStart);
+    assert.ok(pass !== -1 && ondemand > pass && candidates > ondemand);
+    assert.equal(script.match(/\n  verify_device_ondemand_work\n/g)?.length, 1);
+    // Also when the In Test board query fails: it runs its own queries.
+    assert.match(
+      script,
+      /\n    verify_device_intest_work\n    verify_device_ondemand_work\n    log "WARNING: query-status-items 'In Test' failed/,
+    );
+    const labels = readFileSync(join(scriptsDir, "setup-factory-labels.sh"), "utf8");
+    assert.match(labels, /^\s+"factory-device-run\|[0-9A-F]{6}\|/m);
   });
 });

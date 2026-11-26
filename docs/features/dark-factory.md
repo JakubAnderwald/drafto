@@ -59,31 +59,32 @@ The factory agent reads the Status field directly via the GitHub GraphQL API on 
 
 The full set is created idempotently by `scripts/setup-factory-labels.sh`. Reference:
 
-| Label                   | Set by               | Meaning                                                                                                                                     |
-| ----------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status:ready`          | human (via board)    | Spec accepted; factory may plan.                                                                                                            |
-| `status:planning`       | factory              | Plan in progress.                                                                                                                           |
-| `status:plan-review`    | factory              | Awaiting plan approval.                                                                                                                     |
-| `status:in-progress`    | human / factory      | Implementation in progress.                                                                                                                 |
-| `status:in-review`      | factory              | PR open, CI / review comments active.                                                                                                       |
-| `status:testing`        | factory              | Pre-In-Test verification running (ADR-0053).                                                                                                |
-| `status:in-test`        | factory              | Testable build + scenario posted, awaiting ship approval.                                                                                   |
-| `status:approved`       | human / factory      | Approved for release; merge + dispatch authorised.                                                                                          |
-| `status:released`       | factory              | Merged + beta dispatched.                                                                                                                   |
-| `status:done`           | human / support      | Final acceptance.                                                                                                                           |
-| `status:blocked`        | factory              | Hard stop — see comment on issue.                                                                                                           |
-| `factory-pause`         | operator             | Global kill switch on this issue (factory ignores).                                                                                         |
-| `driver:interactive`    | interactive session  | An interactive Claude Code session owns the card (`/drive-issue`); the factory skips it (ADR-0091).                                         |
-| `migration-approved`    | operator             | Authorises merging the PR's migration SQL as it is when added; an SQL edit removes it.                                                      |
-| `hosted-config-applied` | operator             | Its `config.toml` changes are applied to dev and prod (ADR-0065).                                                                           |
-| `factory-failure`       | factory failure trap | Filed by `cleanup()` on a run error, or by the toolchain check.                                                                             |
-| `factory-oversize`      | factory              | The plan estimates 1,500+ added lines (`FACTORY_PLAN_OVERSIZE_LINES`); held until split (`/split`, ADR-0104) or approved (ADRs 0083, 0103). |
-| `oversize-approved`     | operator             | Run this oversize card as one PR: the factory implements it without a split (ADR-0103).                                                     |
-| `factory-split`         | factory              | Split into sub-cards on your `/split` comment and parked in Backlog; close it once they ship (ADR-0104).                                    |
-| `parity:web-only`       | operator             | Skip cross-platform parity check (legitimate web-only work).                                                                                |
-| `parity:mobile-only`    | operator             | Skip cross-platform parity check (legitimate mobile-only work).                                                                             |
-| `parity:desktop-only`   | operator             | Skip cross-platform parity check (legitimate desktop-only work).                                                                            |
-| `parity:infra-only`     | operator             | Skip parity check; change touches no app platform (scripts/docs/CI).                                                                        |
+| Label                   | Set by               | Meaning                                                                                                                                                         |
+| ----------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status:ready`          | human (via board)    | Spec accepted; factory may plan.                                                                                                                                |
+| `status:planning`       | factory              | Plan in progress.                                                                                                                                               |
+| `status:plan-review`    | factory              | Awaiting plan approval.                                                                                                                                         |
+| `status:in-progress`    | human / factory      | Implementation in progress.                                                                                                                                     |
+| `status:in-review`      | factory              | PR open, CI / review comments active.                                                                                                                           |
+| `status:testing`        | factory              | Pre-In-Test verification running (ADR-0053).                                                                                                                    |
+| `status:in-test`        | factory              | Testable build + scenario posted, awaiting ship approval.                                                                                                       |
+| `status:approved`       | human / factory      | Approved for release; merge + dispatch authorised.                                                                                                              |
+| `status:released`       | factory              | Merged + beta dispatched.                                                                                                                                       |
+| `status:done`           | human / support      | Final acceptance.                                                                                                                                               |
+| `status:blocked`        | factory              | Hard stop — see comment on issue.                                                                                                                               |
+| `factory-pause`         | operator             | Global kill switch on this issue (factory ignores).                                                                                                             |
+| `driver:interactive`    | interactive session  | An interactive Claude Code session owns the card (`/drive-issue`); the factory skips it (ADR-0091).                                                             |
+| `migration-approved`    | operator             | Authorises merging the PR's migration SQL as it is when added; an SQL edit removes it.                                                                          |
+| `hosted-config-applied` | operator             | Its `config.toml` changes are applied to dev and prod (ADR-0065).                                                                                               |
+| `factory-device-run`    | operator             | Run the device lane (Android emulator + iOS simulator) on the card's PR head now, in Testing or In Test; the factory removes it once the run starts (ADR-0106). |
+| `factory-failure`       | factory failure trap | Filed by `cleanup()` on a run error, or by the toolchain check.                                                                                                 |
+| `factory-oversize`      | factory              | The plan estimates 1,500+ added lines (`FACTORY_PLAN_OVERSIZE_LINES`); held until split (`/split`, ADR-0104) or approved (ADRs 0083, 0103).                     |
+| `oversize-approved`     | operator             | Run this oversize card as one PR: the factory implements it without a split (ADR-0103).                                                                         |
+| `factory-split`         | factory              | Split into sub-cards on your `/split` comment and parked in Backlog; close it once they ship (ADR-0104).                                                        |
+| `parity:web-only`       | operator             | Skip cross-platform parity check (legitimate web-only work).                                                                                                    |
+| `parity:mobile-only`    | operator             | Skip cross-platform parity check (legitimate mobile-only work).                                                                                                 |
+| `parity:desktop-only`   | operator             | Skip cross-platform parity check (legitimate desktop-only work).                                                                                                |
+| `parity:infra-only`     | operator             | Skip parity check; change touches no app platform (scripts/docs/CI).                                                                                            |
 
 ## How to file an issue for the factory
 
