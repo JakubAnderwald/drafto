@@ -56,6 +56,7 @@ import {
   readDeviceKnobs,
   releasePidLock,
   renderOutput,
+  renderSecrets,
   runHousekeeping,
   runStart,
   runStop,
@@ -1264,12 +1265,45 @@ describe("CLI", () => {
     );
   });
 
-  it("render prints a table from device-output.json", async () => {
+  it("render prints the follow-up comment from device-output.json", async () => {
     const { runDir } = await startAndSupervise();
     const out = await main(["render", "--run-dir", runDir], h.deps);
-    assert.match(out.text, /\| ios \| done \| PASS \|/);
-    assert.match(out.text, /PASS `ios-all.yaml`/);
+    assert.match(out.text, /^🏭 \*\*Device lane results\*\* for `[0-9a-f]{12}` \(PR #\d+\)/);
+    assert.match(out.text, /\| iOS \(simulator\) \| ran \| PASS \| 1\/1 flows passed/);
+    assert.match(out.text, /- PASS `ios-all.yaml`/);
+    assert.match(
+      out.text,
+      /<!-- drafto-factory-device-report -->\n<!-- drafto-factory-device-sha:[0-9a-f]{40}:[^ ]+ -->\n$/,
+    );
     assert.equal(renderOutput(null), "No device-output.json in this run dir.\n");
+  });
+
+  it("render scans for the account password the run used, with no FACTORY_DEVICE_ACCOUNT_FILE set", async () => {
+    const { runDir } = await startAndSupervise();
+    const outFile = path.join(runDir, "device-output.json");
+    const output = readJson(outFile);
+    output.platforms.ios.flows[0].failure = `typed ${PASSWORD} into the note`;
+    writeFileSync(outFile, JSON.stringify(output));
+    const { FACTORY_DEVICE_ACCOUNT_FILE: _unset, ...env } = h.env;
+    assert.deepEqual(renderSecrets(env, h.deps.fs, runDir), { devicePassword: PASSWORD });
+    const out = await main(["render", "--run-dir", runDir], { ...h.deps, env });
+    assert.ok(!out.text.includes(PASSWORD));
+    assert.match(out.text, /report withheld/);
+
+    // An account-backed run whose account file is gone can't be checked: null.
+    rmSync(h.account);
+    assert.deepEqual(renderSecrets(env, h.deps.fs, runDir), { devicePassword: null });
+    // A run dir that says nothing about its account, with no file configured: null.
+    assert.deepEqual(renderSecrets(env, h.deps.fs, path.join(h.tmp, "nope")), {
+      devicePassword: null,
+    });
+    // Only a run that signed in to no account (a selftest) needs no check.
+    const meta = readJson(path.join(runDir, "meta.json"));
+    writeFileSync(
+      path.join(runDir, "meta.json"),
+      JSON.stringify({ ...meta, needsAccount: false, paths: { ...meta.paths, accountFile: null } }),
+    );
+    assert.deepEqual(renderSecrets(env, h.deps.fs, runDir), { devicePassword: "" });
   });
 
   it("start validates its argv", async () => {
