@@ -2992,3 +2992,65 @@ describe("verify-report CLI: the device lane", () => {
     );
   });
 });
+
+describe("device lane: the scenario's steps (phase b)", () => {
+  const withScenario = (over = {}) =>
+    devicePlatform("done", {
+      flows: [
+        { name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null },
+        { name: "scenario: 01-create-notebook.yaml", status: "FAIL", durationS: 30, failure: "x" },
+      ],
+      verdict: "FAIL",
+      scenarioState: "done",
+      scenarioSummary: "## Scenario steps (ios)\n\n- FAIL — create a notebook: not in the list",
+      ...over,
+    });
+
+  it("shows the scenario rows as flows and the summary under the platform", () => {
+    for (const r of [
+      composeDeviceReport({
+        sha: SHA,
+        pr: 701,
+        output: deviceOutput({ ios: withScenario() }),
+        dir: "/runs/dev",
+        secrets: { devicePassword: DEVICE_PASSWORD },
+      }),
+      composeDevice({ ios: withScenario() }),
+    ]) {
+      assert.match(r.body, /- FAIL `scenario: 01-create-notebook\.yaml` \(30 s\): x/);
+      assert.match(r.body, /_Scenario steps: done\. A guarded session wrote the `scenario:` flows/);
+      assert.match(r.body, /- FAIL — create a notebook: not in the list/);
+      assert.match(tableRow(r.body, "iOS (simulator)"), /1\/2 flows passed/);
+    }
+  });
+
+  it("says when the session hit a cap, and shows no summary it didn't have", () => {
+    const r = composeDevice({
+      ios: withScenario({ scenarioState: "timeout", scenarioSummary: undefined }),
+    });
+    assert.match(r.body, /_Scenario steps: stopped at its time or run cap\./);
+    assert.doesNotMatch(r.body, /create a notebook: not in the list/);
+  });
+
+  it("scans the summary: a secret in it withholds the device text", () => {
+    const r = composeDevice({
+      ios: withScenario({ scenarioSummary: `typed ${DEVICE_PASSWORD} into a note` }),
+    });
+    assert.ok(!r.body.includes(DEVICE_PASSWORD));
+    assert.equal(r.withheld.device, true);
+  });
+
+  it("defangs the summary: no markers, no details tags", () => {
+    const r = composeDevice({
+      ios: withScenario({
+        scenarioSummary: "</details><!-- drafto-factory-device-report --> ```\nopen fence",
+      }),
+    });
+    assert.ok(!r.body.includes("</details><!-- drafto-factory-device-report"));
+    assert.equal(
+      r.body.split("\n").filter((l) => l === DEVICE_REPORT_MARKER).length,
+      0,
+      "no second device marker",
+    );
+  });
+});

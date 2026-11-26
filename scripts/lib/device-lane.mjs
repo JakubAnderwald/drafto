@@ -40,8 +40,11 @@
 // Subcommands (each prints one JSON line, except `render` and `selftest`,
 // which print text):
 //   start --issue N --pr P --sha S [--platforms ios,android] [--mode smoke]
-//         [--trigger testing|on-demand] [--force-attempt] [--repo-root R]
-//         [--run-root D] [--dry-run 1] [--now ISO]
+//         [--trigger testing|on-demand] [--force-attempt] [--scenario-file F]
+//         [--repo-root R] [--run-root D] [--dry-run 1] [--now ISO]
+//       (--scenario-file: the In Test scenario's mobile sections, written by
+//       `scenario-file`; with FACTORY_DEVICE_SCENARIO=1 a guarded session per
+//       platform runs them after the repo flows: device-scenario.mjs.)
 //       → {started: true, runId, runDir, platforms, attempt, deadlineAt} or
 //         {started: false, reason}: deferred:busy, deferred:beta-build,
 //         deferred:memory, deferred:disk, attempts, head-moved, pr-unreadable,
@@ -57,6 +60,12 @@
 //                               (verify-report.mjs's composeDeviceReport),
 //                               scanned for the account password the run's
 //                               meta.json names.
+//   scenario-file --sha S --out F
+//                             → stdin: the issue's comments. Writes the
+//                               scenario's iOS / Android / mobile sections for
+//                               S to F (mode 600), only when there are any.
+//   device-run --dir D --timeout-sec N -- <flows/x.yaml | --wait n>
+//                             (internal; a scenario session's bin/device-run)
 //   _supervise --run-dir D    (internal)
 
 import { createHash } from "node:crypto";
@@ -197,6 +206,11 @@ export function readDeviceKnobs(env = process.env) {
       ? expandTilde(env.FACTORY_DEVICE_ACCOUNT_FILE, home)
       : null,
     keepRaw: env.FACTORY_DEVICE_KEEP_RAW === "1",
+    // The scenario's mobile steps (device-scenario.mjs): off unless exactly
+    // "1". At most scenarioRuns device-run calls per session, scenarioMin each.
+    scenario: env.FACTORY_DEVICE_SCENARIO === "1",
+    scenarioRuns: positiveInt(env.FACTORY_DEVICE_SCENARIO_RUNS, 6),
+    scenarioMin: positiveInt(env.FACTORY_DEVICE_SCENARIO_MIN, 30),
     jdkPaths: (env.FACTORY_DEVICE_JDK_PATHS || "")
       .split(",")
       .map((p) => p.trim())
@@ -562,6 +576,9 @@ export function resolveDeviceBins({ env = process.env, isExecutable, knobs }) {
     node: base.node,
     pnpm: base.pnpm,
     nice: base.nice,
+    // Only a scenario session needs these (device-scenario.mjs).
+    claude: base.claude,
+    perl: base.perl,
     git: findBin("git", { env, isExecutable, extra: ["/usr/bin/git"] }),
     maestro: findBin("maestro", {
       env,
@@ -697,7 +714,7 @@ export function buildEnv(env, { bins, knobs, platform, expoValues }) {
 
 // ── run context ─────────────────────────────────────────────────────────────
 
-class Interrupt extends Error {
+export class Interrupt extends Error {
   constructor(state) {
     super(`interrupted: ${state}`);
     this.state = state;
@@ -1679,7 +1696,7 @@ export function flowSlug(flow) {
     .replace(/[^A-Za-z0-9._-]+/g, "-");
 }
 
-function worstStatus(statuses) {
+export function worstStatus(statuses) {
   if (statuses.includes("FAIL")) return "FAIL";
   if (statuses.includes("ERROR")) return "ERROR";
   return statuses.length ? "PASS" : "ERROR";
@@ -1723,36 +1740,44 @@ export function appendShot(fs, runDir, entry) {
   writeJsonAtomic(fs, file, next);
 }
 
+/** The device's screen into <file> (adb screencap / simctl io). true when it has bytes. */
+export async function screencapTo(ctx, { platform, deviceId, file }) {
+  const { deps, bins } = ctx;
+  const fs = deps.fs;
+  rmQuiet(fs, file);
+  const r =
+    platform === "android"
+      ? await deps.run(bins.adb, ["-s", deviceId, "exec-out", "screencap", "-p"], {
+          cwd: ctx.cwd,
+          env: ctx.devEnv,
+          timeoutMs: QUICK_MS,
+          stdoutFile: file,
+          stderrFile: ctx.stepLog,
+        })
+      : await deps.run(bins.xcrun, ["simctl", "io", deviceId, "screenshot", file], {
+          cwd: ctx.cwd,
+          env: ctx.devEnv,
+          timeoutMs: QUICK_MS,
+          stdoutFile: ctx.stepLog,
+          stderrFile: ctx.stepLog,
+        });
+  if (r.code !== 0 || !fs.existsSync(file) || fs.statSync(file).size === 0) {
+    rmQuiet(fs, file);
+    return false;
+  }
+  return true;
+}
+
 /** The supervisor's own final-state screenshot after a flow. Never throws. */
 export async function captureShot(ctx, { platform, deviceId, index, flow }) {
-  const { deps, bins, runDir } = ctx;
+  const { deps, runDir } = ctx;
   const fs = deps.fs;
   try {
     const dir = path.join(runDir, "evidence", `device-${platform}`);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const name = `${String(index).padStart(2, "0")}-${flowSlug(flow)}.png`;
     const file = path.join(dir, name);
-    rmQuiet(fs, file);
-    const r =
-      platform === "android"
-        ? await deps.run(bins.adb, ["-s", deviceId, "exec-out", "screencap", "-p"], {
-            cwd: ctx.cwd,
-            env: ctx.devEnv,
-            timeoutMs: QUICK_MS,
-            stdoutFile: file,
-            stderrFile: ctx.stepLog,
-          })
-        : await deps.run(bins.xcrun, ["simctl", "io", deviceId, "screenshot", file], {
-            cwd: ctx.cwd,
-            env: ctx.devEnv,
-            timeoutMs: QUICK_MS,
-            stdoutFile: ctx.stepLog,
-            stderrFile: ctx.stepLog,
-          });
-    if (r.code !== 0 || !fs.existsSync(file) || fs.statSync(file).size === 0) {
-      rmQuiet(fs, file);
-      return null;
-    }
+    if (!(await screencapTo(ctx, { platform, deviceId, file }))) return null;
     const entry = {
       file: `device-${platform}/${name}`,
       sha256: await sha256File(fs, file),
@@ -1773,21 +1798,14 @@ export async function captureShot(ctx, { platform, deviceId, index, flow }) {
  * Run each flow on <deviceId>, then capture the screen. Returns
  * device-output.json's flow rows. Throws Interrupt.
  */
-export async function runMaestro(ctx, { platform, deviceId, flows, account, root }) {
-  const { deps, meta } = ctx;
-  const results = [];
+/**
+ * A Maestro runner for <deviceId>: (flowPath, junit, log, epoch) → runStep's
+ * result, through guardedRun. The password is only in Maestro's environment.
+ */
+export function makeMaestro(ctx, { deviceId, account, root }) {
+  const { meta } = ctx;
   const env = maestroFlowEnv(ctx.devEnv, account);
-  const secrets = account ? { password: account.password } : {};
-  // RUN_IDs: the smoke flow (the first) gets the base epoch. A flow whose
-  // header says "Depends on:" (03, 04: "NB <RUN_ID> exists") reuses it, since
-  // the smoke flow created that notebook. Every other flow, and every retry,
-  // gets a fresh one, so data from an earlier flow or a failed attempt can't
-  // collide with it (02 refuses a notebook name that's taken). Each is still
-  // an epoch timestamp, which the E2E clean-up patterns match.
-  const runEpoch = Math.floor(deps.nowMs() / 1000);
-  let epochSeq = 0;
-  const freshEpoch = () => runEpoch + epochSeq++;
-  const maestro = (flowPath, junit, log, epoch = runEpoch) =>
+  return (flowPath, junit, log, epoch) =>
     guardedRun(
       ctx,
       meta.bins.maestro,
@@ -1807,6 +1825,67 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
         stderrFile: log,
       },
     );
+}
+
+/**
+ * One flow through <maestro>, with the Android adb-drop retry, read back from
+ * its JUnit report: {status, failure, lines}. <epochFor>() gives each attempt
+ * its RUN_ID. Throws Interrupt.
+ */
+export async function runFlowOnce(
+  ctx,
+  { platform, maestro, flowPath, label, junit, log, epochFor, secrets },
+) {
+  const { deps, meta } = ctx;
+  ctx.log(`maestro: ${platform} ${label} starting`);
+  let r = await maestro(flowPath, junit, log, epochFor());
+  let retried = false;
+  if (platform === "android" && r.code !== 0 && !r.timedOut && isAdbDrop(readText(deps.fs, log))) {
+    // An adb drop is the harness, not the app: one more try, recorded. A
+    // flow with its own RUN_ID gets a fresh one, so the failed attempt's
+    // data can't collide with the retry.
+    ctx.log(`maestro: ${platform} ${label} lost the device (adb); retrying once`);
+    rmQuiet(deps.fs, junit);
+    retried = true;
+    r = await maestro(flowPath, junit, log, epochFor());
+  }
+  const parsed = filterJunit(readText(deps.fs, junit), { secrets });
+  let status;
+  let failure = null;
+  if (r.timedOut) {
+    status = "ERROR";
+    failure = `timed out after ${meta.knobs.flowTimeoutMin} min`;
+  } else if (parsed.cases.length) {
+    status = worstStatus(parsed.cases.map((c) => c.status));
+    failure = parsed.cases.find((c) => c.failure)?.failure ?? null;
+    if (status === "PASS" && r.code !== 0) {
+      status = "ERROR";
+      failure = `maestro exited ${r.code}`;
+    }
+  } else {
+    status = r.code === 0 ? "PASS" : "ERROR";
+    if (status === "ERROR") failure = `maestro exited ${r.code} with no JUnit report`;
+  }
+  if (retried && failure) failure = `${failure} (after one retry for an adb drop)`;
+  for (const line of parsed.lines) ctx.log(`maestro: ${platform} ${line}`);
+  return { status, failure, lines: parsed.lines };
+}
+
+export async function runMaestro(ctx, { platform, deviceId, flows, account, root }) {
+  const { deps } = ctx;
+  const results = [];
+  const secrets = account ? { password: account.password } : {};
+  // RUN_IDs: the smoke flow (the first) gets the base epoch. A flow whose
+  // header says "Depends on:" (03, 04: "NB <RUN_ID> exists") reuses it, since
+  // the smoke flow created that notebook. Every other flow, and every retry,
+  // gets a fresh one, so data from an earlier flow or a failed attempt can't
+  // collide with it (02 refuses a notebook name that's taken). Each is still
+  // an epoch timestamp, which the E2E clean-up patterns match.
+  const runEpoch = Math.floor(deps.nowMs() / 1000);
+  let epochSeq = 0;
+  const freshEpoch = () => runEpoch + epochSeq++;
+  const run = makeMaestro(ctx, { deviceId, account, root });
+  const maestro = (flowPath, junit, log, epoch = runEpoch) => run(flowPath, junit, log, epoch);
   await warmUp(ctx, { root, platform, maestro });
   freshEpoch(); // the base epoch belongs to the smoke flow
   for (const [i, flow] of flows.entries()) {
@@ -1831,43 +1910,17 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
     }
     const shared = i === 0 || flowDependsOnEarlier(readText(deps.fs, path.join(root, flow)));
     const epochFor = () => (shared ? runEpoch : freshEpoch());
-    ctx.log(`maestro: ${platform} ${flowName(flow)} starting`);
-    let r = await maestro(path.join(root, flow), junit, log, epochFor());
-    let retried = false;
-    if (
-      platform === "android" &&
-      r.code !== 0 &&
-      !r.timedOut &&
-      isAdbDrop(readText(deps.fs, log))
-    ) {
-      // An adb drop is the harness, not the app: one more try, recorded. A
-      // flow with its own RUN_ID gets a fresh one, so the failed attempt's
-      // data can't collide with the retry.
-      ctx.log(`maestro: ${platform} ${flowName(flow)} lost the device (adb); retrying once`);
-      rmQuiet(deps.fs, junit);
-      retried = true;
-      r = await maestro(path.join(root, flow), junit, log, epochFor());
-    }
+    const { status, failure } = await runFlowOnce(ctx, {
+      platform,
+      maestro,
+      flowPath: path.join(root, flow),
+      label: flowName(flow),
+      junit,
+      log,
+      epochFor,
+      secrets,
+    });
     const durationS = Math.round((deps.nowMs() - started) / 1000);
-    const parsed = filterJunit(readText(deps.fs, junit), { secrets });
-    let status;
-    let failure = null;
-    if (r.timedOut) {
-      status = "ERROR";
-      failure = `timed out after ${meta.knobs.flowTimeoutMin} min`;
-    } else if (parsed.cases.length) {
-      status = worstStatus(parsed.cases.map((c) => c.status));
-      failure = parsed.cases.find((c) => c.failure)?.failure ?? null;
-      if (status === "PASS" && r.code !== 0) {
-        status = "ERROR";
-        failure = `maestro exited ${r.code}`;
-      }
-    } else {
-      status = r.code === 0 ? "PASS" : "ERROR";
-      if (status === "ERROR") failure = `maestro exited ${r.code} with no JUnit report`;
-    }
-    if (retried && failure) failure = `${failure} (after one retry for an adb drop)`;
-    for (const line of parsed.lines) ctx.log(`maestro: ${platform} ${line}`);
     results.push({ name: flowName(flow), status, durationS, failure });
     await captureShot(ctx, { platform, deviceId, index, flow });
     ctx.onFlow?.(results);
@@ -2051,6 +2104,14 @@ export async function runPlatform(ctx, platform, { flows, account, needsAccount,
     res.flows = await runMaestro(ctx, { platform, deviceId, flows, account, root });
     res.verdict = platformVerdict(res.flows);
     res.state = "done";
+    ctx.onFlow = null;
+    ctx.save();
+    // Phase (b): the scenario's steps for this platform, on the same booted
+    // device (device-scenario.mjs). Its failures never undo phase (a)'s rows.
+    if (meta.knobs.scenario && meta.scenario?.sections?.length) {
+      const { runScenario } = await import("./device-scenario.mjs");
+      await runScenario(ctx, platform, { deviceId, account, root, res });
+    }
   } catch (err) {
     if (!(err instanceof PlatformError)) throw err;
     res.state = err.state;
@@ -2149,7 +2210,14 @@ export async function runSupervise({ runDir }, { deps = createDeviceDeps() } = {
   const outFile = path.join(runDir, OUTPUT_FILE);
   const output = initialOutput(meta);
   const save = () => writeJsonAtomic(fs, outFile, output);
-  const status = { terminated: false, timedOut: false, child: null, stopReason: null };
+  // session: a scenario session's child, while one runs (device-scenario.mjs).
+  const status = {
+    terminated: false,
+    timedOut: false,
+    child: null,
+    session: null,
+    stopReason: null,
+  };
   fs.mkdirSync(path.join(runDir, "private"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(runDir, "evidence"), { recursive: true, mode: 0o700 });
   save();
@@ -2166,6 +2234,7 @@ export async function runSupervise({ runDir }, { deps = createDeviceDeps() } = {
       status.stopReason = req.reason;
     log(`stop signal received (${status.stopReason ?? "signal"})`);
     killGroup(deps, status.child);
+    killGroup(deps, status.session);
   };
   process.on("SIGTERM", onSignal);
   process.on("SIGHUP", onSignal);
@@ -2174,6 +2243,7 @@ export async function runSupervise({ runDir }, { deps = createDeviceDeps() } = {
     status.timedOut = true;
     log("run cap reached; stopping the run");
     killGroup(deps, status.child);
+    killGroup(deps, status.session);
   }, deadlineMs);
   deadline.unref?.();
 
@@ -2378,6 +2448,35 @@ function readIosSimUdid(repoRoot, fs) {
   return typeof udid === "string" && /^[0-9A-Fa-f-]{36}$/.test(udid) ? udid : null;
 }
 
+const SCENARIO_MAX_SECTIONS = 20;
+const SCENARIO_MAX_HEADING = 200;
+const SCENARIO_MAX_TEXT = 8000;
+
+/**
+ * The scenario sections in a `scenario-file` JSON file ([{heading, text}]),
+ * shape-checked and capped. [] when the file is missing or isn't that shape:
+ * the repo flows still run.
+ */
+export function readScenarioSections(fs, file) {
+  const parsed = parseJson(readText(fs, file, 256 * 1024), null);
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .filter(
+      (s) =>
+        s !== null &&
+        typeof s === "object" &&
+        typeof s.heading === "string" &&
+        typeof s.text === "string" &&
+        s.heading.trim() &&
+        s.text.trim(),
+    )
+    .slice(0, SCENARIO_MAX_SECTIONS)
+    .map((s) => ({
+      heading: s.heading.slice(0, SCENARIO_MAX_HEADING),
+      text: s.text.slice(0, SCENARIO_MAX_TEXT),
+    }));
+}
+
 export async function runStart(opts, deps) {
   const { issue, pr, sha, repoRoot } = opts;
   const runRoot = opts.runRoot ?? defaultRunRoot(repoRoot);
@@ -2420,9 +2519,15 @@ export async function runStart(opts, deps) {
   });
   if (fetched.code !== 0) return refuse("fetch-failed");
   const flowTags = await readFlowTags(files, sha, repoRoot, deps);
+  // The In Test scenario's mobile sections (factory-agent.sh writes them with
+  // `scenario-file`): they add platforms to the plan and, with
+  // FACTORY_DEVICE_SCENARIO=1, are what the scenario sessions translate.
+  const scenarioSections =
+    opts.scenarioSections ??
+    (opts.scenarioFile ? readScenarioSections(deps.fs, opts.scenarioFile) : []);
   const plan = deriveDevicePlan({
     diffFiles: files,
-    scenarioSections: opts.scenarioSections ?? [],
+    scenarioSections,
     flowTags,
     deletedFiles,
   });
@@ -2520,6 +2625,8 @@ export async function runStart(opts, deps) {
       order,
       platforms,
       planReasons: plan.reasons,
+      // Scenario text, from an OWNER comment: data for the sessions' prompts.
+      ...(scenarioSections.length ? { scenario: { sections: scenarioSections } } : {}),
       needsAccount: true,
       iosSimUdid: readIosSimUdid(repoRoot, deps.fs),
       bins,
@@ -2567,6 +2674,7 @@ export async function runStart(opts, deps) {
       attempt: reserved.attempt,
       deadlineAt,
       reasons: plan.reasons,
+      scenarioSections: scenarioSections.length,
     };
   } catch (err) {
     if (spawned?.ok) deps.kill(-spawned.pid, "SIGTERM");
@@ -3199,10 +3307,17 @@ export async function runSelftestBuild({ repoRoot, platform, runRoot }, deps) {
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
+async function readStdin() {
+  const chunks = [];
+  for await (const c of process.stdin) chunks.push(c);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 const USAGE =
   "usage: device-lane.mjs <start --issue N --pr P --sha S [--platforms ios,android] [--mode smoke] " +
   "[--trigger testing|on-demand] [--force-attempt]|status|stop --issue N [--reason R]|housekeeping|" +
-  "selftest [--platform android|ios] [--build]|render --run-dir D [--images F]|_supervise --run-dir D> " +
+  "selftest [--platform android|ios] [--build]|render --run-dir D [--images F]|" +
+  "scenario-file --sha S --out F (comments on stdin)|_supervise --run-dir D> " +
   "[--repo-root R] [--run-root D] [--dry-run 1] [--now ISO]";
 
 class UsageError extends Error {}
@@ -3222,6 +3337,11 @@ export function parseArgv(argv) {
 
 export async function main(argv, deps = createDeviceDeps()) {
   const [sub, ...rest] = argv;
+  // A scenario session's wrapper (bin/device-run): plain text, its own argv.
+  if (sub === "device-run") {
+    const { deviceRunMain } = await import("./device-scenario.mjs");
+    return deviceRunMain(rest, { fs: deps.fs, sleep: deps.sleep, nowMs: deps.nowMs });
+  }
   const flags = parseArgv(rest);
   const repoRoot = path.resolve(flags["repo-root"] ?? process.cwd());
   const common = {
@@ -3254,6 +3374,7 @@ export async function main(argv, deps = createDeviceDeps()) {
             mode: flags.mode,
             trigger: flags.trigger,
             forceAttempt: Boolean(flags["force-attempt"]),
+            scenarioFile: flags["scenario-file"] ? path.resolve(flags["scenario-file"]) : null,
           },
           deps,
         );
@@ -3306,6 +3427,19 @@ export async function main(argv, deps = createDeviceDeps()) {
         text: `${selftestTable(checks.checks)}\n${JSON.stringify(built, null, 2)}\n`,
         exitCode: built.ok ? 0 : 2,
       };
+    }
+    case "scenario-file": {
+      // stdin: the issue's comments (gh's JSON). Writes the mobile sections of
+      // the scenario for --sha to --out (mode 600), only when there are any.
+      if (!flags.sha || !SHA40.test(flags.sha)) throw new UsageError("--sha must be a 40-hex SHA");
+      if (!flags.out) throw new UsageError("missing --out");
+      const { writeScenarioFile } = await import("./device-scenario.mjs");
+      return writeScenarioFile({
+        commentsText: await (deps.readStdin ?? readStdin)(),
+        sha: flags.sha,
+        out: path.resolve(flags.out),
+        fs: deps.fs,
+      });
     }
     case "_supervise":
       if (!flags["run-dir"]) throw new UsageError("missing --run-dir");

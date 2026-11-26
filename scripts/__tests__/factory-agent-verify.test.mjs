@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -215,9 +215,16 @@ node() {
       call "device \${*:2}"
       [[ -z "\${DEVICE_FAIL:-}" ]] || return 1
       case "$2" in
-        start) printf '%s\\n' "\${DEVICE_START_STUB:-$DEVICE_START_DEFAULT}" ;;
+        start)
+          # The scenario file as start saw it (bash removes it afterwards).
+          if f=$(stub_flag --scenario-file "$@"); then
+            { if [[ "$(uname)" == Darwin ]]; then stat -f '%Lp' "$f"; else stat -c '%a' "$f"; fi; cat "$f"; } > "$CALLS.scenario"
+          fi
+          printf '%s\\n' "\${DEVICE_START_STUB:-$DEVICE_START_DEFAULT}" ;;
         stop) printf '%s\\n' "\${DEVICE_STOP_STUB:-$DEVICE_STOP_DEFAULT}" ;;
         housekeeping) printf '%s\\n' "\${DEVICE_HK_STUB:-$DEVICE_HK_DEFAULT}" ;;
+        # The real module: it reads the stubbed comments on stdin.
+        scenario-file) command node "$@" ;;
       esac
       ;;
     */verify-lane.mjs)
@@ -3214,6 +3221,62 @@ describe("verify_device_work", () => {
     withBash(work(MOBILE), { env: { HEAD, ...DEVICE_ON, DEVICE_FAIL: "1" } }, (r) => {
       assert.equal(r.issue.verifyDevice, `${HEAD}:deferred:start-error`);
     });
+  });
+});
+
+describe("verify_device_work: the scenario's mobile sections (--scenario-file)", () => {
+  const work = `verify_device_work 7 70 "$HEAD" '{"web":false,"mobile":true,"desktop":false}' '{"device":"none"}'`;
+  const scenario = (sha, sections) => [
+    {
+      id: 5,
+      authorAssociation: "OWNER",
+      createdAt: "t",
+      body: [
+        "## Test scenario",
+        ...sections,
+        "<!-- drafto-factory-test-scenario -->",
+        `<!-- drafto-factory-scenario-sha:${sha} -->`,
+      ].join("\n"),
+    },
+  ];
+
+  it("passes the scenario's mobile sections in a mode-600 file, removed after start", () => {
+    const comments = scenario(HEAD, ["### Web", "1. web", "### iOS", "1. ios step"]);
+    withBash(work, { env: { HEAD, ...DEVICE_ON }, comments }, (r) => {
+      const m = /^device start .* --repo-root \S+ --scenario-file (\S+)$/m.exec(r.calls);
+      assert.ok(m, r.calls);
+      assert.ok(m[1].startsWith(`${r.dir}/logs/factory/device/scenario-7-`), m[1]);
+      assert.equal(existsSync(m[1]), false, "removed once start has copied it");
+      const [mode, ...json] = readFileSync(`${r.dir}/calls.log.scenario`, "utf8").split("\n");
+      assert.equal(mode, "600");
+      assert.deepEqual(JSON.parse(json.join("\n")), [{ heading: "iOS", text: "1. ios step" }]);
+    });
+  });
+
+  it("passes no file without mobile sections, for another commit, or when comments fail", () => {
+    for (const [comments, env] of [
+      [scenario(HEAD, ["### Web", "1. web"]), {}],
+      [scenario("b".repeat(40), ["### iOS", "1. ios"]), {}],
+      [scenario(HEAD, ["### iOS", "1. ios"]), { COMMENTS_FAIL: "1" }],
+    ]) {
+      withBash(work, { env: { HEAD, ...DEVICE_ON, ...env }, comments }, (r) => {
+        assert.match(r.calls, /^device start /m);
+        assert.doesNotMatch(r.calls, /--scenario-file/);
+        assert.deepEqual(
+          readdirSync(`${r.dir}/logs/factory/device`).filter((f) => f.startsWith("scenario-")),
+          [],
+        );
+      });
+    }
+  });
+
+  it("the on-demand start passes it too", () => {
+    const fn = extract("verify_device_ondemand_work");
+    assert.match(fn, /scenario_file=\$\(verify_device_scenario_file "\$issue_num" "\$head_sha"\)/);
+    assert.match(
+      fn,
+      /--force-attempt --repo-root "\$REPO_ROOT" \\\n\s+\$\{scenario_args\[@\]\+"\$\{scenario_args\[@\]\}"\}/,
+    );
   });
 });
 

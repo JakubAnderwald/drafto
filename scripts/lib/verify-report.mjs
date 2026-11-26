@@ -886,8 +886,29 @@ function shapeDevicePlatform(v) {
         }
       : null,
     flows: Array.isArray(v.flows) ? v.flows.map(shapeDeviceFlow) : [],
+    // Phase (b), the scenario's steps (device-scenario.mjs): the session's
+    // state and its summary. Its flows are in `flows`, named `scenario: …`.
+    scenario:
+      typeof v.scenarioState === "string"
+        ? {
+            state: own(DEVICE_SCENARIO_STATES, v.scenarioState) ?? "in an unrecognised state",
+            summary:
+              typeof v.scenarioSummary === "string" && v.scenarioSummary.trim()
+                ? capText(v.scenarioSummary.trim(), DEVICE_SUMMARY_MAX)
+                : null,
+          }
+        : null,
   };
 }
+
+const DEVICE_SUMMARY_MAX = 4096;
+const DEVICE_SCENARIO_STATES = {
+  running: "still running",
+  done: "done",
+  timeout: "stopped at its time or run cap",
+  error: "failed",
+  stopped: "stopped with the run",
+};
 
 // A platform that didn't finish: its state, with the reason as a sentence.
 function deviceStateText(v, { reason = true } = {}) {
@@ -926,6 +947,7 @@ function buildDeviceLane(input, secrets, sha) {
         .flatMap(([p, v]) => [
           `${p} ${v.kind}:${v.detail}`,
           ...v.flows.map((f) => `${f.name} ${f.status} ${f.failure ?? ""}`),
+          ...(v.scenario?.summary ? [v.scenario.summary] : []),
         ])
         .join("\n")
     : null;
@@ -1041,6 +1063,14 @@ function deviceDetailsText(lane) {
     }
     if (v.flows.length > shown.length) lines.push(`- …and ${v.flows.length - shown.length} more.`);
     if (!v.flows.length) lines.push("_No flow ran._");
+    if (v.scenario) {
+      lines.push(
+        "",
+        `_Scenario steps: ${v.scenario.state}. A guarded session wrote the \`scenario:\` flows; ` +
+          "the supervisor validated them and ran them again after the session ended._",
+      );
+      if (v.scenario.summary) lines.push("", closeFences(defang(v.scenario.summary)));
+    }
     lines.push("");
   }
   return closeFences(lines.join("\n").trimEnd());

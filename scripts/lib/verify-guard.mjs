@@ -51,6 +51,12 @@
 // pnpm exec, bash -c …) are unwrapped and the inner command is checked too.
 // Text that can't be tokenised (an unbalanced quote) is denied.
 //
+// A config with `mode: "device-scenario"` is a device-lane scenario session
+// (device-scenario.mjs), decided by decideDevicePre instead: Write only to its
+// flows/*.yaml, Bash only `device-run` and read-only commands, everything only
+// inside its own directory (see "Device scenario mode" below). A config
+// without a mode, the shell lane's, is decided as above.
+//
 // The decision log is <logDir>/<session>.jsonl. Commands are logged truncated
 // and with Drafto API keys and bearer tokens redacted.
 //
@@ -70,6 +76,7 @@ import {
   accessSync,
   appendFileSync,
   constants as fsConstants,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -129,6 +136,46 @@ export const PRIVATE_FILE_NAMES = Object.freeze([
 ]);
 // The run's own bin/ wrappers, which the session may name by full path.
 export const LANE_BIN_NAMES = Object.freeze(["preview-curl", "dev-inspect", "live-tests"]);
+
+// The device lane's scenario sessions (ADR-0106 decision 2, device-lane.mjs)
+// run under this guard too, in a mode of their own: config.mode set to
+// DEVICE_SCENARIO_MODE. Without it, every decision is the shell lane's.
+export const DEVICE_SCENARIO_MODE = "device-scenario";
+export const DEVICE_SCENARIO_TOOLS = Object.freeze([...LANE_TOOLS, "Write"]);
+// The one command a scenario session runs that does anything: the run's
+// wrapper, which asks the supervisor to validate and run a flow.
+export const DEVICE_RUN_BIN = "device-run";
+// The only files a scenario session may write: flows/NN-<slug>.yaml.
+export const DEVICE_FLOW_FILE_RE = /^[0-9]{2}-[a-z0-9][a-z0-9-]{0,59}\.yaml$/;
+export const DEVICE_FLOW_MAX_BYTES = 20 * 1024;
+// Read-only commands a scenario session may run on its own directory. No
+// sed, awk, find, tee or uniq: each of those can write a file.
+export const DEVICE_READ_COMMANDS = Object.freeze([
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "grep",
+  "egrep",
+  "fgrep",
+  "file",
+  "stat",
+  "sort",
+  "diff",
+  "cut",
+  "tr",
+  "nl",
+  "echo",
+  "printf",
+  "pwd",
+  "basename",
+  "dirname",
+  "true",
+  "false",
+  "test",
+  "[",
+]);
 
 // Command words a lane session never runs, whatever their arguments.
 export const DENY_COMMANDS = Object.freeze([
@@ -422,7 +469,15 @@ export function buildGuardSettings({
   guardPath,
   configPath,
   perlPath = DEFAULT_PERL_PATH,
+  mode = null,
 }) {
+  if (mode !== null && mode !== DEVICE_SCENARIO_MODE) throw new Error(`unknown guard mode ${mode}`);
+  // A scenario session writes its flows with Write (the pre hook confines it
+  // to flows/*.yaml); every other tool stays removed.
+  const denied =
+    mode === DEVICE_SCENARIO_MODE
+      ? ALWAYS_DENY_TOOLS.filter((t) => t !== "Write")
+      : [...ALWAYS_DENY_TOOLS];
   const node = shellQuotePath("nodePath", nodePath);
   const guard = shellQuotePath("guardPath", guardPath);
   const cfg = shellQuotePath("configPath", configPath);
@@ -431,7 +486,7 @@ export function buildGuardSettings({
   const alarmed = `${perl} -e '${PERL_ALARM_SCRIPT}' ${PRE_ALARM_SEC} ${command("pre")}`;
   return {
     disableAllHooks: false,
-    permissions: { deny: [...ALWAYS_DENY_TOOLS] },
+    permissions: { deny: denied },
     hooks: {
       SessionStart: [
         {
@@ -479,7 +534,7 @@ function absoluteDir(label, v) {
 export function validateConfig(raw) {
   if (!isPlainObject(raw)) throw new Error("config must be a JSON object");
   const runDir = absoluteDir("config.runDir", raw.runDir);
-  return {
+  const config = {
     runDir,
     privateDir: path.join(runDir, PRIVATE_DIRNAME),
     binDir: path.join(runDir, BIN_DIRNAME),
@@ -488,6 +543,12 @@ export function validateConfig(raw) {
     repoRoot: absoluteDir("config.repoRoot", raw.repoRoot),
     home: absoluteDir("config.home", raw.home),
   };
+  // Only a scenario session's config names a mode; the shell lane's has none.
+  if (raw.mode !== undefined) {
+    if (raw.mode !== DEVICE_SCENARIO_MODE) throw new Error(`config.mode is unknown: ${raw.mode}`);
+    config.mode = DEVICE_SCENARIO_MODE;
+  }
+  return config;
 }
 
 export function loadConfig(file) {
@@ -1566,6 +1627,7 @@ function globPrefix(p) {
 export function decidePre({ tool, input, config }) {
   try {
     if (typeof tool !== "string") return deny("the hook payload names no tool");
+    if (config?.mode === DEVICE_SCENARIO_MODE) return decideDevicePre({ tool, input, config });
     if (!LANE_TOOLS.includes(tool)) return deny(`${tool} isn't available in a verification lane`);
     const args = isPlainObject(input) ? input : {};
     if (tool === "Bash") {
@@ -1588,6 +1650,146 @@ export function decidePre({ tool, input, config }) {
   } catch (err) {
     return deny(`the guard failed to evaluate this call (${err.message})`);
   }
+}
+
+// ── Device scenario mode ────────────────────────────────────────────────────
+// A device-lane scenario session (device-lane.mjs) works in its own directory,
+// config.worktree (<runDir>/scenario-<platform>/), and nowhere else. It writes
+// Maestro YAML into flows/ and asks the supervisor to run a flow with
+// `device-run flows/<file>.yaml`; the supervisor validates the YAML and runs
+// Maestro outside the session. So, in this mode:
+//   - Write only to <cwd>/flows/NN-<slug>.yaml, never through a symlink, under
+//     DEVICE_FLOW_MAX_BYTES. Edit, NotebookEdit, WebFetch, WebSearch: denied.
+//   - Read, Grep, Glob only inside <cwd> (real paths too), no `..`.
+//   - Bash: `device-run flows/<file>.yaml` (or `device-run --wait <n>`), and
+//     the read-only DEVICE_READ_COMMANDS on paths inside <cwd>. No variables,
+//     no command substitution, no heredocs, no redirection but to /dev/null,
+//     no assignments. Everything else, maestro, adb, xcrun, emulator, gradle,
+//     xcodebuild, curl and ps included, isn't on the list and is denied: ps
+//     could show Maestro's environment, which holds the account's password.
+
+function insideDir(abs, dir) {
+  return abs === dir || abs.startsWith(`${dir}/`);
+}
+
+/** Why <p> (relative to the session's dir) is outside it, or null. */
+function deviceOutsideReason(p, config) {
+  const s = String(p);
+  if (s.split("/").includes("..")) return "`..` isn't allowed: stay in this run's directory";
+  if (/^~|^\$/.test(s)) return "only this run's directory may be named";
+  const dir = config.worktree;
+  const abs = path.resolve(dir, s);
+  const realDir = safeRealpath(dir) ?? dir;
+  if (!insideDir(abs, dir) && !insideDir(abs, realDir)) {
+    return "a scenario session may only use its own directory";
+  }
+  const real = safeRealpath(abs);
+  if (real && !insideDir(real, realDir) && !insideDir(real, dir)) {
+    return "that path leads out of this run's directory";
+  }
+  return null;
+}
+
+function deviceWriteDecision(input, config) {
+  const p = input.file_path;
+  if (typeof p !== "string" || p === "") return deny("the Write call names no file");
+  if (typeof input.content !== "string") return deny("the Write call has no text content");
+  if (Buffer.byteLength(input.content, "utf8") > DEVICE_FLOW_MAX_BYTES) {
+    return deny(`a flow may be at most ${DEVICE_FLOW_MAX_BYTES / 1024} KB`);
+  }
+  if (p.split("/").includes("..")) return deny("`..` isn't allowed in a flow's path");
+  const dir = config.worktree;
+  const flowsDir = path.join(dir, "flows");
+  const abs = path.resolve(dir, p);
+  if (path.dirname(abs) !== flowsDir || !DEVICE_FLOW_FILE_RE.test(path.basename(abs))) {
+    return deny("Write may only create flows/NN-<slug>.yaml in this run's directory");
+  }
+  // flows/ itself must be the real directory the supervisor made, and the
+  // file, if it exists, a plain file: never a symlink to somewhere else.
+  const realDir = safeRealpath(dir) ?? dir;
+  if (safeRealpath(flowsDir) !== path.join(realDir, "flows")) {
+    return deny("flows/ isn't this run's own directory");
+  }
+  try {
+    const st = lstatSync(abs);
+    if (!st.isFile()) return deny("that flow path isn't a plain file");
+  } catch (err) {
+    if (err.code !== "ENOENT") return deny("that flow path can't be checked");
+  }
+  return allow("Write to a flow file");
+}
+
+function deviceBashDecision(command, config) {
+  if (/[$`]/.test(command)) {
+    return deny("variables and command substitution aren't allowed in a scenario session");
+  }
+  if (command.includes("<<")) return deny("heredocs aren't allowed in a scenario session");
+  let parsed;
+  try {
+    parsed = splitCommands(command, 0);
+  } catch (err) {
+    return deny(`the guard couldn't parse this command (${err.message}); simplify it`);
+  }
+  if (parsed.commands.length === 0) return deny("no command");
+  const fullBin = path.join(config.binDir, DEVICE_RUN_BIN);
+  for (const { words, targets } of parsed.commands) {
+    if (targets.some((t) => t !== "/dev/null")) {
+      return deny("redirecting output to a file isn't allowed: Write creates flows");
+    }
+    let w = words.filter((x) => x !== "");
+    while (w.length && LEADING_KEYWORDS.has(w[0])) w = w.slice(1);
+    if (w.length === 0 || NON_COMMANDS.has(w[0])) continue;
+    if (isAssignment(w[0])) return deny("variable assignments aren't allowed");
+    const [cmd, ...args] = w;
+    if (cmd === DEVICE_RUN_BIN || cmd === fullBin) {
+      const ok =
+        (args.length === 1 &&
+          /^(\.\/)?flows\/[^/]+$/.test(args[0]) &&
+          DEVICE_FLOW_FILE_RE.test(path.basename(args[0]))) ||
+        (args.length === 2 && args[0] === "--wait" && /^[1-9][0-9]{0,3}$/.test(args[1]));
+      if (!ok) return deny("use `device-run flows/NN-<slug>.yaml` (or `device-run --wait <n>`)");
+      continue;
+    }
+    if (cmd.includes("/") || !DEVICE_READ_COMMANDS.includes(cmd)) {
+      return deny(
+        `${base(cmd)} isn't available in a scenario session (device-run and read-only commands only)`,
+      );
+    }
+    if (cmd === "sort" && args.some((a) => /^-[A-Za-z]*o|^--output/.test(a))) {
+      return deny("sort -o writes a file");
+    }
+    for (const a of args) {
+      const value = a.startsWith("-") && a.includes("=") ? a.slice(a.indexOf("=") + 1) : a;
+      if (a.startsWith("-") && value === a) continue;
+      if (value.includes("/") || value === ".." || value.startsWith("~")) {
+        const why = deviceOutsideReason(value, config);
+        if (why) return deny(why);
+      }
+    }
+  }
+  return allow("scenario command checked");
+}
+
+function decideDevicePre({ tool, input, config }) {
+  if (!DEVICE_SCENARIO_TOOLS.includes(tool)) {
+    return deny(`${tool} isn't available in a scenario session`);
+  }
+  const args = isPlainObject(input) ? input : {};
+  if (tool === "Write") return deviceWriteDecision(args, config);
+  if (tool === "Bash") {
+    if (typeof args.command !== "string" || args.command.trim() === "") {
+      return deny("the Bash call has no command");
+    }
+    return deviceBashDecision(args.command, config);
+  }
+  for (const [p] of pathInputs(tool, args, config)) {
+    if (p == null || p === "") continue;
+    if (typeof p !== "string") return deny(`${tool} got a path that isn't a string`);
+    const why = deviceOutsideReason(globPrefix(p) || ".", config) ?? deviceOutsideReason(p, config);
+    if (why) return deny(why);
+  }
+  // A Grep / Glob pattern is matched under the tool's path, which was checked.
+  return allow(`${tool} inside the run's directory`);
 }
 
 // ── Hooks ───────────────────────────────────────────────────────────────────
@@ -1783,16 +1985,20 @@ export function writeGuardFiles({
   home = os.homedir(),
   perlPath = DEFAULT_PERL_PATH,
   nodePath = process.execPath,
+  mode = null,
+  filesDir = runDir,
+  logDir = path.join(runDir, "guard"),
 }) {
   const config = validateConfig({
     runDir,
     worktree,
     repoRoot,
     home,
-    logDir: path.join(runDir, "guard"),
+    logDir,
+    ...(mode ? { mode } : {}),
   });
-  const configPath = path.join(runDir, "guard-config.json");
-  const settingsPath = path.join(runDir, "guard-settings.json");
+  const configPath = path.join(filesDir, "guard-config.json");
+  const settingsPath = path.join(filesDir, "guard-settings.json");
   writeFileAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`);
   // The pre hook only fails closed on a hang through perl's alarm, so the lane
   // must not start with a settings file whose wrapper is missing.
@@ -1802,6 +2008,7 @@ export function writeGuardFiles({
     guardPath: guardModulePath(),
     configPath,
     perlPath,
+    mode,
   });
   writeFileAtomic(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   return { configPath, settingsPath, logDir: config.logDir };

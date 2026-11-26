@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import {
   ALWAYS_DENY_TOOLS,
   DENY_COMMANDS,
+  DEVICE_SCENARIO_MODE,
   HOOK_MATCHER,
   HOOK_TIMEOUTS,
   LANE_TOOLS,
@@ -679,5 +680,223 @@ describe("redactForLog", () => {
     assert.match(s, /Bearer \[redacted\]/);
     assert.match(s, /\[jwt redacted\]/);
     assert.ok(s.length <= 401);
+  });
+});
+
+// ── Device scenario mode (ADR-0106, device-scenario.mjs) ────────────────────
+
+describe("device-scenario mode", () => {
+  let dtmp;
+  let dcfg;
+  let cwd;
+  const pre = (tool, input) => decidePre({ tool, input, config: dcfg });
+  const sh = (command) => pre("Bash", { command });
+
+  before(() => {
+    dtmp = mkdtempSync(path.join(tmpdir(), "verify-guard-device-"));
+    const repoRoot = path.join(dtmp, "factory");
+    const runDir = path.join(repoRoot, "logs", "factory", "device", "runs", "7-a-20261126T000000Z");
+    cwd = path.join(runDir, "scenario-ios");
+    for (const d of ["flows", "bin", "examples", "iter-shots", "requests"]) {
+      mkdirSync(path.join(cwd, d), { recursive: true });
+    }
+    writeFileSync(path.join(runDir, "meta.json"), "{}\n");
+    writeFileSync(path.join(cwd, "examples", "02-create-notebook.yaml"), "appId: x\n");
+    symlinkSync(path.join(runDir, "meta.json"), path.join(cwd, "examples", "leak.yaml"));
+    symlinkSync(path.join(runDir, "meta.json"), path.join(cwd, "flows", "09-link.yaml"));
+    dcfg = validateConfig({
+      runDir: cwd,
+      worktree: cwd,
+      repoRoot,
+      home: path.join(dtmp, "home"),
+      mode: DEVICE_SCENARIO_MODE,
+    });
+  });
+  after(() => rmSync(dtmp, { recursive: true, force: true }));
+
+  it("Write: only flows/NN-<slug>.yaml in the run's dir, plain files, under 20 KB", () => {
+    const content = "appId: eu.drafto.mobile\n---\n- back\n";
+    assert.equal(
+      pre("Write", { file_path: path.join(cwd, "flows", "01-x.yaml"), content }).allow,
+      true,
+    );
+    assert.equal(pre("Write", { file_path: "flows/02-make-note.yaml", content }).allow, true);
+    for (const file_path of [
+      `${cwd}/flows/../flows/01-x.yaml`,
+      path.join(cwd, "examples", "01-x.yaml"),
+      path.join(cwd, "bin", "device-run"),
+      path.join(cwd, "requests", "1.result.json"),
+      path.join(cwd, "flows", "x.yaml"),
+      path.join(cwd, "flows", "01-X.yaml"),
+      path.join(cwd, "flows", "01-x.yml"),
+      path.join(cwd, "flows", "sub", "01-x.yaml"),
+      path.join(cwd, "01-x.yaml"),
+      "/tmp/01-x.yaml",
+      path.join(cwd, "flows", "09-link.yaml"),
+    ]) {
+      assert.equal(pre("Write", { file_path, content }).allow, false, file_path);
+    }
+    const big = "x".repeat(20 * 1024 + 1);
+    assert.equal(pre("Write", { file_path: "flows/01-x.yaml", content: big }).allow, false);
+    assert.equal(pre("Write", { file_path: "flows/01-x.yaml" }).allow, false);
+  });
+
+  it("Write is refused when flows/ is a symlink out of the dir", () => {
+    const other = path.join(dtmp, "other");
+    const cwd2 = path.join(dtmp, "scenario-android");
+    mkdirSync(other, { recursive: true });
+    mkdirSync(cwd2, { recursive: true });
+    symlinkSync(other, path.join(cwd2, "flows"));
+    const cfg2 = validateConfig({ ...dcfg, runDir: cwd2, worktree: cwd2 });
+    const r = decidePre({
+      tool: "Write",
+      input: { file_path: path.join(cwd2, "flows", "01-x.yaml"), content: "x" },
+      config: cfg2,
+    });
+    assert.equal(r.allow, false);
+  });
+
+  it("Edit, NotebookEdit, WebFetch, WebSearch and unknown tools stay denied", () => {
+    for (const tool of ["Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "MultiEdit"]) {
+      assert.equal(pre(tool, { file_path: "flows/01-x.yaml" }).allow, false, tool);
+    }
+  });
+
+  it("Bash: device-run on a flow, or --wait, and read-only commands in the dir", () => {
+    for (const command of [
+      "device-run flows/01-x.yaml",
+      "device-run ./flows/01-create-notebook.yaml",
+      `${path.join(cwd, "bin", "device-run")} flows/01-x.yaml`,
+      "device-run --wait 3",
+      "ls -la flows",
+      "cat flows/01-x.yaml",
+      "head -50 examples/02-create-notebook.yaml",
+      "grep -rn tapOn examples",
+      "wc -l flows/*.yaml",
+      "ls iter-shots && cat requests/1.result.json",
+      "cat flows/01-x.yaml | grep tapOn | wc -l",
+      `cat ${path.join(cwd, "flows", "01-x.yaml")}`,
+      "ls 2>/dev/null",
+    ]) {
+      assert.equal(sh(command).allow, true, command);
+    }
+  });
+
+  it("Bash: device tools, the network, ps and writes are denied", () => {
+    for (const command of [
+      "maestro test flows/01-x.yaml",
+      "adb shell input tap 1 1",
+      "xcrun simctl io booted screenshot x.png",
+      "emulator -list-avds",
+      "gradle tasks",
+      "xcodebuild -list",
+      "curl https://example.com",
+      "ps eww",
+      "env",
+      "node -e 1",
+      "sh flows/01-x.yaml",
+      "device-run flows/01-x.yaml extra",
+      "device-run examples/02-create-notebook.yaml",
+      "device-run flows/../../meta.json",
+      "device-run --wait 0",
+      "echo hi > flows/01-x.yaml",
+      "cat flows/01-x.yaml > requests/9.json",
+      "sort -o flows/01-x.yaml flows/02-y.yaml",
+      "cat ../meta.json",
+      "cat /etc/passwd",
+      "ls ~",
+      "cat examples/leak.yaml",
+      "ls $HOME",
+      "cat `ls`",
+      "cat $(ls)",
+      "X=1 ls",
+      "cat <<EOF\nhi\nEOF",
+      "cat flows/01-x.yaml | sh",
+      "sed -n 1p flows/01-x.yaml",
+      "find . -name x",
+      "/bin/ls",
+      "ls 'unclosed",
+    ]) {
+      assert.equal(sh(command).allow, false, command);
+    }
+  });
+
+  it("Read, Grep and Glob only inside the dir, never through a symlink out", () => {
+    assert.equal(pre("Read", { file_path: path.join(cwd, "flows", "01-x.yaml") }).allow, true);
+    assert.equal(pre("Read", { file_path: "iter-shots/1-01-x.png" }).allow, true);
+    assert.equal(pre("Grep", { pattern: "tapOn", path: "examples" }).allow, true);
+    assert.equal(pre("Glob", { pattern: "flows/*.yaml" }).allow, true);
+    assert.equal(pre("Glob", { pattern: "**/*.yaml" }).allow, true);
+    for (const [tool, input] of [
+      ["Read", { file_path: path.join(cwd, "..", "meta.json") }],
+      ["Read", { file_path: "../meta.json" }],
+      ["Read", { file_path: "/etc/hosts" }],
+      ["Read", { file_path: "examples/leak.yaml" }],
+      ["Read", { file_path: "~/drafto-secrets/x" }],
+      ["Grep", { pattern: "x", path: "/" }],
+      ["Grep", { pattern: "x", path: cwd, glob: "../*" }],
+      ["Glob", { pattern: "../**" }],
+      ["Glob", { pattern: "/Users/*" }],
+    ]) {
+      assert.equal(pre(tool, input).allow, false, `${tool} ${JSON.stringify(input)}`);
+    }
+  });
+
+  it("the settings keep every tool but Write removed", () => {
+    const s = buildGuardSettings({
+      nodePath: "/n",
+      guardPath: "/g",
+      configPath: "/c",
+      mode: DEVICE_SCENARIO_MODE,
+    });
+    assert.deepEqual(
+      s.permissions.deny,
+      ALWAYS_DENY_TOOLS.filter((t) => t !== "Write"),
+    );
+    assert.ok(s.permissions.deny.includes("Edit"));
+    assert.throws(() =>
+      buildGuardSettings({ nodePath: "/n", guardPath: "/g", configPath: "/c", mode: "x" }),
+    );
+  });
+
+  it("an unknown mode is refused; the shell lane's config has none", () => {
+    assert.throws(() => validateConfig({ ...dcfg, mode: "anything" }), /mode/);
+    assert.equal(Object.hasOwn(config, "mode"), false);
+    assert.equal(dcfg.mode, DEVICE_SCENARIO_MODE);
+  });
+
+  it("shell mode is unchanged: Write and device-run get the shell lane's answers", () => {
+    assert.equal(
+      decidePre({ tool: "Write", input: { file_path: "x", content: "y" }, config }).allow,
+      false,
+    );
+    assert.deepEqual(
+      buildGuardSettings({ nodePath: "/n", guardPath: "/g", configPath: "/c" }).permissions.deny,
+      [...ALWAYS_DENY_TOOLS],
+    );
+    // The shell lane's own rules, not the scenario mode's allowlist.
+    assert.equal(bash("ls ~/work").allow, true);
+    assert.equal(bash("maestro test x.yaml").allow, false);
+    assert.equal(bash("adb devices").allow, false);
+  });
+
+  it("writeGuardFiles writes a scenario session's files where it is told", () => {
+    const filesDir = path.join(dtmp, "guard-files");
+    mkdirSync(filesDir, { recursive: true });
+    const r = writeGuardFiles({
+      runDir: cwd,
+      worktree: cwd,
+      repoRoot: dcfg.repoRoot,
+      home: dcfg.home,
+      mode: DEVICE_SCENARIO_MODE,
+      filesDir,
+      logDir: path.join(filesDir, "log"),
+    });
+    assert.equal(path.dirname(r.configPath), filesDir);
+    const written = JSON.parse(readFileSync(r.configPath, "utf8"));
+    assert.equal(written.mode, DEVICE_SCENARIO_MODE);
+    assert.equal(written.logDir, path.join(filesDir, "log"));
+    const settings = JSON.parse(readFileSync(r.settingsPath, "utf8"));
+    assert.equal(settings.permissions.deny.includes("Write"), false);
   });
 });

@@ -2187,3 +2187,425 @@ describe("review round 4", () => {
     assert.equal(callsOf("maestro").length, 0);
   });
 });
+
+// ── phase (b): the scenario's mobile steps (device-scenario.mjs) ────────────
+
+describe("scenario sessions", () => {
+  const SESSION_PID = 7777;
+  const UUID = "12345678-1234-4123-8123-123456789abc";
+  const SECTIONS = [
+    { heading: "iOS", text: "1. Create a notebook named NB. Expect it in the list." },
+    { heading: "Web", text: "1. Open the preview." },
+  ];
+  const GOOD_FLOW = [
+    "appId: eu.drafto.mobile",
+    "---",
+    '- tapOn: "Notebooks"',
+    '- inputText: "NB ${RUN_ID}"',
+    '- assertVisible: "NB ${RUN_ID}"',
+    "",
+  ].join("\n");
+  const BAD_FLOW = [
+    "appId: eu.drafto.mobile",
+    "---",
+    "- inputText: ${MAESTRO_E2E_TEST_PASSWORD}",
+    "- runScript: steal.js",
+    "",
+  ].join("\n");
+  const macrotask = () => new Promise((r) => setImmediate(r));
+
+  let dr;
+  beforeEach(async () => {
+    dr = await import("../lib/device-scenario.mjs");
+    h.env.FACTORY_DEVICE_SCENARIO = "1";
+    h.env.GH_TOKEN = "ghp_should_never_reach_the_session";
+    h.prView.files = [{ path: "apps/mobile/e2e/ios-all.yaml" }];
+    h.deps.sleep = macrotask;
+    h.deps.randomUUID = () => UUID;
+    h.deps.checkGuard = async () => ({ ok: true });
+    h.results = [];
+    h.sessionEnded = false;
+    h.events = [];
+  });
+
+  function isSession(args) {
+    return String(args[0] ?? "").endsWith("run-claude.mjs");
+  }
+
+  /** A fake claude session: writes flows, calls the real device-run wrapper code. */
+  function fakeSession({ flows = {}, requests = [], exit = 0, hang = false, summary } = {}) {
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro") {
+        h.events.push({ kind: "maestro", flow: args[3], sessionEnded: h.sessionEnded });
+        return null;
+      }
+      if (!isSession(args)) return null;
+      h.session = { args: [...args], env: opts.env, cwd: opts.cwd, input: opts.input, opts };
+      // The guard's files live in private/, which the run removes at its end.
+      const settingsPath = args[args.indexOf("--settings") + 1];
+      h.settings = readJson(settingsPath);
+      h.guardCfg = readJson(path.join(path.dirname(settingsPath), "guard-config.json"));
+      opts.onChild?.({ pid: SESSION_PID });
+      for (const [name, text] of Object.entries(flows)) {
+        writeFileSync(path.join(opts.cwd, "flows", name), text);
+      }
+      for (const flow of requests) {
+        const r = await dr.deviceRunMain(["--dir", opts.cwd, "--timeout-sec", "60", "--", flow], {
+          fs: nodeFs,
+          sleep: macrotask,
+          nowMs: () => Date.now(),
+          pollMs: 0,
+        });
+        h.results.push(r);
+      }
+      if (hang) await new Promise((res) => (h.release = res));
+      writeFileSync(
+        opts.stdoutFile,
+        summary ?? "## Scenario steps (ios)\n\n- PASS — create a notebook (`flows/01-nb.yaml`)\n",
+      );
+      h.sessionEnded = true;
+      return { code: exit, timedOut: false, stdout: "" };
+    };
+  }
+
+  function sessionCalls() {
+    return h.calls.filter((c) => isSession(c.args));
+  }
+
+  it("starts no session without the knob, or without a section for the platform", async () => {
+    fakeSession();
+    h.env.FACTORY_DEVICE_SCENARIO = "0";
+    let run = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.equal(sessionCalls().length, 0);
+    assert.equal(Object.hasOwn(run.output.platforms.ios, "scenarioState"), false);
+    rmSync(tmp, { recursive: true, force: true });
+    h = makeHarness();
+    h.env.FACTORY_DEVICE_SCENARIO = "1";
+    h.prView.files = [{ path: "apps/mobile/e2e/ios-all.yaml" }];
+    fakeSession();
+    run = await startAndSupervise({ scenarioSections: [{ heading: "Web", text: "x" }] });
+    assert.equal(sessionCalls().length, 0);
+    assert.deepEqual(Object.keys(run.output.platforms.ios).sort(), [
+      "build",
+      "flows",
+      "state",
+      "verdict",
+    ]);
+  });
+
+  it("starts the session locked down: the argv shape, a scrubbed env, no password", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    const { runDir, output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.equal(sessionCalls().length, 1);
+    const { args, env, cwd, input } = h.session;
+    assert.equal(cwd, path.join(runDir, "scenario-ios"));
+    const claudeArgs = args.slice(1);
+    assert.deepEqual(claudeArgs.slice(0, 6), [
+      "-p",
+      "--no-chrome",
+      "--strict-mcp-config",
+      "--setting-sources",
+      "",
+      "--settings",
+    ]);
+    const at = (flag) => claudeArgs[claudeArgs.indexOf(flag) + 1];
+    assert.ok(path.isAbsolute(at("--settings")));
+    assert.ok(!at("--settings").startsWith(cwd), "the guard's files are outside the session's dir");
+    assert.equal(at("--permission-mode"), "dontAsk");
+    assert.equal(at("--tools"), "Bash,Read,Grep,Glob,Write");
+    assert.equal(at("--allowedTools"), "Bash,Read,Grep,Glob,Write");
+    assert.equal(at("--session-id"), UUID);
+    for (const f of ["--dangerously-skip-permissions", "--chrome", "--mcp-config", "--add-dir"]) {
+      assert.ok(!claudeArgs.includes(f), f);
+    }
+    assert.equal(h.settings.permissions.deny.includes("Write"), false);
+    assert.ok(h.settings.permissions.deny.includes("Edit"));
+    assert.equal(h.guardCfg.mode, "device-scenario");
+    assert.equal(h.guardCfg.worktree, cwd);
+    // Gone with private/ once the run ends.
+    assert.equal(existsSync(at("--settings")), false);
+    // The environment: the lane's allowlist, the wrapper's bin dir first on PATH.
+    assert.equal(env.GH_TOKEN, undefined);
+    assert.equal(env.FACTORY_DEVICE_ACCOUNT_FILE, undefined);
+    assert.equal(env.MAESTRO_E2E_TEST_PASSWORD, undefined);
+    assert.equal(env.DRAFTO_UNATTENDED, "1");
+    assert.ok(env.PATH.startsWith(path.join(cwd, "bin")));
+    for (const text of [JSON.stringify(env), input, args.join(" ")]) {
+      assert.ok(!text.includes(PASSWORD));
+      assert.ok(!text.includes(EMAIL));
+    }
+    // The prompt carries only this platform's sections, enveloped as data.
+    assert.match(input, /<scenario-section>### iOS\n\n1\. Create a notebook/);
+    assert.doesNotMatch(input, /Open the preview/);
+    // The directory: examples and helpers copied, the wrapper written.
+    assert.ok(existsSync(path.join(cwd, "examples", "02-create-notebook.yaml")));
+    assert.ok(existsSync(path.join(cwd, "helpers", "sign-in-clean.yaml")));
+    assert.match(
+      readFileSync(path.join(cwd, "helpers", "sign-in.yaml"), "utf8"),
+      /sign-in-clean\.yaml/,
+    );
+    assert.match(
+      readFileSync(path.join(cwd, "bin", "device-run"), "utf8"),
+      /device-lane\.mjs' device-run --dir '/,
+    );
+    assert.equal(output.platforms.ios.scenarioState, "done");
+  });
+
+  it("an invalid flow gets the validator's errors and Maestro never sees it", async () => {
+    fakeSession({ flows: { "01-bad.yaml": BAD_FLOW }, requests: ["flows/01-bad.yaml"] });
+    const { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.equal(h.results.length, 1);
+    assert.equal(h.results[0].exitCode, 1);
+    assert.match(h.results[0].text, /REJECTED/);
+    assert.match(h.results[0].text, /only \$\{RUN_ID\}/);
+    assert.match(h.results[0].text, /runScript: isn't allowed/);
+    assert.ok(!callsOf("maestro").some((c) => c.args.some((a) => String(a).includes("01-bad"))));
+    // The final pass reports it, without running it.
+    const row = output.platforms.ios.flows.find((f) => f.name === "scenario: 01-bad.yaml");
+    assert.equal(row.status, "ERROR");
+    assert.match(row.failure, /rejected by the validator/);
+  });
+
+  it("a valid flow runs, signed in, with the password only in Maestro's environment", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    const { runDir } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(h.results[0].text, /request 1 \(flows\/01-nb\.yaml\): PASS/);
+    assert.match(h.results[0].text, /iter-shots\/1-01-nb\.png/);
+    assert.equal(h.results[0].exitCode, 0);
+    const scenario = callsOf("maestro").filter((c) =>
+      c.cwd?.includes(`${path.sep}snapshots${path.sep}`),
+    );
+    // Per run (the try and the final pass): a reset, the sign-in, the flow.
+    assert.equal(scenario.length, 6);
+    for (const c of scenario) {
+      assert.equal(c.env.MAESTRO_E2E_TEST_PASSWORD, PASSWORD);
+      assert.ok(!c.args.some((a) => String(a).includes(PASSWORD)));
+    }
+    const flowRuns = scenario.filter((c) =>
+      c.args[3].endsWith(`${path.sep}flows${path.sep}01-nb.yaml`),
+    );
+    assert.equal(flowRuns.length, 2);
+    // It ran the snapshot, never the session's own file.
+    for (const c of flowRuns) assert.ok(!c.args[3].startsWith(path.join(runDir, "scenario-ios")));
+    // Fresh RUN_IDs: the try and the final pass don't share one.
+    const ids = flowRuns.map((c) => c.args.find((a) => String(a).startsWith("RUN_ID=")));
+    assert.notEqual(ids[0], ids[1]);
+    assert.ok(
+      scenario.some((c) => c.args[3].endsWith(`${path.sep}helpers${path.sep}sign-in.yaml`)),
+    );
+  });
+
+  it("the final pass runs only after the session's group is gone, and publishes only its shots", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    // The group outlives the session's leader until the supervisor kills it.
+    h.aliveGroups.add(SESSION_PID);
+    const kill = h.deps.kill;
+    h.deps.kill = (pid, signal) => {
+      if (pid === -SESSION_PID && signal !== 0) {
+        h.events.push({ kind: "kill", signal });
+        h.aliveGroups.delete(SESSION_PID);
+      }
+      return kill(pid, signal);
+    };
+    const { runDir, output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    const killedAt = h.events.findIndex((e) => e.kind === "kill");
+    assert.ok(killedAt >= 0, "the lingering group was killed");
+    const finalRuns = h.events
+      .map((e, i) => ({ e, i }))
+      .filter(({ e }) => e.kind === "maestro" && e.sessionEnded);
+    assert.ok(finalRuns.length > 0);
+    for (const { i } of finalRuns) assert.ok(i > killedAt, "no final-pass run before the kill");
+    // shots.json: phase (a)'s and the final pass's, nothing from iter-shots.
+    const shots = readJson(path.join(runDir, "evidence", "shots.json"));
+    assert.deepEqual(
+      shots.map((s) => s.file),
+      ["device-ios/01-ios-all.png", "device-ios/02-scenario-01-nb.png"],
+    );
+    assert.ok(shots.every((s) => s.pass === "final"));
+    assert.ok(!JSON.stringify(shots).includes("iter-shots"));
+    assert.ok(existsSync(path.join(runDir, "scenario-ios", "iter-shots", "1-01-nb.png")));
+    const ios = output.platforms.ios;
+    assert.deepEqual(
+      ios.flows.map((f) => f.name),
+      ["ios-all.yaml", "scenario: 01-nb.yaml"],
+    );
+    assert.equal(ios.verdict, "PASS");
+    assert.match(ios.scenarioSummary, /PASS — create a notebook/);
+  });
+
+  it("a group that won't die gets no final pass", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW } });
+    h.aliveGroups.add(SESSION_PID);
+    const { output, runDir } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.equal(output.platforms.ios.scenarioState, "error");
+    assert.deepEqual(
+      output.platforms.ios.flows.map((f) => f.name),
+      ["ios-all.yaml"],
+    );
+    assert.equal(readJson(path.join(runDir, "evidence", "shots.json")).length, 1);
+  });
+
+  it("the run cap refuses the next run, then kills the session's group", async () => {
+    h.env.FACTORY_DEVICE_SCENARIO_RUNS = "1";
+    fakeSession({
+      flows: { "01-nb.yaml": GOOD_FLOW, "02-nb.yaml": GOOD_FLOW },
+      requests: ["flows/01-nb.yaml", "flows/02-nb.yaml"],
+      hang: true,
+    });
+    h.deps.sleep = async () => {
+      h.clock += 30_000;
+      await macrotask();
+    };
+    const kill = h.deps.kill;
+    h.deps.kill = (pid, signal) => {
+      if (pid === -SESSION_PID && signal === "SIGTERM") h.release?.();
+      return kill(pid, signal);
+    };
+    const { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(h.results[0].text, /PASS/);
+    assert.match(h.results[1].text, /REFUSED/);
+    assert.match(h.results[1].text, /runs are used up/);
+    assert.ok(h.kills.some((k) => k.pid === -SESSION_PID && k.signal === "SIGTERM"));
+    assert.equal(output.platforms.ios.scenarioState, "timeout");
+    // The final pass still runs both flows.
+    assert.equal(output.platforms.ios.flows.length, 3);
+  });
+
+  it("the session cap kills the session's group", async () => {
+    h.env.FACTORY_DEVICE_SCENARIO_MIN = "10";
+    fakeSession({ hang: true });
+    h.deps.sleep = async () => {
+      h.clock += 60_000;
+      await macrotask();
+    };
+    const kill = h.deps.kill;
+    h.deps.kill = (pid, signal) => {
+      if (pid === -SESSION_PID && signal === "SIGTERM") h.release?.();
+      return kill(pid, signal);
+    };
+    const { output, runDir } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.ok(h.kills.some((k) => k.pid === -SESSION_PID && k.signal === "SIGTERM"));
+    assert.equal(output.platforms.ios.scenarioState, "timeout");
+    assert.match(
+      readFileSync(path.join(runDir, "supervisor.log"), "utf8"),
+      /stopping the session \(time cap\)/,
+    );
+  });
+
+  it("a failed session keeps phase (a)'s results", async () => {
+    fakeSession({ exit: 1 });
+    let { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    let ios = output.platforms.ios;
+    assert.equal(ios.state, "done");
+    assert.equal(ios.verdict, "PASS");
+    assert.deepEqual(
+      ios.flows.map((f) => f.name),
+      ["ios-all.yaml"],
+    );
+    assert.equal(ios.scenarioState, "error");
+
+    h = makeHarness();
+    h.env.FACTORY_DEVICE_SCENARIO = "1";
+    h.prView.files = [{ path: "apps/mobile/e2e/ios-all.yaml" }];
+    h.deps.sleep = macrotask;
+    h.deps.checkGuard = async () => ({ ok: true });
+    h.onRun = async (cmd, args) => {
+      if (isSession(args)) throw new Error("spawn failed");
+      return null;
+    };
+    ({ output } = await startAndSupervise({ scenarioSections: SECTIONS }));
+    ios = output.platforms.ios;
+    assert.equal(ios.state, "done");
+    assert.equal(ios.verdict, "PASS");
+    assert.equal(ios.scenarioState, "error");
+  });
+
+  it("a session the guard didn't cover: its flows aren't run", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW } });
+    h.deps.checkGuard = async () => ({ ok: false, sessionStart: false });
+    const { output } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.equal(output.platforms.ios.scenarioState, "error");
+    assert.equal(output.platforms.ios.flows.length, 1);
+  });
+
+  it("a summary with the password or a secret is withheld", () => {
+    assert.match(dr.sanitizeSummary(`typed ${PASSWORD}`, { password: PASSWORD }), /withheld/);
+    assert.match(dr.sanitizeSummary(`key dk_${"a".repeat(40)}`), /withheld/);
+    assert.equal(dr.sanitizeSummary(`mail ${EMAIL}`), "mail [email]");
+    assert.equal(dr.sanitizeSummary("x".repeat(9000)).length, dr.SUMMARY_MAX);
+  });
+
+  it("start reads --scenario-file into meta.json; scenario-file writes only mobile sections", async () => {
+    const comments = [
+      {
+        id: 1,
+        authorAssociation: "OWNER",
+        createdAt: "t",
+        body: [
+          "## Test scenario",
+          "### Web",
+          "1. web step",
+          "### iOS",
+          "1. ios step",
+          "### Android",
+          "1. android step",
+          `<!-- drafto-factory-scenario-sha:${SHA} -->`,
+        ].join("\n"),
+      },
+    ];
+    const file = path.join(tmp, "scen.json");
+    const out = await main(["scenario-file", "--sha", SHA, "--out", file], {
+      ...h.deps,
+      readStdin: async () => JSON.stringify(comments),
+    });
+    assert.deepEqual(out, { written: true, sections: 2 });
+    assert.equal(nodeFs.statSync(file).mode & 0o777, 0o600);
+    assert.deepEqual(
+      readJson(file).map((s) => s.heading),
+      ["iOS", "Android"],
+    );
+    const none = await main(["scenario-file", "--sha", OTHER_SHA, "--out", file], {
+      ...h.deps,
+      readStdin: async () => JSON.stringify(comments),
+    });
+    assert.deepEqual(none, { written: false, sections: 0 });
+    assert.equal(existsSync(file), false);
+
+    writeFileSync(file, JSON.stringify([{ heading: "iOS", text: "1. ios step" }, { nope: 1 }]));
+    h.env.FACTORY_DEVICE_SCENARIO = "0";
+    const r = await start({ scenarioFile: file });
+    assert.equal(r.started, true);
+    assert.equal(r.scenarioSections, 1);
+    const meta = readJson(path.join(r.runDir, "meta.json"));
+    assert.deepEqual(meta.scenario, { sections: [{ heading: "iOS", text: "1. ios step" }] });
+    assert.equal(meta.knobs.scenario, false);
+    assert.ok(!JSON.stringify(meta).includes(PASSWORD));
+  });
+
+  it("device-run refuses a path outside flows/ and waits on --wait", async () => {
+    const dir = path.join(tmp, "sd");
+    mkdirSync(path.join(dir, "requests"), { recursive: true });
+    mkdirSync(path.join(dir, "flows"), { recursive: true });
+    const opts = { fs: nodeFs, sleep: macrotask, nowMs: () => Date.now(), pollMs: 0 };
+    for (const arg of ["../meta.json", "flows/x.yaml", "examples/02-create-notebook.yaml"]) {
+      const r = await dr.deviceRunMain(["--dir", dir, "--timeout-sec", "5", "--", arg], opts);
+      assert.equal(r.exitCode, 2, arg);
+    }
+    const missing = await dr.deviceRunMain(
+      ["--dir", dir, "--timeout-sec", "5", "--", "flows/01-a.yaml"],
+      opts,
+    );
+    assert.match(missing.text, /doesn't exist/);
+    writeFileSync(path.join(dir, "requests", "4.json"), '{"flow":"flows/01-a.yaml"}');
+    writeFileSync(
+      path.join(dir, "requests", "4.result.json"),
+      JSON.stringify({ flow: "flows/01-a.yaml", status: "FAIL", failure: "x", runsLeft: 2 }),
+    );
+    const waited = await dr.deviceRunMain(
+      ["--dir", dir, "--timeout-sec", "5", "--", "--wait", "4"],
+      opts,
+    );
+    assert.equal(waited.exitCode, 1);
+    assert.match(waited.text, /request 4 \(flows\/01-a\.yaml\): FAIL\nfailure: x\nruns left: 2/);
+  });
+});
