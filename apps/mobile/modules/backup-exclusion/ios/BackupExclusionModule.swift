@@ -2,7 +2,7 @@ import ExpoModulesCore
 
 // Keeps a folder out of iCloud and device backups by setting
 // NSURLIsExcludedFromBackupKey on it, which also covers everything inside it
-// (ADR-0099). expo-file-system has no way to set it. The attachment cache
+// (ADR-0107). expo-file-system has no way to set it. The attachment cache
 // calls it through apps/mobile/src/lib/backup-exclusion.ts.
 public class BackupExclusionModule: Module {
   public func definition() -> ModuleDefinition {

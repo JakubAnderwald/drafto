@@ -42,7 +42,7 @@ jest.mock("@/db", () => ({
   },
 }));
 
-// The iOS backup flag (ADR-0099): the native module isn't there under Jest.
+// The iOS backup flag (ADR-0107): the native module isn't there under Jest.
 const mockExcludeFromBackup = jest.fn();
 jest.mock("@/lib/backup-exclusion", () => ({
   excludeFromBackup: (dir: { uri: string }) => mockExcludeFromBackup(dir),
@@ -629,7 +629,7 @@ describe("deleteAttachmentCache", () => {
   });
 });
 
-describe("the cache folder stays out of backups (ADR-0099)", () => {
+describe("the cache folder stays out of backups (ADR-0107)", () => {
   /** Record, at each flag, whether `uri` had been written yet. */
   const writtenAtFlag = (uri: string): boolean[] => {
     const seen: boolean[] = [];

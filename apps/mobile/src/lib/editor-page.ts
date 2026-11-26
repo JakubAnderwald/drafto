@@ -50,7 +50,7 @@ function removeStalePages(dir: Directory, keep: string): void {
  * Write the editor page into the cache unless it is already there (a sign-out
  * deletes the whole cache, so it is checked every time), and return where it
  * is. The cache folder is created and flagged to stay out of backups first,
- * even when the page is already there (ADR-0099). The page is written beside
+ * even when the page is already there (ADR-0107). The page is written beside
  * its final name and then moved there, so a half-written page is never
  * loaded. Throws when the write fails.
  */

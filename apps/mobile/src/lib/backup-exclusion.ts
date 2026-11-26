@@ -1,10 +1,10 @@
 import { requireOptionalNativeModule } from "expo";
 import type { Directory } from "expo-file-system";
 
-// Keeps a folder out of iCloud and device backups (ADR-0099), through the
+// Keeps a folder out of iCloud and device backups (ADR-0107), through the
 // app's own iOS module in apps/mobile/modules/backup-exclusion: expo-file-system
 // can't set NSURLIsExcludedFromBackupKey. Android has no such module: its Auto
-// Backup already leaves the app's Documents folder out (see ADR-0099).
+// Backup already leaves the app's Documents folder out (see ADR-0107).
 
 interface BackupExclusionNativeModule {
   excludeFromBackup(uri: string): void;

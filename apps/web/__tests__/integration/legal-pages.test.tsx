@@ -120,7 +120,7 @@ describe("Privacy policy page", () => {
     );
     expect(offline).toMatch(/Images in\s+notes in the trash are kept/);
     expect(offline).toMatch(/The local copy, attachments included, is erased when you sign out/);
-    // The image copies are a re-downloadable cache, left out of device backups (ADR-0099).
+    // The image copies are a re-downloadable cache, left out of device backups (ADR-0107).
     expect(offline).toMatch(/These copies are left out of your\s+device.s backups/);
     expect(offline).toMatch(/Android device backups and Time Machine on macOS/);
     // On iOS the flag can fail without blocking the write, so the policy

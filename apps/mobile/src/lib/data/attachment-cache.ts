@@ -25,7 +25,7 @@ import {
 // the directory the editor WebView is given read access to. On iOS the editor
 // page itself is kept there too, in .editor/ (see editor-page.ts). The folder
 // stays out of iCloud and device backups: everything written into it goes
-// through ensureAttachmentCacheRoot() first (ADR-0099). Mirrors
+// through ensureAttachmentCacheRoot() first (ADR-0107). Mirrors
 // apps/desktop/src/lib/data/attachment-cache.ts (react-native-fs there).
 
 /** Cap on the cache. Files whose upload hasn't finished don't count against eviction. */

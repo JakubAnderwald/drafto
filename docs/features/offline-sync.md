@@ -130,7 +130,7 @@ by `attachmentCacheRelativePath`):
   skips that folder like `.partial/` and `.index.json`, so the page is never
   indexed, evicted or swept; the next editor writes it again after a wipe.
 - The cache is left out of device backups
-  ([ADR-0099](../adr/0099-mobile-attachment-cache-excluded-from-backups.md)).
+  ([ADR-0107](../adr/0107-mobile-attachment-cache-excluded-from-backups.md)).
   On iOS, `ensureAttachmentCacheRoot()` (`src/lib/data/attachment-cache-root.ts`)
   creates the folder and flags it `isExcludedFromBackup` through the local
   `backup-exclusion` native module, once per launch and again when the folder is
@@ -255,7 +255,7 @@ header's Back arrow and took its taps (PrimeTestLab report 10668, M-03).
 - [0048 — Local Writes Trigger a Debounced Sync](../adr/0048-local-writes-trigger-debounced-sync.md)
 - [0086 — Offline Attachment Cache on Mobile and Desktop](../adr/0086-offline-attachment-cache.md)
 - [0088 — Activity Days Instead of Event Analytics](../adr/0088-activity-days-instead-of-event-analytics.md)
-- [0099 — Mobile Attachment Cache Excluded from Device Backups](../adr/0099-mobile-attachment-cache-excluded-from-backups.md)
+- [0107 — Mobile Attachment Cache Excluded from Device Backups](../adr/0107-mobile-attachment-cache-excluded-from-backups.md)
 
 ## Cross-platform notes
 

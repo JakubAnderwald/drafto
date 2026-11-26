@@ -8,7 +8,7 @@ import appConfig from "../../app.config";
 // (`expo prebuild` adds `android:fullBackupContent` and
 // `android:dataExtractionRules`), and those only include the `sharedpref`
 // domain. Once a rules file has an <include>, Auto Backup backs up only what
-// it includes, so the cache stays out of Android backups (ADR-0099). These
+// it includes, so the cache stays out of Android backups (ADR-0107). These
 // tests run secure-store's own manifest plugin with app.config.ts's options
 // and read the rules files it names, so a change to the app or a secure-store
 // upgrade that breaks the chain fails them. A plugin from another package that

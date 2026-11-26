@@ -1,4 +1,4 @@
-# The app's own Expo module (ADR-0099), autolinked from apps/mobile/modules.
+# The app's own Expo module (ADR-0107), autolinked from apps/mobile/modules.
 # It has no package.json, so its details are written out here.
 Pod::Spec.new do |s|
   s.name           = 'BackupExclusion'

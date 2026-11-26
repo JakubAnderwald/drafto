@@ -4,7 +4,7 @@ import { ATTACHMENT_CACHE_DIR_NAME } from "@drafto/shared";
 import { excludeFromBackup } from "@/lib/backup-exclusion";
 
 // The attachment cache's folder, <Documents>/attachment-cache/ (ADR-0086),
-// kept out of iCloud and device backups (ADR-0099): everything in it is a
+// kept out of iCloud and device backups (ADR-0107): everything in it is a
 // copy the app can download again. On iOS a flag on the folder covers all of
 // it. The flag belongs to the folder, so a sign-out wipe, which deletes the
 // folder, takes it with it. This file doesn't load the database, so

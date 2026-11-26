@@ -11,7 +11,7 @@ jest.mock(
   () => require("../helpers/fake-expo-file-system").fakeFs.module,
 );
 
-// The iOS backup flag (ADR-0099): the native module isn't there under Jest.
+// The iOS backup flag (ADR-0107): the native module isn't there under Jest.
 const mockExcludeFromBackup = jest.fn();
 jest.mock("@/lib/backup-exclusion", () => ({
   excludeFromBackup: (dir: { uri: string }) => mockExcludeFromBackup(dir),
@@ -133,7 +133,7 @@ describe("ensureEditorPage", () => {
   });
 });
 
-describe("the cache folder stays out of backups (ADR-0099)", () => {
+describe("the cache folder stays out of backups (ADR-0107)", () => {
   it("flags the cache folder before the page is written", () => {
     const seen: boolean[] = [];
     mockExcludeFromBackup.mockImplementation((dir: { uri: string }) => {
