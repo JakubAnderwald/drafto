@@ -96,7 +96,8 @@ function classifyFile(file) {
   return { platforms: [], flow: false };
 }
 
-function headingPlatforms(heading) {
+/** The platforms a scenario section's heading names: iOS, Android, both, or none. */
+export function headingPlatforms(heading) {
   const h = String(heading ?? "");
   if (!MOBILE_HEADING.test(h)) return [];
   const ios = IOS_HEADING.test(h);

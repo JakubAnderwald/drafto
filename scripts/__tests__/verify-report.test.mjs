@@ -2992,3 +2992,114 @@ describe("verify-report CLI: the device lane", () => {
     );
   });
 });
+
+describe("device lane: the scenario's steps (phase b)", () => {
+  const withScenario = (over = {}) =>
+    devicePlatform("done", {
+      flows: [
+        { name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null },
+        {
+          name: "scenario: 01-create-notebook.yaml",
+          status: "FAIL",
+          durationS: 30,
+          failure: "x",
+          dispatched: true,
+        },
+      ],
+      verdict: "FAIL",
+      scenarioState: "done",
+      scenarioSummary: "## Scenario steps (ios)\n\n- FAIL — create a notebook: not in the list",
+      ...over,
+    });
+
+  it("shows the scenario rows as flows and the summary under the platform", () => {
+    for (const r of [
+      composeDeviceReport({
+        sha: SHA,
+        pr: 701,
+        output: deviceOutput({ ios: withScenario() }),
+        dir: "/runs/dev",
+        secrets: { devicePassword: DEVICE_PASSWORD },
+      }),
+      composeDevice({ ios: withScenario() }),
+    ]) {
+      assert.match(r.body, /- FAIL `scenario: 01-create-notebook\.yaml` \(30 s\): x/);
+      assert.match(r.body, /_Scenario steps: done\. A guarded session wrote the `scenario:` flows/);
+      assert.match(r.body, /- FAIL — create a notebook: not in the list/);
+      assert.match(tableRow(r.body, "iOS (simulator)"), /1\/2 flows passed/);
+    }
+  });
+
+  it("says when the session hit a cap, and shows no summary it didn't have", () => {
+    const r = composeDevice({
+      ios: withScenario({ scenarioState: "timeout", scenarioSummary: undefined }),
+    });
+    assert.match(r.body, /_Scenario steps: stopped at its time or run cap\./);
+    assert.doesNotMatch(r.body, /create a notebook: not in the list/);
+  });
+
+  it("says when the session was skipped for time", () => {
+    const r = composeDevice({
+      ios: withScenario({
+        scenarioState: "skipped:time",
+        scenarioSummary: undefined,
+        flows: [{ name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null }],
+      }),
+    });
+    assert.match(r.body, /_Scenario steps: skipped: too little of the run was left\._/);
+  });
+
+  it("names the session as the flows' author only when there are scenario rows", () => {
+    const phaseA = [{ name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null }];
+    for (const state of ["done", "timeout", "stopped", "skipped:time", "error"]) {
+      const r = composeDevice({
+        ios: withScenario({ scenarioState: state, scenarioSummary: undefined, flows: phaseA }),
+      });
+      // A session that left no flows: its state, and no claim about flows.
+      assert.doesNotMatch(r.body, /A guarded session wrote/, state);
+      assert.doesNotMatch(r.body, /ran them again/, state);
+      assert.match(r.body, /_Scenario steps: [^_]+\._/, state);
+    }
+    // An error after the session wrote flows still says who wrote them.
+    const r = composeDevice({ ios: withScenario({ scenarioState: "error" }) });
+    assert.match(r.body, /_Scenario steps: failed\. A guarded session wrote/);
+  });
+
+  it("claims the final re-run only for flows the supervisor ran", () => {
+    const row = (name, extra) => ({ name, status: "ERROR", durationS: 0, failure: "x", ...extra });
+    const rejected = row("scenario: 01-bad.yaml", {
+      failure: "rejected by the validator: commands[0]: nope",
+    });
+    const ran = row("scenario: 02-ok.yaml", { status: "PASS", failure: null, dispatched: true });
+    const body = (flows) => composeDevice({ ios: withScenario({ flows }) }).body;
+    const none = body([rejected]);
+    assert.doesNotMatch(none, /ran them again/);
+    assert.match(none, /none passed the supervisor's validation, so none ran\._/);
+    assert.match(body([rejected, ran]), /ran the valid ones again after the session ended\._/);
+    assert.match(body([ran]), /validated them and ran them again after the session ended\._/);
+    // A row that only claims to be dispatched with a non-boolean doesn't count.
+    assert.match(body([{ ...ran, dispatched: "yes" }]), /none passed/);
+  });
+
+  it("scans the summary: a secret in it withholds the device text", () => {
+    const r = composeDevice({
+      ios: withScenario({ scenarioSummary: `typed ${DEVICE_PASSWORD} into a note` }),
+    });
+    assert.ok(!r.body.includes(DEVICE_PASSWORD));
+    assert.equal(r.withheld.device, true);
+  });
+
+  it("defangs the summary: no markers, no details tags", () => {
+    const r = composeDevice({
+      ios: withScenario({
+        scenarioSummary: "</details><!-- drafto-factory-device-report --> ```\nopen fence",
+      }),
+    });
+    assert.ok(!r.body.includes("</details><!-- drafto-factory-device-report"));
+    assert.equal(
+      r.body.split("\n").filter((l) => l === DEVICE_REPORT_MARKER).length,
+      0,
+      "no second device marker",
+    );
+  });
+});
