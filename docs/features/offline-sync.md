@@ -129,6 +129,28 @@ by `attachmentCacheRelativePath`):
   (`src/lib/editor-page.ts`), so WebKit can read the cached images. The walk
   skips that folder like `.partial/` and `.index.json`, so the page is never
   indexed, evicted or swept; the next editor writes it again after a wipe.
+- The cache is left out of device backups
+  ([ADR-0107](../adr/0107-mobile-attachment-cache-excluded-from-backups.md)).
+  On iOS, `ensureAttachmentCacheRoot()` (`src/lib/data/attachment-cache-root.ts`)
+  creates the folder and flags it `isExcludedFromBackup` through the local
+  `backup-exclusion` native module, once per launch and again when the folder is
+  created again after a sign-out wipe. A write still goes ahead if the flag
+  can't be set, so the iOS exclusion holds only once setting the flag succeeds:
+  until a later call sets it, an iCloud backup can include the cache. On
+  Android the folder is in Auto Backup's `file` domain, which expo-secure-store's
+  include-only rules (`sharedpref` alone) already leave out;
+  `__tests__/unit/android-backup-rules.test.ts` pins that. Desktop sets
+  `NSURLIsExcludedFromBackupKey` in `ensureDir`.
+- A backup can't bring back a picked image that hadn't uploaded yet. The cache
+  is the only copy of such an image, and the cache isn't in the backup (on iOS,
+  unless the backup was taken while the flag couldn't be set, as above; then
+  the copy may be in it after all). Otherwise, on iOS
+  the database is (WatermelonDB keeps it in `Documents`), so after a restore the
+  row comes back pending with no file. Its upload fails with "Local file not
+  found", the row turns `failed`, and every retry fails the same way. The user
+  has to attach the image again from the original. On Android the backup has
+  neither the database nor the cache, since only `sharedpref` is backed up, so
+  the row is gone as well.
 
 The editor shows a cached image through a `file://…#drafto-attachment=<path>`
 src; see [editor.md](./editor.md). Opening a non-image attachment still needs
@@ -233,6 +255,7 @@ header's Back arrow and took its taps (PrimeTestLab report 10668, M-03).
 - [0048 — Local Writes Trigger a Debounced Sync](../adr/0048-local-writes-trigger-debounced-sync.md)
 - [0086 — Offline Attachment Cache on Mobile and Desktop](../adr/0086-offline-attachment-cache.md)
 - [0088 — Activity Days Instead of Event Analytics](../adr/0088-activity-days-instead-of-event-analytics.md)
+- [0107 — Mobile Attachment Cache Excluded from Device Backups](../adr/0107-mobile-attachment-cache-excluded-from-backups.md)
 
 ## Cross-platform notes
 

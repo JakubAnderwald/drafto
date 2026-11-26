@@ -3,6 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-11-18
 - **Authors**: Jakub Anderwald (with Claude Code); PrimeTestLab report 10668, bug M-02
+- **Amended by**: [0107](./0107-mobile-attachment-cache-excluded-from-backups.md) (the mobile cache is left out of iCloud backup, and Android Auto Backup already leaves it out)
 
 ## Context
 

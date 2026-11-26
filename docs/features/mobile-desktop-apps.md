@@ -25,6 +25,7 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 | Mobile app routes (expo-router)    | `apps/mobile/app/`                                                                                                            |
 | Mobile source tree                 | `apps/mobile/src/{components,db,hooks,lib,providers,screens,theme}/`                                                          |
 | Mobile Expo config plugins         | `apps/mobile/plugins/with-android-{optimizations,gradle-memory,signing}.js`, `with-ios-*.js`                                  |
+| Mobile local Expo modules          | `apps/mobile/modules/backup-exclusion/` (iOS only, autolinked from `./modules`)                                               |
 | Mobile Fastlane                    | `apps/mobile/fastlane/{Fastfile,Appfile,Matchfile,Pluginfile}`                                                                |
 | Mobile release-notes scripts       | `apps/mobile/scripts/{generate-release-notes.sh,post-release-notes.mjs}`                                                      |
 | Mobile tests                       | `apps/mobile/__tests__/{components,hooks,lib,performance,providers,screens}/`                                                 |
@@ -49,6 +50,7 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
 - [0016 — Local Fastlane Builds](../adr/0016-local-fastlane-builds.md) (supersedes [0011](../adr/0011-app-store-deployment-strategy.md))
 - [0062 — Desktop PKCE Draws From a Native CSPRNG](../adr/0062-desktop-pkce-native-csprng.md) (in-project native modules)
 - [0087 — Android Navigation Bar Follows the In-App Theme](../adr/0087-android-navigation-bar-follows-in-app-theme.md)
+- [0107 — Mobile Attachment Cache Excluded from Device Backups](../adr/0107-mobile-attachment-cache-excluded-from-backups.md) (mobile's first local Expo module)
 
 ## Cross-platform notes
 
@@ -71,7 +73,9 @@ Both link the same `@nozbe/watermelondb@0.28.x` native module and reuse the
   (`expo-secure-store`, `expo-file-system`, `expo-image-picker`) are not
   available on macOS — desktop substitutes `react-native-keychain`,
   `react-native-fs`, and `react-native-document-picker-macos`.
-- **Native shell**: mobile has no custom native code beyond Expo plugins;
+- **Native shell**: mobile has no custom native code beyond Expo plugins and
+  the iOS-only local Expo module `apps/mobile/modules/backup-exclusion/`
+  ([ADR-0107](../adr/0107-mobile-attachment-cache-excluded-from-backups.md));
   desktop has Swift/Obj-C in `apps/desktop/macos/Drafto-macOS/` for the app
   menu (`DraftoMenuManager`), the PKCE random source and SHA-256
   (`DraftoCrypto`, [ADR-0062](../adr/0062-desktop-pkce-native-csprng.md)),

@@ -119,7 +119,7 @@ export default function PrivacyPolicyPage() {
       <header>
         <h1 className="text-fg text-4xl font-bold tracking-tight">Privacy Policy</h1>
         <p className="text-fg-muted mt-3 text-sm">
-          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;22,&nbsp;2026
+          Effective date: March&nbsp;8,&nbsp;2026 &middot; Last updated: November&nbsp;25,&nbsp;2026
         </p>
         <p className="text-fg-muted mt-8 text-lg leading-8">
           Drafto (&ldquo;we&rdquo;, &ldquo;our&rdquo;, &ldquo;us&rdquo;) operates the Drafto apps
@@ -328,7 +328,11 @@ export default function PrivacyPolicyPage() {
             permanently anywhere else (on the web, in another app, or by the 30-day trash cleanup)
             is not removed from the app, so the copies of its images stay too, until you delete the
             note there, the limit removes them, or you sign out. Images in notes in the trash are
-            kept, so a restored note still shows them.
+            kept, so a restored note still shows them. These copies are left out of your
+            device&apos;s backups: Android device backups and Time Machine on macOS. On iPhone and
+            iPad, the app marks them to be left out of iCloud backups. If setting that mark fails,
+            the app tries again later, and until it succeeds the copies can be included in an iCloud
+            backup.
           </p>
           <p>
             The local copy, attachments included, is erased when you sign out or delete your account
