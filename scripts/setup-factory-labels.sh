@@ -65,6 +65,7 @@ LABELS=(
   "driver:interactive|5319E7|An interactive Claude Code session owns this card; the factory skips it (ADR-0091)."
   "migration-approved|0052CC|Authorises merging this PR's migration SQL as it is when added; an SQL edit removes it."
   "hosted-config-applied|0052CC|Operator applied this PR's supabase/config.toml changes to dev and prod."
+  "factory-device-run|0E8A16|Run the device lane (Android emulator + iOS simulator) on this card's PR head now (ADR-0106)."
   "oversize-approved|0052CC|Lets the factory implement this oversize card as-is, without a split (ADR-0103)."
   "factory-failure|B60205|Filed by the factory failure trap when a run errors out."
 

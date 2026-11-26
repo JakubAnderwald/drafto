@@ -282,7 +282,7 @@ function emptyIssue() {
     // "<sha>:<runId>[:stale|:render-failed|:no-output]": the last device run
     // whose follow-up comment was posted, or settled without one. Post-once.
     deviceReportPosted: null,
-    deviceRunRequest: null, // "<sha>": the head an on-demand factory-device-run label asked for
+    deviceRunRequest: null, // on-demand factory-device-run label: "<sha>:<run-id>", "<sha>:waiting:<why>" or "<sha>:refused"
     // Head SHA verify_promote moved to In Test (set at the handoff, whether or
     // not its report could be posted): the device lane's In Test pass reads it.
     verifyPromotedSha: null,

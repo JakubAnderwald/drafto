@@ -9260,6 +9260,149 @@ device_card_column() {
   esac
 }
 
+# The label an operator puts on a card in Testing or In Test to run the device
+# lane on its PR head now (ADR-0106 decision 7). A comment can't do this: an
+# owner comment on an In Test card is feedback and rolls the card back.
+# device_run_label — prints the label's name. A function rather than a global,
+# so every caller (and a harness that loads functions alone) sees the same one.
+device_run_label() { echo "factory-device-run"; }
+
+# device_run_label_remove <issue> — take the on-demand label off once it has
+# been acted on. Returns 1 when GitHub refused (the next tick sees it again).
+device_run_label_remove() {
+  if gh issue edit "$1" --repo JakubAnderwald/drafto --remove-label "$(device_run_label)" \
+      >>"$LOG_FILE" 2>&1; then
+    return 0
+  fi
+  log "WARNING: removing $(device_run_label) from #$1 failed; the next tick tries again"
+  return 1
+}
+
+# device_run_label_refuse <issue> <head-sha> <why> — the on-demand run can't
+# happen: say so on the issue (a factory comment, so it is never read as
+# feedback), record it, and take the label off.
+device_run_label_refuse() {
+  local issue_num="$1" head_sha="$2" why="$3"
+  if printf '%s\n\n🏭 **Device lane:** the run you asked for with `%s` can'"'"'t start: %s. Remove the cause and add the label again.\n' \
+      "<!-- drafto-factory-device-run -->" "$(device_run_label)" "$why" \
+      | gh issue comment "$issue_num" --repo JakubAnderwald/drafto --body-file - >>"$LOG_FILE" 2>&1; then
+    :
+  else
+    log "WARNING: issue #$issue_num: couldn't post why the on-demand device run can't start"
+  fi
+  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" deviceRunRequest \
+    "${head_sha:-none}:refused" --state-file "$STATE_FILE" \
+    >>"$LOG_FILE" 2>&1 || true
+  device_run_label_remove "$issue_num" || true
+  log "Issue #$issue_num: on-demand device run refused ($why)"
+}
+
+# verify_device_ondemand_work — the factory-device-run label (ADR-0106
+# decision 7). For each card in Testing or In Test carrying it, start the device
+# lane on its PR head now, with one allowance past the per-commit attempt cap
+# (--force-attempt), whatever FACTORY_VERIFY_DEVICE says: the operator asked.
+#   - started: record deviceRunRequest="<sha>:<run-id>" and take the label off;
+#     housekeeping posts the run's follow-up comment when it ends.
+#   - a run for this head already going: take the label off (its results come).
+#   - deferred (busy, a beta build, memory, disk) or a stop still settling:
+#     keep the label and try again next tick, logging once per reason.
+#   - anything else (no account, a missing tool, no open PR): say why on the
+#     issue and take the label off.
+# Honours the global pause and the per-card kill switches, skips support
+# cards, never moves a card. Never fails the tick.
+verify_device_ondemand_work() {
+  local status items count idx item issue_num item_labels pr_obj pr_num view head_sha
+  local ledger inflight out started reason run_id prev
+  [[ ",$VERIFY_BUILT_LANES," == *",device,"* ]] || return 0
+  for status in "Testing" "In Test"; do
+    if ! items=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items --status "$status" \
+        2>>"$LOG_FILE"); then
+      log "WARNING: query-status-items '$status' failed (transient?); on-demand device runs wait"
+      continue
+    fi
+    count=$(echo "$items" | jq 'length' 2>/dev/null || echo "0")
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    for ((idx=0; idx<count; idx++)); do
+      if node "$SCRIPT_DIR/lib/state-cli.mjs" factory:paused? --state-file "$STATE_FILE" 2>/dev/null; then
+        return 0
+      fi
+      item=$(echo "$items" | jq -c ".[${idx}]")
+      issue_num=$(echo "$item" | jq -r '.issueNumber')
+      item_labels=$(echo "$item" | jq -r '.labels // [] | join(",")')
+      [[ "$issue_num" =~ ^[0-9]+$ ]] || continue
+      [[ ",$item_labels," == *",$(device_run_label),"* ]] || continue
+      if CARD_OPT_OUT=$(card_opted_out "$item_labels"); then
+        log "Issue #$issue_num: on-demand device run: skipping ($CARD_OPT_OUT)"; continue
+      fi
+      if [[ ",$item_labels," == *",support,"* ]]; then
+        log "Issue #$issue_num: on-demand device run: skipping (support label — nightly-support.sh owns these)"; continue
+      fi
+      pr_obj=$(find_prior_pr "$issue_num" || echo "")
+      pr_num=$(echo "$pr_obj" | jq -r '.number // ""' 2>/dev/null || echo "")
+      if [[ ! "$pr_num" =~ ^[0-9]+$ ]]; then
+        device_run_label_refuse "$issue_num" "" "the card has no open PR"; continue
+      fi
+      if ! view=$(gh pr view "$pr_num" --repo JakubAnderwald/drafto --json state,headRefOid \
+          2>>"$LOG_FILE"); then
+        continue   # GitHub couldn't say: next tick
+      fi
+      if [[ "$(echo "$view" | jq -r '.state // ""' 2>/dev/null)" != "OPEN" ]]; then
+        device_run_label_refuse "$issue_num" "" "PR #$pr_num isn't open"; continue
+      fi
+      head_sha=$(echo "$view" | jq -r '.headRefOid // ""' 2>/dev/null || echo "")
+      [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "DRY-RUN: would start an on-demand device run for #$issue_num at ${head_sha:0:12}"
+        continue
+      fi
+      ledger="$(verify_device_ledger)"
+      inflight=$(jq -r --arg i "$issue_num" '.inFlight // {} | select((.issue|tostring) == $i) | .sha // ""' \
+        "$ledger" 2>/dev/null || echo "")
+      if [[ "$inflight" == "$head_sha" ]]; then
+        log "Issue #$issue_num: on-demand device run: one is already going for ${head_sha:0:12}; its results follow"
+        device_run_label_remove "$issue_num" || true
+        continue
+      fi
+      if ! out=$(node "$SCRIPT_DIR/lib/device-lane.mjs" start --issue "$issue_num" --pr "$pr_num" \
+          --sha "$head_sha" --trigger on-demand --force-attempt --repo-root "$REPO_ROOT" \
+          2>>"$LOG_FILE"); then
+        log "WARNING: issue #$issue_num: the on-demand device run couldn't be started (retried next tick)"
+        continue
+      fi
+      out=$(printf '%s\n' "$out" | tail -1)
+      started=$(echo "$out" | jq -r '.started // false' 2>/dev/null || echo "false")
+      if [[ "$started" == "true" ]]; then
+        run_id=$(echo "$out" | jq -r '.runId // ""' 2>/dev/null || echo "")
+        node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" deviceRunRequest \
+          "$head_sha:$run_id" --state-file "$STATE_FILE" \
+          >>"$LOG_FILE" 2>&1 || true
+        device_run_label_remove "$issue_num" || true
+        log "Issue #$issue_num: on-demand device run started for ${head_sha:0:12}: $out"
+        continue
+      fi
+      reason=$(echo "$out" | jq -r '.reason // ""' 2>/dev/null || echo "")
+      case "$reason" in
+        deferred:*|stopped)
+          prev=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+            --state-file "$STATE_FILE" 2>/dev/null | jq -r '.deviceRunRequest // ""' 2>/dev/null || echo "")
+          if [[ "$prev" != "$head_sha:waiting:$reason" ]]; then
+            node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" deviceRunRequest \
+              "$head_sha:waiting:$reason" --state-file "$STATE_FILE" \
+              >>"$LOG_FILE" 2>&1 || true
+            log "Issue #$issue_num: on-demand device run waits ($reason); the label stays and it's tried each tick"
+          fi
+          ;;
+        account) device_run_label_refuse "$issue_num" "$head_sha" "the factory has no device-lane account (FACTORY_DEVICE_ACCOUNT_FILE)" ;;
+        *-missing) device_run_label_refuse "$issue_num" "$head_sha" "a tool the lane needs is missing on the Mac mini (${reason})" ;;
+        not-applicable) device_run_label_refuse "$issue_num" "$head_sha" "the PR changes nothing the mobile app is built from" ;;
+        head-moved) ;;   # the PR moved between the two reads: next tick
+        *) device_run_label_refuse "$issue_num" "$head_sha" "device-lane.mjs answered ${reason:-nothing}" ;;
+      esac
+    done
+  done
+  return 0
+}
+
 # device_pr_head_is <pr> <sha> — is <sha> still the head of open PR <pr>?
 # Returns 0 yes, 1 no (moved, merged or closed), 2 when GitHub couldn't say.
 device_pr_head_is() {
@@ -12596,8 +12739,10 @@ A human should take a look. Reset with \
   # is treated as noise here — never a ship signal.
   if ! INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items \
       --status "In Test" 2>>"$LOG_FILE"); then
-    # The device lane's In Test pass runs its own query, so it still runs.
+    # The device lane's In Test pass and its factory-device-run label pass
+    # run their own queries, so they still run.
     verify_device_intest_work
+    verify_device_ondemand_work
     log "WARNING: query-status-items 'In Test' failed (transient?); skipping feedback sweep this tick"
     # The Testing sweep's verify candidates still go to --browser.
     browser_write_candidates
@@ -12804,6 +12949,9 @@ instead, drag the card to **Approved**.)
   # card promoted while its device run waited for the betas: start that run now
   # (never moves a card). A no-op while the device lane is off.
   verify_device_intest_work
+  # The factory-device-run label on a Testing or In Test card: run the device
+  # lane on its head now (never moves a card).
+  verify_device_ondemand_work
 
   browser_write_candidates
 

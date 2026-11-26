@@ -58,9 +58,9 @@ describe("every per-card skip goes through card_opted_out", () => {
   it("guards each column-walking mode", () => {
     // Testing sweep, plan rescue, --plan (Ready), Plan Review, --implement,
     // --watch In Review, the In Test sweep, the device lane's In Test pass
-    // (ADR-0106) and --release.
+    // and its factory-device-run label pass (ADR-0106), and --release.
     const guards = script.match(/card_opted_out "\$(ITEM_LABELS|item_labels)"/g) ?? [];
-    assert.equal(guards.length, 9);
+    assert.equal(guards.length, 10);
   });
 
   it("holds a detached implement run's result while a session owns the card", () => {
