@@ -738,6 +738,11 @@ const DEVICE_REASONS = {
   "pr-closed": "the PR was closed or merged",
   "left-column": "the card left Testing and In Test",
   stop: "it was stopped by hand",
+  "platforms-unknown": "the PR's changed files couldn't be read",
+  "pr-unreadable": "the PR couldn't be read",
+  "fetch-failed": "fetching the PR's head failed",
+  "start-failed": "starting the run failed",
+  "start-error": "starting the run failed",
   signal: "it was stopped",
 };
 
@@ -763,6 +768,7 @@ const DEVICE_STOPS = {
   threads: "the card went back to In Review for open review threads",
   feedback: "the card rolled back for feedback",
   "verification-off": "verification was switched off",
+  conflict: "the card went back to In Review to resolve a merge conflict",
 };
 
 function deviceEndText(token) {
@@ -775,8 +781,24 @@ function deviceEndText(token) {
 }
 
 // A lane that hadn't run (or had to run again) when the card was promoted:
-// the factory starts it from In Test (verify_device_intest_work).
+// the factory starts it from In Test (verify_device_intest_work). Said only
+// where that's sure: a wait that spends no attempt (DEVICE_WAITS), or a run
+// whose attempt was given back (a beta build, memory pressure, the factory's
+// own stop). Anything else is tried again while attempts are left.
 const DEVICE_FOLLOWS = "it runs from In Test and its results follow in a separate comment";
+const DEVICE_RETRIES =
+  "the factory tries it again from In Test while it has attempts left (FACTORY_DEVICE_MAX_ATTEMPTS)";
+
+// A retried run whose attempt was given back (device-lane.mjs REFUNDED_STOPS).
+function deviceRetryRefunded(detail) {
+  if (own(DEVICE_WAITS, detail)) return true;
+  const stopped = /^stopped-(.+)$/.exec(detail);
+  return Boolean(stopped && own(DEVICE_STOPS, stopped[1]));
+}
+
+function deviceRetryNote(detail) {
+  return `${deviceRetryText(detail)}; ${deviceRetryRefunded(detail) ? DEVICE_FOLLOWS : DEVICE_RETRIES}`;
+}
 
 /**
  * The device lane's state as decide reported it (--device-state), as a note
@@ -792,8 +814,10 @@ export function deviceStateNote(token) {
   if (kind === "unavailable")
     return `the device lane couldn't run: ${deviceReason(detail) || "no reason given"}`;
   // Deferred or retried: the factory starts it from In Test.
-  if (kind === "retry") return `${deviceRetryText(detail)}; ${DEVICE_FOLLOWS}`;
-  if (kind === "deferred") return `${deviceWaitText(detail)}; ${DEVICE_FOLLOWS}`;
+  if (kind === "retry") return deviceRetryNote(detail);
+  if (kind === "deferred") {
+    return `${deviceWaitText(detail)}; ${own(DEVICE_WAITS, detail) ? DEVICE_FOLLOWS : DEVICE_RETRIES}`;
+  }
   if (kind !== "skipped") return null;
   if (["lane-off", "not-built", "verification-off", "not-applicable", ""].includes(detail)) {
     return null;
@@ -806,7 +830,7 @@ export function deviceStateNote(token) {
   }
   if (own(DEVICE_STOPS, detail)) return `the device run was stopped: ${DEVICE_STOPS[detail]}`;
   const after = /^after-(.+)$/.exec(detail);
-  if (after) return `${deviceRetryText(after[1])}; ${DEVICE_FOLLOWS}`;
+  if (after) return deviceRetryNote(after[1]);
   // A stop that sticks (by hand, a signal, the card dragged out).
   const stopped = /^stopped-(.+)$/.exec(detail);
   if (stopped) return `the device run was stopped: ${deviceStopText(stopped[1])}`;

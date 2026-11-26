@@ -2752,7 +2752,27 @@ describe("device lane: --device-state when there is no output for the commit", (
     );
     assert.doesNotMatch(deviceStateNote("retry:beta-build"), /needed the Mac mini/);
     assert.ok(deviceStateNote("retry:stopped-threads").endsWith(`review threads); ${follows}`));
-    assert.match(deviceStateNote("retry:lost"), /supervisor was lost\); it runs from In Test/);
+    assert.ok(deviceStateNote("retry:stopped-conflict").endsWith(`merge conflict); ${follows}`));
+  });
+
+  it("promises results only where the retry is sure; otherwise names the attempt cap", () => {
+    const retries =
+      "the factory tries it again from In Test while it has attempts left (FACTORY_DEVICE_MAX_ATTEMPTS)";
+    for (const state of [
+      "retry:lost",
+      "skipped:after-lost",
+      "retry:stopped-head-moved",
+      "deferred:platforms-unknown",
+      "deferred:pr-unreadable",
+    ]) {
+      const note = deviceStateNote(state);
+      assert.ok(note.endsWith(retries), `${state}: ${note}`);
+      assert.doesNotMatch(note, /results follow/, state);
+    }
+    assert.equal(
+      deviceStateNote("deferred:platforms-unknown"),
+      `the device lane hadn't started (the PR's changed files couldn't be read); ${retries}`,
+    );
   });
 
   it("an operator's stop sticks: no promise of results", () => {

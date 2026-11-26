@@ -144,8 +144,9 @@ const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const FAILURE_MAX = 300;
 // A run stopped for one of these wasn't the card's doing: the attempt is given back.
 // The factory's own stops (factory-agent.sh verify_device_stop) are among them:
-// a hand-back to In Review (ci-red, not-reviewed, threads), feedback or
-// verification switched off. A card back in Testing on the same commit runs again.
+// a hand-back to In Review (ci-red, not-reviewed, threads, or conflict from In
+// Test), feedback or verification switched off. A card back on the same commit
+// runs again.
 const REFUNDED_STOPS = new Set([
   "head-moved",
   "pr-closed",
@@ -157,6 +158,7 @@ const REFUNDED_STOPS = new Set([
   "threads",
   "feedback",
   "verification-off",
+  "conflict",
 ]);
 const RETRY_STOPS = new Set(["beta-build", "memory"]);
 const BOOLEAN_FLAGS = new Set(["force-attempt", "build", "json"]);

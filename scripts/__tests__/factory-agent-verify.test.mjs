@@ -99,6 +99,7 @@ const REAL_HELPERS = [
   "intest_reuse_fresh",
   "lane_attempt_of",
   // The device lane (ADR-0106): its follow-up comment.
+  "device_card_column",
   "device_pr_head_is",
   "device_post_followup",
   "iso_age_min",
@@ -156,6 +157,7 @@ gh() {
         > "$COMMENTS_FILE.tmp" && mv "$COMMENTS_FILE.tmp" "$COMMENTS_FILE"
       ;;
     "api repos/JakubAnderwald/drafto/labels/status:testing") [[ -z "\${NO_LABEL:-}" ]] ;;
+    "issue view") printf '%s\\n' "\${ISSUE_VIEW_STUB:-}" ;;
   esac
 }
 node() {
@@ -3112,12 +3114,19 @@ describe("verify_device_work", () => {
     });
   });
 
-  it("waits, starting nothing, while the platforms are unknown", () => {
-    withBash(work("{}"), { env: { HEAD, ...DEVICE_ON } }, (r) => {
-      assert.doesNotMatch(r.calls, /^device /m);
-      assert.equal(r.issue.verifyDevice ?? null, null);
-      assert.match(r.log, /platforms are unknown this tick; the device lane waits/);
-    });
+  it("waits, starting nothing, while the platforms are unknown, and records it", () => {
+    withBash(
+      `${work("{}")}\n${work("{}", "deferred:platforms-unknown")}`,
+      { env: { HEAD, ...DEVICE_ON } },
+      (r) => {
+        assert.doesNotMatch(r.calls, /^device /m);
+        assert.equal(r.issue.verifyDevice, `${HEAD}:deferred:platforms-unknown`);
+        assert.equal(
+          r.log.match(/platforms are unknown this tick; the device lane waits/g)?.length,
+          1,
+        );
+      },
+    );
   });
 
   it("starts a testing run on the PR head and records it as running, with its run dir", () => {
@@ -3179,14 +3188,20 @@ describe("verify_device_work", () => {
       ["maestro-missing", "unavailable:maestro-missing"],
       // A stop arrived while start attached its supervisor: a deferral.
       ["stopped", "deferred:stopping"],
-      ["head-moved", null],
-      ["pr-unreadable", null],
+      // Anything else is retried, and recorded so the In Test pass picks it up.
+      ["head-moved", "deferred:head-moved"],
+      ["pr-unreadable", "deferred:pr-unreadable"],
+      ["Weird Reason!", "deferred:start-error"],
     ]) {
       const stub = JSON.stringify({ started: false, reason });
       withBash(work(MOBILE), { env: { HEAD, ...DEVICE_ON, DEVICE_START_STUB: stub } }, (r) => {
         assert.equal(r.issue.verifyDevice ?? null, want ? `${HEAD}:${want}` : null, reason);
       });
     }
+    // A start that exits non-zero.
+    withBash(work(MOBILE), { env: { HEAD, ...DEVICE_ON, DEVICE_FAIL: "1" } }, (r) => {
+      assert.equal(r.issue.verifyDevice, `${HEAD}:deferred:start-error`);
+    });
   });
 });
 
@@ -3452,6 +3467,7 @@ describe("verify_device_housekeeping and the follow-up comment", () => {
       ["stopped:head-moved", "retry:stopped-head-moved"],
       ["stopped:threads", "retry:stopped-threads"],
       ["stopped:feedback", "retry:stopped-feedback"],
+      ["stopped:conflict", "retry:stopped-conflict"],
       // An operator's stop sticks.
       ["stopped:stop", "skipped:stopped-stop"],
       ["stopped:signal", "skipped:stopped-signal"],
@@ -3580,7 +3596,7 @@ describe("the device lane: review round (hand-back retry, In Test continuation, 
     const revising = script.lastIndexOf("<!-- drafto-factory-revising -->", pass);
     assert.ok(intest !== -1 && pass > intest && revising > intest && pass > revising);
     assert.ok(candidates > pass, "before --watch hands its browser candidates over");
-    assert.equal(script.match(/\n  verify_device_intest_work\n/g)?.length, 1);
+    assert.equal(script.match(/\n  verify_device_intest_work\n/g)?.length, 1, "after the sweep");
   });
 
   it("a promotion that stops the run doesn't promise its results", () => {
@@ -3631,23 +3647,41 @@ describe("the device lane: review round (hand-back retry, In Test continuation, 
     });
   });
 
-  it("holds the round's run, whatever its age, until a report is posted or the head moves", () => {
-    const body = [
-      seedDeviceRun({ ledgerState: "done:PASS" }), // finished long ago
-      setRunDir,
-      "verify_device_housekeeping",
-      'test -e "$RUN_DIR/followup.done" && echo DONE || echo HELD',
-    ].join("\n");
-    const state = round({ verifyDevice: `${HEAD}:running` }); // no report yet (In Review, say)
-    withBash(body, { env: env(), state }, (r) => {
+  it("holds the round's run until a report is posted, the head moves, the card leaves, or time runs out", () => {
+    const seed = (finishedAt) =>
+      [
+        seedDeviceRun({ ledgerState: "done:PASS", finishedAt }),
+        setRunDir,
+        "verify_device_housekeeping",
+        'test -e "$RUN_DIR/followup.done" && echo DONE || echo HELD',
+      ].join("\n");
+    const state = round({ verifyDevice: `${HEAD}:running` }); // no report yet
+    const inReview = JSON.stringify({ state: "OPEN", labels: [{ name: "status:in-review" }] });
+    // Just finished, card in In Review after a hand-back: held.
+    withBash(seed(minsAgo(5)), { env: env({ ISSUE_VIEW_STUB: inReview }), state }, (r) => {
+      assert.match(r.calls, /^gh issue view 7 /m, "the card's column is looked up");
       assert.match(r.stdout, /^HELD$/m);
       assert.equal(followups(r).length, 0);
       assert.equal(r.issue.deviceReportPosted ?? null, null);
     });
-    withBash(body, { env: env({ PR_VIEW_STUB: prView({ headRefOid: OLD }) }), state }, (r) => {
-      assert.match(r.stdout, /^DONE$/m);
-      assert.equal(followups(r).length, 0, "a moved head never gets its results");
-      assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}:stale`);
+    // The head moved: released, and recorded as stale.
+    withBash(
+      seed(minsAgo(5)),
+      { env: env({ ISSUE_VIEW_STUB: inReview, PR_VIEW_STUB: prView({ headRefOid: OLD }) }), state },
+      (r) => {
+        assert.match(r.stdout, /^DONE$/m);
+        assert.equal(followups(r).length, 0, "a moved head never gets its results");
+        assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}:stale`);
+      },
+    );
+    // The card is somewhere else (dragged to In Progress, say): released, posted.
+    const elsewhere = JSON.stringify({ state: "OPEN", labels: [{ name: "status:in-progress" }] });
+    withBash(seed(minsAgo(5)), { env: env({ ISSUE_VIEW_STUB: elsewhere }), state }, (r) => {
+      assert.equal(followups(r).length, 1);
+    });
+    // Past the hold cap + 60 minutes since it finished: released, posted.
+    withBash(seed(minsAgo(121)), { env: env({ ISSUE_VIEW_STUB: inReview }), state }, (r) => {
+      assert.equal(followups(r).length, 1);
     });
   });
 
@@ -3730,19 +3764,102 @@ describe("the device lane: review round (hand-back retry, In Test continuation, 
     });
   });
 
-  it("starts nothing from In Test for a state no Testing round wrote", () => {
-    const state = round({ verifyReportSha: HEAD }); // reached In Test with the lane off
-    withBash("verify_device_intest_work", { env: env(), state }, (r) => {
-      assert.doesNotMatch(r.calls, /^device start /m);
-    });
+  it("from In Test: starts a round whose lane recorded nothing, never one started with it off", () => {
+    // No record: the round started with the lane on, but nothing ran yet.
+    withBash(
+      `${startedStub.replace("$RUN_DIR", "/runs/x")}\nverify_device_intest_work`,
+      { env: env(), state: round({ verifyReportSha: HEAD }) },
+      (r) => {
+        assert.match(r.calls, /^gh pr diff 70 /m, "its platforms are read");
+        assert.match(r.calls, /^device start --issue 7 /m);
+        assert.equal(r.issue.verifyDevice, `${HEAD}:running`);
+      },
+    );
+    // A web-only PR: not applicable, nothing started.
     withBash(
       "verify_device_intest_work",
-      {
-        env: env(),
-        state: round({ verifyReportSha: HEAD, verifyDevice: `${HEAD}:skipped:lane-off` }),
+      { env: env({ DIFF_STUB: "apps/web/a.ts" }), state: round({ verifyReportSha: HEAD }) },
+      (r) => {
+        assert.doesNotMatch(r.calls, /^device start /m);
+        assert.equal(r.issue.verifyDevice, `${HEAD}:skipped:not-applicable`);
       },
-      (r) => assert.doesNotMatch(r.calls, /^device start /m),
     );
+    for (const rec of ["skipped:lane-off", "skipped:not-built"]) {
+      withBash(
+        "verify_device_intest_work",
+        { env: env(), state: round({ verifyReportSha: HEAD, verifyDevice: `${HEAD}:${rec}` }) },
+        (r) => assert.doesNotMatch(r.calls, /^device start /m, rec),
+      );
+    }
+  });
+
+  it("re-derives lane-off and not-built in Testing, and clears them when a round starts with the lane on", () => {
+    const states = `verify_lane_states "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$HEAD" 1`;
+    for (const rec of ["skipped:lane-off", "skipped:not-built"]) {
+      withBash(states, { env: env(), state: { verifyDevice: `${HEAD}:${rec}` } }, (r) => {
+        assert.equal(JSON.parse(r.stdout).device, "none", rec);
+      });
+    }
+    const begin = `verify_begin_round 7 "$HEAD" "" "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")"`;
+    withBash(begin, { env: env(), state: { verifyDevice: `${HEAD}:skipped:lane-off` } }, (r) => {
+      assert.equal(r.issue.verifyDevice ?? null, null);
+    });
+  });
+
+  it("never overwrites a head's device result with lane-off", () => {
+    const begin = `verify_begin_round 7 "$HEAD" "" "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")"`;
+    withBash(
+      begin,
+      {
+        env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser,device" },
+        state: { verifyDevice: `${HEAD}:reported:pass` },
+      },
+      (r) => assert.equal(r.issue.verifyDevice, `${HEAD}:reported:pass`),
+    );
+    // Another commit's record is replaced.
+    withBash(
+      begin,
+      {
+        env: { HEAD, VERIFY_BUILT_LANES_STUB: "shell,browser,device" },
+        state: { verifyDevice: `${OLD}:reported:pass` },
+      },
+      (r) => assert.equal(r.issue.verifyDevice, `${HEAD}:skipped:lane-off`),
+    );
+  });
+
+  it("stops the device run when the factory moves a card out of In Test itself", () => {
+    const sweep = script.slice(
+      script.indexOf("  # ── In Test feedback sweep", watchStart),
+      script.indexOf(
+        "\n  verify_device_intest_work\n",
+        script.indexOf("<!-- drafto-factory-revising -->", watchStart),
+      ),
+    );
+    const stopFb = sweep.indexOf('verify_device_stop "$ISSUE_NUM" "" feedback || true');
+    const rollback = sweep.indexOf(
+      'transition_status "$ITEM_ID" "$ISSUE_NUM" "In Progress" || true',
+    );
+    assert.ok(stopFb !== -1 && rollback > stopFb, "before the feedback rollback");
+    const stopConflict = sweep.indexOf(
+      'verify_device_stop "$ISSUE_NUM" "$INTEST_HEAD_SHA" conflict || true',
+    );
+    const conflict = sweep.indexOf('conflict_handback "$ITEM_ID" "$ISSUE_NUM" "$INTEST_PR_NUM"');
+    assert.ok(stopConflict !== -1 && conflict > stopConflict, "before the conflict hand-back");
+    const ledger =
+      'mkdir -p "$REPO_ROOT/logs/factory/device" && echo "{}" > "$REPO_ROOT/logs/factory/device/ledger.json"';
+    withBash(`${ledger}\nverify_device_stop 7 "$HEAD" conflict`, { env: env() }, (r) => {
+      assert.match(r.calls, /^device stop --issue 7 --reason conflict /m);
+    });
+  });
+
+  it("runs the In Test pass on the feedback sweep's query-failure exit too", () => {
+    const branch = slice(
+      'if ! INTEST_JSON=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items',
+      "    exit 0\n",
+      watchStart,
+    );
+    assert.match(branch, /\n\s+verify_device_intest_work\n[\s\S]*\n\s+browser_write_candidates\n/);
+    assert.equal(script.match(/\n\s+verify_device_intest_work\n/g)?.length, 2);
   });
 
   it("a run that gave way to a beta build starts again later (refunded)", () => {
