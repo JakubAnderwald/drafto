@@ -174,8 +174,8 @@ importers:
         specifier: ^29.7.0
         version: 29.7.0(@types/node@24.19.2)
       react-native-dotenv:
-        specifier: ^3.4.12
-        version: 3.4.12(@babel/runtime@8.1.2)
+        specifier: ^5.0.0
+        version: 5.0.0
       typescript:
         specifier: ~6.0.3
         version: 6.0.3
@@ -5133,6 +5133,11 @@ packages:
     resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
     engines: {node: '>=12'}
 
+  dotenv@18.0.10:
+    resolution: {integrity: sha512-89FAA1xchzK2mxVWdr5F/0rldwiueXs6zJM86rO66EzekR1iBdiXRthyG+m5GvkJaFH3C2LESzamTkgndmLT2A==}
+    engines: {node: '>=12'}
+    hasBin: true
+
   dunder-proto@1.0.1:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
     engines: {node: '>= 0.4'}
@@ -7749,10 +7754,8 @@ packages:
       react-native: '*'
       react-native-macos: '*'
 
-  react-native-dotenv@3.4.12:
-    resolution: {integrity: sha512-CEHSiLTaE1vwW/TgI5CIp/AXi2/O2Lz6oZwbxHGMRNLr50cUXMaR5ThHW/FIFWnrNK5VRCWB2YmFzk6p3csVkg==}
-    peerDependencies:
-      '@babel/runtime': ^7.20.6
+  react-native-dotenv@5.0.0:
+    resolution: {integrity: sha512-y63fXkOvLSDNSEG0ylOZhYvQi5oyY/vHRU+z5iATABbkyifwoUebG88LyAteiaiVsepnFaAwycm2/bytGJ2uUw==}
 
   react-native-fs@2.20.0:
     resolution: {integrity: sha512-VkTBzs7fIDUiy/XajOSNk0XazFE9l+QlMAce7lGuebZcag5CnjszB+u4BdqzwaQOdcYb5wsJIsqq4kxInIRpJQ==}
@@ -15146,6 +15149,8 @@ snapshots:
 
   dotenv@17.4.2: {}
 
+  dotenv@18.0.10: {}
+
   dunder-proto@1.0.1:
     dependencies:
       call-bind-apply-helpers: 1.0.2
@@ -18471,10 +18476,9 @@ snapshots:
       react-native: 0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.1(typescript@6.0.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.8)
       react-native-macos: 0.83.0(patch_hash=6219608397352d54c530a03d8ea806aaa85128b1510eae9be8dd9800ec27d15d)(@babel/core@7.29.7)(@react-native-community/cli@18.0.1(typescript@6.0.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.3.0)(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.1(typescript@6.0.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.8))(react@19.2.8)
 
-  react-native-dotenv@3.4.12(@babel/runtime@8.1.2):
+  react-native-dotenv@5.0.0:
     dependencies:
-      '@babel/runtime': 8.1.2
-      dotenv: 17.4.2
+      dotenv: 18.0.10
 
   react-native-fs@2.20.0(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@18.0.1(typescript@6.0.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.3.0)(react@19.2.8)):
     dependencies:
