@@ -10,6 +10,8 @@ vi.mock("@/env", () => ({
   },
 }));
 
+vi.mock("@/lib/report-error", () => ({ reportError: vi.fn() }));
+
 const mockNotebooks = [
   { id: "nb-1", name: "Notes", created_at: "2026-01-01", updated_at: "2026-01-01", note_count: 3 },
   { id: "nb-2", name: "Work", created_at: "2026-01-02", updated_at: "2026-01-02", note_count: 1 },
@@ -93,6 +95,7 @@ async function openDeleteConfirmForNotes(onSelect = vi.fn()) {
 // The component guards fetching with `if (hasFetched.current) return;` so a
 // single import shares that ref across all tests.
 let NotebooksSidebar: typeof import("@/components/notebooks/notebooks-sidebar").NotebooksSidebar;
+let reportError: typeof import("@/lib/report-error").reportError;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -107,6 +110,8 @@ beforeEach(async () => {
   // Re-import to get a fresh module with a new hasFetched ref
   const mod = await import("@/components/notebooks/notebooks-sidebar");
   NotebooksSidebar = mod.NotebooksSidebar;
+  // resetModules gives the sidebar a fresh report-error mock too; assert against that one.
+  ({ reportError } = await import("@/lib/report-error"));
 });
 
 describe("NotebooksSidebar", () => {
@@ -1055,6 +1060,264 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
     expect(mockFetch).toHaveBeenCalledWith("/api/notebooks");
   });
 
+  it("shows an error with Retry when the notebooks fail to load, and Retry loads them", async () => {
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />);
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't load your notebooks.");
+    expect(screen.queryByText(/No notebooks yet/)).not.toBeInTheDocument();
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), "notebooks-sidebar:load", {
+      extra: { status: 500 },
+    });
+
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Notes")).toBeInTheDocument();
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenCalledWith("nb-1");
+  });
+
+  it("doesn't move a user out of Trash when a Retry succeeds", async () => {
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    let rerender: ReturnType<typeof render>["rerender"] = () => {};
+    await act(async () => {
+      ({ rerender } = render(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />,
+      ));
+    });
+    const alert = await screen.findByRole("alert");
+
+    // The user opens Trash, then retries.
+    await act(async () => {
+      rerender(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} isTrashSelected />,
+      );
+    });
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("shows the error state and reports when the notebooks request throws", async () => {
+    const networkError = new TypeError("Failed to fetch");
+    mockFetch.mockRejectedValueOnce(networkError);
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load your notebooks.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(reportError).toHaveBeenCalledWith(networkError, "notebooks-sidebar:load");
+  });
+
+  it("keeps the list on show and only reports when a refresh fails", async () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={onSelect}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 503));
+
+    rerender(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={onSelect}
+        initialNotebooks={mockNotebooks}
+        refreshTrigger={1}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(reportError).toHaveBeenCalledWith(expect.any(Error), "notebooks-sidebar:load", {
+        extra: { status: 503 },
+      });
+    });
+    expect(screen.getByText("Notes")).toBeInTheDocument();
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load your notebooks.")).not.toBeInTheDocument();
+  });
+
+  it("applies only the newest load when an older one settles after it", async () => {
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+
+    await act(async () => {
+      render(<NotebooksSidebar selectedNotebookId={null} onSelectNotebook={vi.fn()} />);
+    });
+    const retry = within(await screen.findByRole("alert")).getByRole("button", { name: "Retry" });
+
+    // Two Retries in flight: the newer one finds no notebooks, then the older one fails.
+    let settleOlder: (res: FakeResponse) => void = () => {};
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleOlder = resolve;
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse([]));
+    await user.click(retry);
+    await user.click(retry);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No notebooks yet/)).toBeInTheDocument();
+    });
+    await act(async () => {
+      settleOlder(jsonResponse({ error: "boom" }, 500));
+    });
+
+    // The older failure is still reported, but the error state follows the newest load.
+    await waitFor(() => {
+      expect(reportError).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(/No notebooks yet/)).toBeInTheDocument();
+  });
+
+  it("loads again instead of applying a list read before a create landed", async () => {
+    const user = userEvent.setup();
+    const created = {
+      id: "nb-3",
+      name: "Fresh",
+      created_at: "2026-03-01",
+      updated_at: "2026-03-01",
+    };
+    let settleStale: (res: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return Promise.resolve(jsonResponse(created));
+      return Promise.resolve(jsonResponse([created, ...mockNotebooks]));
+    });
+
+    const { rerender } = render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    // A refresh is in flight, and the server read the list before the create.
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleStale = resolve;
+      }),
+    );
+    rerender(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+        refreshTrigger={1}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Fresh{Enter}");
+    await waitFor(() => {
+      expect(screen.getByText("Fresh")).toBeInTheDocument();
+    });
+    const listLoads = () =>
+      mockFetch.mock.calls.filter(([url, init]) => url === "/api/notebooks" && !init);
+    await waitFor(() => {
+      expect(listLoads()).toHaveLength(2);
+    });
+
+    // The stale list settles last and is ignored: the new notebook stays.
+    await act(async () => {
+      settleStale(jsonResponse(mockNotebooks));
+    });
+    expect(screen.getByText("Fresh")).toBeInTheDocument();
+  });
+
+  it("doesn't load again after a create when no load is in flight", async () => {
+    const user = userEvent.setup();
+    mockFetch.mockImplementation((_url: string, init?: RequestInit) =>
+      Promise.resolve(
+        init?.method === "POST"
+          ? jsonResponse({
+              id: "nb-3",
+              name: "Fresh",
+              created_at: "2026-03-01",
+              updated_at: "2026-03-01",
+            })
+          : jsonResponse(mockNotebooks),
+      ),
+    );
+
+    render(
+      <NotebooksSidebar
+        selectedNotebookId="nb-1"
+        onSelectNotebook={vi.fn()}
+        initialNotebooks={mockNotebooks}
+      />,
+    );
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Fresh{Enter}");
+    await waitFor(() => {
+      expect(screen.getByText("Fresh")).toBeInTheDocument();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("still opens the first notebook when a refresh replaces the first load", async () => {
+    const onSelect = vi.fn();
+    let settleFirst: (res: FakeResponse) => void = () => {};
+    mockFetch.mockReturnValueOnce(
+      new Promise<FakeResponse>((resolve) => {
+        settleFirst = resolve;
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse(mockNotebooks));
+
+    let rerender: ReturnType<typeof render>["rerender"] = () => {};
+    await act(async () => {
+      ({ rerender } = render(
+        <NotebooksSidebar selectedNotebookId={null} onSelectNotebook={onSelect} />,
+      ));
+    });
+    await act(async () => {
+      rerender(
+        <NotebooksSidebar
+          selectedNotebookId={null}
+          onSelectNotebook={onSelect}
+          refreshTrigger={1}
+        />,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Work")).toBeInTheDocument();
+    });
+    expect(onSelect).toHaveBeenCalledWith("nb-1");
+
+    // The first load settles last; its empty list doesn't replace the newer one.
+    await act(async () => {
+      settleFirst(jsonResponse([]));
+    });
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
   it("starts a new notebook at 0 notes", async () => {
     const user = userEvent.setup();
     await act(async () => {
@@ -1081,5 +1344,361 @@ describe("NotebooksSidebar — note counts (PrimeTestLab 11035 S-03)", () => {
     await waitFor(() => {
       expect(screen.getByText("Ideas").closest("[role='button']")).toHaveTextContent("0 notes");
     });
+  });
+});
+
+const NETWORK_ERROR = "Network error. Please try again.";
+
+/** The notebook rows' names, top to bottom, as the sidebar shows them. */
+function renderedNotebookNames(): string[] {
+  return screen.getAllByTestId("notebook-name").map((el) => el.textContent ?? "");
+}
+
+/** The fetch calls sent with `method`. */
+function fetchCallsWithMethod(method: string) {
+  return mockFetch.mock.calls.filter(
+    ([, init]) => (init as RequestInit | undefined)?.method === method,
+  );
+}
+
+interface SidebarNotebook {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  note_count?: number;
+}
+
+/** Renders the sidebar from a server prefetch, so no initial GET is sent. */
+async function renderSidebarWith(initialNotebooks: SidebarNotebook[], onNotebooksChange = vi.fn()) {
+  const user = userEvent.setup();
+  await act(async () => {
+    render(
+      <NotebooksSidebar
+        selectedNotebookId={initialNotebooks[0]?.id ?? null}
+        onSelectNotebook={vi.fn()}
+        onNotebooksChange={onNotebooksChange}
+        initialNotebooks={initialNotebooks}
+      />,
+    );
+  });
+  return { user, onNotebooksChange };
+}
+
+describe("NotebooksSidebar — one request per create or rename (issue 480)", () => {
+  it("sends one POST when the create field is left after Enter while the POST is pending", async () => {
+    const { user } = await renderSidebarWith(mockNotebooks);
+    let finishCreate: (response: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url === "/api/notebooks") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishCreate = resolve;
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const input = screen.getByPlaceholderText("Notebook name");
+    await user.type(input, "Ideas{Enter}");
+    // Leaving the field while its create is in flight doesn't send the name again.
+    await act(async () => {
+      input.blur();
+    });
+    expect(input).not.toHaveFocus();
+    expect(fetchCallsWithMethod("POST")).toHaveLength(1);
+
+    await act(async () => {
+      finishCreate(
+        jsonResponse({
+          id: "nb-3",
+          name: "Ideas",
+          created_at: "2026-03-01T00:00:00Z",
+          updated_at: "2026-03-01T00:00:00Z",
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Ideas")).toBeInTheDocument();
+    });
+    expect(screen.queryByPlaceholderText("Notebook name")).not.toBeInTheDocument();
+    expect(fetchCallsWithMethod("POST")).toHaveLength(1);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends one PATCH when the rename field is left after Enter while the PATCH is pending", async () => {
+    const { user } = await renderSidebarWith(mockNotebooks);
+    let finishRename: (response: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH" && url === "/api/notebooks/nb-1") {
+        return new Promise<FakeResponse>((resolve) => {
+          finishRename = resolve;
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.dblClick(screen.getByText("Notes"));
+    const input = screen.getByDisplayValue("Notes");
+    await user.clear(input);
+    await user.type(input, "Journal{Enter}");
+    await act(async () => {
+      input.blur();
+    });
+    expect(input).not.toHaveFocus();
+    expect(fetchCallsWithMethod("PATCH")).toHaveLength(1);
+
+    await act(async () => {
+      finishRename(
+        jsonResponse({ ...mockNotebooks[0], name: "Journal", updated_at: "2026-03-01T00:00:00Z" }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Journal")).toBeInTheDocument();
+    });
+    expect(screen.queryByDisplayValue("Journal")).not.toBeInTheDocument();
+    const patched = fetchCallsWithMethod("PATCH").map(([url]) => url);
+    expect(patched).toEqual(["/api/notebooks/nb-1"]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the network error under the create field when the POST fails to send", async () => {
+    const { user } = await renderSidebarWith(mockNotebooks);
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url === "/api/notebooks") {
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    const input = screen.getByPlaceholderText("Notebook name");
+    await user.type(input, "Ideas{Enter}");
+
+    const error = await screen.findByTestId("notebook-name-error");
+    expect(error).toHaveTextContent(NETWORK_ERROR);
+    expect(error).toHaveAttribute("id", "notebook-create-name-error");
+    expect(input).toHaveAttribute("aria-describedby", "notebook-create-name-error");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveValue("Ideas");
+    expect(renderedNotebookNames()).toEqual(["Notes", "Work"]);
+
+    // Leaving the refused field doesn't resend it.
+    await act(async () => {
+      input.blur();
+    });
+    expect(fetchCallsWithMethod("POST")).toHaveLength(1);
+  });
+
+  it("shows the network error under the rename field when the PATCH fails to send", async () => {
+    const { user } = await renderSidebarWith(mockNotebooks);
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH" && url === "/api/notebooks/nb-1") {
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.dblClick(screen.getByText("Notes"));
+    const input = screen.getByDisplayValue("Notes");
+    await user.clear(input);
+    await user.type(input, "Journal{Enter}");
+
+    const error = await screen.findByTestId("notebook-name-error");
+    expect(error).toHaveTextContent(NETWORK_ERROR);
+    expect(error).toHaveAttribute("id", "notebook-rename-name-error");
+    expect(input).toHaveAttribute("aria-describedby", "notebook-rename-name-error");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByDisplayValue("Journal")).toBeInTheDocument();
+
+    await act(async () => {
+      input.blur();
+    });
+    expect(fetchCallsWithMethod("PATCH")).toHaveLength(1);
+  });
+});
+
+describe("NotebooksSidebar — newest-first order (issue 480)", () => {
+  // As `GET /api/notebooks` and the layout prefetch return them: `updated_at` desc, in
+  // PostgREST's `+00:00` microsecond format. Alphabetically they'd be Alpha, Beta, Zeta.
+  const ORDERED_NOTEBOOKS: SidebarNotebook[] = [
+    {
+      id: "nb-z",
+      name: "Zeta",
+      created_at: "2026-01-03T09:00:00.000000+00:00",
+      updated_at: "2026-03-01T10:00:00.123456+00:00",
+      note_count: 2,
+    },
+    {
+      id: "nb-b",
+      name: "Beta",
+      created_at: "2026-01-02T09:00:00.000000+00:00",
+      updated_at: "2026-02-15T10:00:00.654321+00:00",
+      note_count: 1,
+    },
+    {
+      id: "nb-a",
+      name: "Alpha",
+      created_at: "2026-01-01T09:00:00.000000+00:00",
+      updated_at: "2026-02-01T10:00:00.000000+00:00",
+      note_count: 0,
+    },
+  ];
+
+  // A create's answer: the newest notebook, its name between the others alphabetically.
+  const MIDDLE_CREATED: SidebarNotebook = {
+    id: "nb-m",
+    name: "Middle",
+    created_at: "2026-04-01T08:00:00.000000+00:00",
+    updated_at: "2026-04-01T08:00:00.000000+00:00",
+  };
+
+  function answerCreateWith(created: SidebarNotebook) {
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url === "/api/notebooks") {
+        return Promise.resolve(jsonResponse(created));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+  }
+
+  function answerRenameWith(id: string, renamed: SidebarNotebook) {
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH" && url === `/api/notebooks/${id}`) {
+        return Promise.resolve(jsonResponse(renamed));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+  }
+
+  it("puts a created notebook first by its updated_at, not by its name", async () => {
+    const { user, onNotebooksChange } = await renderSidebarWith(ORDERED_NOTEBOOKS);
+    expect(renderedNotebookNames()).toEqual(["Zeta", "Beta", "Alpha"]);
+    answerCreateWith(MIDDLE_CREATED);
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Middle{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByText("Middle")).toBeInTheDocument();
+    });
+    expect(renderedNotebookNames()).toEqual(["Middle", "Zeta", "Beta", "Alpha"]);
+    expect(onNotebooksChange).toHaveBeenLastCalledWith([
+      { id: "nb-m", name: "Middle" },
+      { id: "nb-z", name: "Zeta" },
+      { id: "nb-b", name: "Beta" },
+      { id: "nb-a", name: "Alpha" },
+    ]);
+  });
+
+  it("moves a renamed notebook to the top when the rename bumps its updated_at", async () => {
+    const { user, onNotebooksChange } = await renderSidebarWith(ORDERED_NOTEBOOKS);
+    // The PATCH answer has no count; the row keeps its own.
+    answerRenameWith("nb-a", {
+      id: "nb-a",
+      name: "Omega",
+      created_at: ORDERED_NOTEBOOKS[2].created_at,
+      updated_at: "2026-04-01T08:00:00.000000+00:00",
+    });
+
+    await user.dblClick(screen.getByText("Alpha"));
+    const input = screen.getByDisplayValue("Alpha");
+    await user.clear(input);
+    await user.type(input, "Omega{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByText("Omega")).toBeInTheDocument();
+    });
+    expect(renderedNotebookNames()).toEqual(["Omega", "Zeta", "Beta"]);
+    expect(screen.getByText("Omega").closest("[role='button']")).toHaveTextContent("0 notes");
+    expect(onNotebooksChange).toHaveBeenLastCalledWith([
+      { id: "nb-a", name: "Omega" },
+      { id: "nb-z", name: "Zeta" },
+      { id: "nb-b", name: "Beta" },
+    ]);
+  });
+
+  it("compares a Z timestamp with PostgREST's +00:00 ones as instants", async () => {
+    const { user } = await renderSidebarWith(ORDERED_NOTEBOOKS);
+    // 10:00:00Z is 0.123456s before Zeta's 10:00:00.123456+00:00, though it sorts after it
+    // as a string ('Z' > '.').
+    answerRenameWith("nb-b", {
+      id: "nb-b",
+      name: "Gamma",
+      created_at: ORDERED_NOTEBOOKS[1].created_at,
+      updated_at: "2026-03-01T10:00:00Z",
+    });
+
+    await user.dblClick(screen.getByText("Beta"));
+    const input = screen.getByDisplayValue("Beta");
+    await user.clear(input);
+    await user.type(input, "Gamma{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByText("Gamma")).toBeInTheDocument();
+    });
+    expect(renderedNotebookNames()).toEqual(["Zeta", "Gamma", "Alpha"]);
+  });
+
+  it("keeps the order a create gave the list when the next refetch lands", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const sidebar = (refreshTrigger: number) => (
+      <NotebooksSidebar
+        selectedNotebookId="nb-z"
+        onSelectNotebook={onSelect}
+        initialNotebooks={ORDERED_NOTEBOOKS}
+        refreshTrigger={refreshTrigger}
+      />
+    );
+    let view: ReturnType<typeof render> | undefined;
+    await act(async () => {
+      view = render(sidebar(0));
+    });
+
+    let answerRefetch: (response: FakeResponse) => void = () => {};
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url === "/api/notebooks") {
+        return Promise.resolve(jsonResponse(MIDDLE_CREATED));
+      }
+      if (init === undefined && url === "/api/notebooks") {
+        return new Promise<FakeResponse>((resolve) => {
+          answerRefetch = resolve;
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await user.click(screen.getByLabelText("New notebook"));
+    await user.type(screen.getByPlaceholderText("Notebook name"), "Middle{Enter}");
+    await waitFor(() => {
+      expect(screen.getByText("Middle")).toBeInTheDocument();
+    });
+    const afterCreate = renderedNotebookNames();
+    expect(afterCreate).toEqual(["Middle", "Zeta", "Beta", "Alpha"]);
+
+    view?.rerender(sidebar(1));
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith("/api/notebooks");
+    });
+    // The server's answer: the same rows, `updated_at` desc. Zeta's count changed meanwhile,
+    // which shows when the refetch has landed.
+    await act(async () => {
+      answerRefetch(
+        jsonResponse([
+          { ...MIDDLE_CREATED, note_count: 0 },
+          { ...ORDERED_NOTEBOOKS[0], note_count: 3 },
+          ORDERED_NOTEBOOKS[1],
+          ORDERED_NOTEBOOKS[2],
+        ]),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Zeta").closest("[role='button']")).toHaveTextContent("3 notes");
+    });
+
+    expect(renderedNotebookNames()).toEqual(afterCreate);
   });
 });

@@ -64,4 +64,30 @@ test.describe("Search functionality", () => {
       timeout: 10000,
     });
   });
+
+  test("shows an error instead of 'No notes found' when the search request fails", async ({
+    page,
+  }) => {
+    // Answer every search with a 500, as a server outage would.
+    await page.route("**/api/notes/search**", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Internal server error" }),
+      }),
+    );
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+
+    await page.getByLabel("Search notes").click();
+    const searchInput = page.getByPlaceholder("Search notes and notebooks...");
+    await expect(searchInput).toBeVisible({ timeout: 5000 });
+
+    await searchInput.fill("anything");
+
+    const results = page.getByTestId("search-results");
+    await expect(results.getByText("Search failed — try again")).toBeVisible({ timeout: 10000 });
+    await expect(results.getByText("No notes found")).not.toBeVisible();
+  });
 });

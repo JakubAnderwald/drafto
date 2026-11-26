@@ -275,6 +275,17 @@ function emptyIssue() {
     // fail-open "coverage unknown (lane error)" note is recorded nowhere else.
     verifyCrNote: null,
     verifyReportPosts: null, // "<sha>:<count>": failed attempts to post that SHA's report
+    // The device lane (ADR-0106). Its attempts per SHA live in the lane's own
+    // ledger (logs/factory/device/ledger.json), not here.
+    verifyDevice: null, // device lane state for the round, "<sha>:<state>" (running is not terminal)
+    verifyDeviceRunDir: null, // run dir of the device lane's latest run (logs/factory/device/runs/<runId>)
+    // "<sha>:<runId>[:stale|:render-failed|:no-output]": the last device run
+    // whose follow-up comment was posted, or settled without one. Post-once.
+    deviceReportPosted: null,
+    deviceRunRequest: null, // what the factory-device-run label led to: "<sha>:<run-id>[:label-stuck]", "<sha>:waiting:<why>", "<sha>:round", "<sha>:refused" or "none:refused"
+    // Head SHA verify_promote moved to In Test (set at the handoff, whether or
+    // not its report could be posted): the device lane's In Test pass reads it.
+    verifyPromotedSha: null,
     // Plan-stage browser probe (plan-probe.mjs). One record per issue, for its
     // latest probe round; keyed by planProbeId ("<issue>-<epoch>"), which also
     // names the probe's staging dir, its report marker and the plan's ack, so a
@@ -677,6 +688,11 @@ export const VERIFY_ISSUE_FIELDS = Object.freeze([
   "verifyBounces",
   "verifyCrNote",
   "verifyReportPosts",
+  "verifyDevice",
+  "verifyDeviceRunDir",
+  "deviceReportPosted",
+  "deviceRunRequest",
+  "verifyPromotedSha",
 ]);
 
 // The plan-stage browser probe's per-issue keys (documented in emptyIssue).

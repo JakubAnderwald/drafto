@@ -196,4 +196,79 @@ describe("AppMenu", () => {
     expect(mockSignOut).toHaveBeenCalled();
     expect(logoutSteps).toEqual(["flush", "signOut"]);
   });
+
+  it("closes on a second trigger click and stays closed", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
+    );
+    const trigger = screen.getByTestId("app-menu-trigger");
+
+    await user.click(trigger);
+    expect(screen.getByTestId("import-evernote-button")).toBeInTheDocument();
+
+    // Before the fix, the trigger's mousedown closed the menu and its click reopened it.
+    await user.click(trigger);
+    expect(screen.queryByTestId("import-evernote-button")).not.toBeInTheDocument();
+    // Let any queued work run; the menu must not come back on its own.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId("import-evernote-button")).not.toBeInTheDocument();
+  });
+
+  it("reopens on a third trigger click", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
+    );
+    const trigger = screen.getByTestId("app-menu-trigger");
+
+    await user.click(trigger);
+    await user.click(trigger);
+    expect(screen.queryByTestId("import-evernote-button")).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    expect(screen.getByTestId("import-evernote-button")).toBeInTheDocument();
+  });
+
+  it("closes when clicking outside the menu", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
+    );
+
+    await user.click(screen.getByTestId("app-menu-trigger"));
+    expect(screen.getByTestId("import-evernote-button")).toBeInTheDocument();
+
+    await user.click(document.body);
+    expect(screen.queryByTestId("import-evernote-button")).not.toBeInTheDocument();
+  });
+
+  it("closes on Escape", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppMenu
+        onImportEvernote={mockOnImportEvernote}
+        onImportTickTick={mockOnImportTickTick}
+        onExportEvernote={mockOnExportEvernote}
+      />,
+    );
+
+    await user.click(screen.getByTestId("app-menu-trigger"));
+    expect(screen.getByTestId("import-evernote-button")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("import-evernote-button")).not.toBeInTheDocument();
+  });
 });

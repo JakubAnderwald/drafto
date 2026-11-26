@@ -131,8 +131,10 @@ Every ADR follows the template in [0000-adr-template.md](./0000-adr-template.md)
 | [0097](./0097-notebook-names-unique-per-user-in-app.md)                        | Notebook Names Are Unique per User, Enforced in the Apps and API                | Accepted           | 2026-11-23 |
 | [0098](./0098-middleware-verifies-session-locally-with-getclaims.md)           | Middleware Verifies the Session Locally with getClaims                          | Accepted           | 2026-11-23 |
 | [0099](./0099-mobile-attachment-cache-excluded-from-backups.md)                | Mobile Attachment Cache Excluded from Device Backups                            | Accepted           | 2026-11-25 |
+| [0099](./0099-web-reports-caught-errors-through-report-error.md)               | The Web App Reports Caught Errors Through reportError                           | Accepted           | 2026-11-24 |
 | [0101](./0101-factory-pins-model-and-revision-effort.md)                       | Factory Pins Its Claude Model, and Revision Runs at xhigh                       | Accepted           | 2026-11-25 |
 | [0102](./0102-factory-reruns-red-ci-after-noop-pass.md)                        | Factory Re-runs Red CI a No-op Fix Pass Left, Then Parks the Card               | Accepted           | 2026-11-25 |
 | [0103](./0103-factory-oversize-hold.md)                                        | Factory Holds Unsplit Oversize Cards Before Implementing                        | Accepted           | 2026-11-25 |
 | [0104](./0104-factory-split-command.md)                                        | `/split`: the Factory Files a Plan's Proposed Split                             | Accepted           | 2026-11-25 |
 | [0105](./0105-factory-adr-index-union-merge.md)                                | The Factory Union-Merges the ADR Index and Allocates ADR Numbers                | Accepted           | 2026-11-25 |
+| [0106](./0106-factory-device-lane.md)                                          | Factory Device Lane: Maestro on an Android Emulator and an iOS Simulator        | Accepted           | 2026-11-25 |

@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedNoteOwner, errorResponse, successResponse } from "@/lib/api/utils";
 import { getStorageUsage, storageQuotaExceededResponse } from "@/lib/api/storage-quota";
+import { reportError } from "@/lib/report-error";
 import {
   MAX_FILE_SIZE,
   BUCKET_NAME,
@@ -57,7 +58,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     .createSignedUploadUrl(filePath);
 
   if (urlError || !data) {
-    console.error("[attachments] Failed to create signed upload URL:", urlError?.message);
+    reportError(
+      urlError ?? new Error("createSignedUploadUrl returned no URL"),
+      "api:attachments-upload-url:signed-url",
+      { extra: { noteId } },
+    );
     return errorResponse("Failed to create upload URL", 500);
   }
 

@@ -12,6 +12,9 @@ vi.mock("@/env", () => ({
 const mockCaptureException = vi.fn();
 vi.mock("@sentry/nextjs", () => ({ captureException: mockCaptureException }));
 
+const { mockReportError } = vi.hoisted(() => ({ mockReportError: vi.fn() }));
+vi.mock("@/lib/report-error", () => ({ reportError: mockReportError }));
+
 const mockGetClaims = vi.fn();
 // The middleware verifies the session locally with getClaims() (ADR-0098). getUser() is a call to
 // Supabase Auth per request, so every test checks it is never made.
@@ -396,6 +399,30 @@ describe("Auth middleware", () => {
 
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location")!).pathname).toBe("/login");
+    // Reported at most once a minute, like a session verification failure: an outage fails every
+    // request.
+    expect(mockReportError).toHaveBeenCalledOnce();
+    expect(mockReportError).toHaveBeenCalledWith(
+      { message: "DB error" },
+      "middleware:profile-query",
+      { throttleMs: 60_000 },
+    );
+  });
+
+  it("does not report anything for an approved user's request", async () => {
+    mockGetClaims.mockResolvedValue(signedIn());
+    mockFrom.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({ data: { is_approved: true }, error: null }),
+        }),
+      }),
+    });
+
+    const response = await updateSession(createRequest("/", { session: true }));
+
+    expect(response.status).toBe(200);
+    expect(mockReportError).not.toHaveBeenCalled();
   });
 
   it("redirects approved users away from /waiting-for-approval", async () => {
@@ -478,6 +505,11 @@ describe("Auth middleware", () => {
       expect(response.status).toBe(401);
       expect(await response.json()).toEqual({ error: "Unauthorized" });
       expect(response.headers.get("location")).toBeNull();
+      expect(mockReportError).toHaveBeenCalledWith(
+        { message: "DB error" },
+        "middleware:profile-query",
+        { throttleMs: 60_000 },
+      );
     });
 
     it("answers an unapproved user's API fetch with 403 JSON", async () => {

@@ -16,6 +16,11 @@ vi.mock("@/lib/supabase/server", () => ({
   }),
 }));
 
+const mockReportError = vi.fn();
+vi.mock("@/lib/report-error", () => ({
+  reportError: (...args: unknown[]) => mockReportError(...args),
+}));
+
 vi.mock("next/headers", () => ({
   cookies: () => ({
     getAll: () => [],
@@ -63,6 +68,45 @@ describe("GET /auth/callback", () => {
     const location = new URL(response.headers.get("location")!);
     expect(location.pathname).toBe("/login");
     expect(location.searchParams.get("error")).toBe("auth-callback-error");
+  });
+
+  it("reports a returned AuthError as a throttled warning (expired or reused links are routine)", async () => {
+    const authError = { message: "Invalid code", status: 400 };
+    mockExchangeCode.mockResolvedValue({ error: authError });
+
+    const request = new NextRequest("http://localhost:3000/auth/callback?code=bad-code");
+    await GET(request);
+
+    expect(mockReportError).toHaveBeenCalledTimes(1);
+    expect(mockReportError).toHaveBeenCalledWith(authError, "auth:callback", {
+      level: "warning",
+      throttleMs: 60_000,
+    });
+  });
+
+  it("reports a thrown error at error level, throttled under its own where, and still redirects to login", async () => {
+    const thrown = new Error("network down");
+    mockExchangeCode.mockRejectedValue(thrown);
+
+    const request = new NextRequest("http://localhost:3000/auth/callback?code=test-code");
+    const response = await GET(request);
+
+    expect(response.status).toBe(307);
+    const location = new URL(response.headers.get("location")!);
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("error")).toBe("auth-callback-error");
+    expect(mockReportError).toHaveBeenCalledTimes(1);
+    expect(mockReportError).toHaveBeenCalledWith(thrown, "auth:callback:exchange-threw", {
+      throttleMs: 60_000,
+    });
+  });
+
+  it("reports nothing when the code exchange succeeds", async () => {
+    mockExchangeCode.mockResolvedValue({ error: null });
+
+    await GET(new NextRequest("http://localhost:3000/auth/callback?code=test-code"));
+
+    expect(mockReportError).not.toHaveBeenCalled();
   });
 
   it("redirects to login when no code provided", async () => {

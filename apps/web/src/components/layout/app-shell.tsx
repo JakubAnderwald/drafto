@@ -8,6 +8,7 @@ import { NoteEditorPanel } from "@/components/notes/note-editor-panel";
 import { TrashList } from "@/components/notes/trash-list";
 import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Alert } from "@/components/ui/alert";
 import { AppMenu } from "@/components/layout/app-menu";
 import { ImportEvernoteDialog } from "@/components/import/import-evernote-dialog";
 import { ImportTickTickDialog } from "@/components/import/import-ticktick-dialog";
@@ -16,6 +17,7 @@ import { SearchOverlay } from "@/components/search/search-overlay";
 import { useNoteRemovals, type NoteRemovalOutcome } from "@/hooks/use-note-removals";
 import { usePaneCollapse } from "@/hooks/use-pane-collapse";
 import type { NoteListPatch } from "@/lib/note-patch";
+import { reportError } from "@/lib/report-error";
 
 interface NotebookInfo {
   id: string;
@@ -27,6 +29,27 @@ interface NoteListItem {
   title: string;
   updated_at: string;
 }
+
+// How a failed delete or move is reported and shown.
+interface RemovalFailure {
+  where: string;
+  description: string;
+  message: string;
+}
+
+const DELETE_FAILURE: RemovalFailure = {
+  where: "app-shell:delete-note",
+  description: "Failed to delete note",
+  message: "Couldn't delete the note.",
+};
+
+const MOVE_FAILURE: RemovalFailure = {
+  where: "app-shell:move-note",
+  description: "Failed to move note",
+  message: "Couldn't move the note.",
+};
+
+const CREATE_FAILURE_MESSAGE = "Couldn't create the note. Try again.";
 
 interface InitialNotebook {
   id: string;
@@ -233,6 +256,15 @@ export function AppShell({
   const [searchOpen, setSearchOpen] = useState(false);
   const { notebooksCollapsed, notesCollapsed, togglePane } = usePaneCollapse();
   const [lastNoteUpdate, setLastNoteUpdate] = useState<NoteListPatch | null>(null);
+  // A failed create, delete or move, shown above the note list. The next one of those
+  // clears it, and so does a notebook switch: the notebook it was shown with is kept so
+  // a render can tell the selection changed (React's "adjust state on a change" pattern).
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionErrorNotebookId, setActionErrorNotebookId] = useState(selectedNotebookId);
+  if (actionErrorNotebookId !== selectedNotebookId) {
+    setActionErrorNotebookId(selectedNotebookId);
+    setActionError(null);
+  }
 
   // The selection as last committed, for code that runs when a request settles. A
   // layout effect updates it during the commit, before any later response can read it.
@@ -240,6 +272,18 @@ export function AppShell({
   useLayoutEffect(() => {
     committedNoteId.current = selectedNoteId;
   }, [selectedNoteId]);
+  const committedNotebookId = useRef(selectedNotebookId);
+  useLayoutEffect(() => {
+    committedNotebookId.current = selectedNotebookId;
+  }, [selectedNotebookId]);
+
+  // Shows a failure only while the notebook its action started in is still selected. A
+  // response that lands after a switch is still reported, but its message would sit
+  // over a different notebook's notes. A later action in the same notebook doesn't hide
+  // an earlier one's failure: that note still failed, and the user needs to know.
+  const showActionError = useCallback((startedIn: string | null, message: string) => {
+    if (committedNotebookId.current === startedIn) setActionError(message);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -308,6 +352,7 @@ export function AppShell({
 
   const handleCreateNote = useCallback(async () => {
     if (!selectedNotebookId) return;
+    setActionError(null);
 
     try {
       const res = await fetch(`/api/notebooks/${selectedNotebookId}/notes`, {
@@ -316,7 +361,10 @@ export function AppShell({
 
       if (handleAuthError(res)) return;
       if (!res.ok) {
-        console.error("Failed to create note:", res.status);
+        reportError(new Error(`Failed to create note: ${res.status}`), "app-shell:create-note", {
+          extra: { status: res.status, notebookId: selectedNotebookId },
+        });
+        showActionError(selectedNotebookId, CREATE_FAILURE_MESSAGE);
         return;
       }
 
@@ -324,9 +372,10 @@ export function AppShell({
       setSelectedNoteId(note.id);
       setRefreshTrigger((prev) => prev + 1);
     } catch (err) {
-      console.error("Failed to create note:", err);
+      reportError(err, "app-shell:create-note", { extra: { notebookId: selectedNotebookId } });
+      showActionError(selectedNotebookId, CREATE_FAILURE_MESSAGE);
     }
-  }, [selectedNotebookId]);
+  }, [selectedNotebookId, showActionError]);
 
   const handleSelectNotebook = useCallback((id: string | null) => {
     setSelectedNotebookId(id);
@@ -380,15 +429,18 @@ export function AppShell({
   });
 
   // A delete and a move share one lifecycle: the request's outcome decides the next
-  // selection and the refresh. Each caller supplies only its request and its logs.
+  // selection and the refresh. Each caller supplies only its request and how a failure
+  // is reported and shown. A signed-out response is neither: the page is leaving.
   const runRemoval = useCallback(
     async (
       noteId: string,
       remainingIds: string[],
       request: () => Promise<Response>,
-      log: { failedStatus: (status: number) => void; error: (err: unknown) => void },
+      failure: RemovalFailure,
     ) => {
       beginRemoval(noteId);
+      setActionError(null);
+      const startedIn = committedNotebookId.current;
       let outcome: NoteRemovalOutcome = "failed";
       try {
         const res = await request();
@@ -398,25 +450,31 @@ export function AppShell({
           return;
         }
         if (!res.ok) {
-          log.failedStatus(res.status);
+          reportError(new Error(`${failure.description}: ${res.status}`), failure.where, {
+            extra: { status: res.status, noteId },
+          });
+          showActionError(startedIn, failure.message);
           return;
         }
         outcome = "removed";
       } catch (err) {
-        log.error(err);
+        reportError(err, failure.where, { extra: { noteId } });
+        showActionError(startedIn, failure.message);
       } finally {
         settleRemoval(noteId, remainingIds, outcome);
       }
     },
-    [beginRemoval, settleRemoval],
+    [beginRemoval, settleRemoval, showActionError],
   );
 
   const handleDeleteNote = useCallback(
     (noteId: string, remainingIds: string[]) =>
-      runRemoval(noteId, remainingIds, () => fetch(`/api/notes/${noteId}`, { method: "DELETE" }), {
-        failedStatus: (status) => console.error(new Error(`Failed to delete note: ${status}`)),
-        error: (err) => console.error("Failed to delete note:", err),
-      }),
+      runRemoval(
+        noteId,
+        remainingIds,
+        () => fetch(`/api/notes/${noteId}`, { method: "DELETE" }),
+        DELETE_FAILURE,
+      ),
     [runRemoval],
   );
 
@@ -432,7 +490,6 @@ export function AppShell({
         if (handleAuthError(res)) return;
         if (!res.ok) {
           const err = new Error(`Failed to restore note: ${res.status}`);
-          console.error(err);
           setRefreshTrigger((prev) => prev + 1);
           throw err;
         }
@@ -441,7 +498,7 @@ export function AppShell({
         // refetching it would re-suspend an editor opened while the PATCH was in flight.
         refreshLists();
       } catch (err) {
-        console.error("Failed to restore note:", err);
+        reportError(err, "app-shell:restore-note", { extra: { noteId } });
         setRefreshTrigger((prev) => prev + 1);
         throw err;
       }
@@ -458,12 +515,11 @@ export function AppShell({
       if (handleAuthError(res)) return;
       if (!res.ok) {
         const err = new Error(`Failed to permanently delete note: ${res.status}`);
-        console.error(err);
         setRefreshTrigger((prev) => prev + 1);
         throw err;
       }
     } catch (err) {
-      console.error("Failed to permanently delete note:", err);
+      reportError(err, "app-shell:permanent-delete-note", { extra: { noteId } });
       setRefreshTrigger((prev) => prev + 1);
       throw err;
     }
@@ -480,10 +536,7 @@ export function AppShell({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ notebook_id: targetNotebookId }),
           }),
-        {
-          failedStatus: (status) => console.error("Failed to move note:", status),
-          error: (err) => console.error("Failed to move note:", err),
-        },
+        MOVE_FAILURE,
       ),
     [runRemoval],
   );
@@ -607,6 +660,12 @@ export function AppShell({
             <PanelCollapseIcon />
           </IconButton>
         </div>
+
+        {actionError && (
+          <Alert className="mx-2 mt-2 shrink-0" onDismiss={() => setActionError(null)}>
+            {actionError}
+          </Alert>
+        )}
 
         {viewingTrash ? (
           <Suspense fallback={<ListLoadingSkeleton label="Loading trash" />}>

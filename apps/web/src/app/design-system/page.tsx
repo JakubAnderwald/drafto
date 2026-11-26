@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { outlineEntry, type OutlineEntry } from "@/components/legal/document-outline";
 import { LegalLinks } from "@/components/legal/legal-links";
 import { NumberedSection } from "@/components/legal/numbered-section";
 import { TableOfContents } from "@/components/legal/table-of-contents";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardBody, CardFooter } from "@/components/ui/card";
@@ -196,9 +197,12 @@ function ColorScale({ label, prefix, shades }: ColorScaleProps) {
 
 export default function DesignSystemPage() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownTriggerRef = useRef<HTMLButtonElement>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [typedConfirmOpen, setTypedConfirmOpen] = useState(false);
   const [typedConfirmation, setTypedConfirmation] = useState("");
+  const [alertDismissed, setAlertDismissed] = useState(false);
+  const [alertRetries, setAlertRetries] = useState(0);
 
   const closeTypedConfirm = () => {
     setTypedConfirmOpen(false);
@@ -546,6 +550,23 @@ export default function DesignSystemPage() {
         </div>
       </Section>
 
+      <Section title="Alert">
+        <div className="max-w-md space-y-3">
+          <Alert>Couldn&apos;t load your notebooks.</Alert>
+          {alertDismissed ? (
+            <Button variant="secondary" size="sm" onClick={() => setAlertDismissed(false)}>
+              Show dismissible alert
+            </Button>
+          ) : (
+            <Alert onDismiss={() => setAlertDismissed(true)}>Couldn&apos;t create the note.</Alert>
+          )}
+          <Alert action={{ label: "Retry", onClick: () => setAlertRetries((n) => n + 1) }}>
+            Couldn&apos;t move the note.
+            {alertRetries > 0 && <span className="ml-1 text-xs">(retried {alertRetries}×)</span>}
+          </Alert>
+        </div>
+      </Section>
+
       <Section title="ProgressBar">
         <div className="max-w-md space-y-4">
           {(
@@ -608,10 +629,19 @@ export default function DesignSystemPage() {
 
       <Section title="DropdownMenu">
         <div className="relative inline-block">
-          <Button variant="secondary" onClick={() => setDropdownOpen(!dropdownOpen)}>
+          <Button
+            ref={dropdownTriggerRef}
+            variant="secondary"
+            onClick={() => setDropdownOpen(!dropdownOpen)}
+          >
             Open menu
           </Button>
-          <DropdownMenu open={dropdownOpen} onClose={() => setDropdownOpen(false)} align="left">
+          <DropdownMenu
+            open={dropdownOpen}
+            onClose={() => setDropdownOpen(false)}
+            triggerRef={dropdownTriggerRef}
+            align="left"
+          >
             <DropdownMenuLabel>Actions</DropdownMenuLabel>
             <DropdownMenuItem onClick={() => setDropdownOpen(false)}>Edit</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setDropdownOpen(false)}>Duplicate</DropdownMenuItem>

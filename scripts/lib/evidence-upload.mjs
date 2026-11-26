@@ -45,6 +45,7 @@
 //   node evidence-upload.mjs upload --issue <n> --sha <40-hex> --run-id <id>
 //        --evidence-dir <dir> --source browser --guard-log <session.jsonl|"">
 //        | --source macos   (shots/NN-<label>.png in --evidence-dir)
+//        | --source device  (a device run's evidence/: its shots.json, ADR-0106)
 //        --render-json <file> --account-file <f|""> --ocr <bin|"">
 //        [--bypass-file <f>] [--signin-key-file <f>]
 //        --log-dir <dir> --repo-root <dir> --out <upload.json>
@@ -52,12 +53,22 @@
 //     --source macos in an unattended session (DRAFTO_UNATTENDED=1) or while
 //     the run's state.env (beside --evidence-dir, whose run dir is resolved
 //     once, so both checks and the reads see one run) exists, when
-//     --render-json says the report (or its browser lane, or the composed
-//     body) was withheld or can't be read, when the selftest hasn't passed
+//     --render-json says the report (or its browser lane, for --source
+//     device its device lane, or the composed body) was withheld or can't be
+//     read, when the selftest hasn't passed
 //     (checked again after the scan, just before the push), or
 //     when the OCR helper or a given secret file can't be used (each image's
 //     OCR text is scanned for the password, the bypass secret and the dev
-//     service-role key it names, as well as the patterns). Writes
+//     service-role key it names, as well as the patterns; for --source
+//     device, --account-file is the device account file and its
+//     E2E_TEST_PASSWORD is the password). A device run is published
+//     unattended, like a browser run: its supervisor, not a model, captured
+//     and hashed every shot (ADR-0106 decision 8). Its --run-id is
+//     deviceEvidenceRunId(<the device run id>), so a run publishes once: it
+//     is refused ("device-running") until the run's device-output.json, beside
+//     --evidence-dir (pinned to its real run dir, like a macOS run's), says
+//     the run finished: a finishedAt, and at least one platform, every one in
+//     a terminal state. Writes
 //     --out (mode 600): {ok, issue, sha, runId, ref, commit, images: [{n,
 //     url, local, name[, label]}], overflow: [{n, path, why}]} or {ok: false,
 //     reason}. Exit 0 either way; 2 on a usage error.
@@ -68,8 +79,10 @@ import * as nodeFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { deviceEvidenceRunId } from "./evidence-embed.mjs";
 import {
   browserManifest,
+  deviceManifest,
   helperOcr,
   macosManifest,
   ocrAvailable,
@@ -88,7 +101,11 @@ export const UPLOAD_FILE = "upload.json";
 export const SWITCH_ENV = "FACTORY_EVIDENCE_UPLOAD";
 // <kind>-<stamp>: intest-20261110T051950, verify-…, macos-20261110-051950.
 export const RUN_ID_RE = /^[a-z][a-z0-9]*-[0-9A-Za-z][0-9A-Za-z_-]{0,47}$/;
-export const SOURCES = Object.freeze(["browser", "macos"]);
+export const SOURCES = Object.freeze(["browser", "macos", "device"]);
+
+// deviceEvidenceRunId lives in evidence-embed.mjs, so verify-report.mjs
+// (which this module imports) can check a device record's run id too.
+export { deviceEvidenceRunId };
 
 // A 1×1 PNG: the selftest's image.
 export const SELFTEST_PNG = Buffer.from(
@@ -229,13 +246,18 @@ export function selftestFile(logDir) {
  * Whether a render's JSON line says its report must not carry images. Only an
  * explicit clean decision lets them through: the browser render's
  * `withheld: false`, or the verification render's `withheld.browser: false`,
- * with `secretHits` a list of strings holding no `body:` hit. Anything else
+ * with `secretHits` a list of strings holding no `body:` hit. For <source>
+ * device it is `withheld.device: false` (the verification render's, or the
+ * device follow-up's, verify-report.mjs --kind device). Anything else
  * (unreadable, a field missing or of another type) counts as withheld.
  */
-export function renderWithheld(json) {
+export function renderWithheld(json, source = "browser") {
   if (json === null || typeof json !== "object" || Array.isArray(json)) return true;
   const w = json.withheld;
-  const clean = w === false || (w !== null && typeof w === "object" && w.browser === false);
+  const lane = source === "device" ? "device" : "browser";
+  const clean =
+    (lane === "browser" && w === false) ||
+    (w !== null && typeof w === "object" && w[lane] === false);
   if (!clean) return true;
   const hits = json.secretHits;
   if (!Array.isArray(hits) || hits.some((h) => typeof h !== "string")) return true;
@@ -391,12 +413,14 @@ export function prepareRun({ source, evidenceDir, guardLog, ocrBin, secrets, dep
       return { ok: false, reason: "no-session" };
     }
     entries = browserManifest(text);
+  } else if (source === "device") {
+    entries = deviceManifest(evidenceDir);
   } else {
     entries = macosManifest(evidenceDir);
   }
   const ocr = deps.ocr ?? (ocrAvailable(ocrBin) ? helperOcr(ocrBin) : null);
-  // A browser run's screenshots are published unattended, so one showing an
-  // email address stays on the Mac mini. A macOS run's aren't held for that:
+  // A browser or device run's screenshots are published unattended, so one
+  // showing an email address stays on the Mac mini. A macOS run's aren't held for that:
   // the desktop sidebar shows the signed-in account's email on every screen,
   // and evidence-post.mjs publishes only after the operator looked at each.
   const holdEmails = source !== "macos";
@@ -536,7 +560,9 @@ function selectAndPublish({
   recheck,
 }) {
   const literal = (file, key) => (file ? readSecretValue(file, key) : "");
-  const password = literal(accountFile, "FACTORY_BROWSER_PASSWORD");
+  // A device run signs in with the device lane's own dev account (ADR-0106).
+  const passwordKey = source === "device" ? "E2E_TEST_PASSWORD" : "FACTORY_BROWSER_PASSWORD";
+  const password = literal(accountFile, passwordKey);
   const bypass = literal(bypassFile, "VERCEL_AUTOMATION_BYPASS_SECRET");
   const signinKey = literal(signinKeyFile, "DEV_SUPABASE_SERVICE_ROLE_KEY");
   if (password === null) return { ok: false, reason: "account-file" };
@@ -552,6 +578,44 @@ function selectAndPublish({
   // switch) must stop an upload that is still scanning too.
   const gate = recheck();
   return gate ? { ok: false, reason: gate } : publishRun({ issue, sha, runId, selection, git });
+}
+
+// A device run's platforms, and the states a platform ends in
+// (device-lane.mjs: done, or failed / stopped / unavailable with a reason).
+const DEVICE_RUN_PLATFORMS = new Set(["android", "ios"]);
+const DEVICE_TERMINAL_STATE = /^(?:done|(?:failed|stopped|unavailable)(?::.*)?)$/;
+
+// A device run publishes once per run (its evidence ref is keyed by the run
+// id), so only after the run has finished: device-output.json, beside its
+// evidence/ (<evidenceDir>, pinned by pinnedShotsDir), has a finishedAt and at
+// least one platform, every one of them a device platform in a terminal
+// state. An upload made mid-run would freeze the set without the platforms
+// still to come.
+function deviceRunFinished(evidenceDir) {
+  let output;
+  try {
+    output = JSON.parse(
+      nodeFs.readFileSync(path.join(path.dirname(evidenceDir), "device-output.json"), "utf8"),
+    );
+  } catch {
+    return false;
+  }
+  if (output === null || typeof output !== "object") return false;
+  if (typeof output.finishedAt !== "string" || !output.finishedAt) return false;
+  const platforms = output.platforms;
+  if (platforms === null || typeof platforms !== "object" || Array.isArray(platforms)) return false;
+  const entries = Object.entries(platforms);
+  return (
+    entries.length > 0 &&
+    entries.every(
+      ([name, p]) =>
+        DEVICE_RUN_PLATFORMS.has(name) &&
+        p !== null &&
+        typeof p === "object" &&
+        typeof p.state === "string" &&
+        DEVICE_TERMINAL_STATE.test(p.state),
+    )
+  );
 }
 
 // A macOS run's state.env sits beside its shots/: while it exists, the run's
@@ -608,8 +672,11 @@ export function uploadRun({
     // A macOS run is production and is published by a person (evidence-post.mjs
     // refuses the same way): never from an unattended session, and never while
     // its throwaway account may still be live, whatever calls. Its shots/ is
-    // pinned first, so both gate checks and the reads see one run.
-    const shotsDir = source === "macos" ? pinnedShotsDir(evidenceDir) : evidenceDir;
+    // pinned first, so both gate checks and the reads see one run; a device
+    // run's evidence/ is pinned the same way, so the run whose finish the
+    // gate checks is the run whose screenshots are read.
+    const pinned = source === "macos" || source === "device";
+    const shotsDir = pinned ? pinnedShotsDir(evidenceDir) : evidenceDir;
     const macosGate = () => {
       if (source !== "macos") return null;
       if (env.DRAFTO_UNATTENDED === "1") return "unattended";
@@ -617,7 +684,13 @@ export function uploadRun({
       if (shotsDir === null) return "error";
       return macosAccountLive(shotsDir) ? "account-live" : null;
     };
-    const gates = () => macosGate() ?? uploadGate({ env, withheld, logDir });
+    const deviceGate = () => {
+      if (source !== "device") return null;
+      // No run dir to look in: whether the run finished can't be told.
+      if (shotsDir === null) return "error";
+      return deviceRunFinished(shotsDir) ? null : "device-running";
+    };
+    const gates = () => macosGate() ?? deviceGate() ?? uploadGate({ env, withheld, logDir });
     const gate = gates();
     const prior = readJson(out);
     if (gate) {
@@ -703,7 +776,7 @@ function cmdUpload(flags, deps) {
   // "" when the run left no session id: no manifest, so nothing is published.
   const guardLog = source === "browser" ? present(flags, "guard-log") : "";
   // A render whose JSON can't be read counts as withheld: fail closed.
-  const withheld = renderWithheld(readJson(required(flags, "render-json")));
+  const withheld = renderWithheld(readJson(required(flags, "render-json")), source);
   const result = uploadRun({
     issue,
     sha,

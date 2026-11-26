@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { getAuthenticatedNoteOwner, errorResponse, successResponse } from "@/lib/api/utils";
 import { getStorageUsage, storageQuotaExceededResponse } from "@/lib/api/storage-quota";
+import { reportError } from "@/lib/report-error";
 import {
   BUCKET_NAME,
   MAX_FILE_SIZE,
@@ -103,7 +104,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Clean up: remove DB record and storage object
     await supabase.from("attachments").delete().eq("id", attachment.id);
     await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-    console.error("[attachments] Failed to generate signed URL:", urlError?.message);
+    reportError(
+      urlError ?? new Error("createSignedUrl returned no URL"),
+      "api:attachments-confirm:signed-url",
+      { extra: { noteId } },
+    );
     return errorResponse("Failed to generate file URL", 500);
   }
 

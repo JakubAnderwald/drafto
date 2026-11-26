@@ -155,6 +155,16 @@ describe("verify shell prompt — safety rules", () => {
     assert.match(flat, /\*\*Never touch production\.\*\*/);
   });
 
+  it("says the device lane, not this session, runs devices (ADR-0106)", () => {
+    assert.match(flat, /Nothing here can run an iOS or Android build or a simulator/);
+    assert.match(flat, /the guard denies the device tools/);
+    assert.match(flat, /The factory's device lane runs the repo's Maestro flows/);
+    assert.match(flat, /outside this session, and the report adds its results/);
+    for (const bin of ["maestro", "adb", "emulator", "xcrun", "xcodebuild", "gradle"]) {
+      assert.ok(DENY_COMMANDS.includes(bin), bin);
+    }
+  });
+
   it("documents webViaShared as the bundle builder emits it (ADR-0053, 5C)", () => {
     assert.match(
       flat,

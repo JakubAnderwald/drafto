@@ -8,9 +8,19 @@ vi.mock("@/env", () => ({
   },
 }));
 
+const { mockReportError } = vi.hoisted(() => ({ mockReportError: vi.fn() }));
+vi.mock("@/lib/report-error", () => ({ reportError: mockReportError }));
+
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
 const mockCreateSignedUrls = vi.fn().mockResolvedValue({ data: [], error: null });
+type SignedUrlResult = {
+  data: { signedUrl: string } | null;
+  error: { message: string } | null;
+};
+const signedUrlOk = (): Promise<SignedUrlResult> =>
+  Promise.resolve({ data: { signedUrl: "https://signed.test/url" }, error: null });
+const mockCreateSignedUrl = vi.fn<(filePath: string) => Promise<SignedUrlResult>>(signedUrlOk);
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: () => ({
@@ -18,8 +28,7 @@ vi.mock("@/lib/supabase/server", () => ({
     from: mockFrom,
     storage: {
       from: () => ({
-        createSignedUrl: () =>
-          Promise.resolve({ data: { signedUrl: "https://signed.test/url" }, error: null }),
+        createSignedUrl: mockCreateSignedUrl,
         createSignedUrls: mockCreateSignedUrls,
       }),
     },
@@ -53,6 +62,7 @@ const params = Promise.resolve({ id: "note-1" });
 describe("Notes API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCreateSignedUrl.mockImplementation(signedUrlOk);
   });
 
   describe("GET /api/notes/[id]", () => {
@@ -156,6 +166,155 @@ describe("Notes API", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.content[0].props.url).toBe("https://signed.test/url");
+    });
+
+    it("reports a failed write of the converted content, with the note id", async () => {
+      authenticateAs("user-1");
+      const tiptapContent = {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Hello" }] }],
+      };
+      const note = { id: "note-1", title: "Test", content: tiptapContent };
+      const updateError = { message: "update failed" };
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: note, error: null }),
+              }),
+            }),
+          }),
+          update: () => ({
+            eq: () => ({ eq: () => Promise.resolve({ error: updateError }) }),
+          }),
+        };
+      });
+
+      const { GET } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1");
+      const response = await GET(request, { params });
+
+      // The write is fire-and-forget: the read still succeeds with the converted content.
+      expect(response.status).toBe(200);
+      expect(Array.isArray((await response.json()).content)).toBe(true);
+      await vi.waitFor(() =>
+        expect(mockReportError).toHaveBeenCalledWith(
+          updateError,
+          "api:notes-get:persist-converted",
+          { extra: { noteId: "note-1" } },
+        ),
+      );
+    });
+
+    it("reports attachment signing failures once per request, without file paths", async () => {
+      authenticateAs("user-1");
+      const content = [
+        { type: "image", props: { url: "attachment://user-1/note-1/a.jpg" }, children: [] },
+        { type: "image", props: { url: "attachment://user-1/note-1/b.jpg" }, children: [] },
+        { type: "image", props: { url: "attachment://user-1/note-1/c.jpg" }, children: [] },
+      ];
+      const note = { id: "note-1", title: "Test", content };
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: note, error: null }),
+              }),
+            }),
+          }),
+        };
+      });
+      const signError = { message: "Object not found" };
+      mockCreateSignedUrl.mockImplementation((filePath: string) =>
+        filePath.endsWith("b.jpg")
+          ? signedUrlOk()
+          : Promise.resolve({ data: null, error: signError }),
+      );
+
+      const { GET } = await import("@/app/api/notes/[id]/route");
+      const request = new NextRequest("http://localhost:3000/api/notes/note-1");
+      const response = await GET(request, { params });
+
+      // Unchanged response: a failed image keeps its attachment:// URL, the others are signed.
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.content.map((block: { props: { url: string } }) => block.props.url)).toEqual([
+        "attachment://user-1/note-1/a.jpg",
+        "https://signed.test/url",
+        "attachment://user-1/note-1/c.jpg",
+      ]);
+
+      expect(mockReportError).toHaveBeenCalledOnce();
+      expect(mockReportError).toHaveBeenCalledWith(signError, "api:notes-get:sign-attachments", {
+        extra: { noteId: "note-1", failedCount: 2 },
+      });
+      expect(JSON.stringify(mockReportError.mock.calls)).not.toContain("jpg");
+    });
+
+    it("reports a signing call that returns no URL", async () => {
+      authenticateAs("user-1");
+      const content = [
+        { type: "image", props: { url: "attachment://user-1/note-1/a.jpg" }, children: [] },
+      ];
+      const note = { id: "note-1", title: "Test", content };
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: note, error: null }),
+              }),
+            }),
+          }),
+        };
+      });
+      mockCreateSignedUrl.mockImplementation(() => Promise.resolve({ data: null, error: null }));
+
+      const { GET } = await import("@/app/api/notes/[id]/route");
+      const response = await GET(new NextRequest("http://localhost:3000/api/notes/note-1"), {
+        params,
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockReportError).toHaveBeenCalledOnce();
+      expect(mockReportError).toHaveBeenCalledWith(
+        expect.any(Error),
+        "api:notes-get:sign-attachments",
+        { extra: { noteId: "note-1", failedCount: 1 } },
+      );
+    });
+
+    it("does not report when every attachment is signed", async () => {
+      authenticateAs("user-1");
+      const content = [
+        { type: "image", props: { url: "attachment://user-1/note-1/a.jpg" }, children: [] },
+      ];
+      const note = { id: "note-1", title: "Test", content };
+      mockFrom.mockImplementation((table: string) => {
+        if (table === "profiles") return approvedProfile;
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({ data: note, error: null }),
+              }),
+            }),
+          }),
+        };
+      });
+
+      const { GET } = await import("@/app/api/notes/[id]/route");
+      const response = await GET(new NextRequest("http://localhost:3000/api/notes/note-1"), {
+        params,
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockReportError).not.toHaveBeenCalled();
     });
 
     it("returns is_trashed so the editor can see a note trashed on another device", async () => {

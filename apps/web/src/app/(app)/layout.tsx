@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { ActivityPing } from "@/components/layout/activity-ping";
 import { NOTE_COUNT_FILTER_COLUMN, withNoteCount } from "@/lib/api/notebook-note-count";
+import { reportError } from "@/lib/report-error";
 
 async function ensureDefaultNotebook(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -78,7 +79,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     .order("updated_at", { ascending: false });
 
   if (notebooksError) {
-    console.error("[layout] Failed to prefetch notebooks:", notebooksError.message);
+    // Falls back to an empty prefetch: the sidebar fetches the notebooks itself.
+    reportError(notebooksError, "app-layout:prefetch-notebooks");
   }
 
   const firstNotebookId = notebooks?.[0]?.id ?? null;
@@ -93,7 +95,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       .eq("is_trashed", false)
       .order("updated_at", { ascending: false });
     if (notesError) {
-      console.error("[layout] Failed to prefetch notes:", notesError.message);
+      reportError(notesError, "app-layout:prefetch-notes");
     }
     initialNotes = notes ?? [];
   }

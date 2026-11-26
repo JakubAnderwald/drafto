@@ -1,6 +1,7 @@
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import {
   appendFileSync,
@@ -20,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   CAP_WHY,
+  DEVICE_HASH_WHY,
   EMAIL_WHY,
   MAX_IMAGES,
   MAX_IMAGE_BYTES,
@@ -28,6 +30,7 @@ import {
   OFF_ORIGIN_WHY,
   browserManifest,
   checkImage,
+  deviceManifest,
   helperOcr,
   macosManifest,
   ocrAvailable,
@@ -721,6 +724,282 @@ describe("evidence-images: macosManifest", () => {
     assert.deepEqual(macosManifest(join(tmp, "nope")), []);
     writeFileSync(join(tmp, "file"), "x");
     assert.deepEqual(macosManifest(join(tmp, "file")), []);
+  });
+});
+
+// ── deviceManifest (ADR-0106 decision 8) ────────────────────────────────────
+
+describe("evidence-images: deviceManifest", () => {
+  let tmp;
+  let ev;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "evidence-images-device-"));
+    ev = join(tmp, "evidence");
+    mkdirSync(ev, { mode: 0o700 });
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+
+  /**
+   * Write a supervisor shot and return its shots.json entry, as captureShot
+   * writes them. <over> changes the entry; the file holds <bytes>.
+   */
+  const capture = (platform, name, bytes, over = {}) => {
+    mkdirSync(join(ev, `device-${platform}`), { recursive: true });
+    writeFileSync(join(ev, `device-${platform}`, name), bytes);
+    return {
+      file: `device-${platform}/${name}`,
+      sha256: sha256(bytes),
+      platform,
+      flow: `${name.replace(/^\d{2}-/, "").replace(/\.png$/, "")}.yaml`,
+      capturedAt: "2026-11-10T05:19:50Z",
+      pass: "final",
+      ...over,
+    };
+  };
+  const writeShots = (list) => writeFileSync(join(ev, "shots.json"), JSON.stringify(list));
+
+  it("lists the supervisor's final-pass shots, Android first, slots running over both platforms", () => {
+    const a = png("ios-1");
+    const b = png("android-1");
+    const c = png("android-2");
+    writeShots([
+      capture("ios", "01-ios-all.png", a),
+      capture("android", "02-notes.png", c),
+      capture("android", "01-login.png", b),
+    ]);
+    assert.deepEqual(deviceManifest(ev), [
+      {
+        slot: 1,
+        name: "device-android/01-login.png",
+        missing: null,
+        label: "android: login.yaml",
+        sha256: sha256(b),
+      },
+      {
+        slot: 2,
+        name: "device-android/02-notes.png",
+        missing: null,
+        label: "android: notes.yaml",
+        sha256: sha256(c),
+      },
+      {
+        slot: 3,
+        name: "device-ios/01-ios-all.png",
+        missing: null,
+        label: "ios: ios-all.yaml",
+        sha256: sha256(a),
+      },
+    ]);
+  });
+
+  it("holds back a shot whose bytes no longer hash to the recorded sha256", () => {
+    const entry = capture("ios", "01-ios-all.png", png("captured"));
+    writeFileSync(join(ev, "device-ios", "01-ios-all.png"), png("swapped"));
+    writeShots([entry]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => [e.name, e.missing]),
+      [["device-ios/01-ios-all.png", DEVICE_HASH_WHY]],
+    );
+  });
+
+  it("holds back a name outside device-<platform>/NN-<slug>.png, with no file to point at", () => {
+    const ok = png("ok");
+    writeShots([
+      capture("ios", "01-has space.png", ok),
+      { ...capture("ios", "02-x.png", ok), file: "../outside/02-x.png" },
+      { ...capture("ios", "03-x.png", ok), file: "device-ios/sub/03-x.png" },
+      { ...capture("ios", "04-x.png", ok), file: "device-web/04-x.png" },
+      { ...capture("ios", "5-x.png", ok) },
+      { ...capture("ios", "1000-x.png", ok) },
+      { ...capture("ios", "06-x.png", ok), file: "device-ios/06-x.jpg" },
+      "not an object",
+    ]);
+    const out = deviceManifest(ev);
+    assert.equal(out.length, 8);
+    for (const e of out) {
+      assert.equal(e.name, null);
+      assert.equal(e.missing, "unexpected file name");
+    }
+  });
+
+  it("holds back a shot that is a symlink, or whose platform dir is one", () => {
+    const real = png("real");
+    writeFileSync(join(tmp, "outside.png"), real);
+    mkdirSync(join(ev, "device-ios"));
+    symlinkSync(join(tmp, "outside.png"), join(ev, "device-ios", "01-link.png"));
+    const elsewhere = join(tmp, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "01-login.png"), real);
+    symlinkSync(elsewhere, join(ev, "device-android"));
+    writeShots([
+      {
+        file: "device-ios/01-link.png",
+        sha256: sha256(real),
+        platform: "ios",
+        flow: "x",
+        pass: "final",
+      },
+      {
+        file: "device-android/01-login.png",
+        sha256: sha256(real),
+        platform: "android",
+        flow: "y",
+        pass: "final",
+      },
+    ]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => e.missing),
+      ["a symlink", "a symlink"],
+    );
+  });
+
+  it("holds back a shot that isn't from the final evidence pass", () => {
+    const bytes = png("session");
+    writeShots([
+      capture("android", "01-login.png", bytes, { pass: "session" }),
+      capture("android", "02-notes.png", bytes, { pass: undefined }),
+    ]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => e.missing),
+      ["not from the final evidence pass", "not from the final evidence pass"],
+    );
+  });
+
+  it("takes flowSlug's names as they are: upper case and a three-digit index", () => {
+    const a = png("upper");
+    const b = png("hundred");
+    writeShots([capture("ios", "01-IOS-All.png", a), capture("ios", "100-last_Flow.png", b)]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => [e.slot, e.name, e.missing]),
+      [
+        [1, "device-ios/01-IOS-All.png", null],
+        [2, "device-ios/100-last_Flow.png", null],
+      ],
+    );
+  });
+
+  it("a file listed twice is published from its last entry that passes", () => {
+    const first = png("first");
+    const again = png("again");
+    const one = capture("android", "01-login.png", first);
+    // Re-captured: the file now holds the second capture, and the first
+    // entry's hash no longer matches. A later entry that fails its own checks
+    // doesn't take the file from an earlier one that passes.
+    const two = capture("android", "01-login.png", again);
+    const broken = { ...two, pass: "session" };
+    writeShots([one, two, broken]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => [e.slot, e.missing]),
+      [
+        [1, DEVICE_HASH_WHY],
+        [2, null],
+        [3, "not from the final evidence pass"],
+      ],
+    );
+    // Two entries that both pass: the last one wins, the earlier is held back.
+    writeShots([two, two]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => e.missing),
+      ["a later shots.json entry lists the same file", null],
+    );
+  });
+
+  it("holds back a missing file, a platform mismatch and a missing hash", () => {
+    const bytes = png("x");
+    const one = capture("android", "01-login.png", bytes);
+    writeShots([
+      one,
+      capture("android", "02-notes.png", bytes, { platform: "ios" }),
+      capture("android", "03-edit.png", bytes, { sha256: "abc" }),
+      { ...one, file: "device-android/04-gone.png" },
+    ]);
+    assert.deepEqual(
+      deviceManifest(ev).map((e) => [e.slot, e.missing]),
+      [
+        [1, null],
+        [2, "its platform doesn't match its file name"],
+        [3, "shots.json records no sha256 for it"],
+        [4, "missing"],
+      ],
+    );
+  });
+
+  it("a missing, unreadable or non-array shots.json is no screenshots", () => {
+    assert.deepEqual(deviceManifest(ev), []);
+    writeFileSync(join(ev, "shots.json"), "{not json");
+    assert.deepEqual(deviceManifest(ev), []);
+    writeFileSync(join(ev, "shots.json"), JSON.stringify({ file: "device-ios/01-x.png" }));
+    assert.deepEqual(deviceManifest(ev), []);
+  });
+
+  it("selectImages publishes the listed shots, labelled, and re-checks each hash on the bytes it reads", () => {
+    const a = png("login");
+    const b = png("notes");
+    writeShots([capture("android", "01-login.png", a), capture("ios", "01-notes.png", b)]);
+    const entries = deviceManifest(ev);
+    // Swapped after the manifest was read: the bytes read no longer hash right.
+    writeFileSync(join(ev, "device-ios", "01-notes.png"), png("swapped"));
+    const ocr = fakeOcr();
+    const r = selectImages({ root: ev, entries, ocr });
+    assert.equal(r.ok, true);
+    assert.deepEqual(
+      r.upload.map((u) => [u.slot, u.name, u.label, u.path]),
+      [
+        [
+          1,
+          "device-android/01-login.png",
+          "android: login.yaml",
+          join(ev, "device-android", "01-login.png"),
+        ],
+      ],
+    );
+    assert.ok(r.upload[0].data.equals(a));
+    assert.deepEqual(r.overflow, [
+      { slot: 2, path: join(ev, "device-ios", "01-notes.png"), why: DEVICE_HASH_WHY },
+    ]);
+    assert.deepEqual(
+      ocr.calls.map((c) => c.tag),
+      ["login"],
+    );
+  });
+
+  it("selectImages lists a held-back device shot at its own path, and runs the OCR scan on the rest", () => {
+    writeShots([
+      capture("android", "01-login.png", png("login"), { pass: "session" }),
+      capture("android", "02-key.png", png("key")),
+    ]);
+    const r = selectImages({
+      root: ev,
+      entries: deviceManifest(ev),
+      ocr: fakeOcr({ key: { ok: true, text: `key ${API_KEY}` } }),
+    });
+    assert.deepEqual(r.upload, []);
+    assert.deepEqual(
+      r.overflow.map((o) => [o.slot, o.path]),
+      [
+        [1, join(ev, "device-android", "01-login.png")],
+        [2, join(ev, "device-android", "02-key.png")],
+      ],
+    );
+    assert.equal(r.overflow[0].why, "not from the final evidence pass");
+    assert.match(r.overflow[1].why, /^its text matched a secret pattern/);
+  });
+
+  it("selectImages refuses a device shot whose platform dir became a symlink since the manifest", () => {
+    const bytes = png("login");
+    writeShots([capture("android", "01-login.png", bytes)]);
+    const entries = deviceManifest(ev);
+    const moved = join(ev, "moved");
+    nodeFs.renameSync(join(ev, "device-android"), moved);
+    symlinkSync(moved, join(ev, "device-android"));
+    const r = selectImages({ root: ev, entries, ocr: fakeOcr() });
+    assert.deepEqual(r.upload, []);
+    assert.deepEqual(
+      r.overflow.map((o) => o.why),
+      ["a symlink"],
+    );
   });
 });
 

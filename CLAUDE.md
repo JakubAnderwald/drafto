@@ -233,14 +233,16 @@ A factory issue has one driver at a time: the **factory** on the Mac mini, or an
 
 Every other rule in this file applies in both modes. Only these differ:
 
-| Rule                                         | Factory (unattended)              | Interactive (`/drive-issue`)                                                                        |
-| -------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Plan and merge approval                      | board drags (the two human gates) | the operator's words in the session, quoted in the issue log                                        |
-| Devices, Mobile/Desktop E2E, live tests      | never                             | yes (Desktop E2E needs the operator's yes; a person starts any prod-writing macOS In-Test scenario) |
-| Browser                                      | locked-down runner only           | this Mac's Chrome, per `~/.claude/CLAUDE.md`                                                        |
-| Secrets                                      | only what its scripts load        | the [Local Secrets](#local-secrets-drafto-secrets) recipes                                          |
-| Betas                                        | factory dispatch                  | the pre-authorized lanes, run in the session                                                        |
-| `migration-approved`, prod DB, public stores | label / never / never             | label via `approve-migration` after an explicit yes; prod only after an explicit yes                |
+| Rule                                         | Factory (unattended)                                                       | Interactive (`/drive-issue`)                                                                        |
+| -------------------------------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Plan and merge approval                      | board drags (the two human gates)                                          | the operator's words in the session, quoted in the issue log                                        |
+| Devices, Mobile/Desktop E2E, live tests      | never, except the device lane¹ and the verify lane's live tests (ADR-0073) | yes (Desktop E2E needs the operator's yes; a person starts any prod-writing macOS In-Test scenario) |
+| Browser                                      | locked-down runner only                                                    | this Mac's Chrome, per `~/.claude/CLAUDE.md`                                                        |
+| Secrets                                      | only what its scripts load                                                 | the [Local Secrets](#local-secrets-drafto-secrets) recipes                                          |
+| Betas                                        | factory dispatch                                                           | the pre-authorized lanes, run in the session                                                        |
+| `migration-approved`, prod DB, public stores | label / never / never                                                      | label via `approve-migration` after an explicit yes; prod only after an explicit yes                |
+
+¹ The factory's opt-in device lane runs Maestro on its own dev-backed Android emulator and iOS simulator. A supervisor drives them, never a claude session ([ADR-0106](./docs/adr/0106-factory-device-lane.md)).
 
 A session working on a factory issue without `/drive-issue` must still claim it first (`node scripts/drive-issue.mjs claim <n>`) and follow the skill's stage rules.
 
@@ -338,6 +340,7 @@ The recipes below are for interactive sessions. Unattended factory, support and 
 - Client config: `instrumentation-client.ts` (NOT `sentry.client.config.ts` — Turbopack ignores the old webpack convention)
 - Server/edge configs: `sentry.server.config.ts`, `sentry.edge.config.ts` (loaded via `instrumentation.ts`)
 - Do not swallow errors silently — let them propagate to Sentry
+- A caught-and-continued error in `apps/web` goes through `reportError` from `@/lib/report-error` (never a bare `console.error`): it reports to Sentry with a `where` tag and logs only where nothing captures the console ([ADR-0099](./docs/adr/0099-web-reports-caught-errors-through-report-error.md))
 - To read Sentry data from a session, use the read-only token in [Local Secrets](#local-secrets-drafto-secrets)
 
 ## MCP Server (Claude Cowork Integration)

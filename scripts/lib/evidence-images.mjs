@@ -13,8 +13,12 @@
 //     `copied`, `copyFailed` or `screenshotRejected` event. A failed or
 //     rejected copy keeps its slot, so slot k is still the runner's
 //     "screenshot k". A macOS harness run's are its `shots/NN-<label>.png`
-//     (common.sh's shot()). Anything else in the dir is ignored:
-//     runner-output.txt, the harness's preflight-window.png and tmp-ocr.png.
+//     (common.sh's shot()). A device run's are the files its supervisor
+//     listed in evidence/shots.json, each with the sha256 it recorded when it
+//     captured the screen itself (ADR-0106 decision 8): deviceManifest checks
+//     name, pass and hash, and selectImages re-checks the hash on the bytes it
+//     reads. Anything else in the dir is ignored: runner-output.txt, the
+//     harness's preflight-window.png and tmp-ocr.png.
 //   - Per file: not a symlink, real path strictly inside the evidence dir (the
 //     dir itself no symlink), a regular file read through an O_NOFOLLOW fd,
 //     .png / .jpg / .jpeg with matching magic bytes, at most MAX_IMAGE_BYTES.
@@ -31,6 +35,7 @@
 // Pure apart from the file reads and the OCR call, both injectable for tests.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -60,6 +65,14 @@ const MAGIC = Object.freeze({
 const GUARD_COPY_NAME = /^screenshot-\d+-\d+(?:-\d+)?\.(?:jpg|png)$/;
 // common.sh's shot(): shots/<NN>-<label>.png.
 const MACOS_SHOT_NAME = /^(\d{2,3})-([A-Za-z0-9._-]{1,80})\.png$/;
+// device-lane.mjs's captureShot: device-<platform>/<NN>-<flow slug>.png,
+// relative to the run's evidence dir (flowSlug keeps case; NN can reach three
+// digits). The only manifest name with a dir part.
+export const DEVICE_SHOT_NAME = /^device-(ios|android)\/(\d{2,3})-([A-Za-z0-9._-]+)\.png$/;
+export const DEVICE_SHOTS_FILE = "shots.json";
+const DEVICE_PLATFORM_ORDER = Object.freeze(["android", "ios"]);
+const SHA256_RE = /^[0-9a-f]{64}$/;
+export const DEVICE_HASH_WHY = "its sha256 doesn't match shots.json";
 
 export const CAP_WHY = `over the per-comment cap (${MAX_IMAGES} images / ${
   MAX_TOTAL_BYTES / 1024 / 1024
@@ -157,6 +170,112 @@ export function macosManifest(shotsDir, { fs = nodeFs } = {}) {
     .filter(({ m }) => m)
     .map(({ name, m }) => ({ slot: Number(m[1]), name, missing: null, label: m[2] }))
     .sort((a, b) => a.slot - b.slot || a.name.localeCompare(b.name));
+}
+
+/**
+ * A device run's screenshots, from the supervisor's <dir>/shots.json (<dir>:
+ * the run's evidence dir; ADR-0106 decision 8). Android's first, then iOS's,
+ * each by NN; slots run 1.. over all of them, so the two platforms' 01 shots
+ * don't share one. [{slot, name, missing, label, sha256}]: label is
+ * "<platform>: <flow>", sha256 the recorded hash selectImages checks the read
+ * bytes against. An entry is held back (missing says why) unless its name is
+ * device-<platform>/NN-<slug>.png for its own platform, it comes from the
+ * final pass, and its file is a regular file (no symlink on the way) inside
+ * <dir> whose bytes hash to the recorded sha256. A file listed more than once
+ * (a flow re-captured) is published from its last entry that passes; an
+ * earlier one that passes too is held back. A missing or unreadable
+ * shots.json is no screenshots.
+ */
+export function deviceManifest(dir, { fs = nodeFs } = {}) {
+  let list;
+  try {
+    list = JSON.parse(fs.readFileSync(path.join(dir, DEVICE_SHOTS_FILE), "utf8"));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
+  let realDir = null;
+  const dirWhy = rootProblem(dir, { fs });
+  if (!dirWhy) {
+    try {
+      realDir = fs.realpathSync(dir);
+    } catch {
+      realDir = null;
+    }
+  }
+  const rows = list.map((raw, order) => {
+    const rec = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const file = typeof rec.file === "string" ? rec.file : "";
+    const m = DEVICE_SHOT_NAME.exec(file);
+    const platform = m ? m[1] : null;
+    const flow = typeof rec.flow === "string" && rec.flow.trim() ? rec.flow.trim() : m?.[3];
+    const sha256 = typeof rec.sha256 === "string" ? rec.sha256 : "";
+    let missing = null;
+    if (!m) missing = "unexpected file name";
+    else if (rec.platform !== platform) missing = "its platform doesn't match its file name";
+    else if (rec.pass !== "final") missing = "not from the final evidence pass";
+    else if (!SHA256_RE.test(sha256)) missing = "shots.json records no sha256 for it";
+    else if (realDir === null) missing = dirWhy ?? "the evidence directory is missing";
+    else missing = deviceFileProblem(dir, realDir, file, sha256, fs);
+    return {
+      order,
+      rank: platform ? DEVICE_PLATFORM_ORDER.indexOf(platform) : DEVICE_PLATFORM_ORDER.length,
+      nn: m ? Number(m[2]) : 0,
+      name: m ? file : null,
+      missing,
+      ...(m ? { label: `${platform}: ${flow}`, sha256 } : {}),
+    };
+  });
+  // The last entry of a file that passes wins: a file is marked seen only once
+  // one of its entries passes, walking from the end.
+  const seen = new Set();
+  for (const row of [...rows].reverse()) {
+    if (row.missing !== null || row.name === null) continue;
+    if (seen.has(row.name)) row.missing = "a later shots.json entry lists the same file";
+    else seen.add(row.name);
+  }
+  return rows
+    .sort((a, b) => a.rank - b.rank || a.nn - b.nn || a.order - b.order)
+    .map(({ order: _o, rank: _r, nn: _n, ...e }, i) => ({ slot: i + 1, ...e }));
+}
+
+// Why a shots.json entry's file can't be published, or null: its platform dir
+// and the file itself must not be symlinks, its real path must be inside the
+// evidence dir, and its bytes must hash to the recorded sha256.
+function deviceFileProblem(dir, realDir, name, sha256, fs) {
+  const file = path.join(dir, name);
+  try {
+    if (fs.lstatSync(path.dirname(file)).isSymbolicLink()) return "a symlink";
+  } catch {
+    return "missing";
+  }
+  let lst;
+  try {
+    lst = fs.lstatSync(file);
+  } catch {
+    return "missing";
+  }
+  if (lst.isSymbolicLink()) return "a symlink";
+  if (!lst.isFile()) return "not a regular file";
+  if (lst.size > MAX_IMAGE_BYTES) return `larger than ${sizeText(MAX_IMAGE_BYTES)}`;
+  try {
+    if (!isStrictlyUnder(fs.realpathSync(file), realDir)) return "outside the evidence directory";
+    return sha256Of(fs.readFileSync(file)) === sha256 ? null : DEVICE_HASH_WHY;
+  } catch {
+    return "it couldn't be read";
+  }
+}
+
+function sha256Of(data) {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+// A manifest name selectImages may join onto the evidence dir: a basename, or
+// a device shot's device-<platform>/<file> (the only one with a dir part).
+function entryName(name) {
+  if (typeof name !== "string" || !name) return null;
+  if (DEVICE_SHOT_NAME.test(name)) return name;
+  return name === path.basename(name) && name !== "." && name !== ".." ? name : null;
 }
 
 // ── per-file checks ─────────────────────────────────────────────────────────
@@ -312,8 +431,9 @@ export function helperOcr(
  * @param {object} o
  * @param {string} o.root the evidence dir every entry's file must be in
  * @param {{slot:number,name:string|null,missing:string|null,label?:string}[]} o.entries
- *   a manifest (browserManifest / macosManifest); an entry with `missing` is
- *   never published, only listed in the overflow with that reason
+ *   a manifest (browserManifest / macosManifest / deviceManifest); an entry
+ *   with `missing` is never published, only listed in the overflow with that
+ *   reason, and one with `sha256` only when the bytes read hash to it
  * @param {((data:Buffer, ext:string) => {ok:boolean,text?:string})|null} o.ocr
  *   null when the helper is missing: then nothing is published
  * @param {{password?:string,bypass?:string,signinKey?:string}} o.secrets
@@ -375,8 +495,9 @@ export function selectImages({
   let total = 0;
   const deadline = now() + ocrBudgetMs;
   for (const e of [...listed].sort((a, b) => a.slot - b.slot)) {
-    // A manifest name is a basename: one that isn't is not this run's file.
-    if (e.name !== path.basename(e.name) || e.name === "." || e.name === "..") {
+    // A manifest name is a basename (or a device shot's platform dir plus
+    // one): one that isn't is not this run's file.
+    if (entryName(e.name) === null) {
       overflow.push({ slot: e.slot, path: root, why: "unexpected file name" });
       continue;
     }
@@ -385,9 +506,21 @@ export function selectImages({
       overflow.push({ slot: e.slot, path: file, why: "another screenshot has the same number" });
       continue;
     }
+    // A device shot's platform dir is checked again here: swapped for a link
+    // since deviceManifest looked, it could point anywhere inside the root.
+    if (path.dirname(e.name) !== "." && subdirIsLink(path.join(root, path.dirname(e.name)), fs)) {
+      overflow.push({ slot: e.slot, path: file, why: "a symlink" });
+      continue;
+    }
     const img = checkImage(file, root, { maxBytes: maxImageBytes, realRoot, fs });
     if (!img.ok) {
       overflow.push({ slot: e.slot, path: file, why: img.why });
+      continue;
+    }
+    // A device shot: the bytes read now must be the ones its supervisor
+    // hashed when it captured them (ADR-0106 decision 8).
+    if (typeof e.sha256 === "string" && sha256Of(img.data) !== e.sha256) {
+      overflow.push({ slot: e.slot, path: file, why: DEVICE_HASH_WHY });
       continue;
     }
     // The cap before the OCR, so a run with many screenshots isn't OCR'd past it.
@@ -436,7 +569,14 @@ export function selectImages({
 // A held-back manifest entry as an overflow line: its file when it names one
 // (an off-origin copy), else the evidence dir, since there is no file.
 function heldBack(e, root) {
-  const name = typeof e.name === "string" ? e.name : "";
-  const named = name && name === path.basename(name) && name !== "." && name !== "..";
-  return { slot: e.slot, path: named ? path.join(root, name) : root, why: String(e.missing) };
+  const name = entryName(e.name);
+  return { slot: e.slot, path: name ? path.join(root, name) : root, why: String(e.missing) };
+}
+
+function subdirIsLink(dir, fs) {
+  try {
+    return fs.lstatSync(dir).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }

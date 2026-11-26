@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { reportError } from "@/lib/report-error";
+import { MAX_SEARCH_QUERY_LENGTH } from "@/lib/search-query";
 
 interface SearchResult {
   id: string;
@@ -43,9 +46,13 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  // Set when the last search failed (a non-OK response or a network error), so the overlay says so
+  // instead of claiming there are no matching notes. A new query clears it.
+  const [searchError, setSearchError] = useState(false);
+  // Bumped by Retry, so the search runs again for an unchanged query.
+  const [retryCount, setRetryCount] = useState(0);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const notebookMap = new Map(notebooks.map((n) => [n.id, n.name]));
 
@@ -55,44 +62,56 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
     }
   }, [open]);
 
+  // Sets the state a new search starts from. Called from the event that starts the search (a
+  // keystroke or Retry), never from the effect below: React runs a keystroke's effects straight
+  // after its commit, so a setState there leaves a lower-priority update pending. More than 50
+  // commits in a row like that, as fast typing makes, and React throws "Maximum update depth
+  // exceeded" and drops the keystroke.
+  const startSearch = useCallback((nextQuery: string) => {
+    const hasQuery = nextQuery.trim() !== "";
+    setLoading(hasQuery);
+    setSearchError(false);
+    if (!hasQuery) setResults([]);
+  }, []);
+
+  const handleQueryChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setQuery(e.target.value);
+      startSearch(e.target.value);
+    },
+    [startSearch],
+  );
+
+  // Runs the debounced request for the current query. Only the request's own callbacks set state.
   useEffect(() => {
-    const controller = new AbortController();
-
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-
     const trimmed = query.trim();
-    if (!trimmed) {
-      // Clearing local state when the query empties is the intentional terminating
-      // case — no fetch, no cascading render storm — so the synchronous reset is fine.
-      /* eslint-disable react-hooks/set-state-in-effect */
-      setResults([]);
-      setLoading(false);
-      /* eslint-enable react-hooks/set-state-in-effect */
-      return;
-    }
+    if (!trimmed) return;
 
-    setLoading(true);
-
-    timerRef.current = setTimeout(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
       try {
         const res = await fetch(`/api/notes/search?q=${encodeURIComponent(trimmed)}`, {
           signal: controller.signal,
         });
         if (handleAuthError(res)) return;
         if (!res.ok) {
-          console.error("Search failed:", res.status);
+          // Never the query text: it is the user's own words.
+          reportError(new Error(`Search failed: ${res.status}`), "search-overlay", {
+            extra: { status: res.status },
+          });
           setResults([]);
+          setSearchError(true);
           return;
         }
         const data: SearchResult[] = await res.json();
         setResults(data);
         setHighlightedIndex(0);
       } catch (err) {
+        // An abort is the normal end of a search the user typed past, not a failure.
         if (err instanceof DOMException && err.name === "AbortError") return;
-        console.error("Search failed:", err);
+        reportError(err, "search-overlay");
         setResults([]);
+        setSearchError(true);
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
@@ -101,12 +120,16 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
     }, 300);
 
     return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
+      clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [query, retryCount]);
+
+  const retrySearch = useCallback(() => {
+    startSearch(query);
+    setRetryCount((count) => count + 1);
+    inputRef.current?.focus();
+  }, [query, startSearch]);
 
   const selectResult = useCallback(
     (result: SearchResult) => {
@@ -134,12 +157,20 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
         return;
       }
 
+      // Only from the search box: Enter on the Retry or Close search button does what that
+      // button does.
+      if (e.key === "Enter" && searchError && query.trim() && e.target === inputRef.current) {
+        e.preventDefault();
+        retrySearch();
+        return;
+      }
+
       if (e.key === "Enter" && results.length > 0) {
         e.preventDefault();
         selectResult(results[highlightedIndex]);
       }
     },
-    [results, highlightedIndex, onClose, selectResult],
+    [results, highlightedIndex, onClose, selectResult, searchError, query, retrySearch],
   );
 
   if (!open) return null;
@@ -165,7 +196,9 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
           <Input
             ref={inputRef}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={handleQueryChange}
+            // The route rejects a longer query, which would only ever show as a failed search.
+            maxLength={MAX_SEARCH_QUERY_LENGTH}
             placeholder="Search notes and notebooks..."
             className="flex-1"
           />
@@ -178,7 +211,13 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
         <div className="max-h-80 overflow-y-auto p-2" data-testid="search-results">
           {loading && <p className="text-fg-muted px-3 py-4 text-center text-sm">Searching...</p>}
 
-          {!loading && trimmed && results.length === 0 && (
+          {!loading && trimmed && searchError && (
+            <Alert className="m-1" action={{ label: "Retry", onClick: retrySearch }}>
+              Search failed — try again
+            </Alert>
+          )}
+
+          {!loading && trimmed && !searchError && results.length === 0 && (
             <p className="text-fg-muted px-3 py-4 text-center text-sm">No notes found</p>
           )}
 

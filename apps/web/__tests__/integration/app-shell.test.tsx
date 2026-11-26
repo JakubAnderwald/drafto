@@ -68,6 +68,17 @@ vi.mock("@/hooks/use-theme", () => ({
   }),
 }));
 
+// The shell reports the errors it catches and carries on from through reportError. One
+// shared mock, so the module re-imported after vi.resetModules reports into it too.
+const { reportError } = vi.hoisted(() => ({ reportError: vi.fn() }));
+vi.mock("@/lib/report-error", () => ({ reportError }));
+
+/** The reportError calls tagged `where`. */
+const reportsFrom = (where: string) => reportError.mock.calls.filter((args) => args[1] === where);
+
+/** The error message shown above the note list, if any. */
+const actionAlert = () => within(screen.getByTestId("notes-pane")).queryByRole("alert");
+
 const mockNotebooks = [
   { id: "nb-1", name: "Personal", created_at: "2026-01-01", updated_at: "2026-01-01" },
   { id: "nb-2", name: "Work", created_at: "2026-01-02", updated_at: "2026-01-02" },
@@ -298,7 +309,6 @@ describe("AppShell", () => {
 
   it("handles failed note creation gracefully", async () => {
     const user = userEvent.setup();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await act(async () => {
       render(<AppShell />);
@@ -333,9 +343,225 @@ describe("AppShell", () => {
     });
 
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith("Failed to create note:", 500);
+      expect(reportError).toHaveBeenCalledWith(
+        new Error("Failed to create note: 500"),
+        "app-shell:create-note",
+        { extra: { status: 500, notebookId: "nb-1" } },
+      );
+    });
+    expect(actionAlert()).toHaveTextContent("Couldn't create the note. Try again.");
+
+    // Dismiss clears the message.
+    await act(async () => {
+      await user.click(within(screen.getByTestId("notes-pane")).getByText("Dismiss"));
+    });
+    expect(actionAlert()).not.toBeInTheDocument();
+  });
+
+  it("shows an error when creating a note fails on the network", async () => {
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<AppShell />);
     });
 
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    const networkError = new Error("Network error");
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "POST") {
+        return Promise.reject(networkError);
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+
+    await waitFor(() => {
+      expect(reportError).toHaveBeenCalledWith(networkError, "app-shell:create-note", {
+        extra: { notebookId: "nb-1" },
+      });
+    });
+    expect(actionAlert()).toHaveTextContent("Couldn't create the note. Try again.");
+  });
+
+  it("clears the error when the next note is created or the notebook changes", async () => {
+    const user = userEvent.setup();
+    let failPost = true;
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "POST") {
+        return Promise.resolve(
+          failPost
+            ? { ok: false, status: 500 }
+            : { ok: true, json: () => Promise.resolve({ id: "note-new" }) },
+        );
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([...mockNotes]) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notes\//)) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: "note-new", title: "", content: null }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+    await waitFor(() => {
+      expect(actionAlert()).toHaveTextContent("Couldn't create the note. Try again.");
+    });
+
+    // The next create clears it.
+    failPost = false;
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+    await waitFor(() => {
+      expect(actionAlert()).not.toBeInTheDocument();
+    });
+
+    // A notebook switch clears it too.
+    failPost = true;
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+    await waitFor(() => {
+      expect(actionAlert()).toHaveTextContent("Couldn't create the note. Try again.");
+    });
+    await act(async () => {
+      await user.click(within(screen.getByTestId("notebooks-pane")).getByText("Work"));
+    });
+    await waitFor(() => {
+      expect(actionAlert()).not.toBeInTheDocument();
+    });
+  });
+
+  it("reports but doesn't show a create that fails after the user switched notebooks", async () => {
+    const user = userEvent.setup();
+    // Set when the POST is sent; answering it with a 500 is up to the test.
+    const post: { fail?: () => void } = {};
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "POST") {
+        return new Promise((resolve) => {
+          post.fail = () => resolve({ ok: false, status: 500 });
+        });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([...mockNotes]) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    // The POST is held while the user moves to another notebook.
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+    expect(post.fail).toBeDefined();
+    await act(async () => {
+      await user.click(within(screen.getByTestId("notebooks-pane")).getByText("Work"));
+    });
+
+    await act(async () => {
+      post.fail?.();
+    });
+
+    await waitFor(() => {
+      expect(reportsFrom("app-shell:create-note")).toHaveLength(1);
+    });
+    expect(actionAlert()).not.toBeInTheDocument();
+
+    // Going back to the notebook the create started in doesn't bring it up either.
+    await act(async () => {
+      await user.click(within(screen.getByTestId("notebooks-pane")).getByText("Personal"));
+    });
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+    expect(actionAlert()).not.toBeInTheDocument();
+  });
+
+  it("neither reports nor shows an error when creating a note finds the session expired", async () => {
+    const user = userEvent.setup();
+    // jsdom reports the redirect to /login as an unimplemented navigation.
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await act(async () => {
+      render(<AppShell />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("My First Note")).toBeInTheDocument();
+    });
+
+    mockFetch.mockImplementation((url: string, options?: { method?: string }) => {
+      if (options?.method === "POST") {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: () => Promise.resolve({ error: "Unauthorized" }),
+        });
+      }
+      if (url === "/api/notebooks") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotebooks) });
+      }
+      if (typeof url === "string" && url.match(/\/api\/notebooks\/[^/]+\/notes$/)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(mockNotes) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await act(async () => {
+      await user.click(screen.getByLabelText("New note"));
+    });
+
+    await waitFor(() => {
+      const postCalls = mockFetch.mock.calls.filter(
+        (args) => (args[1] as { method?: string } | undefined)?.method === "POST",
+      );
+      expect(postCalls.length).toBe(1);
+    });
+    expect(reportError).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "app-shell:create-note",
+      expect.anything(),
+    );
+    expect(actionAlert()).not.toBeInTheDocument();
     consoleSpy.mockRestore();
   });
 
@@ -377,7 +603,6 @@ describe("AppShell", () => {
 
   it("handles failed note move gracefully", async () => {
     const user = userEvent.setup();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await act(async () => {
       render(<AppShell />);
@@ -416,10 +641,13 @@ describe("AppShell", () => {
     });
 
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith("Failed to move note:", 500);
+      expect(reportError).toHaveBeenCalledWith(
+        new Error("Failed to move note: 500"),
+        "app-shell:move-note",
+        { extra: { status: 500, noteId: "note-1" } },
+      );
     });
-
-    consoleSpy.mockRestore();
+    expect(actionAlert()).toHaveTextContent("Couldn't move the note.");
   });
 
   it("deletes a note via the action menu", async () => {
@@ -708,7 +936,6 @@ describe("AppShell", () => {
 
   it("handles network error on restore with rollback", async () => {
     const user = userEvent.setup();
-    vi.spyOn(console, "error").mockImplementation(() => {});
 
     const mockTrashedNotes = [
       {
@@ -759,13 +986,13 @@ describe("AppShell", () => {
     await waitFor(() => {
       expect(screen.getByText("Trashed Note")).toBeInTheDocument();
     });
-
-    vi.restoreAllMocks();
+    expect(reportError).toHaveBeenCalledWith(new Error("Network error"), "app-shell:restore-note", {
+      extra: { noteId: "t-1" },
+    });
   });
 
   it("handles network error on permanent delete with rollback", async () => {
     const user = userEvent.setup();
-    vi.spyOn(console, "error").mockImplementation(() => {});
 
     const mockTrashedNotes = [
       {
@@ -816,13 +1043,15 @@ describe("AppShell", () => {
     await waitFor(() => {
       expect(screen.getByText("Trashed Note")).toBeInTheDocument();
     });
-
-    vi.restoreAllMocks();
+    expect(reportError).toHaveBeenCalledWith(
+      new Error("Network error"),
+      "app-shell:permanent-delete-note",
+      { extra: { noteId: "t-1" } },
+    );
   });
 
   it("handles network error on note move gracefully", async () => {
     const user = userEvent.setup();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await act(async () => {
       render(<AppShell />);
@@ -855,15 +1084,15 @@ describe("AppShell", () => {
     });
 
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith("Failed to move note:", expect.any(Error));
+      expect(reportError).toHaveBeenCalledWith(new Error("Network error"), "app-shell:move-note", {
+        extra: { noteId: "note-1" },
+      });
     });
-
-    consoleSpy.mockRestore();
+    expect(actionAlert()).toHaveTextContent("Couldn't move the note.");
   });
 
   it("handles network error on note delete gracefully", async () => {
     const user = userEvent.setup();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await act(async () => {
       render(<AppShell />);
@@ -908,8 +1137,15 @@ describe("AppShell", () => {
     });
 
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith("Failed to delete note:", expect.any(Error));
+      expect(reportError).toHaveBeenCalledWith(
+        new Error("Network error"),
+        "app-shell:delete-note",
+        {
+          extra: { noteId: "note-1" },
+        },
+      );
     });
+    expect(actionAlert()).toHaveTextContent("Couldn't delete the note.");
 
     // The refresh brings the note back, and it is still the selected one: the
     // selection only moves once a delete succeeds.
@@ -917,8 +1153,6 @@ describe("AppShell", () => {
       expect(screen.getByTestId("note-item-active")).toHaveTextContent("My First Note");
       expect(screen.getByLabelText("Note title")).toHaveValue("My First Note");
     });
-
-    consoleSpy.mockRestore();
   });
 
   // #461: deleting the open note used to select the next one at once, which refetched
@@ -1252,7 +1486,6 @@ describe("AppShell", () => {
     });
 
     it("brings the note back still selected when the server rejects the delete", async () => {
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const user = userEvent.setup();
       await renderAndOpen(user, "My First Note");
       await chooseAction(user, "My First Note", "Delete");
@@ -1267,7 +1500,12 @@ describe("AppShell", () => {
         expect(screen.getByLabelText("Note title")).toHaveValue("My First Note");
       });
       expect(notesPane().getByText("My Second Note")).toBeInTheDocument();
-      expect(consoleSpy).toHaveBeenCalledWith(new Error("Failed to delete note: 500"));
+      expect(reportError).toHaveBeenCalledWith(
+        new Error("Failed to delete note: 500"),
+        "app-shell:delete-note",
+        { extra: { status: 500, noteId: "note-1" } },
+      );
+      expect(notesPane().getByRole("alert")).toHaveTextContent("Couldn't delete the note.");
       expect(logFrom("DELETE note-1 sent")).toEqual([
         "DELETE note-1 sent",
         "DELETE note-1 failed",
@@ -1275,7 +1513,55 @@ describe("AppShell", () => {
       ]);
       // The note never left the editor, so the refresh doesn't refetch it.
       expect(noteFetches).toEqual(["note-1"]);
-      consoleSpy.mockRestore();
+    });
+
+    it("reports but doesn't show a delete that fails after the user switched notebooks", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+      await chooseAction(user, "My First Note", "Delete");
+
+      await act(async () => {
+        await user.click(within(screen.getByTestId("notebooks-pane")).getByText("Work"));
+      });
+      await waitFor(() => {
+        expect(
+          notesPane().getByText("No notes yet. Create one to get started."),
+        ).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        held[0].fail();
+      });
+
+      await waitFor(() => {
+        expect(reportsFrom("app-shell:delete-note")).toHaveLength(1);
+      });
+      expect(notesPane().queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("still shows a delete that fails after a later delete started", async () => {
+      const user = userEvent.setup();
+      await renderAndOpen(user, "My First Note");
+      await chooseAction(user, "My First Note", "Delete");
+      await chooseAction(user, "My Second Note", "Delete");
+
+      // The first note's DELETE fails after the second one started: that note is
+      // still in the notebook, so the user is told.
+      await act(async () => {
+        held[0].fail();
+      });
+      await waitFor(() => {
+        expect(notesPane().getByRole("alert")).toHaveTextContent("Couldn't delete the note.");
+      });
+
+      // The second DELETE landing doesn't clear it.
+      await act(async () => {
+        held[1].release();
+      });
+      await waitFor(() => {
+        expect(log.at(-1)).toBe("GET nb-1 list");
+      });
+      expect(notesPane().getByRole("alert")).toHaveTextContent("Couldn't delete the note.");
     });
 
     it("leaves the selection and the list alone when the session expired", async () => {
@@ -1296,6 +1582,13 @@ describe("AppShell", () => {
         "DELETE note-1 sent",
         "DELETE note-1 unauthorized",
       ]);
+      // Not an error to report or show.
+      expect(reportError).not.toHaveBeenCalledWith(
+        expect.anything(),
+        "app-shell:delete-note",
+        expect.anything(),
+      );
+      expect(notesPane().queryByRole("alert")).not.toBeInTheDocument();
       consoleSpy.mockRestore();
     });
 
@@ -1351,7 +1644,6 @@ describe("AppShell", () => {
 
   it("handles failed restore (non-ok response) with rollback", async () => {
     const user = userEvent.setup();
-    vi.spyOn(console, "error").mockImplementation(() => {});
 
     const mockTrashedNotes = [
       {
@@ -1402,13 +1694,17 @@ describe("AppShell", () => {
     await waitFor(() => {
       expect(screen.getByText("Trashed Note")).toBeInTheDocument();
     });
-
-    vi.restoreAllMocks();
+    // Reported once, by the outer catch.
+    expect(reportsFrom("app-shell:restore-note")).toHaveLength(1);
+    expect(reportError).toHaveBeenCalledWith(
+      new Error("Failed to restore note: 500"),
+      "app-shell:restore-note",
+      { extra: { noteId: "t-1" } },
+    );
   });
 
   it("handles failed permanent delete (non-ok response) with rollback", async () => {
     const user = userEvent.setup();
-    vi.spyOn(console, "error").mockImplementation(() => {});
 
     const mockTrashedNotes = [
       {
@@ -1459,8 +1755,12 @@ describe("AppShell", () => {
     await waitFor(() => {
       expect(screen.getByText("Trashed Note")).toBeInTheDocument();
     });
-
-    vi.restoreAllMocks();
+    expect(reportsFrom("app-shell:permanent-delete-note")).toHaveLength(1);
+    expect(reportError).toHaveBeenCalledWith(
+      new Error("Failed to permanently delete note: 500"),
+      "app-shell:permanent-delete-note",
+      { extra: { noteId: "t-1" } },
+    );
   });
 
   // A title typed into a new note used to stay "Untitled" in the list until the note

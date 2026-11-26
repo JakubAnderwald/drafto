@@ -1017,3 +1017,29 @@ describe("defanging step text", () => {
     assert.doesNotMatch(label, /drafto-factory/i);
   });
 });
+
+describe("device mode", () => {
+  it("keeps a flow label with line breaks under its platform, and scans it as given", () => {
+    const rec = upload([1, 2, 3]);
+    rec.images[0].label = "android: 01-login\nsign in.yaml";
+    rec.images[1].label = "ios: ios-all.yaml";
+    // No label: the ungrouped section, as before.
+    const scanned = [];
+    const ev = evidenceSection({
+      upload: rec,
+      evidenceDir: DIR,
+      mode: "device",
+      isSafe: (lines) => {
+        scanned.push(...lines);
+        return true;
+      },
+    });
+    const text = ev.block.join("\n");
+    assert.ok(ev.block.includes("**Android (emulator)** · 01-login sign in.yaml"), text);
+    assert.ok(ev.block.includes("**iOS (simulator)** · ios-all.yaml"), text);
+    assert.ok(scanned.includes("01-login\nsign in.yaml"), "the scan sees the label unchanged");
+    assert.ok(text.indexOf("Other screenshots") < text.indexOf(imgTag(3)));
+    assert.ok(text.indexOf(imgTag(1)) < text.indexOf("Other screenshots"));
+    assert.equal(ev.embedded, 3);
+  });
+});

@@ -220,10 +220,9 @@ test.describe("Note editing flow", () => {
   test("move a note between notebooks", async ({ page }, testInfo) => {
     // The note starts in a notebook made for this test. One picked from the sidebar
     // can be gone after the reload below: the e2e account can hold more notebooks than
-    // a query returns (Supabase caps it at 1000 rows, most recently updated first), and
-    // creating a notebook re-sorts the sidebar by name, so its first entry can be the
-    // oldest one listed, which the new notebook has already pushed out of the query.
-    // Another worker can also delete a notebook it created.
+    // a query returns (Supabase caps it at 1000 rows, most recently updated first), so a
+    // notebook listed when the page loaded can be pushed out of the query by the ones
+    // created since. Another worker can also delete a notebook it created.
     //
     // The source isn't deleted when the test ends: until Target exists it can be the
     // newest notebook, which other workers' tests open by default. Deleting it could pull
@@ -380,6 +379,36 @@ test.describe("Note editing flow", () => {
     await expect(noteList.getByText(noteTitle)).toBeVisible({ timeout: 5000 });
     // Permanently deleted note should NOT be visible
     await expect(noteList.getByText(noteTitle2)).not.toBeVisible({ timeout: 5000 });
+  });
+
+  test("a note create the server refuses shows an error above the note list", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "Notebooks" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Notes" })).toBeVisible({ timeout: 10000 });
+
+    // The server refuses the create. Everything else (the list reads) goes through.
+    await page.route("**/api/notebooks/*/notes", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Internal error" }),
+      });
+    });
+
+    await page.getByRole("button", { name: "New note", exact: true }).click();
+
+    const alert = page.getByTestId("notes-pane").getByRole("alert");
+    await expect(alert).toBeVisible({ timeout: 5000 });
+    await expect(alert).toContainText("Couldn't create the note. Try again.");
+
+    // Dismiss clears it.
+    await alert.getByRole("button", { name: "Dismiss" }).click();
+    await expect(alert).toHaveCount(0);
   });
 
   test("create multiple notes and switch between them", async ({ page }) => {

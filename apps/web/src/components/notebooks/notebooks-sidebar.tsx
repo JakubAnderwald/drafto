@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { handleAuthError } from "@/lib/handle-auth-error";
+import { reportError } from "@/lib/report-error";
+import { compareNewestFirst } from "@/lib/notebooks/order";
 import { useNotebookDeleteImpact } from "@/hooks/use-notebook-delete-impact";
+import { Alert } from "@/components/ui/alert";
 import { IconButton } from "@/components/ui/icon-button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -98,45 +101,107 @@ export function NotebooksSidebar({
   // its confirm-time check by then sends no DELETE.
   const deleteSession = useRef(0);
 
+  // Set when the last load of the list failed; a later successful load clears it. With no
+  // notebooks on show it replaces the empty state with an error and a Retry.
+  const [loadError, setLoadError] = useState(false);
+
+  // The selection as last committed, read when a load settles: a Retry can settle long after it
+  // was clicked, and must not move a user who has since opened Trash or a notebook.
+  const selectionRef = useRef({ selectedNotebookId, isTrashSelected });
+  useEffect(() => {
+    selectionRef.current = { selectedNotebookId, isTrashSelected };
+  }, [selectedNotebookId, isTrashSelected]);
+
+  // Each load takes the next number, and only the newest one applies its list or its failure: a
+  // Retry or refresh doesn't wait for a load in flight, and the older one can settle last. A
+  // superseded load that was to open the first notebook hands that on to the newest one.
+  const loadSeq = useRef(0);
+  const pendingSelectFirst = useRef(false);
+  // Set while the newest load is in flight. A create, rename or delete that lands meanwhile makes
+  // that load's list out of date: the server may have read it before the change.
+  const loadInFlight = useRef(false);
+
+  /**
+   * Loads the notebook list. `selectFirst` opens the first notebook when nothing (no notebook, not
+   * Trash) is selected (the first load, and its Retry); a refresh leaves the selection alone. A
+   * failed load keeps any list already on show and reports the error.
+   */
+  const loadNotebooks = useCallback(
+    ({ selectFirst = false }: { selectFirst?: boolean } = {}) => {
+      loadSeq.current += 1;
+      const seq = loadSeq.current;
+      const isLatest = () => loadSeq.current === seq;
+      if (selectFirst) pendingSelectFirst.current = true;
+      loadInFlight.current = true;
+
+      return fetch("/api/notebooks")
+        .then(async (res) => {
+          if (handleAuthError(res)) return [] as Notebook[];
+          if (!res.ok) {
+            reportError(
+              new Error(`Failed to load notebooks: ${res.status}`),
+              "notebooks-sidebar:load",
+              { extra: { status: res.status } },
+            );
+            return null;
+          }
+          return (await res.json()) as Notebook[];
+        })
+        .then((data) => {
+          if (!isLatest()) return;
+          const shouldSelectFirst = pendingSelectFirst.current;
+          pendingSelectFirst.current = false;
+          if (data === null) {
+            setLoadError(true);
+            return;
+          }
+          setNotebooks(data);
+          setLoadError(false);
+          onNotebooksChange?.(data.map((n) => ({ id: n.id, name: n.name })));
+          const selection = selectionRef.current;
+          if (
+            shouldSelectFirst &&
+            data.length > 0 &&
+            !selection.selectedNotebookId &&
+            !selection.isTrashSelected
+          ) {
+            onSelectNotebook(data[0].id);
+          }
+        })
+        .catch((error: unknown) => {
+          reportError(error, "notebooks-sidebar:load");
+          if (!isLatest()) return;
+          pendingSelectFirst.current = false;
+          setLoadError(true);
+        })
+        .finally(() => {
+          if (!isLatest()) return;
+          loadInFlight.current = false;
+          setLoading(false);
+        });
+    },
+    [onNotebooksChange, onSelectNotebook],
+  );
+
+  /**
+   * Called once a create, rename or delete has landed. A load still in flight may hold the list
+   * from before it, which would undo the change on screen, so a new load replaces that one.
+   */
+  function reloadIfLoadInFlight() {
+    if (loadInFlight.current) void loadNotebooks();
+  }
+
   useEffect(() => {
     if (hasFetched.current) return;
     hasFetched.current = true;
 
-    fetch("/api/notebooks")
-      .then(async (res) => {
-        if (handleAuthError(res)) return [] as Notebook[];
-        if (!res.ok) throw new Error(`Failed to load notebooks: ${res.status}`);
-        return (await res.json()) as Notebook[];
-      })
-      .then((data) => {
-        setNotebooks(data);
-        onNotebooksChange?.(data.map((n) => ({ id: n.id, name: n.name })));
-        if (data.length > 0 && !selectedNotebookId) {
-          onSelectNotebook(data[0].id);
-        }
-      })
-      .catch((error) => {
-        console.error("Failed to load notebooks:", error);
-      })
-      .finally(() => setLoading(false));
-  }, [selectedNotebookId, onSelectNotebook]);
+    void loadNotebooks({ selectFirst: true });
+  }, [loadNotebooks]);
 
   useEffect(() => {
     if (refreshTrigger === 0) return;
 
-    fetch("/api/notebooks")
-      .then(async (res) => {
-        if (handleAuthError(res)) return [] as Notebook[];
-        if (!res.ok) throw new Error(`Failed to load notebooks: ${res.status}`);
-        return (await res.json()) as Notebook[];
-      })
-      .then((data) => {
-        setNotebooks(data);
-        onNotebooksChange?.(data.map((n) => ({ id: n.id, name: n.name })));
-      })
-      .catch((error) => {
-        console.error("Failed to refresh notebooks:", error);
-      });
+    void loadNotebooks();
   }, [refreshTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -213,10 +278,12 @@ export function NotebooksSidebar({
       const created: Notebook = await res.json();
       const notebook: Notebook = { ...created, note_count: created.note_count ?? 0 };
       setNotebooks((prev) => {
-        const updated = [...prev, notebook].sort((a, b) => a.name.localeCompare(b.name));
+        // The server's order (`updated_at` desc), so the next refetch doesn't reorder the list.
+        const updated = [...prev, notebook].sort(compareNewestFirst);
         onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
         return updated;
       });
+      reloadIfLoadInFlight();
       onSelectNotebook(notebook.id);
       // A field reopened while this was pending is the user's next name: leave it open.
       if (stillOpen()) closeCreate();
@@ -260,13 +327,15 @@ export function NotebooksSidebar({
 
       const updated: Notebook = await res.json();
       setNotebooks((prev) => {
-        // The response has no count; the notebook keeps the one it had.
+        // The response has no count; the notebook keeps the one it had. Its `updated_at` is the
+        // one the rename bumped, so it moves to the top, as it does on the next refetch.
         const newList = prev
           .map((n) => (n.id === id ? { ...n, ...updated } : n))
-          .sort((a, b) => a.name.localeCompare(b.name));
+          .sort(compareNewestFirst);
         onNotebooksChange?.(newList.map((n) => ({ id: n.id, name: n.name })));
         return newList;
       });
+      reloadIfLoadInFlight();
       // Another notebook's rename field, opened while this was pending, stays open.
       if (stillOpen()) closeRename();
     } catch {
@@ -312,6 +381,7 @@ export function NotebooksSidebar({
           onNotebooksChange?.(updated.map((n) => ({ id: n.id, name: n.name })));
           return updated;
         });
+        reloadIfLoadInFlight();
         if (selectedNotebookId === id) {
           onSelectNotebook(null);
         }
@@ -350,7 +420,16 @@ export function NotebooksSidebar({
       </div>
 
       <nav className="flex-1 overflow-y-auto">
-        {notebooks.length === 0 && creatingName === null && (
+        {notebooks.length === 0 && loadError && (
+          <div className="p-3">
+            <Alert
+              action={{ label: "Retry", onClick: () => void loadNotebooks({ selectFirst: true }) }}
+            >
+              Couldn&apos;t load your notebooks.
+            </Alert>
+          </div>
+        )}
+        {notebooks.length === 0 && !loadError && creatingName === null && (
           <div className="flex flex-col items-center gap-2 p-6 text-center">
             <svg
               className="text-fg-subtle h-8 w-8"
