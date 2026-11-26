@@ -8834,6 +8834,10 @@ verify_device_stop() {
   state=$(echo "$out" | jq -r '.state // ""' 2>/dev/null || echo "")
   if [[ "$state" == "stopped" ]]; then
     log "Issue #$issue_num: device lane stopped ($reason): $out"
+  elif [[ "$state" == "stopping" ]]; then
+    # The supervisor got SIGTERM and is shutting the devices down; housekeeping
+    # finalises the slot (and escalates a wedged one) on a later tick.
+    log "Issue #$issue_num: device lane stopping ($reason); housekeeping finalises it"
   elif [[ "$state" == "error" ]]; then
     log "WARNING: issue #$issue_num: stopping the device lane: $out"
   fi

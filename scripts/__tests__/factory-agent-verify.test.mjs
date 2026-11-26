@@ -3208,6 +3208,18 @@ describe("verify_device_stop: only for reasons that leave the run without a read
     }
   });
 
+  it("logs a stop still in progress (a supervisor shutting its devices down)", () => {
+    withBash(
+      `${ledger}\nverify_stop_lanes 7 "$HEAD" feedback`,
+      { env: { HEAD, DEVICE_STOP_STUB: '{"state":"stopping","runId":"r"}' } },
+      (r) => {
+        assert.match(r.calls, /^device stop --issue 7 --reason feedback /m);
+        assert.match(r.log, /device lane stopping \(feedback\); housekeeping finalises it/);
+        assert.doesNotMatch(r.log, /WARNING/);
+      },
+    );
+  });
+
   it("lets it run on into In Test at the hold cap or with the other lanes done", () => {
     for (const reason of ["hold-cap", "lanes-done", "decide-error"]) {
       withBash(`${ledger}\nverify_stop_lanes 7 "$HEAD" ${reason}`, { env: { HEAD } }, (r) => {
