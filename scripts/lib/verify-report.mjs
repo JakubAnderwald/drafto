@@ -788,6 +788,8 @@ function deviceEndText(token) {
 const DEVICE_FOLLOWS = "it runs from In Test and its results follow in a separate comment";
 const DEVICE_RETRIES =
   "the factory tries it again from In Test while it has attempts left (FACTORY_DEVICE_MAX_ATTEMPTS)";
+const DEVICE_IN_FOLLOWUP =
+  "the device run's results are already on this issue, in the device lane's own comment";
 
 // A retried run whose attempt was given back (device-lane.mjs REFUNDED_STOPS).
 function deviceRetryRefunded(detail) {
@@ -822,6 +824,9 @@ export function deviceStateNote(token) {
   if (["lane-off", "not-built", "verification-off", "not-applicable", ""].includes(detail)) {
     return null;
   }
+  // Results already posted as the follow-up comment (bash's
+  // verify_compose_report): pointed at, not repeated.
+  if (detail === "in-followup") return DEVICE_IN_FOLLOWUP;
   if (own(DEVICE_WAITS, detail)) return `${deviceWaitText(detail)}; ${DEVICE_FOLLOWS}`;
   if (detail === "attempts")
     return "the device lane didn't run: its attempts for this commit were spent";

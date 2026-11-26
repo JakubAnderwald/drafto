@@ -2728,6 +2728,10 @@ describe("device lane: --device-state when there is no output for the commit", (
         /ended early \(it was stopped: the card went back to In Review for open review threads\)/,
       ],
       ["running", /still running; its results follow in a separate comment/],
+      [
+        "skipped:in-followup",
+        /the device run's results are already on this issue, in the device lane's own comment/,
+      ],
     ]) {
       const row = tableRow(compose({ deviceState: state }).body, "iOS / Android");
       assert.match(row, /^\| iOS \/ Android \| manual \| — \| /, state);

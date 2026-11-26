@@ -283,6 +283,9 @@ function emptyIssue() {
     // whose follow-up comment was posted, or settled without one. Post-once.
     deviceReportPosted: null,
     deviceRunRequest: null, // "<sha>": the head an on-demand factory-device-run label asked for
+    // Head SHA verify_promote moved to In Test (set at the handoff, whether or
+    // not its report could be posted): the device lane's In Test pass reads it.
+    verifyPromotedSha: null,
     // Plan-stage browser probe (plan-probe.mjs). One record per issue, for its
     // latest probe round; keyed by planProbeId ("<issue>-<epoch>"), which also
     // names the probe's staging dir, its report marker and the plan's ack, so a
@@ -689,6 +692,7 @@ export const VERIFY_ISSUE_FIELDS = Object.freeze([
   "verifyDeviceRunDir",
   "deviceReportPosted",
   "deviceRunRequest",
+  "verifyPromotedSha",
 ]);
 
 // The plan-stage browser probe's per-issue keys (documented in emptyIssue).

@@ -87,6 +87,8 @@ const REAL_HELPERS = [
   "scenario_platforms",
   // The Web lane's screenshots (verify_publish_screenshots, ADR-0096).
   "evidence_ocr_bin",
+  "evidence_ocr_provision",
+  "evidence_ocr_spawn",
   "browser_guard_log",
   "evidence_upload",
   "comments_have_marker",
@@ -167,6 +169,8 @@ node() {
       case "$2" in
         has-status-option) [[ -z "\${NO_OPTION:-}" ]] ;;
         query-status-items) [[ -z "\${QUERY_FAIL:-}" ]] || return 1; echo "\${TESTING_ITEMS:-[]}" ;;
+        # The card's board column (device_card_column).
+        item-status) [[ -z "\${ITEM_STATUS_FAIL:-}" ]] || return 1; printf '%s\\n' "\${ITEM_STATUS_STUB:-}" ;;
       esac
       ;;
     # dispatch-release.mjs is the real module: derive-platforms (and --verify)
@@ -3384,7 +3388,18 @@ describe("verify_device_housekeeping and the follow-up comment", () => {
   });
 
   it("publishes the run's screenshots for the follow-up only, as the device source", () => {
-    const published = JSON.stringify({ ok: true, images: [] });
+    const commit = "c".repeat(40);
+    const url = `https://raw.githubusercontent.com/JakubAnderwald/drafto/${commit}/7/${HEAD.slice(0, 12)}/device-${DEVICE_RUN_ID}/01.png`;
+    const published = JSON.stringify({
+      ok: true,
+      issue: "7",
+      sha: HEAD,
+      runId: `device-${DEVICE_RUN_ID}`,
+      ref: `refs/factory-evidence/7/${HEAD.slice(0, 12)}/device-${DEVICE_RUN_ID}`,
+      commit,
+      images: [{ n: 1, url, local: "/x/01.png", label: "ios: ios-all.yaml" }],
+      overflow: [],
+    });
     const body = [
       seedDeviceRun({ ledgerState: "done:PASS", evidence: true }),
       "verify_device_housekeeping",
@@ -3395,7 +3410,9 @@ describe("verify_device_housekeeping and the follow-up comment", () => {
       assert.match(uploads[0], /--source device /);
       assert.match(uploads[0], new RegExp(`--run-id device-${DEVICE_RUN_ID} `));
       assert.match(r.calls, /^report device-images .*upload\.json$/m);
-      assert.equal(followups(r).length, 1);
+      const posted = followups(r);
+      assert.equal(posted.length, 1);
+      assert.ok(posted[0].body.includes(`<img src="${url}"`), posted[0].body);
     });
   });
 
@@ -3656,31 +3673,58 @@ describe("the device lane: review round (hand-back retry, In Test continuation, 
         'test -e "$RUN_DIR/followup.done" && echo DONE || echo HELD',
       ].join("\n");
     const state = round({ verifyDevice: `${HEAD}:running` }); // no report yet
-    const inReview = JSON.stringify({ state: "OPEN", labels: [{ name: "status:in-review" }] });
+    const column = (status) => JSON.stringify({ itemId: "ITEM", contentId: "N", status });
+    const inReview = column("In Review");
     // Just finished, card in In Review after a hand-back: held.
-    withBash(seed(minsAgo(5)), { env: env({ ISSUE_VIEW_STUB: inReview }), state }, (r) => {
-      assert.match(r.calls, /^gh issue view 7 /m, "the card's column is looked up");
+    withBash(seed(minsAgo(5)), { env: env({ ITEM_STATUS_STUB: inReview }), state }, (r) => {
+      assert.match(r.calls, /^project item-status --issue 7$/m, "the board column is looked up");
+      assert.doesNotMatch(r.calls, /^gh issue view /m, "not the status:* label");
       assert.match(r.stdout, /^HELD$/m);
       assert.equal(followups(r).length, 0);
       assert.equal(r.issue.deviceReportPosted ?? null, null);
     });
+    // The board can't be read: held too (not read as a move).
+    for (const over of [{ ITEM_STATUS_FAIL: "1" }, { ITEM_STATUS_STUB: "" }]) {
+      withBash(seed(minsAgo(5)), { env: env(over), state }, (r) => {
+        assert.match(r.stdout, /^HELD$/m, JSON.stringify(over));
+        assert.equal(followups(r).length, 0);
+      });
+    }
     // The head moved: released, and recorded as stale.
     withBash(
       seed(minsAgo(5)),
-      { env: env({ ISSUE_VIEW_STUB: inReview, PR_VIEW_STUB: prView({ headRefOid: OLD }) }), state },
+      {
+        env: env({ ITEM_STATUS_STUB: inReview, PR_VIEW_STUB: prView({ headRefOid: OLD }) }),
+        state,
+      },
       (r) => {
         assert.match(r.stdout, /^DONE$/m);
         assert.equal(followups(r).length, 0, "a moved head never gets its results");
         assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}:stale`);
       },
     );
-    // The card is somewhere else (dragged to In Progress, say): released, posted.
-    const elsewhere = JSON.stringify({ state: "OPEN", labels: [{ name: "status:in-progress" }] });
-    withBash(seed(minsAgo(5)), { env: env({ ISSUE_VIEW_STUB: elsewhere }), state }, (r) => {
-      assert.equal(followups(r).length, 1);
-    });
+    // Dragged out of Testing by hand (to In Test, Blocked, off the board), its
+    // status:testing label left behind: the board says so, released, posted.
+    for (const status of ["In Test", "Blocked", null]) {
+      withBash(
+        seed(minsAgo(5)),
+        {
+          env: env({
+            ITEM_STATUS_STUB: column(status),
+            ISSUE_VIEW_STUB: JSON.stringify({
+              state: "OPEN",
+              labels: [{ name: "status:testing" }],
+            }),
+          }),
+          state,
+        },
+        (r) => {
+          assert.equal(followups(r).length, 1, String(status));
+        },
+      );
+    }
     // Past the hold cap + 60 minutes since it finished: released, posted.
-    withBash(seed(minsAgo(121)), { env: env({ ISSUE_VIEW_STUB: inReview }), state }, (r) => {
+    withBash(seed(minsAgo(121)), { env: env({ ITEM_STATUS_STUB: inReview }), state }, (r) => {
       assert.equal(followups(r).length, 1);
     });
   });
@@ -3877,5 +3921,292 @@ describe("the device lane: review round (hand-back retry, In Test continuation, 
       assert.match(r.calls, /^device start --issue 7 /m);
       assert.equal(followups(r).length, 0, "a run that gave way posts nothing");
     });
+  });
+});
+
+describe("the device lane: review round 4 (run identity, board column, account file, OCR)", () => {
+  const minsAgo = (m) => new Date(Date.now() - m * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const RUN_DIR = `$REPO_ROOT/logs/factory/device/runs/${DEVICE_RUN_ID}`;
+  const round = (over = {}) => ({
+    verifySha: HEAD,
+    verifyStartedAt: minsAgo(31),
+    lastReviewSha: HEAD,
+    lastFeedbackAt: "2026-01-01T00:00:00Z",
+    intestCommentSha: HEAD,
+    verifyShell: `${HEAD}:skipped:lane-off`,
+    verifyBrowser: `${HEAD}:skipped:not-web`,
+    ...over,
+  });
+  const env = (over = {}) => ({
+    HEAD,
+    LABELS: "status:testing",
+    PR_OBJ_STUB: PR_OBJ,
+    PR_VIEW_STUB: prView(),
+    DIFF_STUB: "apps/mobile/e2e/ios-all.yaml",
+    ...DEVICE_ON,
+    FACTORY_VERIFY_LANES: "browser,device",
+    FACTORY_DEVICE_ACCOUNT_FILE: "",
+    TESTING_ITEMS: JSON.stringify([{ itemId: "ITEM", issueNumber: 7, labels: ["status:in-test"] }]),
+    ...over,
+  });
+  const setRunDir = `node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 verifyDeviceRunDir "$RUN_DIR" --state-file "$STATE_FILE" >/dev/null`;
+  const followups = (r) => r.comments.filter((c) => /drafto-factory-device-report/.test(c.body));
+  const reports = (r) => r.comments.filter((c) => /drafto-factory-verify-report/.test(c.body));
+  const ledgerDir = 'mkdir -p "$REPO_ROOT/logs/factory/device"';
+  const inFlight = (over = "") =>
+    `${ledgerDir} && jq -nc --arg d "${RUN_DIR}" '{version: 1, inFlight: ({runId: "${DEVICE_RUN_ID}", issue: "7", pr: "70", sha: "${HEAD}", runDir: $d}${over}), attempts: {}, last: {}}' > "$REPO_ROOT/logs/factory/device/ledger.json"`;
+  const work = `verify_device_work 7 70 "$HEAD" '{"mobile":true}' '{"device":"none"}'`;
+
+  it("records a run with its dir in one write, and tries a failed write once more", () => {
+    const body = [
+      // The first state write fails; the second must carry both fields.
+      `eval "$(declare -f node | sed '1s/^node/stub_node/')"`,
+      'node() { if [[ "$2" == factory:set-issue-fields ]]; then echo "$*" >> "$REPO_ROOT/writes"; if [[ ! -e "$REPO_ROOT/failed-once" ]]; then : > "$REPO_ROOT/failed-once"; return 1; fi; fi; stub_node "$@"; }',
+      'verify_device_record 7 "$HEAD" running /runs/one',
+      'cat "$REPO_ROOT/writes"',
+    ].join("\n");
+    withBash(body, { env: env() }, (r) => {
+      assert.equal(r.issue.verifyDevice, `${HEAD}:running`);
+      assert.equal(r.issue.verifyDeviceRunDir, "/runs/one");
+      const writes = r.stdout.trim().split("\n");
+      assert.equal(writes.length, 2, "tried once more");
+      for (const w of writes) {
+        assert.match(
+          w,
+          /verifyDevice \S+:running verifyDeviceRunDir \/runs\/one/,
+          "one write, both",
+        );
+      }
+      assert.doesNotMatch(r.log, /couldn't record/);
+    });
+  });
+
+  it("adopts an unrecorded run in flight for the same commit instead of starting another", () => {
+    withBash(`${inFlight()}\n${work}`, { env: env() }, (r) => {
+      assert.doesNotMatch(r.calls, /^device start /m);
+      assert.equal(r.issue.verifyDevice, `${HEAD}:running`);
+      assert.match(r.issue.verifyDeviceRunDir, new RegExp(`device/runs/${DEVICE_RUN_ID}$`));
+      assert.match(r.log, /wasn't recorded; adopting it/);
+    });
+    // Another commit's run, or one already stopping, isn't ours to adopt.
+    for (const over of [` + {sha: "${OLD}"}`, ` + {stopping: {reason: "feedback"}}`]) {
+      withBash(`${inFlight(over)}\n${work}`, { env: env() }, (r) => {
+        assert.match(r.calls, /^device start /m, over);
+        assert.doesNotMatch(r.log, /adopting/);
+      });
+    }
+  });
+
+  it("adopts a finished run the round never recorded, so the lane isn't run again", () => {
+    const body = [
+      seedDeviceRun({ ledgerState: "done:PASS", finishedAt: minsAgo(1) }),
+      // The record still names an earlier run's dir, for another commit.
+      'node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 verifyDeviceRunDir /runs/older --state-file "$STATE_FILE" >/dev/null',
+      "verify_device_housekeeping",
+      `verify_device_work 7 70 "$HEAD" '{"mobile":true}' "$(verify_lane_states "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$HEAD" 1)"`,
+    ].join("\n");
+    const state = round({ verifyDevice: `${HEAD}:deferred:busy` });
+    withBash(body, { env: env(), state }, (r) => {
+      assert.equal(r.issue.verifyDevice, `${HEAD}:reported:pass`);
+      assert.match(r.issue.verifyDeviceRunDir, new RegExp(`device/runs/${DEVICE_RUN_ID}$`));
+      assert.doesNotMatch(r.calls, /^device start /m, "terminal now: not started again");
+      assert.equal(followups(r).length, 0, "the round's run waits for its report");
+    });
+    // A run for another commit than the round's is left as it is.
+    const other = round({ verifySha: OLD, verifyDevice: `${OLD}:deferred:busy` });
+    withBash(body.split("\n").slice(0, -1).join("\n"), { env: env(), state: other }, (r) => {
+      assert.equal(r.issue.verifyDevice, `${OLD}:deferred:busy`);
+      assert.equal(r.issue.verifyDeviceRunDir, "/runs/older");
+    });
+  });
+
+  it("posts nothing when the head moves while the comments are read", () => {
+    const body = [
+      seedDeviceRun({ ledgerState: "done:PASS" }),
+      `eval "$(declare -f gh | sed '1s/^gh/stub_gh/')"`,
+      `gh() { if [[ "$1 $2" == "pr view" && -e "$REPO_ROOT/moved" ]]; then call "gh $*"; echo '{"state":"OPEN","headRefOid":"${OLD}"}'; return 0; fi; stub_gh "$@"; }`,
+      'fetch_issue_comments() { : > "$REPO_ROOT/moved"; cat "$COMMENTS_FILE"; }',
+      "verify_device_housekeeping",
+    ].join("\n");
+    withBash(body, { env: env() }, (r) => {
+      assert.equal(followups(r).length, 0);
+      assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}:stale`);
+      assert.match(r.log, /head moved off .* it isn't posted \(stale\)/);
+    });
+  });
+
+  it("scans for the password of the account file the run used, not the current setting", () => {
+    const leaky = deviceOutput();
+    leaky.platforms.ios.verdict = "FAIL";
+    leaky.platforms.ios.flows = [
+      { name: "ios-all.yaml", status: "FAIL", durationS: 3, failure: "typed Run-Acct-Passw0rd" },
+    ];
+    const meta = [
+      `printf 'E2E_TEST_EMAIL=dev@example.com\\nE2E_TEST_PASSWORD=Run-Acct-Passw0rd\\n' > "$REPO_ROOT/run-account.env"`,
+      'chmod 600 "$REPO_ROOT/run-account.env"',
+      `jq -nc --arg a "$REPO_ROOT/run-account.env" '{needsAccount: true, paths: {accountFile: $a}}' > "${RUN_DIR}/meta.json"`,
+    ].join("\n");
+    // The follow-up comment.
+    withBash(
+      [
+        seedDeviceRun({ output: leaky, ledgerState: "done:FAIL" }),
+        meta,
+        "verify_device_housekeeping",
+      ].join("\n"),
+      { env: env() },
+      (r) => {
+        const posted = followups(r);
+        assert.equal(posted.length, 1);
+        assert.ok(
+          !posted[0].body.includes("Run-Acct-Passw0rd"),
+          "the run's password is scanned for",
+        );
+      },
+    );
+    // The verification report.
+    const promote = `verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"skipped:lane-off","browser":"skipped:not-web","device":"reported:fail"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+    withBash(
+      [seedDeviceRun({ output: leaky, ledgerState: "done:FAIL" }), meta, setRunDir, promote].join(
+        "\n",
+      ),
+      { env: env(), state: round({ verifyDevice: `${HEAD}:reported:fail` }) },
+      (r) => {
+        const report = reports(r)[0].body;
+        assert.ok(!report.includes("Run-Acct-Passw0rd"));
+        assert.match(report, /report withheld \(matched device-password\)/);
+      },
+    );
+    // No account in the run's record: the setting is the fallback.
+    withBash(
+      `mkdir -p "${RUN_DIR}" && printf '{}' > "${RUN_DIR}/meta.json"\nverify_device_account_file "${RUN_DIR}"`,
+      { env: env({ FACTORY_DEVICE_ACCOUNT_FILE: "/set/device.env" }) },
+      (r) => assert.equal(r.stdout.trim(), "/set/device.env"),
+    );
+  });
+
+  it("doesn't repeat results its follow-up already posted, and points at that comment", () => {
+    const promote = `verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"skipped:lane-off","browser":"skipped:not-web","device":"reported:pass"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+    const body = [
+      seedDeviceRun({ ledgerState: "done:PASS" }),
+      setRunDir,
+      promote,
+      'ls "$RUN_DIR" | grep report-composed || echo NO-MARKER',
+    ].join("\n");
+    const state = round({
+      verifyDevice: `${HEAD}:reported:pass`,
+      deviceReportPosted: `${HEAD}:${DEVICE_RUN_ID}`,
+    });
+    withBash(body, { env: env(), state }, (r) => {
+      const report = reports(r)[0].body;
+      assert.doesNotMatch(report, /\| iOS \(simulator\) \| ran \| PASS \|/);
+      assert.match(report, /results are already on this issue, in the device lane's own comment/);
+      assert.match(r.stdout, /^NO-MARKER$/m);
+    });
+    // Settled some other way (stale, in-report…): shown as before.
+    withBash(
+      body,
+      { env: env(), state: { ...state, deviceReportPosted: `${HEAD}:${DEVICE_RUN_ID}:stale` } },
+      (r) => assert.match(reports(r)[0].body, /\| iOS \(simulator\) \| ran \| PASS \|/),
+    );
+  });
+
+  it("a failed composition drops an earlier composition's marker", () => {
+    const promote = `verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"skipped:lane-off","browser":"skipped:not-web","device":"reported:pass"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+    const body = [
+      seedDeviceRun({ ledgerState: "done:PASS" }),
+      setRunDir,
+      'printf "%s\\n" "$HEAD" > "$RUN_DIR/report-composed.pending"',
+      `REPORT_FAIL=1 ${promote}`,
+      'ls "$RUN_DIR" | grep report-composed || echo NO-MARKER',
+      "verify_device_housekeeping",
+    ].join("\n");
+    const state = round({ verifyDevice: `${HEAD}:reported:pass` });
+    withBash(body, { env: env(), state }, (r) => {
+      assert.match(reports(r)[0].body, /report\s+couldn't be composed/);
+      assert.match(r.stdout, /^NO-MARKER$/m);
+      assert.equal(followups(r).length, 1, "the results still go out, as the follow-up");
+      assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}`);
+    });
+  });
+
+  it("from In Test: continues a round promoted for its head even when its report never posted", () => {
+    const promote = `verify_promote ITEM 7 70 "$HEAD" lanes-done '{"shell":"skipped:lane-off","browser":"skipped:not-web","device":"skipped:beta-build"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`;
+    const startedStub = `DEVICE_START_STUB='{"started":true,"runId":"${DEVICE_RUN_ID}","runDir":"/runs/x"}'`;
+    const body = [`FAIL_COMMENT=1 ${promote}`, startedStub, "verify_device_intest_work"].join("\n");
+    withBash(
+      body,
+      { env: env(), state: round({ verifyDevice: `${HEAD}:deferred:beta-build` }) },
+      (r) => {
+        assert.equal(r.issue.verifyPromotedSha, HEAD);
+        assert.equal(r.issue.verifyReportSha ?? null, null, "the report wasn't posted");
+        assert.match(r.calls, /^device start --issue 7 /m);
+        assert.equal(r.issue.verifyDevice, `${HEAD}:running`);
+      },
+    );
+  });
+
+  it("from In Test: starts nothing for a card with feedback pending, or whose comments can't be read", () => {
+    const state = round({ verifyPromotedSha: HEAD, verifyDevice: `${HEAD}:deferred:beta-build` });
+    const feedback = [
+      {
+        id: 5,
+        user: { login: "JakubAnderwald" },
+        body: "The button is the wrong colour, please fix it",
+        createdAt: "2026-10-20T00:00:00Z",
+        authorAssociation: "OWNER",
+      },
+    ];
+    withBash("verify_device_intest_work", { env: env(), state, comments: feedback }, (r) => {
+      assert.doesNotMatch(r.calls, /^device start /m);
+      assert.match(r.log, /actionable feedback pending; not starting a run/);
+    });
+    withBash("verify_device_intest_work", { env: env({ COMMENTS_FAIL: "1" }), state }, (r) => {
+      assert.doesNotMatch(r.calls, /^device start /m);
+      assert.match(r.log, /couldn't read the comments; trying again next tick/);
+    });
+    // Only noise since the mark: it starts.
+    const thanks = [{ ...feedback[0], body: "thanks!" }];
+    withBash("verify_device_intest_work", { env: env(), state, comments: thanks }, (r) => {
+      assert.match(r.calls, /^device start /m);
+    });
+  });
+
+  it("builds the OCR helper in the background when a run starts, once, never in the tick", () => {
+    const fake = [
+      'mkdir -p "$REPO_ROOT/apps/desktop/e2e/in-test/lib" "$REPO_ROOT/fakebin"',
+      'echo "// ocr" > "$REPO_ROOT/apps/desktop/e2e/in-test/lib/ocr.swift"',
+      // A swiftc that writes its -o output.
+      `printf '#!/bin/sh\\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\\nsleep 0.3\\nprintf "#!/bin/sh\\\\n" > "$out"; chmod +x "$out"\\n' > "$REPO_ROOT/fakebin/swiftc"`,
+      'chmod +x "$REPO_ROOT/fakebin/swiftc"',
+      'PATH="$REPO_ROOT/fakebin:$PATH"',
+    ].join("\n");
+    const startedStub = `DEVICE_START_STUB='{"started":true,"runId":"${DEVICE_RUN_ID}","runDir":"/runs/x"}'`;
+    const body = [
+      fake,
+      startedStub,
+      work,
+      // Returned at once: the build is still going (or only just done).
+      'test -e "$LOG_DIR/bin/ocr.building" && echo BUILDING-MARKER',
+      'for _ in $(seq 1 100); do [[ -x "$LOG_DIR/bin/ocr" && ! -e "$LOG_DIR/bin/ocr.building" ]] && break; sleep 0.1; done',
+      'test -x "$LOG_DIR/bin/ocr" && echo BUILT',
+      'test -e "$LOG_DIR/bin/ocr.tmp" || echo NO-TMP',
+      // Built and fresh: nothing more to do.
+      "evidence_ocr_provision && echo FRESH-OK",
+      'test -e "$LOG_DIR/bin/ocr.building" || echo NO-SECOND-BUILD',
+    ].join("\n");
+    withBash(body, { env: env() }, (r) => {
+      assert.match(r.stdout, /^BUILDING-MARKER$/m);
+      assert.match(r.stdout, /^BUILT$/m);
+      assert.match(r.stdout, /^NO-TMP$/m);
+      assert.match(r.stdout, /^FRESH-OK$/m);
+      assert.match(r.stdout, /^NO-SECOND-BUILD$/m);
+      assert.match(r.log, /Building the OCR helper .* in the background/);
+    });
+    // Uploads off: nothing is built.
+    withBash(
+      [fake, startedStub, work, 'test -e "$LOG_DIR/bin/ocr.building" || echo NONE'].join("\n"),
+      { env: env({ FACTORY_EVIDENCE_UPLOAD: "0" }) },
+      (r) => assert.match(r.stdout, /^NONE$/m),
+    );
   });
 });
