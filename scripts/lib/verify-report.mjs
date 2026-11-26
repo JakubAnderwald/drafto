@@ -157,6 +157,7 @@ import {
 } from "./browser-report.mjs";
 import {
   DEVICE_PLATFORMS,
+  deviceEvidenceRunId,
   evidenceSection,
   readUpload,
   reasonSentence,
@@ -797,9 +798,11 @@ function buildDeviceLane(input, secrets, sha) {
   if (src !== null && typeof src === "object" && !Array.isArray(src)) {
     for (const [p] of DEVICE_PLATFORMS) {
       const v = Object.hasOwn(src, p) ? src[p] : null;
-      if (v !== null && typeof v === "object" && !Array.isArray(v)) {
-        platforms[p] = shapeDevicePlatform(v);
-      }
+      if (v === null || typeof v !== "object" || Array.isArray(v)) continue;
+      // Only a recorded state the lane writes counts as coverage: a record
+      // with none (or an unknown one) leaves the platform's manual row.
+      const shaped = shapeDevicePlatform(v);
+      if (own(DEVICE_STATUS, shaped.kind)) platforms[p] = shaped;
     }
   }
   const covered = Object.keys(platforms).length > 0;
@@ -834,6 +837,7 @@ function buildDeviceLane(input, secrets, sha) {
   return {
     key: "device",
     meta,
+    sha,
     dir,
     localFile: dir ? path.join(dir, DEVICE_OUTPUT_FILE) : "",
     runId: DEVICE_RUN_ID.test(String(output?.runId ?? "")) ? output.runId : null,
@@ -858,8 +862,15 @@ function flowCounts(v) {
   return `${v.flows.filter((f) => f.status === "PASS").length}/${v.flows.length} flows passed`;
 }
 
+// The build's native step: device-output.json's build.cached says whether the
+// native project (expo prebuild, and pods on iOS) was reused. The app itself
+// is built either way.
+function nativeText(build) {
+  return build.cached ? "native project reused" : "native project regenerated";
+}
+
 // A covered platform's Note cell: flows passed, the first failure, whether the
-// build was cached. Raw text: the table cell escapes and defangs it.
+// native project was reused. Raw text: the table cell escapes and defangs it.
 function deviceNote(lane, v, runningNote) {
   if (lane.withheld) return `report withheld (${withheldWhy(lane)})`;
   if (v.kind === "running") return runningNote;
@@ -875,7 +886,7 @@ function deviceNote(lane, v, runningNote) {
   } else if (v.kind === "done") {
     parts.push("no flow ran");
   }
-  if (v.build) parts.push(v.build.cached ? "build cached" : "build not cached");
+  if (v.build) parts.push(nativeText(v.build));
   return parts.join("; ");
 }
 
@@ -904,8 +915,8 @@ function deviceDetailsText(lane) {
     const head = [`**${label}**`, inline(deviceStateText(v), 200)];
     if (v.verdict) head.push(v.verdict);
     if (v.build) {
-      const secs = v.build.durationS == null ? "" : `, ${v.build.durationS} s`;
-      head.push(`build ${v.build.cached ? "cached" : "not cached"}${secs}`);
+      if (v.build.durationS != null) head.push(`build ${v.build.durationS} s`);
+      head.push(nativeText(v.build));
     }
     lines.push(head.join(" · "), "");
     const shown = v.flows.slice(0, DEVICE_FLOWS_MAX);
@@ -1368,7 +1379,22 @@ function laneShots(lane, upload, secrets) {
   }
   if (lane.key === "shell" || upload === undefined || upload === null) return none;
   if (lane.withheld) return { ...none, reason: "withheld", given: true };
-  if (!lane.reported) return { ...none, reason: "not-reported", given: true };
+  if (lane.key === "device") {
+    if (!lane.covered) return { ...none, reason: "not-reported", given: true };
+    // A published record embeds only when it is this run's, for this commit:
+    // an earlier run's record would put its images under these results.
+    const ours =
+      upload.ok === true &&
+      upload.sha === lane.sha &&
+      lane.runId !== null &&
+      upload.runId === deviceEvidenceRunId(lane.runId);
+    if (upload.ok === true && !ours) return { ...none, reason: "other-run", given: true };
+    // A run that ended before any platform finished can still have published
+    // the shots of the flows it completed.
+    if (!lane.reported && !ours) return { ...none, reason: "not-reported", given: true };
+  } else if (!lane.reported) {
+    return { ...none, reason: "not-reported", given: true };
+  }
 
   const ev = evidenceSection({
     report: lane.key === "browser" ? (lane.parsed?.report ?? null) : null,
@@ -1632,7 +1658,12 @@ export function composeVerifyReport({
       "",
       `The rest of this report was withheld: the composed comment matched a secret pattern (${bodyHits.join(", ")}).`,
       "",
-      ...buildFooter(false),
+      // Fixed text and markers only: a lane's local path is text too, and
+      // can be what matched.
+      WITHHELD_LOCAL_LINE,
+      "",
+      VERIFY_REPORT_MARKER,
+      verifyShaMarker(sha),
     ].join("\n");
     withheld.shell = withheld.shell || shell.text != null;
     withheld.browser = withheld.browser || browser.text != null;
@@ -1650,6 +1681,11 @@ export function composeVerifyReport({
     },
   };
 }
+
+// A withheld body's pointer to the evidence: no path, since a path can be
+// what the scan matched.
+const WITHHELD_LOCAL_LINE =
+  "<sub>The full report and the local evidence stay on the Mac mini (the repo is public).</sub>";
 
 function laneSecretHits(lanes) {
   const hits = [];
@@ -1771,7 +1807,10 @@ export function composeDeviceReport({ sha, pr, output, dir = "", images, secrets
       "",
       `The rest of this comment was withheld: it matched a secret pattern (${bodyHits.join(", ")}).`,
       "",
-      ...footer(false),
+      // Fixed text and markers only, as composeVerifyReport's.
+      WITHHELD_LOCAL_LINE,
+      "",
+      ...markers,
     ].join("\n");
     withheld.device = withheld.device || device.text != null;
   }

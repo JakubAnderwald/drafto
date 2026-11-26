@@ -1098,6 +1098,21 @@ describe("secrets", () => {
     assert.ok(cr.secretHits.includes("body:bearer"));
   });
 
+  it("the withheld body carries no local path: a lane dir can be what matched", () => {
+    const dir = "/ev/Bearer abcdefghij1234";
+    const r = compose({ shell: { state: "reported:pass", dir, text: shellOutput() } });
+    assert.ok(r.secretHits.includes("body:bearer"), JSON.stringify(r.secretHits));
+    assert.match(r.body, /The rest of this report was withheld/);
+    assert.ok(!r.body.includes("abcdefghij1234"));
+    assert.ok(!r.body.includes("/ev/"), "no lane's dir");
+    assert.deepEqual(r.body.split("\n").slice(-4), [
+      "<sub>The full report and the local evidence stay on the Mac mini (the repo is public).</sub>",
+      "",
+      VERIFY_REPORT_MARKER,
+      verifyShaMarker(SHA),
+    ]);
+  });
+
   it("readSecretValue reads one key, null when the file or the value is missing", () => {
     const dir = mkdtempSync(join(tmpdir(), "verify-secret-"));
     try {
@@ -1674,10 +1689,7 @@ describe("Web lane screenshots (ADR-0096)", () => {
     assert.ok(!r.body.includes(EVIDENCE_COMMIT));
     assert.deepEqual(r.images, { browser: 0 });
     assert.doesNotMatch(r.body, /Web screenshots are published/);
-    assert.ok(
-      r.body.split("\n").some((l) => l.startsWith(LOCAL_BOTH)),
-      "both dirs stay local",
-    );
+    assert.ok(!r.body.includes("/ev/"), "the withheld body names no local dir");
     assert.deepEqual(r.body.split("\n").slice(-2), [VERIFY_REPORT_MARKER, verifyShaMarker(SHA)]);
   });
 
@@ -2122,15 +2134,15 @@ describe("device lane: the lane off leaves the report as it was", () => {
 });
 
 describe("device lane: rows", () => {
-  it("done PASS: the lane's state, verdict, flows passed and the cached build", () => {
+  it("done PASS: the lane's state, verdict, flows passed and the reused native project", () => {
     const r = composeDevice({ android: devicePlatform(), ios: devicePlatform() });
     assert.equal(
       tableRow(r.body, "Android (emulator)"),
-      "| Android (emulator) | ran | PASS | 2/2 flows passed; build cached |",
+      "| Android (emulator) | ran | PASS | 2/2 flows passed; native project reused |",
     );
     assert.equal(
       tableRow(r.body, "iOS (simulator)"),
-      "| iOS (simulator) | ran | PASS | 2/2 flows passed; build cached |",
+      "| iOS (simulator) | ran | PASS | 2/2 flows passed; native project reused |",
     );
     assert.equal(tableRow(r.body, "iOS / Android"), undefined);
     assert.match(tableRow(r.body, "macOS"), /\| manual \|/, "the macOS row is unchanged");
@@ -2146,13 +2158,20 @@ describe("device lane: rows", () => {
       r.body,
       /- \*\*Devices:\*\* Android \(emulator\) PASS, 2\/2 flows passed; iOS \(simulator\) PASS, 2\/2 flows passed\./,
     );
+    // The native project was reused; the app itself was still built.
+    assert.ok(
+      deviceLane(r.body).includes(
+        "**Android (emulator)** · ran · PASS · build 312 s · native project reused",
+      ),
+    );
+    assert.doesNotMatch(r.body, /build cached|not cached/);
   });
 
   it("done FAIL: the first failure's first line, and the verdict counts in the headline", () => {
     const r = composeDevice({ android: FAILED_ANDROID });
     assert.equal(
       tableRow(r.body, "Android (emulator)"),
-      '| Android (emulator) | ran | FAIL | 1/2 flows passed; first failure: 03-notes.yaml (FAIL) — Assertion is false: "Notes" is visible; build not cached |',
+      '| Android (emulator) | ran | FAIL | 1/2 flows passed; first failure: 03-notes.yaml (FAIL) — Assertion is false: "Notes" is visible; native project regenerated |',
     );
     assert.equal(r.verdict, "fail");
     assert.match(r.body, /\*\*Verdict: FAIL\*\*/);
@@ -2391,10 +2410,26 @@ describe("device lane: screenshots", () => {
     assert.deepEqual(r.body.split("\n").slice(-2), [VERIFY_REPORT_MARKER, verifyShaMarker(SHA)]);
   });
 
-  it("aren't shown for a lane that didn't finish a platform, and the footer says why", () => {
+  it("are shown for a run that ended before a platform finished, when its upload published them", () => {
+    // Stopped after its first flow: the supervisor saved that flow's shot, and
+    // the uploader published it once the run was over.
+    const stopped = devicePlatform("stopped:head-moved", {
+      flows: [{ name: "01-login.yaml", status: "PASS", durationS: 40, failure: null }],
+    });
+    const r = composeDevice(
+      { android: stopped },
+      { images: { device: deviceUpload(["android: 01-login.yaml"]) } },
+    );
+    assert.equal(imgCount(r.body), 1);
+    assert.deepEqual(r.images, { browser: 0, device: 1 });
+    assert.ok(deviceLane(r.body).includes("**Android (emulator)** · 01-login.yaml"));
+    assert.doesNotMatch(r.body, /Device screenshots weren't published/);
+  });
+
+  it("aren't shown for a lane that didn't finish a platform and published nothing, and the footer says why", () => {
     const r = composeDevice(
       { android: devicePlatform("unavailable:no-avd") },
-      { images: { device: deviceUpload() } },
+      { images: { device: { ok: false, reason: "push" } } },
     );
     assert.equal(imgCount(r.body), 0);
     assert.match(
@@ -2412,6 +2447,70 @@ describe("device lane: screenshots", () => {
   });
 });
 
+describe("device lane: an upload record of another run", () => {
+  it("embeds nothing from a record for another commit or another run, and says so", () => {
+    for (const extra of [
+      { sha: "f".repeat(40) },
+      { runId: "device-465-0123456789ab-20261109T000000Z" },
+      { runId: DEVICE_RUN },
+      { sha: undefined, runId: undefined },
+    ]) {
+      const r = composeDevice(
+        { android: devicePlatform(), ios: devicePlatform() },
+        { images: { device: deviceUpload(undefined, extra) } },
+      );
+      assert.equal(imgCount(r.body), 0, JSON.stringify(extra));
+      assert.deepEqual(r.images, { browser: 0, device: 0 });
+      assert.match(
+        r.body,
+        /Device screenshots weren't published: the upload record is for another run or commit\./,
+      );
+    }
+    // An odd run id in the output can't be matched to any record.
+    const odd = compose({
+      device: {
+        output: deviceOutput({ android: devicePlatform() }, { runId: "../x" }),
+        dir: "/runs/dev",
+      },
+      secrets: DEVICE_SECRETS,
+      images: { device: deviceUpload() },
+    });
+    assert.equal(imgCount(odd.body), 0);
+  });
+
+  it("embeds this run's record, also one read back from the evidence ref with no labels", () => {
+    const recovered = deviceUpload();
+    recovered.images = recovered.images.map(({ n, url }) => ({ n, url, local: null, name: null }));
+    const r = composeDevice(
+      { android: devicePlatform(), ios: devicePlatform() },
+      { images: { device: { ...recovered, reused: true } } },
+    );
+    assert.equal(imgCount(r.body), 2);
+    assert.deepEqual(r.images, { browser: 0, device: 2 });
+  });
+});
+
+describe("device lane: a platform record without a recognised state", () => {
+  it("isn't coverage: the manual row stays", () => {
+    const before = compose();
+    for (const ios of [{}, { state: "" }, { state: "queued" }, { flows: [] }]) {
+      const r = compose({
+        device: { output: deviceOutput({ ios }), dir: "/runs/dev" },
+        secrets: DEVICE_SECRETS,
+      });
+      assert.equal(r.body, before.body, JSON.stringify(ios));
+      assert.deepEqual(r.withheld, { ...before.withheld, device: true });
+    }
+    // One recognised platform still counts; the other keeps its manual text.
+    const mixed = compose({
+      device: { output: deviceOutput({ android: devicePlatform(), ios: {} }), dir: "/runs/dev" },
+      secrets: DEVICE_SECRETS,
+    });
+    assert.match(tableRow(mixed.body, "Android (emulator)"), /\| ran \| PASS \|/);
+    assert.match(tableRow(mixed.body, "iOS (simulator)"), /\| manual \|/);
+  });
+});
+
 describe("composeDeviceReport (the follow-up comment)", () => {
   function follow(platforms, over = {}) {
     return composeDeviceReport({
@@ -2423,6 +2522,20 @@ describe("composeDeviceReport (the follow-up comment)", () => {
       ...over,
     });
   }
+
+  it("its withheld body carries no local path: the run dir can be what matched", () => {
+    const r = follow({ android: devicePlatform() }, { dir: "/runs/Bearer abcdefghij1234" });
+    assert.ok(r.secretHits.includes("body:bearer"), JSON.stringify(r.secretHits));
+    assert.match(r.body, /The rest of this comment was withheld: it matched a secret pattern/);
+    assert.ok(!r.body.includes("abcdefghij1234"));
+    assert.ok(!r.body.includes("/runs/"), "no run dir");
+    assert.deepEqual(r.body.split("\n").slice(-4), [
+      "<sub>The full report and the local evidence stay on the Mac mini (the repo is public).</sub>",
+      "",
+      DEVICE_REPORT_MARKER,
+      deviceShaMarker(SHA, DEVICE_RUN),
+    ]);
+  });
 
   it("has its header, the device rows and its two markers last", () => {
     const r = follow({ android: FAILED_ANDROID, ios: devicePlatform() });

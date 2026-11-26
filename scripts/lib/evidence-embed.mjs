@@ -40,7 +40,18 @@ export const DEVICE_PLATFORMS = Object.freeze([
   ["android", "Android (emulator)"],
   ["ios", "iOS (simulator)"],
 ]);
-const DEVICE_LABEL = /^(android|ios): (.+)$/;
+// The flow part may hold line breaks (shots.json records it as given):
+// labelText collapses them for display, and the scan sees it unchanged.
+const DEVICE_LABEL = /^(android|ios): ([\s\S]+)$/;
+
+/**
+ * The evidence run id of a device run (device-lane.mjs's makeRunId,
+ * `<issue>-<sha12>-<stamp>`, starts with a digit, which evidence-upload.mjs's
+ * RUN_ID_RE refuses).
+ */
+export function deviceEvidenceRunId(runId) {
+  return `device-${runId}`;
+}
 const REPO = "JakubAnderwald/drafto";
 const RAW_PREFIX = `https://raw.githubusercontent.com/${REPO}/`;
 const IMAGE_URL_RE = new RegExp(
@@ -58,6 +69,7 @@ export const REASONS = Object.freeze({
   "account-live": "the macOS run's throwaway account may still be live (its state.env exists)",
   "device-running":
     "the device run hasn't finished; they follow with its results in a separate comment",
+  "other-run": "the upload record is for another run or commit",
   "selftest-missing":
     "the publishing self-test hasn't passed on this Mac mini yet (see the factory runbook)",
   "selftest-failed": "the publishing self-test failed (see the factory runbook)",

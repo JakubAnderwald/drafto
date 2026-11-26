@@ -54,7 +54,9 @@
 //   selftest [--platform android|ios] [--build]
 //   render --run-dir D [--images upload.json]
 //                             → device-output.json as the follow-up comment
-//                               (verify-report.mjs's composeDeviceReport).
+//                               (verify-report.mjs's composeDeviceReport),
+//                               scanned for the account password the run's
+//                               meta.json names.
 //   _supervise --run-dir D    (internal)
 
 import { createHash } from "node:crypto";
@@ -2989,10 +2991,18 @@ export function renderOutput(output, { runDir = "", images = null, secrets = {} 
   }
 }
 
-/** The device account's password for the render's scan: "" when none is set up, null when unreadable. */
-function renderSecrets(env, fs) {
-  const file = readDeviceKnobs(env).accountFile;
-  if (!file) return { devicePassword: "" };
+/**
+ * The device account's password for the render's scan, from the account file
+ * the run itself used (its meta.json), else FACTORY_DEVICE_ACCOUNT_FILE. ""
+ * only for a run that signed in to no account (a selftest); null, which
+ * withholds the text, when the password can't be read or the run dir says
+ * nothing about its account.
+ */
+export function renderSecrets(env, fs, runDir) {
+  const meta = runDir ? parseJson(readText(fs, path.join(runDir, "meta.json")), null) : null;
+  if (meta?.needsAccount === false) return { devicePassword: "" };
+  const file = meta?.paths?.accountFile || readDeviceKnobs(env).accountFile;
+  if (!file) return { devicePassword: null };
   return { devicePassword: readDeviceAccount(file, fs)?.password ?? null };
 }
 
@@ -3255,7 +3265,11 @@ export async function main(argv, deps = createDeviceDeps()) {
         ? (parseJson(readText(deps.fs, flags.images), null) ?? { ok: false, reason: "unreadable" })
         : null;
       return {
-        text: renderOutput(output, { runDir, images, secrets: renderSecrets(deps.env, deps.fs) }),
+        text: renderOutput(output, {
+          runDir,
+          images,
+          secrets: renderSecrets(deps.env, deps.fs, runDir),
+        }),
       };
     }
     case "selftest": {

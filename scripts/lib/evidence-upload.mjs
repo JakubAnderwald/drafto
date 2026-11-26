@@ -66,7 +66,9 @@
 //     and hashed every shot (ADR-0106 decision 8). Its --run-id is
 //     deviceEvidenceRunId(<the device run id>), so a run publishes once: it
 //     is refused ("device-running") until the run's device-output.json, beside
-//     --evidence-dir, says the run finished. Writes
+//     --evidence-dir (pinned to its real run dir, like a macOS run's), says
+//     the run finished: a finishedAt, and at least one platform, every one in
+//     a terminal state. Writes
 //     --out (mode 600): {ok, issue, sha, runId, ref, commit, images: [{n,
 //     url, local, name[, label]}], overflow: [{n, path, why}]} or {ok: false,
 //     reason}. Exit 0 either way; 2 on a usage error.
@@ -77,6 +79,7 @@ import * as nodeFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { deviceEvidenceRunId } from "./evidence-embed.mjs";
 import {
   browserManifest,
   deviceManifest,
@@ -100,13 +103,9 @@ export const SWITCH_ENV = "FACTORY_EVIDENCE_UPLOAD";
 export const RUN_ID_RE = /^[a-z][a-z0-9]*-[0-9A-Za-z][0-9A-Za-z_-]{0,47}$/;
 export const SOURCES = Object.freeze(["browser", "macos", "device"]);
 
-/**
- * The evidence run id of a device run (device-lane.mjs's makeRunId,
- * `<issue>-<sha12>-<stamp>`, starts with a digit, which RUN_ID_RE refuses).
- */
-export function deviceEvidenceRunId(runId) {
-  return `device-${runId}`;
-}
+// deviceEvidenceRunId lives in evidence-embed.mjs, so verify-report.mjs
+// (which this module imports) can check a device record's run id too.
+export { deviceEvidenceRunId };
 
 // A 1×1 PNG: the selftest's image.
 export const SELFTEST_PNG = Buffer.from(
@@ -581,10 +580,17 @@ function selectAndPublish({
   return gate ? { ok: false, reason: gate } : publishRun({ issue, sha, runId, selection, git });
 }
 
+// A device run's platforms, and the states a platform ends in
+// (device-lane.mjs: done, or failed / stopped / unavailable with a reason).
+const DEVICE_RUN_PLATFORMS = new Set(["android", "ios"]);
+const DEVICE_TERMINAL_STATE = /^(?:done|(?:failed|stopped|unavailable)(?::.*)?)$/;
+
 // A device run publishes once per run (its evidence ref is keyed by the run
 // id), so only after the run has finished: device-output.json, beside its
-// evidence/, has a finishedAt and no platform still running. An upload made
-// mid-run would freeze the set without the platforms still to come.
+// evidence/ (<evidenceDir>, pinned by pinnedShotsDir), has a finishedAt and at
+// least one platform, every one of them a device platform in a terminal
+// state. An upload made mid-run would freeze the set without the platforms
+// still to come.
 function deviceRunFinished(evidenceDir) {
   let output;
   try {
@@ -597,8 +603,19 @@ function deviceRunFinished(evidenceDir) {
   if (output === null || typeof output !== "object") return false;
   if (typeof output.finishedAt !== "string" || !output.finishedAt) return false;
   const platforms = output.platforms;
-  if (platforms === null || typeof platforms !== "object") return false;
-  return Object.values(platforms).every((p) => p?.state !== "running");
+  if (platforms === null || typeof platforms !== "object" || Array.isArray(platforms)) return false;
+  const entries = Object.entries(platforms);
+  return (
+    entries.length > 0 &&
+    entries.every(
+      ([name, p]) =>
+        DEVICE_RUN_PLATFORMS.has(name) &&
+        p !== null &&
+        typeof p === "object" &&
+        typeof p.state === "string" &&
+        DEVICE_TERMINAL_STATE.test(p.state),
+    )
+  );
 }
 
 // A macOS run's state.env sits beside its shots/: while it exists, the run's
@@ -655,8 +672,11 @@ export function uploadRun({
     // A macOS run is production and is published by a person (evidence-post.mjs
     // refuses the same way): never from an unattended session, and never while
     // its throwaway account may still be live, whatever calls. Its shots/ is
-    // pinned first, so both gate checks and the reads see one run.
-    const shotsDir = source === "macos" ? pinnedShotsDir(evidenceDir) : evidenceDir;
+    // pinned first, so both gate checks and the reads see one run; a device
+    // run's evidence/ is pinned the same way, so the run whose finish the
+    // gate checks is the run whose screenshots are read.
+    const pinned = source === "macos" || source === "device";
+    const shotsDir = pinned ? pinnedShotsDir(evidenceDir) : evidenceDir;
     const macosGate = () => {
       if (source !== "macos") return null;
       if (env.DRAFTO_UNATTENDED === "1") return "unattended";
@@ -664,10 +684,12 @@ export function uploadRun({
       if (shotsDir === null) return "error";
       return macosAccountLive(shotsDir) ? "account-live" : null;
     };
-    const deviceGate = () =>
-      source === "device" && !deviceRunFinished(path.resolve(evidenceDir))
-        ? "device-running"
-        : null;
+    const deviceGate = () => {
+      if (source !== "device") return null;
+      // No run dir to look in: whether the run finished can't be told.
+      if (shotsDir === null) return "error";
+      return deviceRunFinished(shotsDir) ? null : "device-running";
+    };
     const gates = () => macosGate() ?? deviceGate() ?? uploadGate({ env, withheld, logDir });
     const gate = gates();
     const prior = readJson(out);

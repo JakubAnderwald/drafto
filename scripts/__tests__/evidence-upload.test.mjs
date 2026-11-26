@@ -25,6 +25,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -1429,7 +1430,8 @@ describe("upload publishes a device run's supervisor-captured shots (ADR-0106)",
       record.images.map((i) => i.name),
       ["device-android/01-login.png"],
     );
-    const ev = fx.deviceEvidence;
+    // The run dir is pinned to its real path (as a macOS run's is).
+    const ev = join(realpathSync(dirname(fx.deviceEvidence)), "evidence");
     assert.deepEqual(record.overflow, [
       {
         n: 2,
@@ -1441,7 +1443,7 @@ describe("upload publishes a device run's supervisor-captured shots (ADR-0106)",
         path: join(ev, "device-ios", "01-ios-all.png"),
         why: "not from the final evidence pass",
       },
-      { n: 4, path: link, why: "a symlink" },
+      { n: 4, path: join(ev, "device-ios", "02-link.png"), why: "a symlink" },
       // A name that isn't a device shot's goes last, and points at no file.
       { n: 5, path: ev, why: "unexpected file name" },
     ]);
@@ -1457,6 +1459,14 @@ describe("upload publishes a device run's supervisor-captured shots (ADR-0106)",
       { ...finished(), finishedAt: null },
       null,
       "{not json",
+      // No platform record, or one that names no terminal state, says
+      // nothing about whether the run finished.
+      { ...finished(), platforms: [] },
+      { ...finished(), platforms: {} },
+      { ...finished(), platforms: { ios: {} } },
+      { ...finished(), platforms: { android: { state: "done" }, ios: null } },
+      { ...finished(), platforms: { ios: { state: "queued" } } },
+      { ...finished(), platforms: { web: { state: "done" } } },
     ]) {
       const fx = deviceFixture(shots, { output: typeof output === "string" ? null : output });
       if (typeof output === "string") {
@@ -1473,6 +1483,73 @@ describe("upload publishes a device run's supervisor-captured shots (ADR-0106)",
       assert.equal(after.ok, true);
       assert.equal(after.images, 2);
     }
+  });
+
+  it("counts a run whose platforms ended early as finished; one platform is enough", async () => {
+    const shots = [{ platform: "android", name: "01-login.png", data: PNG("a") }];
+    for (const platforms of [
+      { android: { state: "done" } },
+      { android: { state: "stopped:head-moved" }, ios: { state: "failed:build" } },
+      { android: { state: "failed" }, ios: { state: "unavailable:no-simulator" } },
+    ]) {
+      const fx = deviceFixture(shots, { output: { ...finished(), platforms } });
+      const summary = await upload(fx, deviceArgs(fx));
+      assert.equal(summary.ok, true, JSON.stringify(platforms));
+      assert.equal(summary.images, 1);
+    }
+  });
+
+  it("pins a device run reached through a link: the finish check reads the run whose shots it read", async () => {
+    // runs/latest -> run A (finished). While A's shots are being OCR'd, the
+    // link moves to run B, still running. The check after the scan must still
+    // look at A; and with the link moved before the upload, B is refused.
+    const fx = deviceFixture([]);
+    const runs = join(fx.root, "runs");
+    const runA = join(runs, "a");
+    const runB = join(runs, "b");
+    for (const [run, ios] of [
+      [runA, "done"],
+      [runB, "running"],
+    ]) {
+      deviceRun(
+        run,
+        [{ platform: "android", name: "01-login.png", data: PNG(run) }],
+        finished(ios),
+      );
+    }
+    const latest = join(runs, "latest");
+    symlinkSync(join(runA, "device-run"), latest);
+    const flags = deviceArgs(fx, { "evidence-dir": join(latest, "evidence") });
+    const ocr = (data, ext) => {
+      rmSync(latest);
+      symlinkSync(join(runB, "device-run"), latest);
+      return fx.ocr.ocr(data, ext);
+    };
+    const published = await upload(fx, flags, { ocr });
+    assert.equal(published.ok, true, JSON.stringify(published));
+    assert.equal(published.images, 1);
+    const dir = `${ISSUE}/${SHA12}/${deviceEvidenceRunId(DEVICE_RUN)}`;
+    assert.ok(blobOf(fx.origin, published.commit, `${dir}/01.png`).equals(PNG(runA)));
+
+    // The link now points at B, still running: refused, nothing more pushed.
+    rmSync(fx.out);
+    const pushes = fx.pushes();
+    const otherRun = deviceArgs(fx, {
+      "evidence-dir": join(latest, "evidence"),
+      "run-id": deviceEvidenceRunId("874-0123456789ab-20261111T061010Z"),
+    });
+    const refused = await upload(fx, otherRun);
+    assert.equal(refused.reason, "device-running");
+    assert.equal(fx.pushes(), pushes);
+  });
+
+  it("refuses a device run whose run dir can't be resolved, before any push", async () => {
+    const fx = deviceFixture([]);
+    const flags = deviceArgs(fx, { "evidence-dir": join(fx.root, "no-such-run", "evidence") });
+    const refused = await upload(fx, flags);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "error");
+    assertNothingPushed(fx);
   });
 
   it("scans each shot's OCR text for the device account's password", async () => {

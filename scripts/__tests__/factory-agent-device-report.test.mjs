@@ -20,7 +20,9 @@ const agentPath = join(scriptsDir, "factory-agent.sh");
 const extract = (name) =>
   `eval "$(awk '/^${name}\\(\\)/{f=1} f{print} f&&/^}/{exit}' "${agentPath}")"`;
 
-function bash(fns, body) {
+// <comments> reach bash as data, in $COMMENTS_JSON: a report body holds
+// backticks, which bash would run as a command inside a quoted literal.
+function bash(fns, body, comments = []) {
   const r = spawnSync(
     "bash",
     [
@@ -31,7 +33,7 @@ function bash(fns, body) {
         body,
       ].join("\n"),
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: { ...process.env, COMMENTS_JSON: JSON.stringify(comments) } },
   );
   assert.equal(r.status, 0, `bash failed: ${r.stderr}`);
   return r.stdout.trim();
@@ -93,19 +95,34 @@ describe("the device lane's follow-up comment is factory output, not feedback", 
     assert.match(DEVICE_BODY, /Verdict: FAIL/);
   });
 
+  it("reaches bash unchanged: the backticks in the body are data, not a command", () => {
+    assert.ok(DEVICE_BODY.includes("`0123456789ab`"));
+    const out = bash([], `printf '%s' "$COMMENTS_JSON" | jq -r '.[1].body'`, COMMENTS);
+    assert.equal(out, DEVICE_BODY.trim());
+  });
+
   it("owner_comments_since skips it and keeps the operator's comment", () => {
     const out = bash(
       ["owner_comments_since"],
-      `owner_comments_since ${JSON.stringify(JSON.stringify(COMMENTS))} "2026-11-10T06:00:00Z" | jq -c '[.[].id]'`,
+      `owner_comments_since "$COMMENTS_JSON" "2026-11-10T06:00:00Z" | jq -c '[.[].id]'`,
+      COMMENTS,
     );
     assert.equal(out, "[3]");
+    // With nothing but the follow-up since the cut-off, nothing is left.
+    const none = bash(
+      ["owner_comments_since"],
+      `owner_comments_since "$COMMENTS_JSON" "2026-11-10T06:00:00Z" | jq -c '[.[].id]'`,
+      ONLY_DEVICE,
+    );
+    assert.equal(none, "[]");
   });
 
   it("has_actionable_feedback finds nothing when the follow-up is the only new comment", () => {
     const run = (comments) =>
       bash(
         ["owner_comments_since", "is_noise_comment", "has_actionable_feedback"],
-        `has_actionable_feedback ${JSON.stringify(JSON.stringify(comments))} "2026-11-10T06:00:00Z" && echo FEEDBACK || echo NONE`,
+        `has_actionable_feedback "$COMMENTS_JSON" "2026-11-10T06:00:00Z" && echo FEEDBACK || echo NONE`,
+        comments,
       );
     assert.equal(run(ONLY_DEVICE), "NONE");
     assert.equal(run(COMMENTS), "FEEDBACK");
@@ -114,7 +131,8 @@ describe("the device lane's follow-up comment is factory output, not feedback", 
   it("unacked_owner_comments doesn't count it as a comment to replan for", () => {
     const out = bash(
       ["unacked_owner_comments"],
-      `unacked_owner_comments ${JSON.stringify(JSON.stringify(COMMENTS))} "2026-11-10T06:00:00Z" '[]'`,
+      `unacked_owner_comments "$COMMENTS_JSON" "2026-11-10T06:00:00Z" '[]'`,
+      COMMENTS,
     );
     assert.deepEqual(JSON.parse(out), ["3"]);
   });
