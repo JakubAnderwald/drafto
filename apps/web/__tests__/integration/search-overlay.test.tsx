@@ -102,6 +102,52 @@ describe("SearchOverlay", () => {
     vi.useRealTimers();
   });
 
+  it("keeps every character of a long query typed in one fast burst", () => {
+    // Regression: the browser run on 86d2807 typed 60 digits in one burst and React threw
+    // "Maximum update depth exceeded" (#185) at the 53rd, which it then dropped. The overlay
+    // used to set state in its search effect on every keystroke. A keystroke's effects run
+    // straight after its commit, so each one left a lower-priority update pending, and React
+    // counts more than 50 commits in a row that leave one as an infinite loop. The keystrokes
+    // here are dispatched outside act(), as a browser delivers them: act() would render the
+    // pending update after each one and hide the loop.
+    render(
+      <SearchOverlay
+        open={true}
+        onClose={vi.fn()}
+        onSelectNote={vi.fn()}
+        notebooks={mockNotebooks}
+      />,
+    );
+    const input = screen.getByPlaceholderText<HTMLInputElement>("Search notes and notebooks...");
+    const setNativeValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    const uncaught: unknown[] = [];
+    const onError = (event: ErrorEvent) => {
+      event.preventDefault();
+      uncaught.push(event.error);
+    };
+    window.addEventListener("error", onError);
+    const actEnvironment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    const wasActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT;
+    actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
+
+    const typed = Array.from({ length: 60 }, (_, i) => String(i % 10)).join("");
+    try {
+      for (const char of typed) {
+        setNativeValue.call(input, input.value + char);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    } finally {
+      actEnvironment.IS_REACT_ACT_ENVIRONMENT = wasActEnvironment;
+      window.removeEventListener("error", onError);
+    }
+
+    expect(uncaught).toEqual([]);
+    expect(input.value).toBe(typed);
+  });
+
   it("calls onClose when close button is clicked", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();

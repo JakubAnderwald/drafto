@@ -53,7 +53,6 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
   const [retryCount, setRetryCount] = useState(0);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const notebookMap = new Map(notebooks.map((n) => [n.id, n.name]));
 
@@ -63,29 +62,33 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
     }
   }, [open]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-
-    const trimmed = query.trim();
-    if (!trimmed) {
-      // Clearing local state when the query empties is the intentional terminating
-      // case — no fetch, no cascading render storm — so the synchronous reset is fine.
-      /* eslint-disable react-hooks/set-state-in-effect */
-      setResults([]);
-      setLoading(false);
-      setSearchError(false);
-      /* eslint-enable react-hooks/set-state-in-effect */
-      return;
-    }
-
-    setLoading(true);
+  // Sets the state a new search starts from. Called from the event that starts the search (a
+  // keystroke or Retry), never from the effect below: React runs a keystroke's effects straight
+  // after its commit, so a setState there leaves a lower-priority update pending. More than 50
+  // commits in a row like that, as fast typing makes, and React throws "Maximum update depth
+  // exceeded" and drops the keystroke.
+  const startSearch = useCallback((nextQuery: string) => {
+    const hasQuery = nextQuery.trim() !== "";
+    setLoading(hasQuery);
     setSearchError(false);
+    if (!hasQuery) setResults([]);
+  }, []);
 
-    timerRef.current = setTimeout(async () => {
+  const handleQueryChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setQuery(e.target.value);
+      startSearch(e.target.value);
+    },
+    [startSearch],
+  );
+
+  // Runs the debounced request for the current query. Only the request's own callbacks set state.
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
       try {
         const res = await fetch(`/api/notes/search?q=${encodeURIComponent(trimmed)}`, {
           signal: controller.signal,
@@ -117,17 +120,16 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
     }, 300);
 
     return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
+      clearTimeout(timer);
       controller.abort();
     };
   }, [query, retryCount]);
 
   const retrySearch = useCallback(() => {
+    startSearch(query);
     setRetryCount((count) => count + 1);
     inputRef.current?.focus();
-  }, []);
+  }, [query, startSearch]);
 
   const selectResult = useCallback(
     (result: SearchResult) => {
@@ -194,7 +196,7 @@ export function SearchOverlay({ open, onClose, onSelectNote, notebooks }: Search
           <Input
             ref={inputRef}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={handleQueryChange}
             // The route rejects a longer query, which would only ever show as a failed search.
             maxLength={MAX_SEARCH_QUERY_LENGTH}
             placeholder="Search notes and notebooks..."
