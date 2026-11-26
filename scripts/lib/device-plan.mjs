@@ -117,7 +117,9 @@ function headingPlatforms(heading) {
  *   the PR applicable, but a deleted flow is never run
  * @returns {{applicable: boolean, platforms: {android?: {flows: string[], unavailable?: string}, ios?: {flows: string[], unavailable?: string}}, reasons: string[]}}
  *   A platform whose smoke flow the PR deletes has no flows and
- *   `unavailable: "no-smoke-flow"`: the lane reports it without building.
+ *   `unavailable: "no-smoke-flow"` (or "smoke-flow-needs-host" /
+ *   "smoke-flow-unreadable" when its tags make it ineligible): the lane
+ *   reports it without building.
  */
 export function deriveDevicePlan({
   diffFiles = [],
@@ -162,6 +164,19 @@ export function deriveDevicePlan({
     if (deleted.has(smokeFlow(p))) {
       reasons.push(`${flowName(smokeFlow(p))} is deleted by the PR: nothing to run on ${p}`);
       platforms[p] = { flows: [], unavailable: "no-smoke-flow" };
+      continue;
+    }
+    // The smoke flow must be eligible too: a PR can tag it for a host step
+    // or leave a header the lane can't read.
+    const smokeTags = flowTags?.[smokeFlow(p)];
+    const smokeHost = Array.isArray(smokeTags) && smokeTags.find((t) => HOST_TAGS.includes(t));
+    if (smokeTags === null || smokeHost) {
+      const why = smokeHost ? `is tagged ${smokeHost}` : "has tags that couldn't be read";
+      reasons.push(`${flowName(smokeFlow(p))} ${why}: nothing to run on ${p}`);
+      platforms[p] = {
+        flows: [],
+        unavailable: smokeHost ? "smoke-flow-needs-host" : "smoke-flow-unreadable",
+      };
       continue;
     }
     const flows = [smokeFlow(p)];

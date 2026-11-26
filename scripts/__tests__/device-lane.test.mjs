@@ -6,6 +6,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as nodeFs from "node:fs";
 import {
   chmodSync,
@@ -941,14 +942,29 @@ describe("housekeeping and stop", () => {
     h.alive.add(SUP_PID);
     const out = await runStop({ repoRoot: h.repoRoot, issue: "874", reason: "stop" }, h.deps);
     assert.equal(out.state, "stopping");
-    // Still wedged five minutes later: escalated, devices stopped, slot freed.
-    const later = new Date(h.clock + 6 * 60_000).toISOString();
-    const done = await runHousekeeping({ repoRoot: h.repoRoot, now: later }, h.deps);
+    // Still wedged five minutes later: SIGKILLed, but it stays alive (stuck
+    // in I/O), so the slot stays reserved and nothing is cleaned up or refunded.
+    const later = (min) => new Date(h.clock + min * 60_000).toISOString();
+    const kill = await runHousekeeping({ repoRoot: h.repoRoot, now: later(6) }, h.deps);
+    assert.equal(kill.state, "stopping");
+    assert.equal(kill.escalated, true);
+    assert.equal(h.kills.filter((k) => k.pid === -SUP_PID && k.signal === "SIGKILL").length, 1);
+    assert.ok(!emuKilled());
+    let ledger = await loadLedger(ledgerPath(h.repoRoot));
+    assert.equal(ledger.inFlight.stopping.killedAt, later(6).replace(/\.\d{3}Z$/, "Z"));
+    assert.equal(attemptsFor(ledger, "874", SHA), 1);
+    assert.equal(
+      (await runHousekeeping({ repoRoot: h.repoRoot, now: later(7) }, h.deps)).state,
+      "stopping",
+    );
+    assert.equal(h.kills.filter((k) => k.pid === -SUP_PID && k.signal === "SIGKILL").length, 1);
+    // It has really exited: cleaned up after, finalised, refunded once.
+    h.alive.delete(SUP_PID);
+    const done = await runHousekeeping({ repoRoot: h.repoRoot, now: later(8) }, h.deps);
     assert.equal(done.state, "stopped");
     assert.equal(done.escalated, true);
-    assert.ok(h.kills.some((k) => k.pid === -SUP_PID && k.signal === "SIGKILL"));
     assert.ok(emuKilled());
-    const ledger = await loadLedger(ledgerPath(h.repoRoot));
+    ledger = await loadLedger(ledgerPath(h.repoRoot));
     assert.equal(ledger.inFlight, null);
     assert.equal(attemptsFor(ledger, "874", SHA), 0);
   });
@@ -1201,11 +1217,17 @@ describe("flows read the password through the env fallback", () => {
     const dir = path.join(h.tmp, "flows");
     mkdirSync(path.join(dir, "helpers"), { recursive: true });
     writeFileSync(path.join(dir, "helpers", "a.yaml"), "appId: x\n---\n- launchApp\n");
+    writeFileSync(path.join(dir, "helpers", "b.yaml"), "appId: x\n---\n- launchApp\n");
     writeFileSync(
       path.join(dir, "top.yaml"),
-      "appId: x\n---\n- runFlow: \"helpers/a.yaml\" # quoted\n- runFlow:\n    file: 'helpers/a.yaml'\n",
+      "appId: x\n---\n- runFlow: \"helpers/a.yaml\" # quoted\n- runFlow:\n    file: 'helpers/b.yaml'\n",
     );
-    assert.deepEqual(closure(path.join(dir, "top.yaml")).length, 2);
+    // One target per quoted form: each must be found on its own.
+    assert.deepEqual(closure(path.join(dir, "top.yaml")).sort(), [
+      path.join(dir, "helpers", "a.yaml"),
+      path.join(dir, "helpers", "b.yaml"),
+      path.join(dir, "top.yaml"),
+    ]);
     writeFileSync(path.join(dir, "bad.yaml"), "appId: x\n---\n- runFlow: helpers/missing.yaml\n");
     assert.throws(() => closure(path.join(dir, "bad.yaml")), /subflow not found/);
   });
@@ -1344,7 +1366,11 @@ describe("review fixes", () => {
       runDir = r.runDir;
       h.deps.pid = SUP_PID;
       await runSupervise({ runDir }, { deps: h.deps });
-      assert.deepEqual(during["child:7100"], { pid: 7100, match: "gradlew" });
+      assert.deepEqual(during["child:7100"], {
+        pid: 7100,
+        match: "gradlew",
+        markers: [h.knobs.volume],
+      });
       assert.deepEqual(during.emulator, undefined);
       assert.equal(existsSync(path.join(runDir, PGIDS_FILE)), false);
     });
@@ -1827,31 +1853,49 @@ describe("review round 3", () => {
   });
 
   describe("ledger", () => {
-    it("mutateLedger waits for another process's lock", async () => {
+    it("mutateLedger waits for another live process's lock, however old it is", async () => {
       const file = ledgerPath(h.repoRoot);
       mkdirSync(path.dirname(file), { recursive: true });
-      mkdirSync(`${file}.lock`);
+      // A slow live owner (our parent, which is certainly alive) with an old lock.
+      writeFileSync(`${file}.pidlock`, `${process.ppid}\n`);
+      const old = new Date(Date.now() - 10 * 60_000);
+      utimesSync(`${file}.pidlock`, old, old);
       let done = false;
       const p = mutateLedger(file, (l) => {
         l.last.x = 1;
         done = true;
         return true;
       });
-      await sleep(60);
+      await sleep(80);
       assert.equal(done, false);
-      nodeFs.rmdirSync(`${file}.lock`);
+      assert.equal(readFileSync(`${file}.pidlock`, "utf8"), `${process.ppid}\n`);
+      rmSync(`${file}.pidlock`);
       await p;
       assert.equal(done, true);
       assert.equal((await loadLedger(file)).last.x, 1);
-      assert.equal(existsSync(`${file}.lock`), false);
+      assert.equal(existsSync(`${file}.pidlock`), false);
     });
 
-    it("takes over a lock left by a dead process", async () => {
+    it("takes over a lock whose owner is dead", async () => {
       const file = ledgerPath(h.repoRoot);
-      mkdirSync(`${file}.lock`, { recursive: true });
-      const old = new Date(Date.now() - 2 * 60_000);
-      utimesSync(`${file}.lock`, old, old);
+      mkdirSync(path.dirname(file), { recursive: true });
+      const dead = spawnSync("/usr/bin/true").pid;
+      writeFileSync(`${file}.pidlock`, `${dead}\n`);
       assert.equal(await mutateLedger(file, () => true), true);
+      assert.equal(existsSync(`${file}.pidlock`), false);
+    });
+
+    it("concurrent mutations in one process never lose an update", async () => {
+      const file = ledgerPath(h.repoRoot);
+      await Promise.all(
+        Array.from({ length: 20 }, () =>
+          mutateLedger(file, (l) => {
+            l.last.n = (l.last.n ?? 0) + 1;
+            return true;
+          }),
+        ),
+      );
+      assert.equal((await loadLedger(file)).last.n, 20);
     });
 
     it("a lock take that throws gives the reservation back", async () => {
@@ -1947,5 +1991,146 @@ describe("review round 3", () => {
     const real =
       "appId: x\n---\n- launchApp\n- inputText: \"${typeof E2E_TEST_PASSWORD !== 'undefined' ? E2E_TEST_PASSWORD : MAESTRO_E2E_TEST_PASSWORD}\" # sign in\n";
     assert.equal(flowNeedsSignIn(real), false);
+  });
+});
+
+describe("review round 4", () => {
+  it("judgeArtifact compares the parsed Supabase origin", () => {
+    const cfg = (supabaseUrl) =>
+      JSON.stringify({ extra: { supabaseUrl, apiUrl: INVALID_API_URL }, note: DEV_REF });
+    const judge = (u) => judgeArtifact({ readOk: true, prodFound: false, configText: cfg(u) });
+    assert.equal(judge(`https://${DEV_REF}.supabase.co`).ok, true);
+    assert.equal(judge(`https://${DEV_REF}.supabase.co/`).ok, true);
+    assert.equal(judge(`https://${DEV_REF}.evil.example`).problem, "supabase-url");
+    assert.equal(judge(`https://${DEV_REF}.supabase.co.evil.example`).problem, "supabase-url");
+    assert.equal(judge(`http://${DEV_REF}.supabase.co`).problem, "supabase-url");
+    assert.equal(judge("not a url").problem, "supabase-url");
+  });
+
+  it("an unavailable platform needs neither its tools nor a build root", async () => {
+    h.prView.files = [
+      { path: "apps/mobile/e2e/ios-all.yaml", changeType: "DELETED" },
+      { path: "packages/shared/src/x.ts" },
+    ];
+    const iosRoot = deviceRootFor(h.knobs, "ios");
+    rmSync(iosRoot, { recursive: true, force: true });
+    h.deps.isExecutable = (p) => !p.endsWith("/pod"); // no CocoaPods on this host
+    const r = await start();
+    assert.equal(r.started, true, JSON.stringify(r));
+    assert.deepEqual(r.platforms.ios, { flows: [], unavailable: "no-smoke-flow" });
+    assert.ok(!h.gitCalls.some((c) => c.args.includes(iosRoot)), "no iOS worktree");
+    assert.equal(existsSync(iosRoot), false);
+  });
+
+  it("the reservation re-checks the attempt budget under the ledger lock", async () => {
+    // Another start for this head spends the last attempt while this one
+    // reads the PR.
+    const gh = h.deps.gh;
+    h.deps.gh = async (args) => {
+      const ledger = await loadLedger(ledgerPath(h.repoRoot));
+      ledger.attempts["874"] = { [SHA]: 2 };
+      await saveLedger(ledger, ledgerPath(h.repoRoot));
+      return gh(args);
+    };
+    const r = await start();
+    assert.equal(r.reason, "attempts");
+    assert.equal(r.attempts, 2);
+    const ledger = await loadLedger(ledgerPath(h.repoRoot));
+    assert.equal(ledger.inFlight, null);
+    assert.equal(attemptsFor(ledger, "874", SHA), 2);
+    assert.equal((await start({ forceAttempt: true })).started, true);
+  });
+
+  describe("retained groups whose leader exited", () => {
+    function record(runDir, groups) {
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(path.join(runDir, PGIDS_FILE), JSON.stringify(groups));
+    }
+
+    it("killRecordedGroups recognises a leaderless group by its members", async () => {
+      const runDir = path.join(h.tmp, "rd2");
+      record(runDir, {
+        "child:7800": { pid: 7800, match: "gradlew", markers: [h.volume] },
+        "child:7900": { pid: 7900, match: "xcodebuild", markers: [h.volume] },
+      });
+      // 7800: the wrapper is gone, its daemon (under the volume) still runs.
+      // 7900: a group with members that are not ours (unverified): left alone.
+      h.aliveGroups.add(7800);
+      h.aliveGroups.add(7900);
+      h.procs = [
+        {
+          pid: 7801,
+          pgid: 7800,
+          command: `java -cp ${h.volume}/drafto-device/gradle/x GradleDaemon`,
+        },
+        { pid: 7901, pgid: 7900, command: "/usr/bin/vim notes.txt" },
+      ];
+      assert.deepEqual(await killRecordedGroups(runDir, "SIGKILL", h.deps), [7800]);
+      assert.deepEqual(h.kills, [{ pid: -7800, signal: "SIGKILL" }]);
+    });
+
+    it("a lost run's leftover group is retried by later housekeeping and forgotten once gone", async () => {
+      const r = await start();
+      record(r.runDir, { "child:7800": { pid: 7800, match: "gradlew", markers: [h.volume] } });
+      h.aliveGroups.add(7800);
+      // Its member survives this pass (stuck), so the record stays.
+      h.procs = [{ pid: 7801, pgid: 7800, command: `java ${h.volume}/x GradleDaemon` }];
+      const first = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+      assert.equal(first.outcome, "retry:lost");
+      assert.ok(h.kills.some((k) => k.pid === -7800 && k.signal === "SIGKILL"));
+      assert.ok(readGroups(nodeFs, r.runDir)["child:7800"]);
+      // Next pass: killed again, still there; then gone: the record goes too.
+      h.kills.length = 0;
+      const second = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+      assert.deepEqual(second.reaped.groups, [7800]);
+      assert.ok(existsSync(path.join(r.runDir, PGIDS_FILE)));
+      h.aliveGroups.delete(7800);
+      h.procs = [];
+      await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+      assert.equal(existsSync(path.join(r.runDir, PGIDS_FILE)), false);
+    });
+  });
+
+  it("a stop that lands while start is attaching keeps the slot and stops the supervisor", async () => {
+    const spawn = h.deps.spawnDetached;
+    let stopOut = null;
+    h.deps.spawnDetached = async (command, args, opts) => {
+      const r = await spawn(command, args, opts);
+      if (args.includes("_supervise")) {
+        // The supervisor exists but isn't attached yet (pid null in the ledger).
+        stopOut = await runStop({ repoRoot: h.repoRoot, issue: "874", reason: "stop" }, h.deps);
+      }
+      return r;
+    };
+    const r = await start();
+    assert.equal(stopOut.state, "stopping");
+    assert.equal(r.started, false);
+    assert.equal(r.reason, "stopped");
+    assert.ok(h.kills.some((k) => k.pid === -SUP_PID && k.signal === "SIGTERM"));
+    const ledger = await loadLedger(ledgerPath(h.repoRoot));
+    assert.equal(ledger.inFlight.pid, SUP_PID);
+    assert.equal(ledger.inFlight.stopping.reason, "stop");
+    // Finalised once the supervisor is seen gone.
+    h.runId = r.runId;
+    h.alive.add(SUP_PID);
+    assert.equal((await runHousekeeping({ repoRoot: h.repoRoot }, h.deps)).state, "stopping");
+    h.alive.delete(SUP_PID);
+    const done = await runHousekeeping({ repoRoot: h.repoRoot }, h.deps);
+    assert.equal(done.state, "stopped");
+    assert.equal((await loadLedger(ledgerPath(h.repoRoot))).inFlight, null);
+  });
+
+  it("a smoke flow tagged for the host, or unreadable, makes its platform unavailable", async () => {
+    h.prView.files = [{ path: "apps/mobile/e2e/ios-all.yaml" }];
+    const git = h.deps.git;
+    h.deps.git = async (args, opts) =>
+      args[0] === "show"
+        ? { code: 0, stdout: "appId: x\ntags: [requires-host-offline]\n---\n", timedOut: false }
+        : git(args, opts);
+    const { r, output } = await startAndSupervise();
+    assert.deepEqual(r.platforms.ios, { flows: [], unavailable: "smoke-flow-needs-host" });
+    assert.equal(output.platforms.ios.state, "unavailable:smoke-flow-needs-host");
+    assert.equal(callsOf("xcodebuild").length, 0);
+    assert.equal(callsOf("maestro").length, 0);
   });
 });

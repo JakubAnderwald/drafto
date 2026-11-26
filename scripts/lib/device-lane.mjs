@@ -105,6 +105,7 @@ import {
 export const DEV_REF = "huhzactreblzcogqkbsd";
 export const PROD_REF = "tbmjbxxseonkciqovnpl";
 export const INVALID_API_URL = "https://device-lane.invalid";
+export const DEV_SUPABASE_ORIGIN = `https://${DEV_REF}.supabase.co`;
 export const APP_ID = "eu.drafto.mobile";
 export const AVD_NAME = "drafto-factory";
 export const EMULATOR_PORT = 5580;
@@ -416,46 +417,38 @@ export async function saveLedger(ledger, file) {
 // mutateState (verify-lane.mjs) over the ledger: reload → mutate → save.
 const LEDGER_STORE = Object.freeze({ loadFactoryState: loadLedger, saveFactoryState: saveLedger });
 const LEDGER_LOCK_WAIT_MS = 15_000;
-const LEDGER_LOCK_STALE_MS = MINUTE_MS;
+const LEDGER_LOCK_DEPS = Object.freeze({ fs: nodeFs, isPidAlive: realIsPidAlive });
+let ledgerQueue = Promise.resolve();
 
 /**
- * mutateState under <file>.lock, a directory made with mkdir (atomic), so a
- * read-check-save can't interleave with another process's. The factory's
- * own calls are already serialised by its tick mutex; this covers an
- * operator's CLI start / stop / housekeeping beside a tick. The section is a
- * synchronous read and write, so a lock older than a minute was left by a
- * dead process and is taken over.
+ * mutateState under <file>.pidlock, so a read-check-save can't interleave
+ * with another process's. The lock is takePidLock's: atomic (a hard link of
+ * a file holding our pid), and taken over only from a holder that is dead,
+ * by a compare-and-delete under a guard, so a slow live owner never loses it
+ * and two reclaimers can't delete each other's fresh lock. Calls in this
+ * process queue behind each other first (the pid lock is re-entrant for our
+ * own pid). The factory's own calls are already serialised by its tick
+ * mutex; this covers an operator's CLI start / stop / housekeeping beside a
+ * tick. Every wait sleeps and checks the deadline; an fs error propagates.
  */
-export async function mutateLedger(file, fn) {
-  const lock = `${file}.lock`;
+export function mutateLedger(file, fn) {
+  const run = ledgerQueue.then(() => lockedMutate(file, fn));
+  ledgerQueue = run.catch(() => {});
+  return run;
+}
+
+async function lockedMutate(file, fn) {
+  const lock = `${file}.pidlock`;
   nodeFs.mkdirSync(path.dirname(file), { recursive: true });
   const until = Date.now() + LEDGER_LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      nodeFs.mkdirSync(lock);
-      break;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-    }
-    try {
-      if (Date.now() - nodeFs.statSync(lock).mtimeMs > LEDGER_LOCK_STALE_MS) {
-        nodeFs.rmdirSync(lock);
-        continue;
-      }
-    } catch {
-      continue; // released meanwhile
-    }
+  while (!takePidLock(lock, process.pid, LEDGER_LOCK_DEPS).ok) {
     if (Date.now() > until) throw new Error("the device ledger is locked");
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   try {
     return await mutateState(LEDGER_STORE, file, fn);
   } finally {
-    try {
-      nodeFs.rmdirSync(lock);
-    } catch {
-      /* already gone */
-    }
+    releasePidLock(lock, process.pid, LEDGER_LOCK_DEPS);
   }
 }
 
@@ -756,31 +749,69 @@ export function readGroups(fs, runDir) {
   return parsed && typeof parsed === "object" ? parsed : {};
 }
 
-export function recordGroup(ctx, kind, pid, match) {
+export function recordGroup(ctx, kind, pid, match, markers = []) {
   if (!ctx.recordGroups) return;
   try {
     const groups = readGroups(ctx.deps.fs, ctx.runDir);
-    if (Number.isInteger(pid) && pid > 1) groups[kind] = { pid, match };
-    else delete groups[kind];
+    if (Number.isInteger(pid) && pid > 1) {
+      groups[kind] = markers.length ? { pid, match, markers } : { pid, match };
+    } else delete groups[kind];
     writeJsonAtomic(ctx.deps.fs, path.join(ctx.runDir, PGIDS_FILE), groups);
   } catch {
     /* best effort: housekeeping also stops devices by port and UDID */
   }
 }
 
-/** Signal every recorded group whose leader is still the process recorded. */
+/**
+ * Signal every recorded group that is verifiably still ours: its leader is
+ * alive and still the process recorded (<match> on its command line), or the
+ * leader has exited but the group lives on and a member's command line
+ * carries the record's <match> or one of its <markers> (a pgid is the pid of
+ * its first leader, and isn't reused while the group has a member, so a dead
+ * leader with live members is the same group). An unverified group is left.
+ */
 export async function killRecordedGroups(runDir, signal, deps, { skip = [], only = null } = {}) {
   const killed = [];
+  let procs;
   for (const [kind, entry] of Object.entries(readGroups(deps.fs, runDir))) {
     if (skip.includes(kind) || (only && !only.includes(kind))) continue;
     const pid = entry?.pid;
-    if (!Number.isInteger(pid) || pid <= 1 || !deps.isPidAlive(pid)) continue;
-    const command = await deps.psCommand(pid);
-    if (!entry.match || !command.includes(entry.match)) continue;
+    if (!Number.isInteger(pid) || pid <= 1 || !entry.match) continue;
+    let ours = false;
+    if (deps.isPidAlive(pid)) {
+      ours = (await deps.psCommand(pid)).includes(entry.match);
+    } else if (groupAlive(deps, pid)) {
+      procs ??= (await deps.listProcesses()) ?? [];
+      const marks = [entry.match, ...(Array.isArray(entry.markers) ? entry.markers : [])];
+      ours = procs.some(
+        (p) => p.pgid === pid && marks.some((m) => m && String(p.command).includes(m)),
+      );
+    }
+    if (!ours) continue;
     if (!deps.kill(-pid, signal)) deps.kill(pid, signal);
     killed.push(pid);
   }
   return killed;
+}
+
+/**
+ * Drop the records of groups confirmed gone (ESRCH only); the file goes with
+ * the last one. A group still alive, or one we may not probe, stays on record
+ * for the next housekeeping pass.
+ */
+export function pruneGroups(runDir, deps) {
+  const groups = readGroups(deps.fs, runDir);
+  const kept = {};
+  for (const [kind, entry] of Object.entries(groups)) {
+    const pid = entry?.pid;
+    if (Number.isInteger(pid) && pid > 1 && groupAlive(deps, pid)) kept[kind] = entry;
+  }
+  const file = path.join(runDir, PGIDS_FILE);
+  if (Object.keys(kept).length === 0) rmQuiet(deps.fs, file);
+  else if (Object.keys(kept).length !== Object.keys(groups).length) {
+    writeJsonAtomic(deps.fs, file, kept);
+  }
+  return Object.keys(kept);
 }
 
 /**
@@ -826,7 +857,15 @@ export async function guardedRun(ctx, cmd, args, opts) {
       onChild: (c) => {
         mine = c;
         ctx.status.child = c;
-        recordGroup(ctx, groupKey(c?.pid), c?.pid, path.basename(cmd));
+        // Markers recognise the group's members once the leader is gone:
+        // every step works under the build volume (roots, gradle, store).
+        recordGroup(
+          ctx,
+          groupKey(c?.pid),
+          c?.pid,
+          path.basename(cmd),
+          [ctx.meta?.knobs?.volume].filter(Boolean),
+        );
       },
     });
   } finally {
@@ -1222,10 +1261,13 @@ export function judgeArtifact({ readOk, prodFound, configText }) {
   const config = parseJson(configText, null);
   if (!config) return { ok: false, problem: "app-config-unparsable" };
   // The field the Supabase client reads, not just any dev ref in the text.
-  const supabaseUrl = config?.extra?.supabaseUrl;
-  if (typeof supabaseUrl !== "string" || !supabaseUrl.startsWith(`https://${DEV_REF}.`)) {
-    return { ok: false, problem: "supabase-url" };
+  let origin = null;
+  try {
+    origin = new URL(String(config?.extra?.supabaseUrl ?? "")).origin;
+  } catch {
+    origin = null; // missing or malformed
   }
+  if (origin !== DEV_SUPABASE_ORIGIN) return { ok: false, problem: "supabase-url" };
   if (config?.extra?.apiUrl !== INVALID_API_URL) return { ok: false, problem: "api-url" };
   return { ok: true, problem: null };
 }
@@ -2141,7 +2183,8 @@ export async function runSupervise({ runDir }, { deps = createDeviceDeps() } = {
     // A step's leader can be gone while members of its group live on (a
     // forked gradle daemon): end them before forgetting the group.
     await killLingeringGroups(runDir, deps);
-    rmQuiet(fs, path.join(runDir, PGIDS_FILE));
+    // Only groups confirmed gone are forgotten; housekeeping retries the rest.
+    pruneGroups(runDir, deps);
     if (!meta.knobs.keepRaw) rmQuiet(fs, path.join(runDir, "private"));
     output.finishedAt = isoSeconds(deps.now());
     save();
@@ -2222,13 +2265,15 @@ export function createDeviceDeps() {
       return r.code === 0 ? r.stdout.trim() : "";
     },
     listProcesses: async () => {
-      const r = await runCommand("ps", ["-axww", "-o", "pid=,command="]);
+      // pgid too: a recorded step group is recognised by its members once
+      // its leader has exited (killRecordedGroups).
+      const r = await runCommand("ps", ["-axww", "-o", "pid=,pgid=,command="]);
       if (r.code !== 0) return null;
       return r.stdout
         .split("\n")
-        .map((l) => /^\s*(\d+)\s+(.*)$/.exec(l))
+        .map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l))
         .filter(Boolean)
-        .map((m) => ({ pid: Number(m[1]), command: m[2] }));
+        .map((m) => ({ pid: Number(m[1]), pgid: Number(m[2]), command: m[3] }));
     },
     kill: (pid, signal) => {
       try {
@@ -2376,7 +2421,10 @@ export async function runStart(opts, deps) {
   const accountProblem = deviceAccountProblem(knobs.accountFile, deps.fs);
   if (accountProblem) return refuse("account", { problem: accountProblem });
   const bins = resolveDeviceBins({ env: deps.env, isExecutable: deps.isExecutable, knobs });
-  const missing = missingBins(bins, order);
+  // A platform the plan already marked unavailable is reported, not built:
+  // its tools and its build root aren't needed.
+  const runnable = order.filter((p) => !platforms[p].unavailable);
+  const missing = missingBins(bins, runnable);
   if (missing.length) return refuse(`${missing[0]}-missing`, { missing });
   if (opts.dryRun) return refuse("dry-run", { platforms, reasons: plan.reasons });
 
@@ -2384,8 +2432,16 @@ export async function runStart(opts, deps) {
   const deadlineAt = addMinutes(now, knobs.runMaxMin);
   const runDir = path.join(runRoot, runId);
   let reserved = null;
+  let overBudget = null;
   await mutateLedger(ledgerFile, (l) => {
     if (l.inFlight) return false;
+    // The authoritative attempt check, under the ledger lock: another start
+    // for this head may have spent one since the snapshot above.
+    const spent = attemptsFor(l, issue, sha);
+    if (spent >= knobs.maxAttempts && !opts.forceAttempt) {
+      overBudget = spent;
+      return false;
+    }
     const attempt = bumpAttempts(l, issue, sha, 1);
     l.inFlight = {
       runId,
@@ -2402,6 +2458,7 @@ export async function runStart(opts, deps) {
     reserved = { attempt };
     return true;
   });
+  if (overBudget !== null) return refuse("attempts", { attempts: overBudget });
   if (!reserved) return refuse("deferred:busy");
 
   const lockFile = deviceLockPath(knobs);
@@ -2426,7 +2483,7 @@ export async function runStart(opts, deps) {
   lockTaken = true;
   let spawned = null;
   try {
-    await ensureDeviceWorktrees({ repoRoot, sha, platforms: order, knobs }, deps);
+    await ensureDeviceWorktrees({ repoRoot, sha, platforms: runnable, knobs }, deps);
     deps.fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
     deps.fs.chmodSync(runDir, 0o700);
     const meta = {
@@ -2464,14 +2521,23 @@ export async function runStart(opts, deps) {
     );
     if (!spawned.ok) throw new Error(`supervisor failed to start: ${spawned.reason}`);
     handOverPidLock(lockFile, deps.pid, spawned.pid, deps);
+    let stopping = null;
     const attached = await mutateLedger(ledgerFile, (l) => {
       if (l.inFlight?.runId !== runId) return false;
+      // Attached even when a stop came in meanwhile, so housekeeping can see
+      // the supervisor exit before it frees the slot.
       l.inFlight.pid = spawned.pid;
+      stopping = l.inFlight.stopping ?? null;
       return true;
     });
     if (!attached) {
       deps.kill(-spawned.pid, "SIGTERM");
       return refuse("abandoned", { runId });
+    }
+    if (stopping) {
+      signalRun({ runDir }, stopping.reason, deps);
+      deps.kill(-spawned.pid, "SIGTERM");
+      return refuse("stopped", { runId, stopReason: stopping.reason });
     }
     return {
       started: true,
@@ -2598,6 +2664,7 @@ async function cleanUpAfterRun(inFlight, { knobs, repoRoot }, deps) {
   groups.push(
     ...(await killRecordedGroups(inFlight.runDir, "SIGKILL", deps, { only: ["emulator"] })),
   );
+  if (inFlight.runDir) pruneGroups(inFlight.runDir, deps);
   return { groups, devices };
 }
 
@@ -2606,31 +2673,36 @@ export async function runStop(opts, deps) {
   const reason = opts.reason ?? "stop";
   const ledgerFile = ledgerPath(repoRoot);
   const snapshot = await loadLedger(ledgerFile);
-  const inFlight = snapshot.inFlight;
-  if (!inFlight || inFlight.issue !== String(issue)) return { state: "idle" };
-  if (opts.dryRun) return { state: "would-stop", runId: inFlight.runId, dryRun: true };
+  if (!snapshot.inFlight || snapshot.inFlight.issue !== String(issue)) return { state: "idle" };
+  if (opts.dryRun) return { state: "would-stop", runId: snapshot.inFlight.runId, dryRun: true };
+  const refund = REFUNDED_STOPS.has(reason) ? "attempt" : "none";
+  const now = opts.now ?? deps.now();
+  // The stop is recorded against the reservation first: a start that is
+  // still attaching its supervisor sees it and stops what it spawned, and
+  // the slot stays until housekeeping has seen the supervisor exit.
+  await markStopping(ledgerFile, snapshot.inFlight.runId, {
+    reason,
+    refund,
+    at: isoSeconds(now),
+  });
+  const inFlight = (await loadLedger(ledgerFile)).inFlight ?? snapshot.inFlight;
   signalRun(inFlight, reason, deps);
   let signalled = false;
   if (Number.isInteger(inFlight.pid) && deps.isPidAlive(inFlight.pid)) {
     if ((await deps.psCommand(inFlight.pid)).includes(inFlight.runId)) {
       signalled = deps.kill(-inFlight.pid, "SIGTERM");
     }
-  } else if (inFlight.pid == null) {
-    const procs = await deps.listProcesses();
-    if (!Array.isArray(procs)) return { state: "error", error: "ps-failed" };
-    for (const pid of supervisorPids(procs, inFlight.runId)) {
-      signalled = deps.kill(-pid, "SIGTERM") || signalled;
-    }
   }
-  const refund = REFUNDED_STOPS.has(reason) ? "attempt" : "none";
-  const now = opts.now ?? deps.now();
-  if (signalled) {
-    // The slot stays until the supervisor has shut its device down and gone;
-    // housekeeping finalises it, or escalates a supervisor that doesn't stop.
-    await markStopping(ledgerFile, inFlight.runId, { reason, refund, at: isoSeconds(now) });
+  if (signalled || inFlight.pid == null) {
+    if (inFlight.pid == null) {
+      // Spawned but not attached yet, or not spawned at all.
+      for (const pid of supervisorPids((await deps.listProcesses()) ?? [], inFlight.runId)) {
+        signalled = deps.kill(-pid, "SIGTERM") || signalled;
+      }
+    }
     return { state: "stopping", runId: inFlight.runId, reason, signalled, refund };
   }
-  // No live supervisor to wind its children down: their groups directly.
+  // The attached supervisor is gone: its groups directly, then finalise.
   const groups = await killRecordedGroups(inFlight.runDir, "SIGTERM", deps);
   const finished = await finishLedgerRun(ledgerFile, inFlight.runId, {
     refund,
@@ -2648,7 +2720,7 @@ export async function runStop(opts, deps) {
 }
 
 async function reapIdle({ repoRoot, runRoot, knobs, now, liveRunId = null }, deps) {
-  const reaped = { lock: false, devices: null, runDirs: [], privateDirs: [] };
+  const reaped = { lock: false, devices: null, runDirs: [], privateDirs: [], groups: [] };
   const lockFile = deviceLockPath(knobs);
   const holder = lockHolder(lockFile, deps);
   if (!holder.alive) {
@@ -2695,6 +2767,13 @@ async function reapIdle({ repoRoot, runRoot, knobs, now, liveRunId = null }, dep
   for (const name of names) {
     const full = path.join(runRoot, name);
     if (isLive(name)) continue;
+    // Groups a dead run left on record: stop the ones still verifiably ours,
+    // forget the ones gone. While any remains, the run dir (the record) stays.
+    if (deps.fs.existsSync(path.join(full, PGIDS_FILE))) {
+      const killed = await killRecordedGroups(full, "SIGKILL", deps);
+      if (killed.length) reaped.groups.push(...killed);
+      if (pruneGroups(full, deps).length) continue;
+    }
     try {
       if (Date.parse(now) - deps.fs.statSync(full).mtimeMs > RUN_DIR_RETENTION_MS) {
         rmQuiet(deps.fs, full);
@@ -2821,20 +2900,36 @@ async function finishStopping(
   { inFlight, poll, live, now, knobs, repoRoot, runRoot, ledgerFile },
   deps,
 ) {
-  const { reason, refund, at } = inFlight.stopping;
+  const { reason, refund, at, killedAt } = inFlight.stopping;
   const base = { runId: inFlight.runId, issue: inFlight.issue, sha: inFlight.sha, reason };
   const waitedMs = Date.parse(now) - Date.parse(at ?? now);
   const starting = poll.state === "starting";
-  if ((live || starting) && waitedMs < STOP_ESCALATE_MS) return { ...base, state: "stopping" };
-  let escalated = false;
+  // Which supervisor processes of this run are still alive: the attached
+  // one, or one found by its run id while the reservation has no pid.
+  let alive = [];
   if (live) {
-    deps.kill(-inFlight.pid, "SIGKILL");
-    escalated = true;
+    alive = [inFlight.pid];
   } else if (starting || poll.unattached) {
-    const procs = (await deps.listProcesses()) ?? [];
-    for (const pid of supervisorPids(procs, inFlight.runId)) deps.kill(-pid, "SIGKILL");
-    escalated = true;
+    const procs = await deps.listProcesses();
+    if (!Array.isArray(procs)) return { ...base, state: "stopping", deferred: "ps-failed" };
+    alive = supervisorPids(procs, inFlight.runId);
   }
+  // A start that hasn't spawned yet gets the same grace.
+  if (alive.length || (starting && waitedMs < STOP_ESCALATE_MS)) {
+    if (waitedMs < STOP_ESCALATE_MS || !alive.length) return { ...base, state: "stopping" };
+    if (!killedAt) {
+      for (const pid of alive) deps.kill(-pid, "SIGKILL");
+      await mutateLedger(ledgerFile, (l) => {
+        if (l.inFlight?.runId !== inFlight.runId || !l.inFlight.stopping) return false;
+        l.inFlight.stopping.killedAt = isoSeconds(now);
+        return true;
+      });
+    }
+    // Tracked until the SIGKILLed supervisor has really exited: cleanup and
+    // the refund come on the tick that sees it gone.
+    return { ...base, state: "stopping", escalated: true };
+  }
+  const escalated = Boolean(killedAt);
   // A supervisor that wrote exit.json cleaned up after itself.
   const cleanup = poll.exit ? null : await cleanUpAfterRun(inFlight, { knobs, repoRoot }, deps);
   const finished = await finishLedgerRun(ledgerFile, inFlight.runId, {

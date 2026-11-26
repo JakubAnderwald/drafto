@@ -129,6 +129,19 @@ describe("deriveDevicePlan", () => {
     );
   });
 
+  it("an ineligible smoke flow makes its platform unavailable", () => {
+    const ios = `${E2E}/ios-all.yaml`;
+    const android = `${E2E}/android-all.yaml`;
+    const plan = deriveDevicePlan({
+      diffFiles: [ios, android],
+      flowTags: { [ios]: ["requires-host-offline"], [android]: null },
+    });
+    assert.deepEqual(plan.platforms.ios, { flows: [], unavailable: "smoke-flow-needs-host" });
+    assert.deepEqual(plan.platforms.android, { flows: [], unavailable: "smoke-flow-unreadable" });
+    const ok = deriveDevicePlan({ diffFiles: [ios], flowTags: { [ios]: ["qa-10668"] } });
+    assert.deepEqual(ok.platforms.ios, { flows: [ios] });
+  });
+
   it("a flow with inline host-offline tags, or tags it can't read, isn't run", () => {
     const inline = `${E2E}/ios-only/10-offline-banner-header.yaml`;
     const odd = `${E2E}/ios-only/search.yaml`;
