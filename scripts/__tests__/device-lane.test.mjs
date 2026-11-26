@@ -843,7 +843,11 @@ describe("supervisor", () => {
     const { output, runDir } = await startAndSupervise();
     assert.equal(output.platforms.ios.state, "stopped:beta-build");
     const exit = readJson(path.join(runDir, "exit.json"));
-    assert.equal(classifyDeviceRun({ exit, output }).state, "retry:beta-build");
+    // The run yields to the beta and its attempt is given back: it retries later.
+    assert.deepEqual(classifyDeviceRun({ exit, output }), {
+      state: "retry:beta-build",
+      refund: "attempt",
+    });
     assert.ok(callsOf("xcrun").some((c) => c.args.includes("shutdown")));
   });
 

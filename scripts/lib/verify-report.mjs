@@ -791,17 +791,14 @@ export function deviceStateNote(token) {
   if (kind === "timeout") return "the device run hit its time limit";
   if (kind === "unavailable")
     return `the device lane couldn't run: ${deviceReason(detail) || "no reason given"}`;
-  if (kind === "retry") return `the device run ended early (${deviceEndText(detail)})`;
-  if (kind === "deferred") {
-    return `the device lane didn't start: ${own(DEVICE_WAITS, detail) ?? deviceReason(detail)}`;
-  }
+  // Deferred or retried: the factory starts it from In Test.
+  if (kind === "retry") return `${deviceRetryText(detail)}; ${DEVICE_FOLLOWS}`;
+  if (kind === "deferred") return `${deviceWaitText(detail)}; ${DEVICE_FOLLOWS}`;
   if (kind !== "skipped") return null;
   if (["lane-off", "not-built", "verification-off", "not-applicable", ""].includes(detail)) {
     return null;
   }
-  if (own(DEVICE_WAITS, detail)) {
-    return `the device lane hadn't started (${DEVICE_WAITS[detail]}); ${DEVICE_FOLLOWS}`;
-  }
+  if (own(DEVICE_WAITS, detail)) return `${deviceWaitText(detail)}; ${DEVICE_FOLLOWS}`;
   if (detail === "attempts")
     return "the device lane didn't run: its attempts for this commit were spent";
   if (detail === "async-wait" || detail === "hold-cap") {
@@ -809,8 +806,27 @@ export function deviceStateNote(token) {
   }
   if (own(DEVICE_STOPS, detail)) return `the device run was stopped: ${DEVICE_STOPS[detail]}`;
   const after = /^after-(.+)$/.exec(detail);
-  if (after) return `the device run ended early (${deviceEndText(after[1])}); ${DEVICE_FOLLOWS}`;
+  if (after) return `${deviceRetryText(after[1])}; ${DEVICE_FOLLOWS}`;
+  // A stop that sticks (by hand, a signal, the card dragged out).
+  const stopped = /^stopped-(.+)$/.exec(detail);
+  if (stopped) return `the device run was stopped: ${deviceStopText(stopped[1])}`;
   return `the device lane didn't run (${deviceEndText(detail)})`;
+}
+
+function deviceStopText(reason) {
+  return own(DEVICE_STOPS, reason) ?? deviceReason(reason);
+}
+
+// A lane that hadn't started: what it was waiting for.
+function deviceWaitText(detail) {
+  return `the device lane hadn't started (${own(DEVICE_WAITS, detail) ?? deviceReason(detail)})`;
+}
+
+// A run that has to run again: one that gave way to a beta build or memory
+// pressure waited, it didn't fail.
+function deviceRetryText(detail) {
+  if (own(DEVICE_WAITS, detail)) return `the device run gave way (${DEVICE_WAITS[detail]})`;
+  return `the device run ended early (${deviceEndText(detail)})`;
 }
 
 function firstLine(text) {

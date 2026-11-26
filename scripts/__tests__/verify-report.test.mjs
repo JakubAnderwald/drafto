@@ -2736,10 +2736,33 @@ describe("device lane: --device-state when there is no output for the commit", (
     }
   });
 
-  it("reads a deferral while an earlier run shuts down", () => {
+  it("reads a deferral or a run that gave way as waiting, and says the results follow", () => {
+    const follows = "it runs from In Test and its results follow in a separate comment";
     assert.equal(
       deviceStateNote("deferred:stopping"),
-      "the device lane didn't start: an earlier run was still shutting down",
+      `the device lane hadn't started (an earlier run was still shutting down); ${follows}`,
+    );
+    assert.equal(
+      deviceStateNote("retry:beta-build"),
+      `the device run gave way (a beta build was running); ${follows}`,
+    );
+    assert.equal(
+      deviceStateNote("retry:memory"),
+      `the device run gave way (the Mac mini was short of memory); ${follows}`,
+    );
+    assert.doesNotMatch(deviceStateNote("retry:beta-build"), /needed the Mac mini/);
+    assert.ok(deviceStateNote("retry:stopped-threads").endsWith(`review threads); ${follows}`));
+    assert.match(deviceStateNote("retry:lost"), /supervisor was lost\); it runs from In Test/);
+  });
+
+  it("an operator's stop sticks: no promise of results", () => {
+    assert.equal(
+      deviceStateNote("skipped:stopped-stop"),
+      "the device run was stopped: it was stopped by hand",
+    );
+    assert.equal(
+      deviceStateNote("skipped:stopped-left-column"),
+      "the device run was stopped: the card left Testing and In Test",
     );
   });
 
@@ -2865,7 +2888,7 @@ describe("verify-report CLI: the device lane", () => {
     const body = readFileSync(join(dir, "body.md"), "utf8");
     assert.match(
       tableRow(body, "iOS / Android"),
-      /the device lane didn't start: a beta build was running; beta dispatched/,
+      /the device lane hadn't started \(a beta build was running\); it runs from In Test and its results follow in a separate comment; beta dispatched/,
     );
   });
 

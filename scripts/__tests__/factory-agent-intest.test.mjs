@@ -2631,8 +2631,7 @@ describe("beta reuse wiring (ADR-0081)", () => {
     // Every jq that prints the payload after the decision carries them.
     const after = body.slice(body.indexOf("reused_json=$(intest_reused_json"));
     const outputs = after.match(/manualCommands: (?:\$manual|\[\])[^}]*\}/g) || [];
-    // Seven: the device lane's mobile deferral (ADR-0106) is the seventh.
-    assert.equal(outputs.length, 7, outputs.join("\n"));
+    assert.equal(outputs.length, 6, outputs.join("\n"));
     for (const o of outputs) assert.match(o, /reused: \$reused/);
   });
 
