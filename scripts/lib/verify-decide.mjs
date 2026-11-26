@@ -29,11 +29,14 @@
 //   bounces          hand-backs already spent on headSha
 //   bounceMax        FACTORY_VERIFY_BOUNCE_MAX
 //   newFeedback      an actionable OWNER comment newer than lastFeedbackAt
-//   lanes            { shell: "<state>", browser: "<state>" }: each lane's
-//                    state for headSha, the SHA already stripped (see below)
+//   lanes            { shell: "<state>", browser: "<state>", device: "<state>" }:
+//                    each lane's state for headSha, the SHA already stripped
+//                    (see below)
 //   startedAt        verifyStartedAt (ISO), the hold-cap anchor
 //   now              ISO
 //   holdMaxMin       FACTORY_VERIFY_HOLD_MAX_MIN
+//   deviceWaitMin    FACTORY_VERIFY_DEVICE_WAIT_MIN: how long the async lanes
+//                    (ASYNC_LANES, the device lane) may hold the card
 //
 // Lane states are verify-report.mjs's tokens: `reported[:<verdict>]`,
 // `timeout`, `unavailable:<reason>`, `stale-branch`, `no-preview` and
@@ -44,6 +47,18 @@
 // as `skipped:not-built`, so both count as done. At the hold cap a
 // `deferred:<why>` lane is reported as `skipped:<why>`, a `retry:<why>` one
 // as `skipped:after-<why>`.
+//
+// Async lanes (ADR-0106 decision 6): the device lane's run takes 45–90
+// minutes, so it holds the card only deviceWaitMin minutes from startedAt.
+// After that a pending device lane no longer counts as pending (the other
+// lanes decide), and the promotion reports it as `running` when its run is
+// still going (the run carries on into In Test and posts its results as a
+// follow-up comment) or, when it never got to run, like a lane at the hold
+// cap (`skipped:<why>` / `skipped:after-<why>`, else `skipped:async-wait`).
+// The hold cap still wins: a wait longer than the cap is cut to the cap, so a
+// card never stays past holdMaxMin. `running` is NOT terminal: before the wait
+// is over it holds the card like any pending state. A promotion for feedback
+// or with verification off stops the run (bash), so it never reads `running`.
 //
 // Rules, first match wins:
 //   1. PR not open                              → skip (pr-merged|pr-closed|pr-unknown)
@@ -97,7 +112,14 @@
 import { isMainModule } from "./is-main.mjs";
 import { parseFlags } from "./parse-flags.mjs";
 
-export const LANES = Object.freeze(["shell", "browser"]);
+export const LANES = Object.freeze(["shell", "browser", "device"]);
+
+// Lanes that hold a card only deviceWaitMin minutes (see the header).
+export const ASYNC_LANES = Object.freeze(["device"]);
+
+// Promotions that stop the lanes (bash's verify_device_stop): a run cut short
+// there is never reported as still running.
+const STOPPING_REASONS = new Set(["feedback", "verification-off"]);
 
 const TERMINAL_KINDS = new Set([
   "reported",
@@ -143,29 +165,53 @@ export function holdExpired({ startedAt, now, holdMaxMin }) {
   return t - start >= cap * MIN_MS;
 }
 
+// True once the async lanes' wait (deviceWaitMin, cut to holdMaxMin) is over.
+// Like holdExpired, doubt resolves toward promotion: a missing or unparseable
+// wait counts as over.
+export function asyncWaitExpired({ startedAt, now, holdMaxMin, deviceWaitMin }) {
+  const wait = Number(deviceWaitMin);
+  const cap = Number(holdMaxMin);
+  const min = Number.isFinite(cap) && cap >= 0 && cap < wait ? cap : wait;
+  return holdExpired({ startedAt, now, holdMaxMin: min });
+}
+
 // The lanes as the report should show them: still-pending lanes become
 // `skipped:<reason>`, terminal ones are kept as they are. At the hold cap the
 // shell lane's own pending states say more than "the hold cap was reached
 // first": a lane left `deferred:<why>` (memory pressure, low disk, another
 // card's run, a session limit) shows `skipped:<why>`, and one whose last
 // attempt ended `retry:<why>` (an error, no result) shows
-// `skipped:after-<why>`, so that attempt's outcome isn't lost.
-function reportLanes(lanes, reason) {
+// `skipped:after-<why>`, so that attempt's outcome isn't lost. An async lane
+// still running shows `running` (unless the promotion stops it); one the card
+// stopped waiting for reads like a lane at the hold cap, and one that never
+// started reads `skipped:async-wait` when the other lanes finished first.
+function reportLanes(lanes, reason, { asyncReleased = false } = {}) {
   const out = {};
   for (const lane of LANES) {
     const state = str(lanes?.[lane]) || "none";
     const deferred = /^deferred:(.+)$/i.exec(state);
     const retry = /^retry:(.+)$/i.exec(state);
+    const async = ASYNC_LANES.includes(lane);
+    const released = reason === "hold-cap" || (async && asyncReleased);
     if (isTerminalLaneState(state)) out[lane] = state;
-    else if (reason === "hold-cap" && deferred) out[lane] = `skipped:${deferred[1]}`;
-    else if (reason === "hold-cap" && retry) out[lane] = `skipped:after-${retry[1]}`;
+    else if (async && laneKind(state) === "running" && !STOPPING_REASONS.has(reason)) {
+      out[lane] = "running";
+    } else if (released && !STOPPING_REASONS.has(reason) && deferred) {
+      out[lane] = `skipped:${deferred[1]}`;
+    } else if (released && !STOPPING_REASONS.has(reason) && retry) {
+      out[lane] = `skipped:after-${retry[1]}`;
+    } else if (async && reason === "lanes-done") out[lane] = "skipped:async-wait";
     else out[lane] = `skipped:${reason}`;
   }
   return out;
 }
 
 function promote(facts, reason) {
-  return { action: "promote", reason, lanes: reportLanes(facts.lanes, reason) };
+  return {
+    action: "promote",
+    reason,
+    lanes: reportLanes(facts.lanes, reason, { asyncReleased: asyncWaitExpired(facts) }),
+  };
 }
 
 /**
@@ -209,7 +255,12 @@ export function decide(facts = {}) {
     return expired ? promote(f, "hold-cap") : { action: "wait", reason: "threads-unknown" };
   }
 
-  const pending = LANES.filter((lane) => !isTerminalLaneState(f.lanes?.[lane]));
+  // An async lane holds the card only until its wait is over (see the header).
+  const asyncReleased = asyncWaitExpired(f);
+  const pending = LANES.filter(
+    (lane) =>
+      !isTerminalLaneState(f.lanes?.[lane]) && !(asyncReleased && ASYNC_LANES.includes(lane)),
+  );
   if (pending.length === 0) return promote(f, "lanes-done");
   if (expired) return promote(f, "hold-cap");
   return { action: "work-lanes", reason: "lanes-pending", pending };

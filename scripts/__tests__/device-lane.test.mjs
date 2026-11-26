@@ -843,7 +843,11 @@ describe("supervisor", () => {
     const { output, runDir } = await startAndSupervise();
     assert.equal(output.platforms.ios.state, "stopped:beta-build");
     const exit = readJson(path.join(runDir, "exit.json"));
-    assert.equal(classifyDeviceRun({ exit, output }).state, "retry:beta-build");
+    // The run yields to the beta and its attempt is given back: it retries later.
+    assert.deepEqual(classifyDeviceRun({ exit, output }), {
+      state: "retry:beta-build",
+      refund: "attempt",
+    });
     assert.ok(callsOf("xcrun").some((c) => c.args.includes("shutdown")));
   });
 
@@ -1060,6 +1064,21 @@ describe("classifyDeviceRun", () => {
       refund: "none",
     });
     assert.equal(classifyDeviceRun({ exit: { error: "x" } }).state, "failed:error");
+    // The factory's own stops (a hand-back, feedback, verification off) give
+    // the attempt back, so a card back in Testing on the same commit runs again.
+    for (const why of [
+      "ci-red",
+      "not-reviewed",
+      "threads",
+      "feedback",
+      "verification-off",
+      "conflict",
+    ]) {
+      assert.deepEqual(classifyDeviceRun({ exit: { interrupt: `stopped:${why}` } }), {
+        state: `stopped:${why}`,
+        refund: "attempt",
+      });
+    }
     assert.equal(
       classifyDeviceRun({
         exit: {},
