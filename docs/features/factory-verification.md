@@ -1,6 +1,6 @@
 # Factory verification before In Test (the Testing column)
 
-**Status:** state machine, shell lane and browser lane built, off by default (`FACTORY_VERIFY=0`) **Updated:** 2026-10-21
+**Status:** state machine, shell lane and browser lane built, off by default (`FACTORY_VERIFY=0`); device lane being built ([ADR-0106](../adr/0106-factory-device-lane.md)) **Updated:** 2026-11-25
 
 ## What it is
 
@@ -183,23 +183,17 @@ The settings table, one-time setup (board, label, bypass secret, canary), triage
 - `FACTORY_VERIFY=0` is the default and the kill switch. With it off, the Testing sweep only drains the column.
 - To roll back, set `FACTORY_VERIFY=0`, wait for the Testing column to empty (move by hand any card the sweep leaves: `factory-pause` or `support` labels, a merged or closed PR, no PR), and only then revert the code.
 
-## Planned: device lanes (deferred)
+## Device lane (being built, ADR-0106)
 
-No lane runs a native app yet. iOS, Android and macOS steps go to the manual list, on the betas dispatched at Testing entry. A device lane would need all of the following:
+[ADR-0106](../adr/0106-factory-device-lane.md) adds a third lane, off by default. A node supervisor (`scripts/lib/device-lane.mjs`) builds a dev-backed app from the PR head, with the JS bundle embedded. It then runs Maestro on a dedicated headless Android emulator and a dedicated iOS simulator, one at a time.
 
-- **Dev-backed debug builds of the PR head only.** Never `.env.production`, never a release or TestFlight build: the lane signs in to the dev Supabase project with the dev test account.
-- **A dedicated build root** under the same root lock as the beta lanes (`scripts/lib/beta-build-root.sh`), never the card's slot worktree.
-- **A Metro port per slot, or an embedded JS bundle,** so two cards' builds can't serve each other's code.
-- **Simulators:** a headless Android emulator (`emulator -no-window`) and an iOS simulator through `simctl`.
-- **Maestro on the factory's PATH** (`~/.maestro/bin`).
-- **The shell lane translating the scenario's steps into Maestro YAML** in its run directory, not in the repo.
-- **Typed sign-in** with the dev test account (no one-time link on a device).
-- **A RAM budget.** The emulator takes 2–3 GB and a Gradle build 3–4 GB, so device lanes have to be serialised with the beta lanes.
-- **Disk.** An AVD is about 10 GB, so `FACTORY_MIN_FREE_DISK_GB` would have to go up.
-- **Killed when the head moves**, like the shell lane.
-- **macOS stays manual** until an ADR allows a dev-backed harness mode. ADR-0043 allows agents `--preflight` only.
-- **Screenshots through the same per-lane renderer.** The report keeps images per lane (`composeVerifyReport`'s `images`, keyed by lane), so a device lane would publish its own evidence directory with `evidence-upload.mjs` and pass its upload record under its key, as the Web lane does ([ADR-0096](../adr/0096-factory-test-run-screenshots-on-github.md)). It would need a provenance rule of its own, like the guard's decision log for the browser runner or the harness's `shots/NN-<label>.png`. A lane driven by a claude session with Bash has none.
-- **Prerequisites:** an ADR amendment (ADR-0053 and ADR-0043), and RAM measurements on the Mac mini with a beta build running.
+- **What runs:** the repo flows the PR touches plus the combined `<platform>-all.yaml` flow. Later, the scenario's iOS and Android steps too: a guarded session translates them into YAML, the supervisor validates the YAML and runs it.
+- **Timing:** the lane is serialised with the beta builds. The card waits for it only `FACTORY_VERIFY_DEVICE_WAIT_MIN`, and never past the hold cap. A longer run posts a follow-up comment instead of holding the card.
+- **The head moves:** the run is killed when the PR head moves, the PR closes, or the card leaves Testing and In Test. Results for a commit that's no longer the head are never posted.
+- **On demand:** the `factory-device-run` label starts a run on a card in Testing or In Test.
+- **Until it's switched on:** iOS, Android and macOS steps go to the manual list, on the betas dispatched at Testing entry. macOS stays manual either way (ADR-0043).
+
+The knobs and the one-time Mac mini setup are documented as the lane's pieces land.
 
 ## Related
 

@@ -3,6 +3,9 @@
 - **Status**: Accepted
 - **Date**: 2026-11-10
 - **Authors**: Jakub Anderwald, Claude
+- **Amended by**: [0106](./0106-factory-device-lane.md) (a third evidence source, `device`)
+
+> **Update 2026-11-25 (device lane)**: [ADR-0106](./0106-factory-device-lane.md) adds a `device` evidence source with its own provenance rule. A shot is published only if the device-lane supervisor captured it while no claude process for the run was alive, and it's listed with a matching sha256 in the supervisor's `shots.json`. The "ADR-0053 decision 8 still defers those lanes" in decision 2 no longer holds.
 
 > **Update 2026-11-22 (resolution)**: The first published screenshots (#900) were 541×560, because the runner's prompt (rule 7) still asked for `scale: 0.5`, a token saving from when screenshots only fed the model. Rule 7 now asks for `scale: 1`, the extension's full image budget (1081×1120 on the Mac mini's window), plus a `zoom` close-up when a step's result is a small detail. Comments still show images 480 px wide.
 

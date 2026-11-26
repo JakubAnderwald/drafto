@@ -3,7 +3,9 @@
 - **Status**: Accepted
 - **Date**: 2026-10-21
 - **Authors**: Jakub Anderwald (with Claude Code)
-- **Amended by**: [0073](./0073-factory-verification-data-checks-live-tests-uploads-admin-js.md) (the shell lane's opt-in `dev-inspect` and `live-tests`)
+- **Amended by**: [0073](./0073-factory-verification-data-checks-live-tests-uploads-admin-js.md) (the shell lane's opt-in `dev-inspect` and `live-tests`), [0106](./0106-factory-device-lane.md) (decision 8: a device lane)
+
+> **Update 2026-11-25 (device lane)**: Decision 8 no longer holds. [ADR-0106](./0106-factory-device-lane.md) adds an opt-in device lane (`FACTORY_VERIFY_DEVICE`). It runs Maestro on a headless Android emulator and an iOS simulator, against dev-backed builds of the PR head. It waits for the lane only up to `FACTORY_VERIFY_DEVICE_WAIT_MIN`. A run that's still going when the card moves posts its results as a follow-up comment. macOS stays manual (decision 7).
 
 > **Update 2026-10-21 (shell lane)**: Decision 6's "never as text", and the `vercel curl` alternative's "keeps the secret out of the model's hands", describe the lane's ordinary path. The secret is handed to `preview-curl` through a mode-600 curl config, never put in the prompt, the environment or a command line. That isn't a wall. The session runs as the factory's OS user, which also owns the secret file. A session that gets past the guard, with a script it wrote or through the PR's own tests, can read it, just as the implement stage can read every factory secret. A loopback proxy holding the secret in the supervisor's memory was considered and not adopted, because the source file would stay readable. The secret only unlocks this project's protected previews, and it can be regenerated in the Vercel dashboard. A separate OS user or a sandbox would make it a wall; that's a follow-up. See [claude-code-hooks.md](../operations/claude-code-hooks.md#the-verification-lanes-guard).
 
