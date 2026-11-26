@@ -1829,6 +1829,16 @@ export function makeMaestro(ctx, { deviceId, account, root, rawDir = ctx.rawDir 
 }
 
 /**
+ * The run's next RUN_ID: an epoch timestamp (the E2E clean-up patterns match
+ * those), from one counter kept on the run's context and started at the
+ * first call's clock, so every flow of a run gets its own.
+ */
+export function nextRunEpoch(ctx) {
+  ctx.epochNext ??= Math.floor(ctx.deps.nowMs() / 1000);
+  return ctx.epochNext++;
+}
+
+/**
  * One flow through <maestro>, with the Android adb-drop retry, read back from
  * its JUnit report: {status, failure, lines}. <epochFor>() gives each attempt
  * its RUN_ID. Throws Interrupt.
@@ -1882,13 +1892,13 @@ export async function runMaestro(ctx, { platform, deviceId, flows, account, root
   // gets a fresh one, so data from an earlier flow or a failed attempt can't
   // collide with it (02 refuses a notebook name that's taken). Each is still
   // an epoch timestamp, which the E2E clean-up patterns match.
-  const runEpoch = Math.floor(deps.nowMs() / 1000);
-  let epochSeq = 0;
-  const freshEpoch = () => runEpoch + epochSeq++;
+  // One sequence for the whole run (nextRunEpoch): no two flows of a run, on
+  // either platform or in a scenario session, ever share a RUN_ID.
+  const runEpoch = nextRunEpoch(ctx);
+  const freshEpoch = () => nextRunEpoch(ctx);
   const run = makeMaestro(ctx, { deviceId, account, root });
   const maestro = (flowPath, junit, log, epoch = runEpoch) => run(flowPath, junit, log, epoch);
   await warmUp(ctx, { root, platform, maestro });
-  freshEpoch(); // the base epoch belongs to the smoke flow
   for (const [i, flow] of flows.entries()) {
     const index = i + 1;
     const nn = String(index).padStart(2, "0");
@@ -2522,10 +2532,9 @@ export async function runStart(opts, deps) {
   if (fetched.code !== 0) return refuse("fetch-failed");
   const flowTags = await readFlowTags(files, sha, repoRoot, deps);
   // The In Test scenario's mobile sections (factory-agent.sh writes them with
-  // `scenario-file`): they add platforms to the plan and, with
-  // FACTORY_DEVICE_SCENARIO=1, are what the scenario sessions translate.
-  // Off (FACTORY_DEVICE_SCENARIO unset or 0), they're ignored altogether: the
-  // plan is the diff's alone.
+  // `scenario-file`), only with FACTORY_DEVICE_SCENARIO=1: then they add
+  // platforms to the plan and are what the scenario sessions translate. Off
+  // (unset or 0), they're ignored altogether: the plan is the diff's alone.
   const scenarioSections = !knobs.scenario
     ? []
     : (opts.scenarioSections ??

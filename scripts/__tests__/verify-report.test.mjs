@@ -3034,9 +3034,32 @@ describe("device lane: the scenario's steps (phase b)", () => {
 
   it("says when the session was skipped for time", () => {
     const r = composeDevice({
-      ios: withScenario({ scenarioState: "skipped:time", scenarioSummary: undefined }),
+      ios: withScenario({
+        scenarioState: "skipped:time",
+        scenarioSummary: undefined,
+        flows: [{ name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null }],
+      }),
     });
-    assert.match(r.body, /_Scenario steps: skipped: too little of the run was left\./);
+    assert.match(r.body, /_Scenario steps: skipped: too little of the run was left\._/);
+  });
+
+  it("names the session as the flows' author only when a session ran", () => {
+    const phaseA = [{ name: "ios-all.yaml", status: "PASS", durationS: 90, failure: null }];
+    for (const [state, ran] of [
+      ["done", true],
+      ["timeout", true],
+      ["stopped", true],
+      ["skipped:time", false],
+      ["error", false],
+    ]) {
+      const r = composeDevice({
+        ios: withScenario({ scenarioState: state, scenarioSummary: undefined, flows: phaseA }),
+      });
+      assert.equal(/A guarded session wrote/.test(r.body), ran, state);
+    }
+    // An error after the session wrote flows still says who wrote them.
+    const r = composeDevice({ ios: withScenario({ scenarioState: "error" }) });
+    assert.match(r.body, /A guarded session wrote/);
   });
 
   it("scans the summary: a secret in it withholds the device text", () => {

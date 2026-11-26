@@ -891,6 +891,7 @@ function shapeDevicePlatform(v) {
     scenario:
       typeof v.scenarioState === "string"
         ? {
+            raw: v.scenarioState,
             state: own(DEVICE_SCENARIO_STATES, v.scenarioState) ?? "in an unrecognised state",
             summary:
               typeof v.scenarioSummary === "string" && v.scenarioSummary.trim()
@@ -1065,10 +1066,17 @@ function deviceDetailsText(lane) {
     if (v.flows.length > shown.length) lines.push(`- …and ${v.flows.length - shown.length} more.`);
     if (!v.flows.length) lines.push("_No flow ran._");
     if (v.scenario) {
+      // The provenance line only when a session ran: it finished, hit a cap
+      // or was stopped, or its flows are in the list.
+      const ran =
+        ["done", "timeout", "stopped"].includes(v.scenario.raw) ||
+        v.flows.some((f) => f.name.startsWith("scenario: "));
       lines.push(
         "",
-        `_Scenario steps: ${v.scenario.state}. A guarded session wrote the \`scenario:\` flows; ` +
-          "the supervisor validated them and ran them again after the session ended._",
+        ran
+          ? `_Scenario steps: ${v.scenario.state}. A guarded session wrote the \`scenario:\` flows; ` +
+              "the supervisor validated them and ran them again after the session ended._"
+          : `_Scenario steps: ${v.scenario.state}._`,
       );
       if (v.scenario.summary) lines.push("", closeFences(defang(v.scenario.summary)));
     }

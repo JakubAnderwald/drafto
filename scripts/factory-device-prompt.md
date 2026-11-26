@@ -64,8 +64,12 @@ running, run `device-run --wait <n>` with the number it gave.
   what its step expects.
 - After you finish, the supervisor checks every file in `flows/` again and runs
   them all once more, in order, each on a clean app, taking its own
-  screenshots. Only that last pass is published. So leave in `flows/` only
-  flows you want run, each able to run on its own.
+  screenshots. Only that last pass is published, so each flow must be able to
+  run on its own. You can't delete a file: to retire a flow you no longer want
+  run (a failed first try you replaced, say), make its first line exactly
+  `# device-lane: skip`. The last pass leaves it out.
+- A screenshot over about 4.5 MB is scaled down or left out; the answer says
+  which.
 
 ## Flow rules
 

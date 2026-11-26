@@ -48,9 +48,12 @@ import {
   Interrupt,
   captureShot,
   flowSlug,
+  avdExists,
   groupAlive,
+  isAdbDrop,
   killGroup,
   makeMaestro,
+  nextRunEpoch,
   platformVerdict,
   recordGroup,
   runFlowOnce,
@@ -100,7 +103,8 @@ const POLL_MS = 1_000;
 // minutes); a longer run is waited for again with `device-run --wait <n>`.
 const WRAPPER_WAIT_MAX_SEC = 540;
 export const SUMMARY_MAX = 4096;
-const SHOT_MAX_BYTES = 20 * 1024 * 1024;
+// Below the model's image limit (about 5 MB).
+const SHOT_MAX_BYTES = 4.5 * 1024 * 1024;
 const REQUEST_RE = /^([1-9][0-9]{0,3})\.json$/;
 // A few repo flows, copied as read-only examples of the app's selectors.
 export const EXAMPLE_FLOWS = Object.freeze([
@@ -339,91 +343,156 @@ export function snapshotFlow(ctx, { platform, dirs, root, name, tag }) {
 // ── one scenario flow on the device ─────────────────────────────────────────
 
 /**
- * Reset the app, sign in when the flow needs it (the vetted helper, through
- * its wrapper in the snapshot), then run the snapshot's flow. Returns
- * {status, failure, lines, durationS}. Throws Interrupt.
+ * One supervisor step (the reset, the sign-in) with the Android adb-drop
+ * retry the flows get. true when it passed.
  */
-async function runSnapshot(ctx, { platform, deviceId, account, snap, label, nextEpoch, tag }) {
+async function runStepFlow(ctx, { platform, maestro, file, junit, log, epoch }) {
+  let r = await maestro(file, junit, log, epoch);
+  if (
+    platform === "android" &&
+    r.code !== 0 &&
+    !r.timedOut &&
+    isAdbDrop(readText(ctx.deps.fs, log))
+  ) {
+    ctx.log(`maestro: ${platform} ${path.basename(file)} lost the device (adb); retrying once`);
+    rmQuiet(ctx.deps.fs, junit);
+    r = await maestro(file, junit, log, epoch);
+  }
+  return r.code === 0 && !r.timedOut;
+}
+
+/**
+ * Reset the app, sign in when the flow needs it (the vetted helper, through
+ * its wrapper in the snapshot), then run the snapshot's flow. Each Maestro
+ * call works in a directory of its own under <snapshot>/out/ (reset,
+ * sign-in, flow-<attempt>): a flow's screenshots are then only that
+ * attempt's. Returns {status, failure, lines, durationS, resetFailed,
+ * shotsDir}. Throws Interrupt.
+ */
+async function runSnapshot(ctx, { platform, deviceId, account, snap, label, tag }) {
   const { deps } = ctx;
   const fs = deps.fs;
   const secrets = account ? { password: account.password } : {};
-  // Maestro's output for this run alone (its takeScreenshot files land in
-  // --test-output-dir in Maestro 2.x), inside the snapshot in private/.
-  const maestro = makeMaestro(ctx, {
-    deviceId,
-    account,
-    root: snap.dir,
-    rawDir: path.join(snap.dir, "out"),
-  });
+  const maestroIn = (sub) => {
+    const dir = path.join(snap.dir, "out", sub);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // cwd and --test-output-dir both: Maestro 2.x writes takeScreenshot files
+    // under the latter, older versions into the former.
+    return { dir, run: makeMaestro(ctx, { deviceId, account, root: dir, rawDir: dir }) };
+  };
   const started = deps.nowMs();
-  const epoch = nextEpoch();
+  const epoch = nextRunEpoch(ctx);
   const elapsed = () => Math.round((deps.nowMs() - started) / 1000);
   const io = (step) => [
     path.join(ctx.rawDir, `${tag}-${step}.junit.xml`),
     path.join(ctx.rawDir, `${tag}-${step}.log`),
   ];
+  const fail = (failure, extra = {}) => ({
+    status: "ERROR",
+    failure,
+    lines: [],
+    durationS: elapsed(),
+    shotsDir: null,
+    ...extra,
+  });
   const reset = path.join(snap.dir, ".reset.yaml");
   fs.writeFileSync(reset, scenarioResetYaml(platform), { mode: 0o600 });
-  const reset0 = await maestro(reset, ...io("reset"), epoch);
-  if (reset0.code !== 0 || reset0.timedOut) {
-    return {
-      status: "ERROR",
-      failure: "the lane's reset before this flow failed",
-      lines: [],
-      durationS: elapsed(),
-    };
+  const [rj, rl] = io("reset");
+  const resetOk = await runStepFlow(ctx, {
+    platform,
+    maestro: maestroIn("reset").run,
+    file: reset,
+    junit: rj,
+    log: rl,
+    epoch,
+  });
+  if (!resetOk) {
+    return fail("the lane's reset before this flow failed", { resetFailed: true });
   }
   if (flowNeedsSignIn(snap.text)) {
-    if (!account) {
-      return {
-        status: "ERROR",
-        failure: "needs a signed-in app, and the run has no account",
-        lines: [],
-        durationS: elapsed(),
-      };
-    }
+    if (!account) return fail("needs a signed-in app, and the run has no account");
     ctx.log(`maestro: ${platform} signing in before ${label}`);
-    const r = await maestro(path.join(snap.dir, SIGN_IN_WRAPPER), ...io("sign-in"), epoch);
-    if (r.code !== 0 || r.timedOut) {
-      return {
-        status: "ERROR",
-        failure: "the lane's sign-in before this flow failed",
-        lines: [],
-        durationS: elapsed(),
-      };
-    }
+    const [sj, sl] = io("sign-in");
+    const signedIn = await runStepFlow(ctx, {
+      platform,
+      maestro: maestroIn("sign-in").run,
+      file: path.join(snap.dir, SIGN_IN_WRAPPER),
+      junit: sj,
+      log: sl,
+      epoch,
+    });
+    if (!signedIn) return fail("the lane's sign-in before this flow failed");
   }
   const [junit, log] = io("flow");
   rmQuiet(fs, junit);
-  // The first attempt has the run's epoch; an adb-drop retry draws a new one
-  // from the same counter, so it never reuses another run's RUN_ID.
-  let first = true;
+  // Each attempt (an adb-drop retry is a second one) has its own output dir
+  // and draws its RUN_ID from the run's counter: the first one has <epoch>.
+  let attempt = 0;
+  let shotsDir = null;
+  const flowMaestro = (file, j, l, e) => {
+    attempt += 1;
+    const m = maestroIn(`flow-${attempt}`);
+    shotsDir = m.dir;
+    return m.run(file, j, l, e);
+  };
   const out = await runFlowOnce(ctx, {
     platform,
-    maestro,
+    maestro: flowMaestro,
     flowPath: snap.file,
     label,
     junit,
     log,
-    epochFor: () => {
-      if (first) {
-        first = false;
-        return epoch;
-      }
-      return nextEpoch();
-    },
+    epochFor: () => (attempt === 0 ? epoch : nextRunEpoch(ctx)),
     secrets,
   });
-  return { ...out, durationS: elapsed() };
+  return { ...out, durationS: elapsed(), shotsDir };
 }
 
 /**
- * The flow's own screenshots (takeScreenshot, and Maestro's failure shots),
- * into iter-shots/: Maestro 2.x writes them under --test-output-dir
- * (<snapshot>/out/maestro), older versions into its working directory (the
- * snapshot itself). At most 10, renamed to plain names.
+ * A screenshot for the session, copied into iter-shots/ as <name>: at most
+ * SHOT_MAX_BYTES (the model's image limit is about 5 MB). A bigger one is
+ * scaled down with macOS's sips when it can be, else skipped. Returns
+ * {name} or {skipped: reason}.
  */
-export function collectMaestroShots(fs, snapDir, iterShots, prefix) {
+async function offerShot(ctx, file, iterShots, name) {
+  const fs = ctx.deps.fs;
+  let size;
+  try {
+    const st = fs.lstatSync(file);
+    if (!st.isFile()) return { skipped: `${name}: not a file` };
+    size = st.size;
+  } catch {
+    return { skipped: `${name}: missing` };
+  }
+  const to = path.join(iterShots, name);
+  if (size <= SHOT_MAX_BYTES) {
+    return copyIfFile(fs, file, to, SHOT_MAX_BYTES) ? { name } : { skipped: `${name}: unreadable` };
+  }
+  const sips = ctx.deps.sipsPath ?? "/usr/bin/sips";
+  if (fs.existsSync(sips)) {
+    const r = await ctx.deps.run(sips, ["-Z", "1600", file, "--out", to], {
+      cwd: path.dirname(file),
+      env: ctx.devEnv,
+      timeoutMs: 30_000,
+      capture: true,
+      stderrFile: ctx.stepLog ?? null,
+    });
+    try {
+      if (r.code === 0 && fs.statSync(to).size <= SHOT_MAX_BYTES) return { name };
+    } catch {
+      /* not written */
+    }
+    rmQuiet(fs, to);
+  }
+  return { skipped: `${name}: larger than ${Math.round(SHOT_MAX_BYTES / 1e5) / 10} MB` };
+}
+
+/**
+ * The answering attempt's own screenshots (takeScreenshot, and Maestro's
+ * failure shots), found under its output dir, as plain names for
+ * iter-shots/. At most 10. [{file, name}].
+ */
+export function maestroShots(fs, shotsDir, prefix) {
   const found = [];
   const walk = (dir, depth) => {
     let entries = [];
@@ -439,10 +508,8 @@ export function collectMaestroShots(fs, snapDir, iterShots, prefix) {
       else if (e.isFile() && /\.png$/i.test(e.name)) found.push(p);
     }
   };
-  walk(path.join(snapDir, "out", "maestro"), 3);
-  walk(snapDir, 0);
-  const names = [];
-  for (const [k, file] of found.entries()) {
+  if (shotsDir) walk(shotsDir, 4);
+  return found.map((file, k) => {
     const base =
       path
         .basename(file, path.extname(file))
@@ -450,10 +517,8 @@ export function collectMaestroShots(fs, snapDir, iterShots, prefix) {
         .replace(/[^a-z0-9-]+/g, "-")
         .replace(/^-+|-+$/g, "")
         .slice(0, 40) || "shot";
-    const to = `${prefix}-${k + 1}-${base}.png`;
-    if (copyIfFile(fs, file, path.join(iterShots, to), SHOT_MAX_BYTES)) names.push(to);
-  }
-  return names;
+    return { file, name: `${prefix}-${k + 1}-${base}.png` };
+  });
 }
 
 // ── the request loop ────────────────────────────────────────────────────────
@@ -504,26 +569,30 @@ export async function serveRequests(ctx, platform, loop, { dirs, deviceId, accou
           account,
           snap,
           label: `scenario try ${n}: ${name}`,
-          nextEpoch: () => loop.nextEpoch(),
           tag: `scenario-${tag}`,
         });
+        // The lane's own reset failing isn't the session's run: give it back.
+        if (out.resetFailed) loop.runs -= 1;
         const prefix = `${n}-${flowSlug(name)}`;
         const shots = [];
-        if (
-          await screencapTo(ctx, {
-            platform,
-            deviceId,
-            file: path.join(dirs.iterShots, `${prefix}.png`),
-          })
-        ) {
-          shots.push(`${prefix}.png`);
+        const skipped = [];
+        const offer = async (file, shotName) => {
+          const r = await offerShot(ctx, file, dirs.iterShots, shotName);
+          if (r.name) shots.push(r.name);
+          else skipped.push(r.skipped);
+        };
+        const screen = path.join(snap.dir, "out", "screen.png");
+        if (await screencapTo(ctx, { platform, deviceId, file: screen })) {
+          await offer(screen, `${prefix}.png`);
         }
-        shots.push(...collectMaestroShots(fs, snap.dir, dirs.iterShots, prefix));
+        for (const shot of maestroShots(fs, out.shotsDir, prefix))
+          await offer(shot.file, shot.name);
         result = {
           status: out.status,
           failure: out.failure ?? null,
           junit: out.lines ?? [],
-          screenshots: shots.map((s) => `iter-shots/${s}`),
+          screenshots: shots.map((x) => `iter-shots/${x}`),
+          ...(skipped.length ? { screenshotsSkipped: skipped } : {}),
         };
       }
     }
@@ -618,6 +687,18 @@ export async function runScenario(ctx, platform, { deviceId, account, root, res 
   ctx.save();
 }
 
+/**
+ * Whether platform <p>, still to come in the run, will build and run: the
+ * plan didn't mark it unavailable, and runPlatform's own checks (the
+ * simulator, the keystore and the AVD) will pass.
+ */
+function willRun(ctx, p) {
+  const { meta, deps } = ctx;
+  if (meta.platforms?.[p]?.unavailable) return false;
+  if (p === "ios") return Boolean(meta.iosSimUdid);
+  return deps.fs.existsSync(meta.knobs.keystore) && avdExists(meta.knobs, deps.fs);
+}
+
 async function runSession(ctx, platform, { dirs, sections, deviceId, account, root }) {
   const { deps, meta } = ctx;
   const fs = deps.fs;
@@ -629,7 +710,7 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
   // The run's time left, less this platform's final pass and an hour for
   // each platform still to come (their builds, flows and sessions).
   const order = Array.isArray(meta.order) ? meta.order : [platform];
-  const later = Math.max(0, order.length - order.indexOf(platform) - 1);
+  const later = order.slice(order.indexOf(platform) + 1).filter((p) => willRun(ctx, p)).length;
   const left =
     Date.parse(meta.deadlineAt) - deps.nowMs() - FINAL_RESERVE_MS - later * PLATFORM_RESERVE_MS;
   const capMs = Math.min(meta.knobs.scenarioMin * MINUTE_MS, left);
@@ -682,10 +763,6 @@ async function runSession(ctx, platform, { dirs, sections, deviceId, account, ro
     seen: new Set(),
     runs: 0,
     capHitAt: null,
-    epoch: Math.floor(deps.nowMs() / 1000),
-    nextEpoch() {
-      return this.epoch++;
-    },
   };
   let child = null;
   let finished = false;
@@ -798,14 +875,16 @@ export async function finalPass(
   platform,
   { dirs, deviceId, account, root, startIndex, onRow },
 ) {
-  const { deps } = ctx;
-  const fs = deps.fs;
+  const fs = ctx.deps.fs;
   const rows = [];
-  const names = listFlowNames(fs, dirs.flows);
-  let epoch = Math.floor(deps.nowMs() / 1000) + 1000;
-  const nextEpoch = () => epoch++;
-  for (const [i, name] of names.entries()) {
-    const index = startIndex + i + 1;
+  let index = startIndex;
+  for (const name of listFlowNames(fs, dirs.flows)) {
+    // A flow the session retired: `# device-lane: skip` on its first line.
+    if (isRetired(fs, path.join(dirs.flows, name))) {
+      ctx.log(`scenario: ${platform}: ${name} is marked skip; not run`);
+      continue;
+    }
+    index += 1;
     const label = `scenario: ${name}`;
     const snap = snapshotFlow(ctx, { platform, dirs, root, name, tag: `final-${name}` });
     let row;
@@ -823,7 +902,6 @@ export async function finalPass(
         account,
         snap,
         label,
-        nextEpoch,
         tag: `scenario-final-${String(index).padStart(2, "0")}`,
       });
       row = {
@@ -840,6 +918,19 @@ export async function finalPass(
   return rows;
 }
 
+export const SKIP_MARK = /^#\s*device-lane:\s*skip\s*$/;
+
+/** Whether a flow's first line retires it: `# device-lane: skip`. */
+export function isRetired(fs, file) {
+  try {
+    if (!fs.lstatSync(file).isFile()) return false;
+    const first = fs.readFileSync(file, "utf8").split(/\r?\n/, 1)[0] ?? "";
+    return SKIP_MARK.test(first.trim());
+  } catch {
+    return false;
+  }
+}
+
 // ── the wrapper's side (bin/device-run, inside the session) ─────────────────
 
 function formatResult(n, r) {
@@ -854,6 +945,9 @@ function formatResult(n, r) {
       "screenshots (Read them; they are for you only):",
       ...r.screenshots.map((s) => `- ${s}`),
     );
+  }
+  if (Array.isArray(r.screenshotsSkipped) && r.screenshotsSkipped.length) {
+    lines.push("screenshots not shown:", ...r.screenshotsSkipped.map((s) => `- ${s}`));
   }
   if (Number.isInteger(r.runsLeft)) lines.push(`runs left: ${r.runsLeft}`);
   return `${lines.join("\n")}\n`;

@@ -2686,6 +2686,163 @@ describe("scenario sessions", () => {
     assert.ok(!JSON.stringify(shots).includes("after-create"));
   });
 
+  it("reserves time only for a later platform that will run", async () => {
+    // Android first with a section; iOS planned but with no simulator, so it
+    // won't run: 80 - 20 leaves Android a session.
+    h.env.FACTORY_DEVICE_RUN_MAX_MIN = "80";
+    h.prView.files = [{ path: "packages/shared/src/x.ts" }];
+    rmSync(path.join(h.repoRoot, "logs", "factory", "device-config.json"));
+    fakeSession();
+    const { output } = await startAndSupervise({
+      scenarioSections: [{ heading: "Android", text: "1. android step" }],
+    });
+    assert.equal(sessionCalls().length, 1);
+    assert.equal(output.platforms.android.scenarioState, "done");
+    assert.equal(output.platforms.ios.state, "unavailable:no-simulator");
+  });
+
+  it("the reset gets the adb-drop retry, and fails only after it", async () => {
+    h.prView.files = [{ path: "apps/mobile/e2e/android-all.yaml" }];
+    h.env.FACTORY_DEVICE_SCENARIO_RUNS = "2";
+    fakeSession({
+      flows: { "01-nb.yaml": GOOD_FLOW, "02-nb.yaml": GOOD_FLOW },
+      requests: ["flows/01-nb.yaml", "flows/02-nb.yaml", "flows/02-nb.yaml"],
+    });
+    const session = h.onRun;
+    let resets = 0;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && String(args[3]).endsWith(".reset.yaml")) {
+        resets += 1;
+        // Request 1: a drop, then a pass on the retry. Request 2: a drop on
+        // both tries, a real failure. Request 3 and on: passes.
+        if (resets === 1 || resets === 3 || resets === 4) {
+          writeFileSync(opts.stdoutFile, "device offline\n");
+          return { code: 1, timedOut: false, stdout: "" };
+        }
+      }
+      return session(cmd, args, opts);
+    };
+    await startAndSupervise({ scenarioSections: [{ heading: "Android", text: "1. step" }] });
+    assert.match(h.results[0].text, /request 1 \(flows\/01-nb\.yaml\): PASS[\s\S]*runs left: 1/);
+    assert.match(
+      h.results[1].text,
+      /ERROR\nfailure: the lane's reset before this flow failed[\s\S]*runs left: 1/,
+    );
+    assert.match(h.results[2].text, /request 3 \(flows\/02-nb\.yaml\): PASS[\s\S]*runs left: 0/);
+  });
+
+  it("a failed reset gives the run back, so the next request still runs", async () => {
+    h.env.FACTORY_DEVICE_SCENARIO_RUNS = "1";
+    fakeSession({
+      flows: { "01-nb.yaml": GOOD_FLOW },
+      requests: ["flows/01-nb.yaml", "flows/01-nb.yaml"],
+    });
+    const session = h.onRun;
+    let resets = 0;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && String(args[3]).endsWith(".reset.yaml")) {
+        resets += 1;
+        if (resets === 1) return { code: 1, timedOut: false, stdout: "" };
+      }
+      return session(cmd, args, opts);
+    };
+    await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(h.results[0].text, /reset before this flow failed[\s\S]*runs left: 1/);
+    assert.match(h.results[1].text, /request 2 \(flows\/01-nb\.yaml\): PASS/);
+  });
+
+  it("only the answering attempt's screenshots reach the session", async () => {
+    h.prView.files = [{ path: "apps/mobile/e2e/android-all.yaml" }];
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    const session = h.onRun;
+    let flowRuns = 0;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro") {
+        const out = args[args.indexOf("--test-output-dir") + 1];
+        const flow = String(args[3]);
+        mkdirSync(out, { recursive: true });
+        if (flow.endsWith("sign-in.yaml")) writeFileSync(path.join(out, "signin-shot.png"), PNG);
+        if (flow.endsWith(".reset.yaml")) writeFileSync(path.join(out, "reset-shot.png"), PNG);
+        if (flow.endsWith(`${path.sep}01-nb.yaml`) && ++flowRuns === 1) {
+          writeFileSync(path.join(out, "first-try.png"), PNG);
+          writeFileSync(opts.stdoutFile, "device offline\n");
+          return { code: 1, timedOut: false, stdout: "" };
+        }
+        if (flow.endsWith(`${path.sep}01-nb.yaml`)) {
+          writeFileSync(path.join(out, "second-try.png"), PNG);
+        }
+      }
+      return session(cmd, args, opts);
+    };
+    await startAndSupervise({ scenarioSections: [{ heading: "Android", text: "1. step" }] });
+    const text = h.results[0].text;
+    assert.match(text, /iter-shots\/1-01-nb-1-second-try\.png/);
+    for (const bad of ["first-try", "signin-shot", "reset-shot"]) {
+      assert.ok(!text.includes(bad), bad);
+    }
+  });
+
+  it("a screenshot over the size cap is left out, and the answer says so", async () => {
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    h.deps.sipsPath = path.join(tmp, "no-sips");
+    const session = h.onRun;
+    h.onRun = async (cmd, args, opts) => {
+      if (path.basename(cmd) === "maestro" && String(args[3]).endsWith(`${path.sep}01-nb.yaml`)) {
+        const out = args[args.indexOf("--test-output-dir") + 1];
+        mkdirSync(out, { recursive: true });
+        writeFileSync(path.join(out, "huge.png"), Buffer.alloc(5 * 1024 * 1024, 1));
+      }
+      return session(cmd, args, opts);
+    };
+    const { runDir } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(
+      h.results[0].text,
+      /screenshots not shown:\n- 1-01-nb-1-huge\.png: larger than 4\.7 MB/,
+    );
+    assert.match(h.results[0].text, /iter-shots\/1-01-nb\.png/);
+    assert.equal(
+      existsSync(path.join(runDir, "scenario-ios", "iter-shots", "1-01-nb-1-huge.png")),
+      false,
+    );
+  });
+
+  it("one RUN_ID sequence for the whole run: no two flows share one", async () => {
+    h.prView.files = [{ path: "packages/shared/src/x.ts" }];
+    fakeSession({ flows: { "01-nb.yaml": GOOD_FLOW }, requests: ["flows/01-nb.yaml"] });
+    await startAndSupervise({
+      scenarioSections: [
+        { heading: "Android", text: "1. a" },
+        { heading: "iOS", text: "1. i" },
+      ],
+    });
+    const flows = callsOf("maestro").filter((c) =>
+      /(android-all|ios-all|01-nb)\.yaml$/.test(String(c.args[3])),
+    );
+    // Per platform: the smoke flow, the try and the final pass.
+    assert.equal(flows.length, 6);
+    const ids = flows.map((c) => c.args.find((a) => String(a).startsWith("RUN_ID=")));
+    assert.equal(new Set(ids).size, 6);
+  });
+
+  it("a flow marked `# device-lane: skip` is runnable but left out of the final pass", async () => {
+    const retired = `# device-lane: skip\n${GOOD_FLOW}`;
+    fakeSession({
+      flows: { "01-old.yaml": retired, "02-nb.yaml": GOOD_FLOW },
+      requests: ["flows/01-old.yaml"],
+    });
+    const { output, runDir } = await startAndSupervise({ scenarioSections: SECTIONS });
+    assert.match(h.results[0].text, /PASS/);
+    assert.deepEqual(
+      output.platforms.ios.flows.map((f) => f.name),
+      ["ios-all.yaml", "scenario: 02-nb.yaml"],
+    );
+    const shots = readJson(path.join(runDir, "evidence", "shots.json"));
+    assert.deepEqual(
+      shots.map((x) => x.file),
+      ["device-ios/01-ios-all.png", "device-ios/02-scenario-02-nb.png"],
+    );
+  });
+
   it("device-run refuses a path outside flows/ and waits on --wait", async () => {
     const dir = path.join(tmp, "sd");
     mkdirSync(path.join(dir, "requests"), { recursive: true });

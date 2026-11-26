@@ -8908,8 +8908,9 @@ verify_device_work() {
     log "DRY-RUN: would start the device lane for #$issue_num at ${head_sha:0:12}"
     return 0
   fi
-  # The scenario's mobile sections: they add platforms to the device plan and,
-  # with FACTORY_DEVICE_SCENARIO=1, are the steps the lane's sessions run.
+  # The scenario's mobile sections, only with FACTORY_DEVICE_SCENARIO=1: then
+  # they add platforms to the device plan and are the steps the lane's
+  # sessions run. Off, no file (verify_device_scenario_file prints nothing).
   scenario_file=$(verify_device_scenario_file "$issue_num" "$head_sha")
   [[ -z "$scenario_file" ]] || scenario_args=(--scenario-file "$scenario_file")
   # ${arr[@]+...}: an empty array under `set -u` is an error on bash 3.2.
