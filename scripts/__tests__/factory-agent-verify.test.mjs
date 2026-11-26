@@ -102,6 +102,7 @@ const REAL_HELPERS = [
   "device_lock_live",
   "device_pr_head_is",
   "device_post_followup",
+  "iso_age_min",
 ];
 
 const STUBS = `
@@ -2979,7 +2980,12 @@ function deviceOutput({ sha = HEAD, running = false } = {}) {
 
 // Bash that writes the run dir (and the ledger, when <ledgerState> is given)
 // under $REPO_ROOT, as device-lane.mjs lays them out.
-function seedDeviceRun({ output = deviceOutput(), ledgerState = null, evidence = false } = {}) {
+function seedDeviceRun({
+  output = deviceOutput(),
+  ledgerState = null,
+  evidence = false,
+  finishedAt = "2026-11-10T06:00:00Z",
+} = {}) {
   const runDir = `$REPO_ROOT/logs/factory/device/runs/${DEVICE_RUN_ID}`;
   const lines = [
     `RUN_DIR="${runDir}"`,
@@ -2988,7 +2994,7 @@ function seedDeviceRun({ output = deviceOutput(), ledgerState = null, evidence =
   ];
   if (ledgerState) {
     lines.push(
-      `jq -nc --arg d "$RUN_DIR" --arg s "${ledgerState}" '{version: 1, inFlight: null, attempts: {}, last: {"7": {sha: "${output.sha}", runId: "${DEVICE_RUN_ID}", runDir: $d, state: $s, finishedAt: "2026-11-10T06:00:00Z"}}}' > "$REPO_ROOT/logs/factory/device/ledger.json"`,
+      `jq -nc --arg d "$RUN_DIR" --arg s "${ledgerState}" '{version: 1, inFlight: null, attempts: {}, last: {"7": {sha: "${output.sha}", runId: "${DEVICE_RUN_ID}", runDir: $d, state: $s, finishedAt: "${finishedAt}"}}}' > "$REPO_ROOT/logs/factory/device/ledger.json"`,
     );
   }
   return lines.join("\n");
@@ -3172,6 +3178,8 @@ describe("verify_device_work", () => {
       ["not-applicable", "skipped:not-applicable"],
       ["account", "unavailable:no-account"],
       ["maestro-missing", "unavailable:maestro-missing"],
+      // A stop arrived while start attached its supervisor: a deferral.
+      ["stopped", "deferred:stopping"],
       ["head-moved", null],
       ["pr-unreadable", null],
     ]) {
@@ -3442,7 +3450,8 @@ describe("verify_device_housekeeping and the follow-up comment", () => {
       ["timeout", "timeout"],
       ["failed:error", "unavailable:error"],
       ["unavailable:lost", "unavailable:lost"],
-      ["stopped:head-moved", "skipped:stopped-head-moved"],
+      ["stopped:head-moved", "retry:stopped-head-moved"],
+      ["stopped:threads", "retry:stopped-threads"],
       ["retry:beta-build", "retry:beta-build"],
       ["weird", ""],
     ];
@@ -3456,7 +3465,7 @@ describe("verify_device_housekeeping and the follow-up comment", () => {
   });
 });
 
-describe("intest_dispatch_betas: the mobile beta waits for the device lane's lock", () => {
+describe("intest_dispatch_betas: the betas wait for the device lane's lock", () => {
   const fns = ["intest_dispatch_betas", "device_lock_live", "lane_attempt_of", "lane_attempt_set"];
   function run(lockPid, lanes = "mobile,desktop") {
     const dir = mkdtempSync(join(tmpdir(), "factory-device-beta-"));
@@ -3519,25 +3528,24 @@ describe("intest_dispatch_betas: the mobile beta waits for the device lane's loc
     }
   }
 
-  it("defers the mobile lane only, spending no attempt, while a live pid holds the lock", () => {
-    const r = run("self");
-    assert.match(r.log, /the device lane is running \(pid \d+\); the mobile beta lane waits/);
-    assert.match(r.log, /^DISPATCH desktop$/m);
-    assert.doesNotMatch(r.log, /BUILD-ROOT mobile/);
-    assert.deepEqual(
-      r.out.dispatched.map((d) => d.id),
-      ["desktop"],
-    );
-    assert.ok(r.out.skipped.some((s) => s.id === "mobile" && /device-lane-busy/.test(s.reason)));
-    assert.equal(r.issue.intestBetaLanes, "desktop", "mobile isn't recorded as started");
-    assert.doesNotMatch(r.issue.intestBetaAttempts ?? "", /mobile/);
-  });
-
-  it("dispatches nothing when mobile was the only lane, and records nothing", () => {
-    const r = run("self", "mobile");
-    assert.deepEqual(r.out.dispatched, []);
-    assert.doesNotMatch(r.log, /DISPATCH/);
-    assert.equal(r.issue.intestBetaSha ?? null, null);
+  it("holds back every beta lane, desktop too, spending no attempt, while a live pid holds the lock", () => {
+    for (const lanes of ["mobile,desktop", "desktop", "mobile"]) {
+      const r = run("self", lanes);
+      assert.match(
+        r.log,
+        new RegExp(`the device lane is running \\(pid \\d+\\); beta lane\\(s\\) '${lanes}' wait`),
+        lanes,
+      );
+      assert.doesNotMatch(r.log, /DISPATCH|BUILD-ROOT/, lanes);
+      assert.deepEqual(r.out.dispatched, [], lanes);
+      assert.deepEqual(
+        r.out.skipped.map((x) => [x.id, x.reason]),
+        lanes.split(",").map((id) => [id, "device-lane-busy, retrying next tick"]),
+        lanes,
+      );
+      assert.equal(r.issue.intestBetaSha ?? null, null, "nothing recorded as started");
+      assert.equal(r.issue.intestBetaAttempts ?? null, null, "no attempt spent");
+    }
   });
 
   it("dispatches as before with no lock or a dead holder", () => {
@@ -3546,5 +3554,164 @@ describe("intest_dispatch_betas: the mobile beta waits for the device lane's loc
       assert.match(r.log, /^DISPATCH mobile,desktop$/m, String(pid));
       assert.doesNotMatch(r.log, /device lane is running/);
     }
+  });
+});
+
+describe("the device lane: review round (hand-back retry, In Test continuation, report)", () => {
+  const minsAgo = (m) => new Date(Date.now() - m * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const round = (over = {}) => ({
+    verifySha: HEAD,
+    verifyStartedAt: minsAgo(31),
+    lastReviewSha: HEAD,
+    lastFeedbackAt: "2026-01-01T00:00:00Z",
+    intestCommentSha: HEAD,
+    verifyShell: `${HEAD}:skipped:lane-off`,
+    verifyBrowser: `${HEAD}:skipped:not-web`,
+    ...over,
+  });
+  const env = (over = {}) => ({
+    HEAD,
+    LABELS: "status:testing",
+    PR_OBJ_STUB: PR_OBJ,
+    PR_VIEW_STUB: prView(),
+    DIFF_STUB: "apps/mobile/e2e/ios-all.yaml",
+    ...DEVICE_ON,
+    FACTORY_VERIFY_LANES: "browser,device",
+    FACTORY_DEVICE_ACCOUNT_FILE: "",
+    TESTING_ITEMS: JSON.stringify([{ itemId: "ITEM", issueNumber: 7, labels: ["status:in-test"] }]),
+    ...over,
+  });
+  const setRunDir = `node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field 7 verifyDeviceRunDir "$RUN_DIR" --state-file "$STATE_FILE" >/dev/null`;
+  const startedStub = `DEVICE_START_STUB="{\\"started\\":true,\\"runId\\":\\"${DEVICE_RUN_ID}\\",\\"runDir\\":\\"$RUN_DIR\\"}"`;
+  const followups = (r) => r.comments.filter((c) => /drafto-factory-device-report/.test(c.body));
+  const reports = (r) => r.comments.filter((c) => /drafto-factory-verify-report/.test(c.body));
+
+  it("a hand-back stop is retried, not terminal, so the lane starts again on the same commit", () => {
+    const body = [
+      seedDeviceRun({ ledgerState: "stopped:threads" }),
+      setRunDir,
+      "verify_device_housekeeping",
+      `verify_device_work 7 70 "$HEAD" '{"mobile":true}' "$(verify_lane_states "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$HEAD" 1)"`,
+    ].join("\n");
+    withBash(body, { env: env(), state: { verifyDevice: `${HEAD}:running` } }, (r) => {
+      assert.equal(r.issue.verifyDevice, `${HEAD}:retry:stopped-threads`);
+      assert.equal(isTerminalLaneState("retry:stopped-threads"), false);
+      assert.match(r.calls, /^device start --issue 7 /m, "started again");
+      assert.equal(followups(r).length, 0, "a stopped run posts nothing");
+    });
+  });
+
+  it("keeps the last run's dir when a later state has none", () => {
+    const body = [
+      'verify_device_record 7 "$HEAD" running /runs/one',
+      'verify_device_record 7 "$HEAD" deferred:busy',
+    ].join("\n");
+    withBash(body, { env: env() }, (r) => {
+      assert.equal(r.issue.verifyDevice, `${HEAD}:deferred:busy`);
+      assert.equal(r.issue.verifyDeviceRunDir, "/runs/one");
+    });
+  });
+
+  it("deferred through Testing, started from In Test, finished, one follow-up", () => {
+    const body = [
+      `RUN_DIR="$REPO_ROOT/logs/factory/device/runs/${DEVICE_RUN_ID}"`,
+      // Testing: the wait is over while the lane still waited for the betas.
+      'verify_sweep_card ITEM 7 "$LABELS"',
+      // In Test: the next ticks start the run, then leave it running.
+      startedStub,
+      "verify_device_intest_work",
+      "verify_device_intest_work",
+      // The run finishes; housekeeping posts its results once.
+      seedDeviceRun({ ledgerState: "done:PASS" }),
+      "verify_device_housekeeping",
+      "verify_device_housekeeping",
+    ].join("\n");
+    const state = round({ verifyDevice: `${HEAD}:deferred:beta-build` });
+    withBash(body, { env: env(), state }, (r) => {
+      assert.match(r.log, /Testing → promote \(lanes-done\)/);
+      assert.equal(r.calls.match(/^transition /gm)?.length, 1, "only the promotion moves it");
+      const report = reports(r)[0].body;
+      assert.match(report, /the device lane hadn't started \(a beta build was running\)/);
+      assert.doesNotMatch(report, /running — results follow/);
+      assert.equal(r.calls.match(/^device start /gm)?.length, 1, "started once, from In Test");
+      assert.equal(r.issue.verifyDevice, `${HEAD}:reported:pass`);
+      assert.equal(followups(r).length, 1);
+      assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}`);
+    });
+  });
+
+  it("leaves an In Test card alone once its head moved, its lane is terminal, or it skipped Testing", () => {
+    for (const [state, view] of [
+      [
+        round({ verifyReportSha: HEAD, verifyDevice: `${HEAD}:deferred:busy` }),
+        prView({ headRefOid: OLD }),
+      ],
+      [round({ verifyReportSha: HEAD, verifyDevice: `${HEAD}:skipped:attempts` }), prView()],
+      [round({ verifyReportSha: HEAD, verifyDevice: `${HEAD}:running` }), prView()],
+      [round({ verifyDevice: `${HEAD}:deferred:busy` }), prView()], // no report for this head
+    ]) {
+      withBash("verify_device_intest_work", { env: env({ PR_VIEW_STUB: view }), state }, (r) => {
+        assert.doesNotMatch(r.calls, /^device start /m, state.verifyDevice);
+        assert.doesNotMatch(r.calls, /^transition/m);
+      });
+    }
+    // Off: no board query at all.
+    withBash("verify_device_intest_work", { env: env({ FACTORY_VERIFY_DEVICE: "0" }) }, (r) => {
+      assert.doesNotMatch(r.calls, /^project /m);
+    });
+  });
+
+  it("is called from --watch after the Testing sweep, before the In Test sweep", () => {
+    const sweep = script.indexOf("\n  verify_sweep\n", watchStart);
+    const pass = script.indexOf("\n  verify_device_intest_work\n", watchStart);
+    const intest = script.indexOf("  # ── In Test feedback sweep", watchStart);
+    assert.ok(sweep !== -1 && pass > sweep && pass < intest);
+  });
+
+  it("a promotion that stops the run doesn't promise its results", () => {
+    const body = [
+      seedDeviceRun({ output: deviceOutput({ running: true }) }),
+      setRunDir,
+      'mkdir -p "$REPO_ROOT/logs/factory/device" && echo "{}" > "$REPO_ROOT/logs/factory/device/ledger.json"',
+      `verify_promote ITEM 7 70 "$HEAD" feedback '{"shell":"skipped:lane-off","browser":"skipped:not-web","device":"skipped:feedback"}' "$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue 7 --state-file "$STATE_FILE")" "$(cat "$COMMENTS_FILE")"`,
+    ].join("\n");
+    withBash(body, { env: env(), state: round({ verifyDevice: `${HEAD}:running` }) }, (r) => {
+      assert.match(r.calls, /^device stop --issue 7 --reason feedback /m);
+      const report = reports(r)[0].body;
+      assert.doesNotMatch(report, /running — results follow/);
+      assert.match(report, /the device run was stopped: the card rolled back for feedback/);
+    });
+  });
+
+  it("results already in the verification report aren't posted again", () => {
+    const body = [
+      seedDeviceRun({ ledgerState: "done:PASS", finishedAt: minsAgo(1) }),
+      setRunDir,
+      // The run finished in Testing: the follow-up waits for the report.
+      "verify_device_housekeeping",
+      'test -e "$RUN_DIR/followup.done" && echo EARLY-DONE || echo WAITING',
+      'verify_sweep_card ITEM 7 "$LABELS"',
+      "verify_device_housekeeping",
+      "verify_device_housekeeping",
+    ].join("\n");
+    withBash(body, { env: env(), state: round({ verifyDevice: `${HEAD}:running` }) }, (r) => {
+      assert.match(r.stdout, /^WAITING$/m);
+      assert.match(r.log, /Testing → promote \(lanes-done\)/);
+      assert.match(reports(r)[0].body, /\| iOS \(simulator\) \| ran \| PASS \|/);
+      assert.equal(followups(r).length, 0);
+      assert.equal(r.issue.deviceReportPosted, `${HEAD}:${DEVICE_RUN_ID}:in-report`);
+    });
+  });
+
+  it("still posts the round's run once its report has been out a while without it", () => {
+    // Finished long ago, no report for this head: the wait is bounded.
+    const body = [
+      seedDeviceRun({ ledgerState: "done:PASS" }),
+      setRunDir,
+      "verify_device_housekeeping",
+    ].join("\n");
+    withBash(body, { env: env(), state: round({ verifyDevice: `${HEAD}:running` }) }, (r) => {
+      assert.equal(followups(r).length, 1);
+    });
   });
 });

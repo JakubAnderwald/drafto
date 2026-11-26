@@ -1060,6 +1060,14 @@ describe("classifyDeviceRun", () => {
       refund: "none",
     });
     assert.equal(classifyDeviceRun({ exit: { error: "x" } }).state, "failed:error");
+    // The factory's own stops (a hand-back, feedback, verification off) give
+    // the attempt back, so a card back in Testing on the same commit runs again.
+    for (const why of ["ci-red", "not-reviewed", "threads", "feedback", "verification-off"]) {
+      assert.deepEqual(classifyDeviceRun({ exit: { interrupt: `stopped:${why}` } }), {
+        state: `stopped:${why}`,
+        refund: "attempt",
+      });
+    }
     assert.equal(
       classifyDeviceRun({
         exit: {},

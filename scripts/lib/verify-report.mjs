@@ -122,7 +122,10 @@
 //        --account-file <f|""> --bypass-file <f|""> --signin-key-file <f|"">
 //        [--browser-images <upload.json|"">]
 //        [--device-out <device-output.json|""> --device-account-file <f|"">
-//         [--device-images <upload.json|"">]] --out <body-file>
+//         [--device-images <upload.json|"">]] [--device-state <state>]
+//        --out <body-file>
+//     (--device-state: the device lane's state from verify-decide; with no
+//     device output for the commit the iOS / Android row says why.)
 //     Writes the comment body to --out and prints one JSON line
 //     {verdict, withheld: {shell, browser[, device]}, secretHits,
 //     images: {browser[, device]}} (the device keys only with --device-out;
@@ -744,6 +747,72 @@ function deviceReason(token) {
   return own(DEVICE_REASONS, t) ?? reasonText(t);
 }
 
+// Why the lane waited (deferred:<r>, reported at promotion as skipped:<r>).
+const DEVICE_WAITS = {
+  "beta-build": "a beta build was running",
+  busy: "another card's device run held the lane",
+  memory: "the Mac mini was short of memory",
+  disk: "the disk was short of space",
+  stopping: "an earlier run was still shutting down",
+};
+
+// Why the factory stopped a run (stopped:<r>, retry:stopped-<r>).
+const DEVICE_STOPS = {
+  "ci-red": "the card went back to In Review for a red check",
+  "not-reviewed": "the card went back to In Review for its code review",
+  threads: "the card went back to In Review for open review threads",
+  feedback: "the card rolled back for feedback",
+  "verification-off": "verification was switched off",
+};
+
+function deviceEndText(token) {
+  const t = String(token ?? "").trim();
+  const stopped = /^stopped-(.+)$/.exec(t);
+  if (stopped)
+    return `it was stopped: ${own(DEVICE_STOPS, stopped[1]) ?? deviceReason(stopped[1])}`;
+  if (t === "lost") return "its supervisor was lost";
+  return deviceReason(t);
+}
+
+// A lane that hadn't run (or had to run again) when the card was promoted:
+// the factory starts it from In Test (verify_device_intest_work).
+const DEVICE_FOLLOWS = "it runs from In Test and its results follow in a separate comment";
+
+/**
+ * The device lane's state as decide reported it (--device-state), as a note
+ * for the iOS / Android row when there is no device output for the commit:
+ * why the lane has no results. null when there is nothing to add (the lane
+ * off, not applicable, or with nothing to explain).
+ */
+export function deviceStateNote(token) {
+  const { kind, detail } = parseLaneState(typeof token === "string" ? token : "");
+  if (kind === "running")
+    return "the device lane is still running; its results follow in a separate comment";
+  if (kind === "timeout") return "the device run hit its time limit";
+  if (kind === "unavailable")
+    return `the device lane couldn't run: ${deviceReason(detail) || "no reason given"}`;
+  if (kind === "retry") return `the device run ended early (${deviceEndText(detail)})`;
+  if (kind === "deferred") {
+    return `the device lane didn't start: ${own(DEVICE_WAITS, detail) ?? deviceReason(detail)}`;
+  }
+  if (kind !== "skipped") return null;
+  if (["lane-off", "not-built", "verification-off", "not-applicable", ""].includes(detail)) {
+    return null;
+  }
+  if (own(DEVICE_WAITS, detail)) {
+    return `the device lane hadn't started (${DEVICE_WAITS[detail]}); ${DEVICE_FOLLOWS}`;
+  }
+  if (detail === "attempts")
+    return "the device lane didn't run: its attempts for this commit were spent";
+  if (detail === "async-wait" || detail === "hold-cap") {
+    return `the device lane hadn't started; ${DEVICE_FOLLOWS}`;
+  }
+  if (own(DEVICE_STOPS, detail)) return `the device run was stopped: ${DEVICE_STOPS[detail]}`;
+  const after = /^after-(.+)$/.exec(detail);
+  if (after) return `the device run ended early (${deviceEndText(after[1])}); ${DEVICE_FOLLOWS}`;
+  return `the device lane didn't run (${deviceEndText(detail)})`;
+}
+
 function firstLine(text) {
   return String(text ?? "").split(/\r?\n/)[0];
 }
@@ -987,7 +1056,15 @@ export const EARLIER_RUN_STEP =
 export const WEB_VIA_SHARED_NOTE =
   "web changes come through `packages/shared/`, which the web app imports (no `apps/web/` files changed)";
 
-function laneTable(shell, browser, platforms, betaLanes, betaReused = [], device = null) {
+function laneTable(
+  shell,
+  browser,
+  platforms,
+  betaLanes,
+  betaReused = [],
+  device = null,
+  deviceState = "",
+) {
   const rows = [];
   for (const lane of [shell, browser]) {
     const verdict = lane.effective ? lane.effective.toUpperCase() : "—";
@@ -1008,9 +1085,12 @@ function laneTable(shell, browser, platforms, betaLanes, betaReused = [], device
     const r = betaReused.find((x) => x.id === id);
     return r ? reusedBetaNote(r) : null;
   };
-  const mobileNote = betaLanes.includes("mobile")
+  const betaNote = betaLanes.includes("mobile")
     ? "beta dispatched for this commit; run the iOS / Android steps on it"
     : (reusedNote("mobile") ?? "no beta was dispatched; the scenario says how to get a build");
+  // With no device output for this commit, the lane's own state says why.
+  const stateNote = device?.covered ? null : deviceStateNote(deviceState);
+  const mobileNote = stateNote ? `${stateNote}; ${betaNote}` : betaNote;
   rows.push(
     ...deviceRows(
       device,
@@ -1477,6 +1557,9 @@ function normaliseBetaLanes(lanes) {
  * @param {{output:object|null,dir?:string}|null} [o.device] the device lane
  *   (ADR-0106): its parsed device-output.json and run dir; absent or null when
  *   the lane is off, and then the report reads exactly as before
+ * @param {string} [o.deviceState] the device lane's state as verify-decide
+ *   reported it (--device-state); with no device output for the commit, the
+ *   iOS / Android row says why (deviceStateNote)
  * @param {{browser?:object|null,device?:object|null}} [o.images] each lane's
  *   upload record (evidence-upload.mjs), by lane key; absent when none was tried
  * @returns {{body:string,verdict:string,withheld:{shell:boolean,browser:boolean,device?:boolean},secretHits:string[],images:{browser:number,device?:number}}}
@@ -1491,6 +1574,7 @@ export function composeVerifyReport({
   shell: shellInput,
   browser: browserInput,
   device: deviceInput = null,
+  deviceState = "",
   gaps = [],
   crNote = "",
   secrets = {},
@@ -1587,7 +1671,7 @@ export function composeVerifyReport({
     "",
     EVIDENCE_LINE,
     "",
-    ...laneTable(shell, browser, platforms, betaLanes, betaReused, device),
+    ...laneTable(shell, browser, platforms, betaLanes, betaReused, device, deviceState),
     "",
     "**Assessment**",
     "",
@@ -1901,6 +1985,7 @@ export function render(argv) {
     shell: lane("shell"),
     browser: lane("browser"),
     device: deviceInput(flags),
+    deviceState: flags["device-state"] ?? "",
     gaps,
     crNote: flags["cr-note"] ?? "",
     secrets: {
@@ -1988,7 +2073,8 @@ const USAGE =
   "--browser-state <state> --browser-dir <dir> --gaps <json> --cr-note <text> " +
   "--account-file <f> --bypass-file <f> --signin-key-file <f> " +
   "[--browser-images <upload.json>] [--device-out <device-output.json> " +
-  "--device-account-file <f> [--device-images <upload.json>]] --out <body-file>\n" +
+  "--device-account-file <f> [--device-images <upload.json>]] [--device-state <state>] " +
+  "--out <body-file>\n" +
   "       verify-report.mjs render --kind device --issue <n> --pr <n> --sha <40-hex> " +
   "--device-out <device-output.json> --device-account-file <f> " +
   "[--device-images <upload.json>] --out <body-file>\n";

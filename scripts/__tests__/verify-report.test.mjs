@@ -16,6 +16,7 @@ import {
   composeDeviceReport,
   composeVerifyReport,
   deviceShaMarker,
+  deviceStateNote,
   parseLaneState,
   parseManualList,
   parseResultTable,
@@ -2709,6 +2710,74 @@ describe("composeDeviceReport: platforms that didn't finish", () => {
   });
 });
 
+describe("device lane: --device-state when there is no output for the commit", () => {
+  it("says why the lane has no results, beside the beta note", () => {
+    for (const [state, want] of [
+      [
+        "skipped:beta-build",
+        /the device lane hadn't started \(a beta build was running\); it runs from In Test and its results follow/,
+      ],
+      ["skipped:attempts", /its attempts for this commit were spent/],
+      [
+        "unavailable:no-account",
+        /couldn't run: the device lane's dev account file is missing or unusable/,
+      ],
+      ["skipped:feedback", /the device run was stopped: the card rolled back for feedback/],
+      [
+        "skipped:after-stopped-threads",
+        /ended early \(it was stopped: the card went back to In Review for open review threads\)/,
+      ],
+      ["running", /still running; its results follow in a separate comment/],
+    ]) {
+      const row = tableRow(compose({ deviceState: state }).body, "iOS / Android");
+      assert.match(row, /^\| iOS \/ Android \| manual \| — \| /, state);
+      assert.match(row, want, state);
+      assert.match(row, /beta dispatched for this commit/, state);
+    }
+  });
+
+  it("reads a deferral while an earlier run shuts down", () => {
+    assert.equal(
+      deviceStateNote("deferred:stopping"),
+      "the device lane didn't start: an earlier run was still shutting down",
+    );
+  });
+
+  it("adds nothing for a lane that is off, not applicable, or reported", () => {
+    const before = compose().body;
+    for (const state of [
+      "",
+      "none",
+      "skipped:lane-off",
+      "skipped:not-built",
+      "skipped:verification-off",
+      "skipped:not-applicable",
+      "reported:pass",
+    ]) {
+      assert.equal(compose({ deviceState: state }).body, before, state);
+      assert.equal(deviceStateNote(state), null, state);
+    }
+  });
+
+  it("is ignored when the device output covers the commit", () => {
+    const withState = composeDevice({ ios: devicePlatform() }, { deviceState: "skipped:attempts" });
+    assert.doesNotMatch(withState.body, /attempts for this commit were spent/);
+    assert.match(tableRow(withState.body, "iOS (simulator)"), /\| ran \| PASS \|/);
+  });
+
+  it("explains a stale run's output the same way", () => {
+    const r = compose({
+      device: {
+        output: deviceOutput({ ios: devicePlatform() }, { sha: "f".repeat(40) }),
+        dir: "/runs/dev",
+      },
+      deviceState: "skipped:attempts",
+      secrets: DEVICE_SECRETS,
+    });
+    assert.match(tableRow(r.body, "iOS / Android"), /attempts for this commit were spent/);
+  });
+});
+
 describe("verify-report CLI: the device lane", () => {
   let dir;
   const run = (argv) => spawnSync(process.execPath, [cli, ...argv], { encoding: "utf8" });
@@ -2788,6 +2857,16 @@ describe("verify-report CLI: the device lane", () => {
     assert.match(tableRow(body, "Android (emulator)"), /\| ran \| FAIL \|/);
     assert.ok(deviceLane(body).includes(deviceImg(1)));
     assert.ok(body.includes(`\`${join(dir, "run")}\``), "the run dir is the lane's local evidence");
+  });
+
+  it("render --device-state explains the device rows without --device-out", () => {
+    const r = run(verifyArgs(["--device-state", "deferred:beta-build"]));
+    assert.equal(r.status, 0, r.stderr);
+    const body = readFileSync(join(dir, "body.md"), "utf8");
+    assert.match(
+      tableRow(body, "iOS / Android"),
+      /the device lane didn't start: a beta build was running; beta dispatched/,
+    );
   });
 
   it("render without --device-out is the report as before; an unreadable one falls back to manual", () => {

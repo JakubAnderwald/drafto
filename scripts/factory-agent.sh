@@ -5919,22 +5919,21 @@ intest_dispatch_betas() {
     return 0
   fi
 
-  # The device lane (ADR-0106) and a mobile beta build can't share the Mac
-  # mini's RAM: while the device lane's lock is held by a live process, the
-  # mobile lane waits for the next tick. Nothing is recorded as started, so no
-  # attempt is spent. Desktop builds are unaffected.
+  # The device lane (ADR-0106 decision 4): a beta build and a device run can't
+  # share the Mac mini's RAM, and the device supervisor stops for any live beta
+  # lock, desktop included. So while the device lane's lock is held by a live
+  # process, every beta lane waits for the next tick. Nothing is recorded as
+  # started, so no attempt is spent.
   local device_pid
-  if [[ ",$lanes," == *",mobile,"* ]] && device_pid=$(device_lock_live); then
-    logerr "Issue #$issue_num: the device lane is running (pid $device_pid); the mobile beta lane waits for the next tick"
-    skipped_json=$(jq -nc --argjson skipped "$skipped_json" \
-      '$skipped + [{ id: "mobile", reason: "device-lane-busy, retrying next tick" }]' \
+  if device_pid=$(device_lock_live); then
+    logerr "Issue #$issue_num: the device lane is running (pid $device_pid); beta lane(s) '$lanes' wait for the next tick"
+    skipped_json=$(jq -nc --argjson skipped "$skipped_json" --arg lanes "$lanes" '
+      $skipped + [ $lanes | split(",") | .[] | select(length > 0)
+                   | { id: ., reason: "device-lane-busy, retrying next tick" } ]' \
       2>/dev/null || echo "$skipped_json")
-    lanes=$(echo "$lanes" | sed -E 's/(^|,)mobile(,|$)/\1\2/; s/^,|,$//')
-    if [[ -z "$lanes" ]]; then
-      jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" --argjson reused "$reused_json" \
-        '{ dispatched: [], skipped: $skipped, manualCommands: $manual, reused: $reused }'
-      return 0
-    fi
+    jq -nc --argjson skipped "$skipped_json" --argjson manual "$manual" --argjson reused "$reused_json" \
+      '{ dispatched: [], skipped: $skipped, manualCommands: $manual, reused: $reused }'
+    return 0
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -8714,16 +8713,20 @@ device_lock_live() {
 
 # verify_device_record <issue> <head-sha> <state> [<run-dir>] — the device
 # lane's state for <head-sha> as verify_lane_states reads it
-# (verifyDevice="<sha>:<state>"), written after its run dir, as the browser
-# lane writes its own: verify_compose_report reads the run's device-output.json
-# from verifyDeviceRunDir for any record of the head, so an older run's dir
-# must never sit beside a newer state. Returns 1 when the state couldn't be
-# written. Nothing in a dry run.
+# (verifyDevice="<sha>:<state>"). A new run's dir is written first
+# (verifyDeviceRunDir); a state recorded without one (a deferral, a refusal)
+# keeps the last run's dir, so its results stay readable. Nothing reads a dir
+# blindly: verify_compose_report passes it only for a state that has a run,
+# the renderer ignores a device-output.json for another commit, and
+# verify_device_collect matches the ledger's run dir exactly. Returns 1 when
+# the state couldn't be written. Nothing in a dry run.
 verify_device_record() {
   local issue_num="$1" head_sha="$2" st="$3" run_dir="${4:-}"
   [[ "$DRY_RUN" -eq 0 ]] || return 0
-  node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyDeviceRunDir "$run_dir" \
-    --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  if [[ -n "$run_dir" ]]; then
+    node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyDeviceRunDir "$run_dir" \
+      --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1 || true
+  fi
   if ! node "$SCRIPT_DIR/lib/state-cli.mjs" factory:set-issue-field "$issue_num" verifyDevice "$head_sha:$st" \
       --state-file "$STATE_FILE" >>"$LOG_FILE" 2>&1; then
     log "WARNING: couldn't record #$issue_num's device lane state for ${head_sha:0:12} ($st)"
@@ -8788,6 +8791,9 @@ verify_device_work() {
   reason=$(echo "$out" | jq -r '.reason // ""' 2>/dev/null || echo "")
   case "$reason" in
     deferred:*) rec="$reason" ;;
+    # A stop arrived while start attached its supervisor: the slot stays
+    # reserved until housekeeping sees it exit. Waiting is all there is to do.
+    stopped) rec="deferred:stopping" ;;
     attempts) rec="skipped:attempts" ;;
     not-applicable) rec="skipped:not-applicable" ;;
     account) rec="unavailable:no-account" ;;
@@ -8847,9 +8853,12 @@ verify_device_stop() {
 # verify_device_outcome_state <ledger-state> — a finished run's ledger state
 # (device-lane.mjs classifyDeviceRun) as a lane state for verify-decide.mjs:
 # done:<VERDICT> → reported:<verdict>; timeout; failed:<why> →
-# unavailable:<why>; unavailable[:<why>] as is; stopped:<why> →
-# skipped:stopped-<why>; retry:<why> as is (the next tick starts it again).
-# Nothing for anything else. Stdout is the value.
+# unavailable:<why>; unavailable[:<why>] as is; retry:<why> as is, and
+# stopped:<why> → retry:stopped-<why>: neither is terminal, so a card that is
+# (or comes back) in Testing on the same commit starts the lane again, like
+# the shell lane's retry:stopped. A stop the factory made gave its attempt
+# back (device-lane.mjs REFUNDED_STOPS); the per-commit attempt cap bounds the
+# rest. Nothing for anything else. Stdout is the value.
 verify_device_outcome_state() {
   local st="$1" v
   case "$st" in
@@ -8859,21 +8868,26 @@ verify_device_outcome_state() {
       ;;
     timeout|unavailable|unavailable:*|retry:*) printf '%s\n' "$st" ;;
     failed:*) printf 'unavailable:%s\n' "${st#failed:}" ;;
-    stopped:*) printf 'skipped:stopped-%s\n' "${st#stopped:}" ;;
+    stopped:*) printf 'retry:stopped-%s\n' "${st#stopped:}" ;;
   esac
   return 0
 }
 
-# verify_device_collect <issue> <sha> <run-id> <run-dir> <ledger-state> — one
-# finished run from the ledger's `last`: record its outcome as the card's
-# device lane state when it is the run the Testing round is waiting for (the
-# round's run dir, a state that isn't terminal yet), then post its follow-up
-# comment once (deviceReportPosted="<sha>:<run-id>[:<why not>]"). A stopped or
-# retried run posts nothing. "<run-dir>/followup.done" says both are settled,
-# so the run costs no state read on later ticks. Never fails the tick.
+# verify_device_collect <issue> <sha> <run-id> <run-dir> <ledger-state>
+#   [<finished-at>] — one finished run from the ledger's `last`: record its
+# outcome as the card's device lane state when it is the run the round is
+# waiting for (the round's run dir, a state that isn't terminal yet), then post
+# its follow-up comment once (deviceReportPosted="<sha>:<run-id>[:<why not>]").
+# A stopped or retried run posts nothing. Nor does the round's own run whose
+# results the verification report carries: while that report for <sha> is
+# still to come (for up to the hold cap and an hour after the run finished)
+# the follow-up waits, and once the report is posted with this run's finished
+# output (verify_compose_report's "<run-dir>/report-composed") it is recorded
+# as ":in-report". "<run-dir>/followup.done" says both are settled, so the run
+# costs no state read on later ticks. Never fails the tick.
 verify_device_collect() {
-  local issue_num="$1" sha="$2" run_id="$3" run_dir="$4" lstate="$5"
-  local state_json cur mapped posted rc
+  local issue_num="$1" sha="$2" run_id="$3" run_dir="$4" lstate="$5" finished_at="${6:-}"
+  local state_json cur mapped posted rc round=0
   [[ "$issue_num" =~ ^[0-9]+$ && "$sha" =~ ^[0-9a-f]{40}$ && -n "$run_id" && -n "$run_dir" ]] || return 0
   [[ -d "$run_dir" && ! -e "$run_dir/followup.done" ]] || return 0
   if ! state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
@@ -8881,6 +8895,10 @@ verify_device_collect() {
     return 0
   fi
   cur=$(verify_sha_value "$(echo "$state_json" | jq -r '.verifyDevice // ""' 2>/dev/null)" "$sha")
+  if [[ "$(echo "$state_json" | jq -r '.verifyDeviceRunDir // ""' 2>/dev/null)" == "$run_dir" \
+      && "$(echo "$state_json" | jq -r '.verifySha // ""' 2>/dev/null)" == "$sha" ]]; then
+    round=1
+  fi
   if [[ -n "$cur" ]] && ! verify_state_terminal "$cur" \
       && [[ "$(echo "$state_json" | jq -r '.verifyDeviceRunDir // ""' 2>/dev/null)" == "$run_dir" ]]; then
     mapped=$(verify_device_outcome_state "$lstate")
@@ -8892,6 +8910,19 @@ verify_device_collect() {
   if [[ "$posted" != "$sha:$run_id" && "$posted" != "$sha:$run_id:"* ]]; then
     case "$lstate" in
       done:*|timeout|failed:*|unavailable|unavailable:*)
+        if [[ "$round" -eq 1 ]]; then
+          if [[ "$(echo "$state_json" | jq -r '.verifyReportSha // ""' 2>/dev/null)" == "$sha" ]]; then
+            if [[ -e "$run_dir/report-composed" ]]; then
+              log "Issue #$issue_num: device run $run_id's results went out in the verification report; no follow-up"
+              verify_device_posted "$issue_num" "$sha:$run_id:in-report" || return 0
+              : >"$run_dir/followup.done" 2>>"$LOG_FILE" || true
+              return 0
+            fi
+          elif [[ "$(iso_age_min "$finished_at")" -lt $(( ${FACTORY_VERIFY_HOLD_MAX_MIN:-60} + 60 )) ]]; then
+            # The card's verification report is still to come, and carries them.
+            return 0
+          fi
+        fi
         rc=0
         device_post_followup "$issue_num" "$run_dir" || rc=$?
         case "$rc" in
@@ -8922,7 +8953,7 @@ verify_device_posted() {
 # or has run once (no ledger), so a factory without it never touches adb or
 # simctl. Never fails the tick.
 verify_device_housekeeping() {
-  local ledger out state busy issue sha run_id run_dir lstate
+  local ledger out state busy issue sha run_id run_dir lstate finished_at
   ledger=$(verify_device_ledger)
   [[ "${FACTORY_VERIFY_DEVICE:-0}" == "1" || -f "$ledger" ]] || return 0
   if ! out=$(node "$SCRIPT_DIR/lib/device-lane.mjs" housekeeping --repo-root "$REPO_ROOT" \
@@ -8943,11 +8974,79 @@ verify_device_housekeeping() {
   [[ "${DRY_RUN:-0}" -eq 0 && -f "$ledger" ]] || return 0
   # Unit-separated, not tab-separated: read folds runs of tabs, so an empty
   # field would shift the ones after it.
-  while IFS=$'\x1f' read -r issue sha run_id run_dir lstate; do
-    verify_device_collect "$issue" "$sha" "$run_id" "$run_dir" "$lstate" || true
+  while IFS=$'\x1f' read -r issue sha run_id run_dir lstate finished_at; do
+    verify_device_collect "$issue" "$sha" "$run_id" "$run_dir" "$lstate" "$finished_at" || true
   done < <(jq -r '(.last // {}) | to_entries[] | select(.value | type == "object")
-      | [.key, (.value.sha // ""), (.value.runId // ""), (.value.runDir // ""), (.value.state // "")]
+      | [.key, (.value.sha // ""), (.value.runId // ""), (.value.runDir // ""), (.value.state // ""),
+         (.value.finishedAt // "")]
       | map(tostring) | join("\u001f")' "$ledger" 2>>"$LOG_FILE" || true)
+  return 0
+}
+
+# verify_device_intest_work — the device lane after promotion (ADR-0106
+# decision 6). Betas are dispatched at Testing entry and come first, so on most
+# mobile cards the device run can't start while the card is in Testing
+# (deferred:beta-build), and the card is promoted once the lane's wait is over.
+# This keeps starting it, every --watch tick, for cards in In Test that came
+# through Testing for their PR head (verifySha = verifyReportSha = the head)
+# and whose device state for that head isn't terminal: none, deferred:*,
+# retry:*. A running run is left to housekeeping, which records how it ended
+# and posts its follow-up comment (verify_device_collect). A card whose head
+# moved, that left In Test, or whose lane is terminal is not looked at again.
+# Per card it honours the kill switches and the verification switch and canary
+# like the Testing sweep. It never moves a card and touches nothing else the
+# In Test sweep does. Never fails the tick.
+verify_device_intest_work() {
+  local items count idx item issue_num item_labels state_json head_sha st pr_obj pr_num view platforms
+  verify_lane_enabled device || return 0
+  [[ ",$VERIFY_BUILT_LANES," == *",device,"* ]] || return 0
+  if ! items=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items --status "In Test" \
+      2>>"$LOG_FILE"); then
+    log "WARNING: query-status-items 'In Test' failed (transient?); the device lane's In Test pass waits"
+    return 0
+  fi
+  count=$(echo "$items" | jq 'length' 2>/dev/null || echo "0")
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  for ((idx=0; idx<count; idx++)); do
+    if node "$SCRIPT_DIR/lib/state-cli.mjs" factory:paused? --state-file "$STATE_FILE" 2>/dev/null; then
+      return 0
+    fi
+    item=$(echo "$items" | jq -c ".[${idx}]")
+    issue_num=$(echo "$item" | jq -r '.issueNumber')
+    item_labels=$(echo "$item" | jq -r '.labels // [] | join(",")')
+    [[ "$issue_num" =~ ^[0-9]+$ ]] || continue
+    if CARD_OPT_OUT=$(card_opted_out "$item_labels"); then
+      log "Issue #$issue_num: device lane in In Test: skipping ($CARD_OPT_OUT)"; continue
+    fi
+    if [[ ",$item_labels," == *",support,"* ]]; then
+      log "Issue #$issue_num: device lane in In Test: skipping (support label — nightly-support.sh owns these)"; continue
+    fi
+    verify_switched_on "$item_labels" || continue
+    state_json=$(node "$SCRIPT_DIR/lib/state-cli.mjs" factory:get-issue "$issue_num" \
+      --state-file "$STATE_FILE" 2>>"$LOG_FILE") || continue
+    head_sha=$(echo "$state_json" | jq -r '.verifySha // ""' 2>/dev/null || echo "")
+    [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+    [[ "$(echo "$state_json" | jq -r '.verifyReportSha // ""' 2>/dev/null)" == "$head_sha" ]] || continue
+    st=$(verify_sha_value "$(echo "$state_json" | jq -r '.verifyDevice // ""' 2>/dev/null)" "$head_sha")
+    [[ -n "$st" ]] || st="none"
+    verify_state_terminal "$st" && continue
+    [[ "$st" != "running" ]] || continue
+    pr_obj=$(find_prior_pr "$issue_num" || echo "")
+    pr_num=$(echo "$pr_obj" | jq -r '.number // ""' 2>/dev/null || echo "")
+    [[ "$pr_num" =~ ^[0-9]+$ ]] || continue
+    # Only the head the round was for: after a push the card is the In Test
+    # sweep's, and a new round (Testing again) starts the lane afresh.
+    view=$(gh pr view "$pr_num" --repo JakubAnderwald/drafto --json state,headRefOid 2>>"$LOG_FILE") || continue
+    [[ "$(echo "$view" | jq -r '.state // ""' 2>/dev/null)" == "OPEN" \
+      && "$(echo "$view" | jq -r '.headRefOid // ""' 2>/dev/null)" == "$head_sha" ]] || continue
+    # A deferral or retry already passed the mobile check in Testing.
+    platforms='{"mobile":true}'
+    if [[ "$st" == "none" ]]; then
+      verify_pr_platforms "$pr_num" || continue
+      platforms="$VERIFY_LANE_PLATFORMS"
+    fi
+    verify_device_work "$issue_num" "$pr_num" "$head_sha" "$platforms" "{\"device\":\"$st\"}" || true
+  done
   return 0
 }
 
@@ -9219,7 +9318,7 @@ verify_compose_report() {
   local issue_num="$1" pr_num="$2" head_sha="$3" platforms="$4" lanes="$5" cr_note="$6"
   local comments_json="$7" state_json="$8" gaps="$9" body_file="${10}"
   local scenario_file beta_lanes="" bypass="" account="" signin_key="" shell_dir="" browser_dir="" out
-  local lane_facts merged beta_reused="[]" device_dir=""
+  local lane_facts merged beta_reused="[]" device_dir="" device_state device_done=0
   mkdir -p "$VERIFY_DIR" 2>>"$LOG_FILE" || return 1
   scenario_file="$VERIFY_DIR/report-$issue_num-$head_sha.scenario.md"
   verify_scenario_file "$comments_json" "$head_sha" "$scenario_file" || scenario_file=""
@@ -9268,18 +9367,40 @@ verify_compose_report() {
     --browser-dir "$browser_dir" --gaps "$gaps" --cr-note "$cr_note"
     --account-file "$account" --bypass-file "$bypass"
     --signin-key-file "$signin_key")
-  # The device account file is passed whenever it is set: every run had it (the
-  # lane refuses to start without one), so a file gone since fails closed.
-  if [[ -n "$device_dir" && -f "$device_dir/device-output.json" ]]; then
-    render_args+=(--device-out "$device_dir/device-output.json"
-      --device-account-file "${FACTORY_DEVICE_ACCOUNT_FILE:-}")
-  fi
+  # The device lane: its run's output only for a state that has one, still
+  # running or finished. A run the promotion stops (feedback, verification
+  # off), or one stopped or retried before it (retry:*, read here as
+  # skipped:after-*), has no results to promise. Its state goes in either way
+  # (--device-state), so with no output for this commit the device rows say
+  # why. The device account file is passed whenever it is set: every run had
+  # it (the lane refuses to start without one), so a file gone since fails
+  # closed.
+  device_state=$(echo "$lanes" | jq -r '.device // ""' 2>/dev/null || echo "")
+  case "$device_state" in
+    ""|none|skipped:lane-off|skipped:not-built) ;;
+    *) render_args+=(--device-state "$device_state") ;;
+  esac
+  case "${device_state%%:*}" in
+    running|reported|timeout|unavailable)
+      if [[ -n "$device_dir" && -f "$device_dir/device-output.json" ]]; then
+        render_args+=(--device-out "$device_dir/device-output.json"
+          --device-account-file "${FACTORY_DEVICE_ACCOUNT_FILE:-}")
+        # A finished run's results are in this report: its follow-up isn't
+        # needed once the report is posted (verify_device_collect).
+        if jq -e '.finishedAt != null and ([.platforms[]?.state] | all(. != "running"))' \
+            "$device_dir/device-output.json" >/dev/null 2>&1; then
+          device_done=1
+        fi
+      fi
+      ;;
+  esac
   # Composed without screenshots first: that render's scan decides whether the
   # Web lane's may be published at all (verify_publish_screenshots).
   if ! out=$(node "$SCRIPT_DIR/lib/verify-report.mjs" "${render_args[@]}" --out "$body_file" 2>>"$LOG_FILE"); then
     return 1
   fi
   [[ -s "$body_file" ]] || return 1
+  [[ "$device_done" -eq 0 ]] || : >"$device_dir/report-composed" 2>>"$LOG_FILE" || true
   log "Issue #$issue_num: verification report for ${head_sha:0:12} composed: $(printf '%s\n' "$out" | tail -1)"
   verify_publish_screenshots "$issue_num" "$head_sha" "$lanes" "$browser_dir" \
     "$bypass" "$signin_key" "$out" "$body_file" "${render_args[@]}"
@@ -12203,6 +12324,11 @@ A human should take a look. Reset with \
   # reaches the In Test sweep (feedback roll-back, browser candidates) in it
   # too. Runs with verification off as well, to drain the column.
   verify_sweep
+
+  # ── 2c. The device lane on In Test cards (ADR-0106 decision 6) ──
+  # A card promoted while its device run waited for the betas: start that run
+  # now (never moves a card). A no-op while the device lane is off.
+  verify_device_intest_work
 
   # ── In Test feedback sweep: a reporter comment requests a revision ──────────
   # A reporter testing the preview asks for changes by commenting. A new OWNER
