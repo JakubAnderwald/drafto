@@ -51,6 +51,12 @@
 // pnpm exec, bash -c …) are unwrapped and the inner command is checked too.
 // Text that can't be tokenised (an unbalanced quote) is denied.
 //
+// A config with `mode: "device-scenario"` is a device-lane scenario session
+// (device-scenario.mjs), decided by decideDevicePre instead: Write only to its
+// flows/*.yaml, Bash only `device-run` and read-only commands, everything only
+// inside its own directory (see "Device scenario mode" below). A config
+// without a mode, the shell lane's, is decided as above.
+//
 // The decision log is <logDir>/<session>.jsonl. Commands are logged truncated
 // and with Drafto API keys and bearer tokens redacted.
 //
@@ -70,6 +76,7 @@ import {
   accessSync,
   appendFileSync,
   constants as fsConstants,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -129,6 +136,26 @@ export const PRIVATE_FILE_NAMES = Object.freeze([
 ]);
 // The run's own bin/ wrappers, which the session may name by full path.
 export const LANE_BIN_NAMES = Object.freeze(["preview-curl", "dev-inspect", "live-tests"]);
+
+// The device lane's scenario sessions (ADR-0106 decision 2, device-lane.mjs)
+// run under this guard too, in a mode of their own: config.mode set to
+// DEVICE_SCENARIO_MODE. Without it, every decision is the shell lane's.
+export const DEVICE_SCENARIO_MODE = "device-scenario";
+export const DEVICE_SCENARIO_TOOLS = Object.freeze([...LANE_TOOLS, "Write"]);
+// The one command a scenario session runs that does anything: the run's
+// wrapper, which asks the supervisor to validate and run a flow.
+export const DEVICE_RUN_BIN = "device-run";
+// The only files a scenario session may write: flows/NN-<slug>.yaml.
+export const DEVICE_FLOW_FILE_RE = /^[0-9]{2}-[a-z0-9][a-z0-9-]{0,59}\.yaml$/;
+export const DEVICE_FLOW_MAX_BYTES = 20 * 1024;
+// The one Bash command a scenario session may run, matched against the raw
+// command text: no shell metacharacters, quotes or extra spaces at all.
+export const DEVICE_RUN_COMMAND_RE =
+  /^device-run (?:flows\/[0-9]{2}-[a-z0-9][a-z0-9-]{0,59}\.yaml|--wait [1-9][0-9]{0,3})$/;
+// The scenario directory's subdirectories a session may read (Read, Grep,
+// Glob). bin/ and requests/ are the supervisor's: device-run prints a
+// request's answer, so the session never needs to read them.
+export const DEVICE_READ_DIRS = Object.freeze(["flows", "examples", "helpers", "iter-shots"]);
 
 // Command words a lane session never runs, whatever their arguments.
 export const DENY_COMMANDS = Object.freeze([
@@ -422,7 +449,15 @@ export function buildGuardSettings({
   guardPath,
   configPath,
   perlPath = DEFAULT_PERL_PATH,
+  mode = null,
 }) {
+  if (mode !== null && mode !== DEVICE_SCENARIO_MODE) throw new Error(`unknown guard mode ${mode}`);
+  // A scenario session writes its flows with Write (the pre hook confines it
+  // to flows/*.yaml); every other tool stays removed.
+  const denied =
+    mode === DEVICE_SCENARIO_MODE
+      ? ALWAYS_DENY_TOOLS.filter((t) => t !== "Write")
+      : [...ALWAYS_DENY_TOOLS];
   const node = shellQuotePath("nodePath", nodePath);
   const guard = shellQuotePath("guardPath", guardPath);
   const cfg = shellQuotePath("configPath", configPath);
@@ -431,7 +466,7 @@ export function buildGuardSettings({
   const alarmed = `${perl} -e '${PERL_ALARM_SCRIPT}' ${PRE_ALARM_SEC} ${command("pre")}`;
   return {
     disableAllHooks: false,
-    permissions: { deny: [...ALWAYS_DENY_TOOLS] },
+    permissions: { deny: denied },
     hooks: {
       SessionStart: [
         {
@@ -479,7 +514,7 @@ function absoluteDir(label, v) {
 export function validateConfig(raw) {
   if (!isPlainObject(raw)) throw new Error("config must be a JSON object");
   const runDir = absoluteDir("config.runDir", raw.runDir);
-  return {
+  const config = {
     runDir,
     privateDir: path.join(runDir, PRIVATE_DIRNAME),
     binDir: path.join(runDir, BIN_DIRNAME),
@@ -488,6 +523,12 @@ export function validateConfig(raw) {
     repoRoot: absoluteDir("config.repoRoot", raw.repoRoot),
     home: absoluteDir("config.home", raw.home),
   };
+  // Only a scenario session's config names a mode; the shell lane's has none.
+  if (raw.mode !== undefined) {
+    if (raw.mode !== DEVICE_SCENARIO_MODE) throw new Error(`config.mode is unknown: ${raw.mode}`);
+    config.mode = DEVICE_SCENARIO_MODE;
+  }
+  return config;
 }
 
 export function loadConfig(file) {
@@ -1566,6 +1607,7 @@ function globPrefix(p) {
 export function decidePre({ tool, input, config }) {
   try {
     if (typeof tool !== "string") return deny("the hook payload names no tool");
+    if (config?.mode === DEVICE_SCENARIO_MODE) return decideDevicePre({ tool, input, config });
     if (!LANE_TOOLS.includes(tool)) return deny(`${tool} isn't available in a verification lane`);
     const args = isPlainObject(input) ? input : {};
     if (tool === "Bash") {
@@ -1588,6 +1630,133 @@ export function decidePre({ tool, input, config }) {
   } catch (err) {
     return deny(`the guard failed to evaluate this call (${err.message})`);
   }
+}
+
+// ── Device scenario mode ────────────────────────────────────────────────────
+// A device-lane scenario session (device-scenario.mjs) works in its own
+// directory, config.worktree (<runDir>/scenario-<platform>/), and nowhere
+// else. It writes Maestro YAML into flows/ and asks the supervisor to run a
+// flow with `device-run`; the supervisor validates the YAML and runs Maestro
+// outside the session. So, in this mode:
+//   - Bash runs only `device-run flows/NN-<slug>.yaml` or `device-run --wait
+//     <n>`, matched against the raw text (DEVICE_RUN_COMMAND_RE): no other
+//     command, no shell syntax of any kind. maestro, adb, xcrun, emulator,
+//     gradle, xcodebuild, curl and ps are all out (ps could show Maestro's
+//     environment, which holds the account's password).
+//   - Write only to flows/NN-<slug>.yaml directly under the directory (as
+//     given, or its real path), never through a symlink, under
+//     DEVICE_FLOW_MAX_BYTES. Edit, NotebookEdit, WebFetch, WebSearch: denied.
+//   - Read, Grep and Glob only inside DEVICE_READ_DIRS, real paths too. No
+//     `..`, braces, `~` or `$` in any path or pattern, and a Grep / Glob
+//     pattern's fixed part must place it inside one of those directories.
+
+function insideDir(abs, dir) {
+  return abs === dir || abs.startsWith(`${dir}/`);
+}
+
+// The directory as given and as its real path (macOS: /var → /private/var).
+function deviceRoots(config) {
+  const dir = config.worktree;
+  const real = safeRealpath(dir) ?? dir;
+  return [...new Set([dir, real])];
+}
+
+/** Why <p> (relative to the session's dir) isn't readable, or null. */
+function deviceReadReason(p, config) {
+  const s = String(p);
+  if (/[{}~$\u0000-\u001f]/.test(s))
+    return "braces, `~`, `$` and control characters aren't allowed in a path";
+  if (s.split(/[/\\]/).includes("..")) return "`..` isn't allowed: stay in this run's directory";
+  const roots = deviceRoots(config);
+  const abs = path.resolve(config.worktree, s);
+  const allowed = roots.flatMap((r) => DEVICE_READ_DIRS.map((d) => path.join(r, d)));
+  const inside = (x) => allowed.some((d) => insideDir(x, d));
+  if (!inside(abs)) {
+    return `a scenario session may only read ${DEVICE_READ_DIRS.map((d) => `${d}/`).join(", ")} in its own directory`;
+  }
+  const real = safeRealpath(abs);
+  if (real && !inside(real)) return "that path leads out of this run's directory";
+  return null;
+}
+
+function deviceWriteDecision(input, config) {
+  const p = input.file_path;
+  if (typeof p !== "string" || p === "") return deny("the Write call names no file");
+  if (typeof input.content !== "string") return deny("the Write call has no text content");
+  if (Buffer.byteLength(input.content, "utf8") > DEVICE_FLOW_MAX_BYTES) {
+    return deny(`a flow may be at most ${DEVICE_FLOW_MAX_BYTES / 1024} KB`);
+  }
+  if (p.split("/").includes("..")) return deny("`..` isn't allowed in a flow's path");
+  const abs = path.resolve(config.worktree, p);
+  const roots = deviceRoots(config);
+  const parent = path.dirname(abs);
+  if (
+    !roots.some((r) => parent === path.join(r, "flows")) ||
+    !DEVICE_FLOW_FILE_RE.test(path.basename(abs))
+  ) {
+    return deny("Write may only create flows/NN-<slug>.yaml in this run's directory");
+  }
+  // flows/ itself must be the real directory the supervisor made, and the
+  // file, if it exists, a plain file: never a symlink to somewhere else.
+  const realDir = safeRealpath(config.worktree) ?? config.worktree;
+  if (safeRealpath(parent) !== path.join(realDir, "flows")) {
+    return deny("flows/ isn't this run's own directory");
+  }
+  try {
+    const st = lstatSync(abs);
+    if (!st.isFile()) return deny("that flow path isn't a plain file");
+  } catch (err) {
+    if (err.code !== "ENOENT") return deny("that flow path can't be checked");
+  }
+  return allow("Write to a flow file");
+}
+
+function decideDevicePre({ tool, input, config }) {
+  if (!DEVICE_SCENARIO_TOOLS.includes(tool)) {
+    return deny(`${tool} isn't available in a scenario session`);
+  }
+  const args = isPlainObject(input) ? input : {};
+  if (tool === "Write") return deviceWriteDecision(args, config);
+  if (tool === "Bash") {
+    if (typeof args.command !== "string" || !DEVICE_RUN_COMMAND_RE.test(args.command)) {
+      return deny(
+        "Bash runs only `device-run flows/NN-<slug>.yaml` or `device-run --wait <n>`; read files with Read, Grep and Glob",
+      );
+    }
+    return allow("device-run");
+  }
+  if (tool === "Read") {
+    if (typeof args.file_path !== "string" || args.file_path === "")
+      return deny("Read names no file");
+    const why = deviceReadReason(args.file_path, config);
+    return why ? deny(why) : allow("Read inside the run's directory");
+  }
+  // Grep and Glob: the base (`path`, else the session's dir) and every
+  // pattern-ish input are checked, and the fixed part of the pattern, taken
+  // from the base, must already be inside a readable directory.
+  const base = args.path ?? "";
+  if (base !== "" && typeof base !== "string")
+    return deny(`${tool} got a path that isn't a string`);
+  const pattern = tool === "Glob" ? args.pattern : args.glob;
+  for (const v of [base, pattern]) {
+    if (v == null || v === "") continue;
+    if (typeof v !== "string") return deny(`${tool} got a pattern that isn't a string`);
+    if (/[{}~$\u0000-\u001f]/.test(v) || v.split(/[/\\]/).includes("..")) {
+      return deny("braces, `..`, `~` and `$` aren't allowed in a path or pattern");
+    }
+  }
+  const baseAbs = path.resolve(config.worktree, base || ".");
+  const fixed =
+    typeof pattern === "string" && pattern !== ""
+      ? path.resolve(baseAbs, globPrefix(pattern) || ".")
+      : baseAbs;
+  // A given base must be readable itself; without one the pattern's fixed
+  // part alone places the call (a bare `**` starts at the session's dir).
+  for (const p of base ? [baseAbs, fixed] : [fixed]) {
+    const why = deviceReadReason(p, config);
+    if (why) return deny(why);
+  }
+  return allow(`${tool} inside the run's directory`);
 }
 
 // ── Hooks ───────────────────────────────────────────────────────────────────
@@ -1783,16 +1952,20 @@ export function writeGuardFiles({
   home = os.homedir(),
   perlPath = DEFAULT_PERL_PATH,
   nodePath = process.execPath,
+  mode = null,
+  filesDir = runDir,
+  logDir = path.join(runDir, "guard"),
 }) {
   const config = validateConfig({
     runDir,
     worktree,
     repoRoot,
     home,
-    logDir: path.join(runDir, "guard"),
+    logDir,
+    ...(mode ? { mode } : {}),
   });
-  const configPath = path.join(runDir, "guard-config.json");
-  const settingsPath = path.join(runDir, "guard-settings.json");
+  const configPath = path.join(filesDir, "guard-config.json");
+  const settingsPath = path.join(filesDir, "guard-settings.json");
   writeFileAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`);
   // The pre hook only fails closed on a hang through perl's alarm, so the lane
   // must not start with a settings file whose wrapper is missing.
@@ -1802,6 +1975,7 @@ export function writeGuardFiles({
     guardPath: guardModulePath(),
     configPath,
     perlPath,
+    mode,
   });
   writeFileAtomic(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   return { configPath, settingsPath, logDir: config.logDir };

@@ -8825,6 +8825,32 @@ verify_device_report_retry_pending() {
   [[ "$n" -lt "$VERIFY_REPORT_POST_MAX" ]]
 }
 
+# verify_device_scenario_file <issue> <head-sha> — the In Test scenario's mobile
+# sections for <head-sha> (device-lane.mjs scenario-file: the factory's OWNER
+# scenario comment with this exact full-SHA marker, never the fallback; only
+# its iOS, Android and mobile `###` sections) in a mode-600 temp file under the
+# device lane's log dir. Prints the file's path, or nothing (and leaves no
+# file) when there are no such sections or the comments can't be read: the
+# repo flows run without them. The caller passes it to `start
+# --scenario-file`, which copies the sections into the run, then removes it.
+# Only with FACTORY_DEVICE_SCENARIO=1 (read by device-lane.mjs too): off, it
+# fetches nothing and prints nothing, so the lane runs exactly as without it.
+verify_device_scenario_file() {
+  local issue_num="$1" head_sha="$2" dir file comments_json
+  [[ "${FACTORY_DEVICE_SCENARIO:-0}" == "1" ]] || return 0
+  dir="$(dirname "$(verify_device_ledger)")"
+  mkdir -p "$dir" 2>>"$LOG_FILE" || return 0
+  comments_json=$(fetch_issue_comments "$issue_num" 2>>"$LOG_FILE") || return 0
+  file=$(umask 077 && mktemp "$dir/scenario-${issue_num}-XXXXXX" 2>>"$LOG_FILE") || return 0
+  if printf '%s' "$comments_json" | node "$SCRIPT_DIR/lib/device-lane.mjs" scenario-file \
+      --sha "$head_sha" --out "$file" >/dev/null 2>>"$LOG_FILE" && [[ -s "$file" ]]; then
+    printf '%s\n' "$file"
+  else
+    rm -f "$file"
+  fi
+  return 0
+}
+
 # verify_device_work <issue> <pr> <head-sha> <platforms-json> <lane-states-json>
 # Start the device lane for <head-sha> (device-lane.mjs start --trigger
 # testing) unless its state is terminal or a run is already going. Only a PR
@@ -8838,7 +8864,8 @@ verify_device_report_retry_pending() {
 # a refusal that waiting can't fix ends the lane. Never fails the tick.
 verify_device_work() {
   local issue_num="$1" pr_num="$2" head_sha="$3" platforms="${4:-}" lanes="${5:-}"
-  local state mobile out started reason rec run_dir
+  local state mobile out started reason rec run_dir scenario_file
+  local scenario_args=()
   [[ -n "$platforms" ]] || platforms='{}'
   [[ -n "$lanes" ]] || lanes='{}'
   verify_lane_enabled device || return 0
@@ -8881,11 +8908,20 @@ verify_device_work() {
     log "DRY-RUN: would start the device lane for #$issue_num at ${head_sha:0:12}"
     return 0
   fi
+  # The scenario's mobile sections, only with FACTORY_DEVICE_SCENARIO=1: then
+  # they add platforms to the device plan and are the steps the lane's
+  # sessions run. Off, no file (verify_device_scenario_file prints nothing).
+  scenario_file=$(verify_device_scenario_file "$issue_num" "$head_sha")
+  [[ -z "$scenario_file" ]] || scenario_args=(--scenario-file "$scenario_file")
+  # ${arr[@]+...}: an empty array under `set -u` is an error on bash 3.2.
   if ! out=$(node "$SCRIPT_DIR/lib/device-lane.mjs" start --issue "$issue_num" --pr "$pr_num" \
-      --sha "$head_sha" --trigger testing --repo-root "$REPO_ROOT" 2>>"$LOG_FILE"); then
+      --sha "$head_sha" --trigger testing --repo-root "$REPO_ROOT" \
+      ${scenario_args[@]+"${scenario_args[@]}"} 2>>"$LOG_FILE"); then
+    [[ -z "$scenario_file" ]] || rm -f "$scenario_file"
     log "WARNING: issue #$issue_num: the device lane couldn't be started (non-fatal; retried next tick)"
     out='{"started":false,"reason":"start-error"}'
   fi
+  [[ -z "$scenario_file" ]] || rm -f "$scenario_file"
   out=$(printf '%s\n' "$out" | tail -1)
   started=$(echo "$out" | jq -r '.started // false' 2>/dev/null || echo "false")
   if [[ "$started" == "true" ]]; then
@@ -9360,7 +9396,8 @@ device_ondemand_wait() {
 # cards, never moves a card. Never fails the tick.
 verify_device_ondemand_work() {
   local status items count idx item issue_num item_labels pr_obj pr_num view head_sha
-  local ledger inflight out started reason run_id state_json prev st seen=","
+  local ledger inflight out started reason run_id state_json prev st seen="," scenario_file
+  local scenario_args=()
   [[ ",$VERIFY_BUILT_LANES," == *",device,"* ]] || return 0
   for status in "Testing" "In Test"; do
     if ! items=$(node "$SCRIPT_DIR/lib/factory-project.mjs" query-status-items --status "$status" \
@@ -9445,12 +9482,17 @@ verify_device_ondemand_work() {
         device_run_label_remove "$issue_num" || true
         continue
       fi
+      scenario_args=()
+      scenario_file=$(verify_device_scenario_file "$issue_num" "$head_sha")
+      [[ -z "$scenario_file" ]] || scenario_args=(--scenario-file "$scenario_file")
       if ! out=$(node "$SCRIPT_DIR/lib/device-lane.mjs" start --issue "$issue_num" --pr "$pr_num" \
           --sha "$head_sha" --trigger on-demand --force-attempt --repo-root "$REPO_ROOT" \
-          2>>"$LOG_FILE"); then
+          ${scenario_args[@]+"${scenario_args[@]}"} 2>>"$LOG_FILE"); then
+        [[ -z "$scenario_file" ]] || rm -f "$scenario_file"
         device_ondemand_wait "$issue_num" "$head_sha" "start-error" "$prev"
         continue
       fi
+      [[ -z "$scenario_file" ]] || rm -f "$scenario_file"
       out=$(printf '%s\n' "$out" | tail -1)
       started=$(echo "$out" | jq -r '.started // false' 2>/dev/null || echo "false")
       if [[ "$started" == "true" ]]; then

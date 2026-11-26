@@ -869,6 +869,8 @@ function shapeDeviceFlow(raw) {
     status: own(DEVICE_VERDICT_RANK, f.status) ? f.status : "ERROR",
     durationS: Number.isFinite(f.durationS) ? Math.max(0, Math.round(f.durationS)) : null,
     failure: typeof f.failure === "string" && f.failure.trim() ? f.failure : null,
+    // A scenario final-pass row the supervisor actually ran (device-scenario.mjs).
+    dispatched: f.dispatched === true,
   };
 }
 
@@ -886,8 +888,31 @@ function shapeDevicePlatform(v) {
         }
       : null,
     flows: Array.isArray(v.flows) ? v.flows.map(shapeDeviceFlow) : [],
+    // Phase (b), the scenario's steps (device-scenario.mjs): the session's
+    // state and its summary. Its flows are in `flows`, named `scenario: …`.
+    scenario:
+      typeof v.scenarioState === "string"
+        ? {
+            raw: v.scenarioState,
+            state: own(DEVICE_SCENARIO_STATES, v.scenarioState) ?? "in an unrecognised state",
+            summary:
+              typeof v.scenarioSummary === "string" && v.scenarioSummary.trim()
+                ? capText(v.scenarioSummary.trim(), DEVICE_SUMMARY_MAX)
+                : null,
+          }
+        : null,
   };
 }
+
+const DEVICE_SUMMARY_MAX = 4096;
+const DEVICE_SCENARIO_STATES = {
+  running: "still running",
+  done: "done",
+  timeout: "stopped at its time or run cap",
+  error: "failed",
+  stopped: "stopped with the run",
+  "skipped:time": "skipped: too little of the run was left",
+};
 
 // A platform that didn't finish: its state, with the reason as a sentence.
 function deviceStateText(v, { reason = true } = {}) {
@@ -926,6 +951,7 @@ function buildDeviceLane(input, secrets, sha) {
         .flatMap(([p, v]) => [
           `${p} ${v.kind}:${v.detail}`,
           ...v.flows.map((f) => `${f.name} ${f.status} ${f.failure ?? ""}`),
+          ...(v.scenario?.summary ? [v.scenario.summary] : []),
         ])
         .join("\n")
     : null;
@@ -1041,6 +1067,25 @@ function deviceDetailsText(lane) {
     }
     if (v.flows.length > shown.length) lines.push(`- …and ${v.flows.length - shown.length} more.`);
     if (!v.flows.length) lines.push("_No flow ran._");
+    if (v.scenario) {
+      // The session's state, then who wrote the `scenario:` rows, only when
+      // there are some. The re-run is claimed only for a row the supervisor
+      // ran (dispatched); a validator-rejected flow never ran.
+      const rows = v.flows.filter((f) => f.name.startsWith("scenario: "));
+      const rerun = rows.filter((f) => f.dispatched).length;
+      let text = `_Scenario steps: ${v.scenario.state}.`;
+      if (rows.length) {
+        text += " A guarded session wrote the `scenario:` flows; ";
+        text +=
+          rerun === rows.length
+            ? "the supervisor validated them and ran them again after the session ended."
+            : rerun
+              ? "the supervisor validated them and ran the valid ones again after the session ended."
+              : "none passed the supervisor's validation, so none ran.";
+      }
+      lines.push("", `${text}_`);
+      if (v.scenario.summary) lines.push("", closeFences(defang(v.scenario.summary)));
+    }
     lines.push("");
   }
   return closeFences(lines.join("\n").trimEnd());

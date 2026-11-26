@@ -147,6 +147,10 @@ export const QA_TAG_PREFIX = "factory-shell-";
 export const BYPASS_KEY = "VERCEL_AUTOMATION_BYPASS_SECRET";
 export const BYPASS_HEADER = "x-vercel-protection-bypass";
 export const LANE_TOOL_LIST = "Bash,Read,Grep,Glob";
+// The device lane's scenario sessions (device-lane.mjs) add Write, which their
+// guard mode (verify-guard.mjs DEVICE_SCENARIO_MODE) confines to flows/*.yaml.
+export const DEVICE_SCENARIO_TOOL_LIST = "Bash,Read,Grep,Glob,Write";
+const TOOL_LISTS = Object.freeze([LANE_TOOL_LIST, DEVICE_SCENARIO_TOOL_LIST]);
 export const EFFORTS = Object.freeze(["ultracode", "max", "xhigh", "high", "medium", "low"]);
 
 const THIS_FILE = fileURLToPath(import.meta.url);
@@ -355,7 +359,13 @@ export function laneEnv(env, { binDirs = [], ghConfigDir = null, extra = {} } = 
  * <model> is optional: a run started before ADR-0101 has none in its meta.json
  * and gets no --model; set, `--model <model>` comes last, after --effort.
  */
-export function buildClaudeArgs({ settingsPath, sessionId, effort, model }) {
+export function buildClaudeArgs({
+  settingsPath,
+  sessionId,
+  effort,
+  model,
+  tools = LANE_TOOL_LIST,
+}) {
   if (typeof settingsPath !== "string" || !path.isAbsolute(settingsPath)) {
     throw new Error("buildClaudeArgs: settingsPath must be absolute");
   }
@@ -365,6 +375,7 @@ export function buildClaudeArgs({ settingsPath, sessionId, effort, model }) {
   if (model !== undefined && model !== null && !isValidModel(model)) {
     throw new Error(`buildClaudeArgs: invalid model ${model}`);
   }
+  if (!TOOL_LISTS.includes(tools)) throw new Error(`buildClaudeArgs: invalid tools ${tools}`);
   return [
     "-p",
     "--no-chrome",
@@ -376,9 +387,9 @@ export function buildClaudeArgs({ settingsPath, sessionId, effort, model }) {
     "--permission-mode",
     "dontAsk",
     "--tools",
-    LANE_TOOL_LIST,
+    tools,
     "--allowedTools",
-    LANE_TOOL_LIST,
+    tools,
     "--session-id",
     sessionId,
     "--effort",
@@ -397,8 +408,13 @@ const FORBIDDEN_CLAUDE_FLAGS = [
   "--plugin-url",
 ];
 
-/** Throws unless <args> is exactly the locked-down shape buildClaudeArgs makes. */
-export function assertSafeClaudeArgs(args) {
+/**
+ * Throws unless <args> is exactly the locked-down shape buildClaudeArgs makes.
+ * <tools>: the tool list the caller's session must have, the shell lane's
+ * unless a device scenario session says otherwise.
+ */
+export function assertSafeClaudeArgs(args, { tools = LANE_TOOL_LIST } = {}) {
+  if (!TOOL_LISTS.includes(tools)) throw new Error(`unknown claude tool list ${tools}`);
   if (!Array.isArray(args)) throw new Error("claude args must be an array");
   for (const a of args) {
     const flag = String(a).split("=")[0];
@@ -411,8 +427,8 @@ export function assertSafeClaudeArgs(args) {
   }
   if (at("--permission-mode") !== "dontAsk") throw new Error("claude args must use dontAsk");
   if (at("--setting-sources") !== "") throw new Error('claude args must pass --setting-sources ""');
-  if (at("--tools") !== LANE_TOOL_LIST || at("--allowedTools") !== LANE_TOOL_LIST) {
-    throw new Error(`claude tools must be exactly ${LANE_TOOL_LIST}`);
+  if (at("--tools") !== tools || at("--allowedTools") !== tools) {
+    throw new Error(`claude tools must be exactly ${tools}`);
   }
   if (!args.includes("--settings")) throw new Error("claude args must load the guard settings");
   if (args.includes("--model") && !isValidModel(at("--model"))) {
